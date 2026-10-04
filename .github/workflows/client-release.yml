@@ -13,6 +13,7 @@
 #   LOOKLOOK_SERVER_URL     客户端默认服务端地址，编译时写入（https://…）
 #   LOOKLOOK_PLATFORM_KEYS  可选：内置平台公钥 p1=<base64url>（见服务端 /.well-known/looklook.json）
 name: client-release
+run-name: client-release (${{ inputs.channel }})
 
 on:
   workflow_dispatch:
