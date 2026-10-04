@@ -8,14 +8,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, patch, post, put};
 use axum::{Extension, Json, Router};
 use looklook_protocol::dto::{CreateTunnel, UpdateTunnel};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use super::access::{self, Peer};
 use super::{origin_matches, Access, App, CLIENT_HEADER};
 use crate::account::VERSION;
 use crate::error::LocalError;
-use crate::instances::{log_tail, Input};
+use crate::instances::{log_tail, Backend, Input, Instances};
 use crate::settings::Settings;
 use crate::tools;
 use crate::transfer;
@@ -46,7 +46,10 @@ pub fn routes(app: App) -> Router<App> {
         // 只有上传块放宽请求体上限（一块 8 MiB），其他接口仍是默认的 2 MB
         .route("/uploads/{uid}", put(upload_chunk).layer(DefaultBodyLimit::max(transfer::BODY_LIMIT)).delete(cancel_upload))
         .route("/uploads/{uid}/finish", post(finish_upload))
+        .route("/instances/{id}/page", post(instance_page))
         .route("/fs/list", get(fs_list))
+        .route("/relays", get(list_relays))
+        .route("/relays/preference", put(set_relay))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
         .route("/settings", get(get_settings).put(put_settings))
@@ -210,9 +213,94 @@ struct CreateReq {
 
 async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
-    let v = app.instances.create(req.input).await?;
+    let v = if req.input.launch.as_deref() == Some("dsh") { create_dsh(&app, req.input).await? } else { app.instances.create(req.input).await? };
     let v = if req.start { app.instances.start(&v.row.id).await? } else { v };
     Ok((StatusCode::CREATED, Json(v)))
+}
+
+// ---------------- DSH（网页界面） ----------------
+//
+// DSH 不是终端界面：`dsh web` 在 tmux 里常驻，只监听 127.0.0.1 的一个端口，再给这个端口建一个本机网页映射。
+// 打开 DSH 就是打开这个映射地址——在本机、局域网、外面都是同一个地址。一台电脑只有一个 DSH，
+// 一个进程管理所有项目文件夹（在网页里添加）。
+
+/// 新建 DSH 时建的那条本机网页映射：`instance_page.{实例ID}`
+#[derive(Serialize, Deserialize)]
+struct DshPage {
+    tunnel_id: String,
+}
+
+fn page_key(id: &str) -> String {
+    format!("instance_page.{id}")
+}
+
+fn require_persistent(app: &App) -> R<()> {
+    // 直接运行模式下命令只在有人打开终端时运行，网页界面没法常驻
+    match app.instances.backend {
+        Backend::Direct => Err(LocalError::new("DSH_NEEDS_PERSISTENT")),
+        Backend::Tmux(_) => Ok(()),
+    }
+}
+
+async fn create_dsh(app: &App, mut input: Input) -> R<crate::instances::View> {
+    require_persistent(app)?;
+    if app.instances.dsh()?.is_some() {
+        return Err(LocalError::new("DSH_EXISTS"));
+    }
+    let port = Instances::pick_web_port()?;
+    check_tunnel_port(app, Some(port.into()))?;
+    let tunnel = app.account.create_tunnel(&CreateTunnel { name: "DSH".into(), target_port: port.into() }).await?;
+    input.web_port = Some(port);
+    let v = match app.instances.create(input).await {
+        Ok(v) => v,
+        Err(e) => {
+            let _ = app.account.delete_tunnel(&tunnel.id).await;
+            return Err(e);
+        }
+    };
+    app.store.set(&page_key(&v.row.id), &DshPage { tunnel_id: tunnel.id })?;
+    Ok(v)
+}
+
+/// 打开 DSH：确保它在运行、映射还在（被删了就重建，被关了就打开），返回映射地址。
+async fn instance_page(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    require_persistent(&app)?;
+    let v = app.instances.get(&id).await?;
+    let port = v.web_port.ok_or_else(LocalError::not_found)?;
+    // 已经在运行时什么也不做；任务退出了（例如 dsh 崩了）会重新运行
+    if !v.running || v.task_alive != Some(true) {
+        app.instances.start(&id).await?;
+    }
+    let saved: Option<DshPage> = app.store.get(&page_key(&id))?;
+    let existing = match saved {
+        Some(p) => app.account.tunnels().await?.items.into_iter().find(|t| t.id == p.tunnel_id),
+        None => None,
+    };
+    let tunnel = match existing {
+        Some(t) if t.status == "enabled" && t.target_port == i32::from(port) => t,
+        Some(t) => {
+            let req = UpdateTunnel { name: None, target_port: Some(port.into()), status: Some("enabled".into()) };
+            app.account.update_tunnel(&t.id, &req).await?
+        }
+        None => {
+            let t = app.account.create_tunnel(&CreateTunnel { name: "DSH".into(), target_port: port.into() }).await?;
+            app.store.set(&page_key(&id), &DshPage { tunnel_id: t.id.clone() })?;
+            t
+        }
+    };
+    // 刚启动时等它开始监听（第一次运行要初始化配置，会慢一些），免得打开就是“连不上”
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
+    let ready = loop {
+        if tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await.is_ok() {
+            break true;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break false;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    };
+    Ok(Json(json!({ "url": tunnel.url, "ready": ready })))
 }
 
 async fn get_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
@@ -224,7 +312,15 @@ async fn update_instance(State(app): State<App>, Path(id): Path<String>, Json(in
 }
 
 async fn delete_instance(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    let page: Option<DshPage> = app.store.get(&page_key(&id))?;
     app.instances.delete(&id).await?;
+    if let Some(p) = page {
+        // 映射跟着删；平台上已经没有（用户自己删了）或暂时连不上都不影响删除终端
+        if let Err(e) = app.account.delete_tunnel(&p.tunnel_id).await {
+            tracing::warn!(error = %e, "删除 DSH 的网页映射失败");
+        }
+        let _ = app.store.remove(&page_key(&id));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -501,6 +597,43 @@ fn is_hidden(e: &std::fs::DirEntry, name: &str) -> bool {
 }
 
 // ---------------- 本机网页（隧道，登记在平台） ----------------
+
+// ---------------- 线路（中转） ----------------
+
+/// 可选的线路，以及从这台电脑到每条线路的延迟（并发测，最多几秒）。
+async fn list_relays(State(app): State<App>) -> R<Json<Value>> {
+    let list = app.account.relays().await?;
+    let pings = futures_util::future::join_all(list.items.iter().map(|i| async {
+        match &i.ping_url {
+            Some(u) => crate::relay::ping(u).await,
+            None => Err("unsupported".to_string()),
+        }
+    }))
+    .await;
+    let items: Vec<Value> = list
+        .items
+        .iter()
+        .zip(pings)
+        .map(|(i, p)| {
+            let (latency_ms, error) = match p {
+                Ok(ms) => (Some(ms), None),
+                Err(e) => (None, Some(e)),
+            };
+            json!({ "name": i.name, "address": i.address, "latency_ms": latency_ms, "error": error })
+        })
+        .collect();
+    Ok(Json(json!({ "items": items, "preferred": list.preferred, "current": list.current })))
+}
+
+#[derive(Deserialize)]
+struct RelayPreference {
+    relay: Option<String>,
+}
+
+async fn set_relay(State(app): State<App>, Json(req): Json<RelayPreference>) -> R<Json<Value>> {
+    let r = app.account.set_relay(req.relay).await?;
+    Ok(Json(json!({ "preferred": r.preferred, "current": r.current })))
+}
 
 async fn list_tunnels(State(app): State<App>) -> R<Json<Value>> {
     let list = app.account.tunnels().await?;

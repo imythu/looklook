@@ -133,7 +133,7 @@
       "short": "Closing a terminal page ends what's running in it"
     },
     "empty_title": "No terminals yet",
-    "empty_body": "Create a terminal to run Codex, Claude Code or any command on this computer. Closing the page won't stop it.",
+    "empty_body": "Create a terminal to run Codex, Claude Code, OpenCode or any command on this computer. Closing the page won't stop it.",
     "pages_tip": "Have a web page running on this computer and want to see it from outside? Try",
     "remote_open": "Open in a new tab",
     "remote_qr_show": "Show QR code",
@@ -162,6 +162,14 @@
     "claude": {
       "title": "Claude Code",
       "desc": "Start Anthropic Claude Code"
+    },
+    "opencode": {
+      "title": "OpenCode",
+      "desc": "Start OpenCode"
+    },
+    "dsh": {
+      "title": "DSH",
+      "desc": "DeepSeek Harness web UI"
     },
     "custom": {
       "title": "Custom command",
@@ -241,6 +249,7 @@
     "full_access": "Open with all permissions",
     "full_access_hint_codex": "Uses --dangerously-bypass-approvals-and-sandbox: no approval prompts and no sandbox.",
     "full_access_hint_claude": "Uses --dangerously-skip-permissions: skips all permission prompts.",
+    "full_access_hint_opencode": "Uses --auto: automatically approves every permission that isn't explicitly denied.",
     "root_confirm": "I confirm starting as root with full permissions",
     "root_confirm_hint": "The client is running as root, so the AI tool will have full control of this machine. Use with care."
   },
@@ -296,7 +305,7 @@
     "mcp": {
       "title": "Let AI assistants add pages",
       "enable": "Allow AI assistants to add pages",
-      "intro": "When on, Codex and Claude Code on this computer can look up and add local pages while you develop: when they notice a site in progress (such as localhost:5173) they give you an address you can open from anywhere. They connect with a separate token, only from this computer, and cannot delete pages.",
+      "intro": "When on, Codex, Claude Code, OpenCode and DSH on this computer can look up and add local pages while you develop: when they notice a site in progress (such as localhost:5173) they give you an address you can open from anywhere. They connect with a separate token, only from this computer, and cannot delete pages.",
       "skill": "When an AI assistant finds a web page",
       "skill_auto": "Add it",
       "skill_ask": "Ask me first",
@@ -482,7 +491,7 @@
   },
   "guide": {
     "title": "First time? Three steps to get started",
-    "s1": "Pick the tool you want (plain terminal, Codex or Claude Code) and click \"New terminal\".",
+    "s1": "Pick the tool you want (plain terminal, Codex, Claude Code, OpenCode or DSH) and click \"New terminal\".",
     "s2": "Type commands in the terminal as usual; closing the page won't stop the task.",
     "s3": "Want to continue on your phone? Open the personal address at the top of the page and sign in to the same account.",
     "dismiss": "Got it"
@@ -496,6 +505,8 @@
     "right": "Right",
     "bksp": "Backspace",
     "enter": "Enter",
+    "ime_show": "Show keyboard",
+    "ime_hide": "Hide keyboard",
     "locked": "{{key}} (locked)",
     "mods_once": "{{keys}} + next key · tap again to lock",
     "mods_locked": "{{keys}} locked · tap again to release",
@@ -731,5 +742,40 @@
       "NOT_A_FILE": "This isn't a regular file and can't be downloaded.",
       "CLIENT_UNREACHABLE": "Can't reach this computer. Retry once the network is back and the upload will continue."
     }
+  },
+  "relays": {
+    "title": "Remote route",
+    "intro": "When you open this computer from your phone or another computer, the data travels through one of Looklook's routes. Looklook picks a working one for you automatically, so usually there's nothing to do.",
+    "when_slow": "If remote access feels slow or typing lags, pick a route with lower latency below. Looklook remembers your choice, so you only need to do this once.",
+    "auto": "Choose automatically (recommended)",
+    "auto_hint": "Uses a route that works and switches to another one if it has problems",
+    "auto_now": "Currently using {{name}}",
+    "line": "Route {{name}}",
+    "in_use": "In use",
+    "ms": "{{ms}} ms",
+    "speed": {
+      "fast": "Fast",
+      "ok": "OK",
+      "slow": "Slow"
+    },
+    "measuring": "Testing speed, this takes a few seconds…",
+    "measuring_short": "Testing…",
+    "retest": "Test again",
+    "no_test": "Can't test this route right now",
+    "unreachable": "Can't connect",
+    "none": "No routes to choose from right now.",
+    "fallback": "The route you chose ({{preferred}}) isn't available right now, so {{current}} is being used for the moment. It switches back automatically once {{preferred}} recovers.",
+    "switched": "Switched to route {{name}}",
+    "saved": "Your choice is saved",
+    "latency_explain": "Latency is how long data takes to travel from this computer to the route and back. Lower is faster.",
+    "switch_note": "Switching routes disconnects any open remote pages for a few seconds, then they reconnect on their own. Your personal address stays the same."
+  },
+  "dsh": {
+    "open": "Open DSH",
+    "open_hint": "Opens DSH's web page; the same address works on this computer and from anywhere",
+    "output": "View DSH's output",
+    "starting": "DSH is still starting; refresh the page in a moment if it doesn't load",
+    "form_note": "DSH runs as a web page, one per computer. Looklook picks a free port and adds a local page for it, so opening DSH (here or remotely) opens that page.",
+    "workdir_hint": "DSH's default project folder. Add other project folders inside DSH."
   }
 }

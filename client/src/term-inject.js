@@ -5,6 +5,7 @@
 // 4. 按键条上点了 Ctrl / Alt / Shift 后，手机键盘打的下一个字符也套用这些修饰键；
 // 5. 文件传输（docs/FILE_TRANSFER.md §5）：在输出里发现 rz / sz 时通知管理台；嵌在管理台里时把粘贴/拖进来的文件交给管理台上传；
 //    提供 window.looklookPaste(text)，管理台上传完成后把路径填进终端。
+// 6. 手机上管住键盘的弹出：只有用户点了终端（或按键条要求）才弹出，并把聚焦变化告诉外层（规则见 src-ui/shared/KeyBar.jsx 开头）。
 (function () {
   'use strict';
   var tries = 0;
@@ -239,7 +240,52 @@
     setTimeout(function () { el.remove(); }, 1300);
   }
 
+  // 手机键盘：外层挂在 iframe 元素上的 looklookIme = { change(focused), up() → 键盘是否弹着 }。
+  var touch = Boolean(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches);
+  var lastGesture = 0;
+  function imeBox() {
+    try { return window.frameElement && window.frameElement.looklookIme; } catch (e) { return null; }
+  }
+  function setupIme(term) {
+    var ta = term.textarea;
+    if (!ta) return;
+    // show：外层按钮的点击里同步调用（算用户操作）。已聚焦但键盘被收起（如安卓返回键）时先失焦再聚焦，键盘才会出来。
+    window.looklookIme = function (show) {
+      if (!show) { ta.blur(); return; }
+      lastGesture = Date.now();
+      if (document.activeElement === ta) ta.blur();
+      ta.focus({ preventScroll: true });
+    };
+    ta.addEventListener('focus', function () {
+      // 不是用户点出来的聚焦（ttyd 加载/重连时自己聚焦）不让它弹出键盘。
+      if (touch && Date.now() - lastGesture > 1500) { ta.blur(); return; }
+      var box = imeBox();
+      if (box) box.change(true);
+    });
+    ta.addEventListener('blur', function () {
+      var box = imeBox();
+      if (box) box.change(false);
+    });
+    if (!touch) return;
+    if (document.activeElement === ta) ta.blur();
+    // 点一下终端（不是滑动、不是长按）：已聚焦但键盘没弹着时把键盘叫出来；没聚焦时 xterm 自己会聚焦。
+    var tap = null;
+    document.addEventListener('pointerdown', function (e) {
+      lastGesture = Date.now();
+      tap = e.pointerType === 'mouse' ? null : { x: e.clientX, y: e.clientY, t: lastGesture };
+    }, true);
+    document.addEventListener('pointerup', function (e) {
+      var d = tap;
+      tap = null;
+      if (!d || Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 12 || Date.now() - d.t > 600) return;
+      if (!e.target || !e.target.closest || !e.target.closest('.xterm')) return;
+      var box = imeBox();
+      if (document.activeElement === ta && box && !box.up()) window.looklookIme(true);
+    }, true);
+  }
+
   function setup(term) {
+    setupIme(term);
     // opts.focus === false：按键条发送时不聚焦终端，免得手机键盘被弹出来。
     window.looklookSend = function (data, opts) { send(term, data); if (!opts || opts.focus !== false) term.focus(); };
     // 管理台上传完成后填路径：term.paste 会在程序开启 bracketed paste 时自动包上 ESC[200~ … ESC[201~。

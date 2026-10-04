@@ -62,14 +62,17 @@ for (const [id, k] of Object.entries(K)) k.id = id;
 
 const combo = (label, seq, hint) => ({ label, seq: fixed(seq), raw: true, hint });
 
-/** 一直显示的两行（第二行的 ← ↓ → 与第一行的 ↑ 组成倒 T）。'more' 'paste' 与修饰键由组件处理。 */
+/**
+ * 一直显示的两行（第二行的 ← ↓ → 与第一行的 ↑ 组成倒 T，回车常驻右下角）。
+ * 'more' 'paste' 'ime'（弹出/收起手机键盘）与修饰键由组件处理；Home / End 在“翻页编辑”分类里。
+ */
 export const MAIN_ROWS = [
   ['esc', 'tab', 'ctrl', 'alt', 'up', 'ctrl_c', 'more'],
-  ['shift', 'home', 'end', 'left', 'down', 'right', 'paste'],
+  ['shift', 'ime', 'paste', 'left', 'down', 'right', 'enter'],
 ];
 
-/** 收起后只留一行：最常用的 Esc / Tab / Ctrl 与方向键，“更多”仍可打开分类面板。 */
-export const COMPACT_ROW = ['esc', 'tab', 'ctrl', 'left', 'up', 'down', 'right', 'more'];
+/** 收起后只留一行：Esc / Tab / Ctrl、方向键、键盘开关和回车；“更多”在展开后的两行里（向上滑把手）。 */
+export const COMPACT_ROW = ['esc', 'tab', 'ctrl', 'left', 'up', 'down', 'right', 'ime', 'enter'];
 
 export const KEYS = {
   ...K,

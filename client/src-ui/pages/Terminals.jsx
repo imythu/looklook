@@ -2,12 +2,14 @@
 import {
   ArrowUp,
   Bot,
+  Braces,
   Check,
   ChevronDown,
   ChevronRight,
   Command,
   ExternalLink,
   FileText,
+  Fish,
   Folder,
   FolderOpen,
   FolderPlus,
@@ -65,9 +67,14 @@ export const LAUNCH_ICON = {
   shell: SquareTerminal,
   codex: Bot,
   claude: Sparkles,
+  opencode: Braces,
+  dsh: Fish,
   custom: Command,
 };
-const LAUNCHES = ["shell", "codex", "claude", "custom"];
+const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
+// 能一键安装的 AI 工具（没装时提示安装）；能以全部权限启动的
+const AI_TOOLS = ["codex", "claude", "opencode", "dsh"];
+const FULL_ACCESS = ["codex", "claude", "opencode"];
 
 function RemoteCard() {
   const { t } = useTranslation();
@@ -297,6 +304,21 @@ function PopMenu({ items }) {
 // 新窗口打开管理台的终端页（带文件面板、粘贴、拖放），不再直接打开裸 /i/{id}/。
 const tabUrl = (inst) => `/t/${inst.id}`;
 
+// DSH 是网页界面：打开它就是打开它的本机网页映射（本机、外面都是同一个地址）。
+// 先在点击里同步开一个空白窗口（不会被当作弹窗拦截），后台确保 DSH 在运行、映射可用后再跳过去。
+async function openDsh(inst, t, toast) {
+  const w = window.open("about:blank", "_blank");
+  try {
+    const r = await api.post(`/instances/${inst.id}/page`);
+    if (w) w.location.href = r.url;
+    else window.open(r.url, "_blank", "noopener");
+    if (!r.ready) toast(t("dsh.starting"));
+  } catch (e) {
+    w?.close();
+    toast(errorText(t, e), "error");
+  }
+}
+
 function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
   const { t } = useTranslation();
   const { status } = useStatus();
@@ -338,6 +360,13 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
   // 在当前页面内嵌打开（不改变标签页地址）。
   const openHere = async () => {
     if (await ensureRunning()) onOpenHere(inst.id);
+  };
+  const dsh = inst.launch === "dsh";
+  const openPage = async () => {
+    setBusy(true);
+    await openDsh(inst, t, toast);
+    setBusy(false);
+    onChanged();
   };
   // 新标签页打开：未运行时先同步开一个空白窗口（避免被拦截），启动后再导航过去。
   const openTab = async () => {
@@ -428,24 +457,50 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
         )}
       </div>
       <div className="instance-actions">
-        <Button
-          className="grow-btn"
-          icon={inst.running ? PanelTop : Play}
-          busy={busy}
-          disabled={!status.account.allowed}
-          onClick={openHere}
-          title={t("instance.open_here_hint")}
-        >
-          {inst.running ? t("instance.open_here") : t("instance.start_open")}
-        </Button>
-        <Button
-          variant="secondary"
-          icon={ExternalLink}
-          disabled={busy || !status.account.allowed}
-          onClick={openTab}
-          aria-label={t("instance.new_window")}
-          title={t("instance.new_window")}
-        />
+        {dsh ? (
+          <>
+            <Button
+              className="grow-btn"
+              icon={ExternalLink}
+              busy={busy}
+              disabled={!status.account.allowed}
+              onClick={openPage}
+              title={t("dsh.open_hint")}
+            >
+              {t("dsh.open")}
+            </Button>
+            {/* DSH 自己的输出（启动报错、日志）还在终端里 */}
+            <Button
+              variant="secondary"
+              icon={SquareTerminal}
+              disabled={busy || !status.account.allowed}
+              onClick={openHere}
+              aria-label={t("dsh.output")}
+              title={t("dsh.output")}
+            />
+          </>
+        ) : (
+          <>
+            <Button
+              className="grow-btn"
+              icon={inst.running ? PanelTop : Play}
+              busy={busy}
+              disabled={!status.account.allowed}
+              onClick={openHere}
+              title={t("instance.open_here_hint")}
+            >
+              {inst.running ? t("instance.open_here") : t("instance.start_open")}
+            </Button>
+            <Button
+              variant="secondary"
+              icon={ExternalLink}
+              disabled={busy || !status.account.allowed}
+              onClick={openTab}
+              aria-label={t("instance.new_window")}
+              title={t("instance.new_window")}
+            />
+          </>
+        )}
         {live && (
           <Button variant="ghost" icon={Square} disabled={busy} onClick={stop}>
             {t("instance.stop")}
@@ -944,10 +999,14 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
     setWorkdir(v);
   };
   const isRoot = Boolean(status.capabilities?.root);
-  const canFull = launch === 'codex' || launch === 'claude';
+  const canFull = FULL_ACCESS.includes(launch);
+  // DSH 带着自己的端口和网页映射，编辑时不能和别的启动方式互换
+  const launches = editing
+    ? LAUNCHES.filter((l) => (l === "dsh") === (initial.launch === "dsh"))
+    : LAUNCHES;
   const needRoot = canFull && fullAccess && isRoot && !rootOk;
   const missing =
-    tools && ["codex", "claude"].includes(launch) && !tools.tools[launch];
+    tools && AI_TOOLS.includes(launch) && !tools.tools[launch];
   const submit = async (e) => {
     e.preventDefault();
     if (needRoot) return;
@@ -1009,7 +1068,7 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
           {t("form.launch")}
         </p>
         <div className="launch-grid" role="group" aria-label={t("form.launch")}>
-          {LAUNCHES.map((l) => {
+          {launches.map((l) => {
             const Icon = LAUNCH_ICON[l];
             return (
               <button
@@ -1087,7 +1146,13 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
         <Field label={t('form.name')} hint={t('form.name_hint')}>
           <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={t(`launch.${launch}.title`)} />
         </Field>
-        <FolderField value={workdir} onChange={editWorkdir} client={client} />
+        {launch === "dsh" && <Note>{t("dsh.form_note")}</Note>}
+        <FolderField
+          value={workdir}
+          onChange={editWorkdir}
+          client={client}
+          hint={launch === "dsh" ? t("dsh.workdir_hint") : undefined}
+        />
         <ShellPicker
           value={shell}
           onChange={setShell}
@@ -1177,11 +1242,14 @@ function CreatedDialog({ inst, onClose, onOpenHere }) {
     onOpenHere(inst.id);
     onClose();
   };
+  const toast = useToast();
   const tab = () => {
     // 在点击里同步打开，不会被浏览器当作弹窗拦截。
-    window.open(tabUrl(inst), "_blank", "noopener");
+    if (inst.launch === "dsh") openDsh(inst, t, toast);
+    else window.open(tabUrl(inst), "_blank", "noopener");
     onClose();
   };
+  const dsh = inst?.launch === "dsh";
   return (
     <Modal open={Boolean(inst)} onClose={onClose} title={t("created.title", { name: inst?.name ?? "" })}>
       <p className="muted" style={{ marginTop: 0 }}>{t("created.body")}</p>
@@ -1189,12 +1257,20 @@ function CreatedDialog({ inst, onClose, onOpenHere }) {
         <Button variant="ghost" onClick={onClose}>
           {t("created.later")}
         </Button>
-        <Button variant="secondary" icon={ExternalLink} onClick={tab}>
-          {t("created.new_tab")}
-        </Button>
-        <Button icon={PanelTop} onClick={here}>
-          {t("created.here")}
-        </Button>
+        {dsh ? (
+          <Button icon={ExternalLink} onClick={tab}>
+            {t("dsh.open")}
+          </Button>
+        ) : (
+          <>
+            <Button variant="secondary" icon={ExternalLink} onClick={tab}>
+              {t("created.new_tab")}
+            </Button>
+            <Button icon={PanelTop} onClick={here}>
+              {t("created.here")}
+            </Button>
+          </>
+        )}
       </div>
     </Modal>
   );

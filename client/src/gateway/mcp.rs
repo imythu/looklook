@@ -1,4 +1,4 @@
-//! MCP 接口 `POST /mcp`（Streamable HTTP，只回 JSON，不开 SSE 流）：让 Codex、Claude Code 等 AI 助手
+//! MCP 接口 `POST /mcp`（Streamable HTTP，只回 JSON，不开 SSE 流）：让 Codex、Claude Code、OpenCode、DSH 等 AI 助手
 //! 在开发时自己查看、创建本机网页（隧道）。
 //!
 //! - 默认关闭；打开后生成一个**单独的** MCP 令牌（不是访问码），请求要带 `Authorization: Bearer <令牌>`。
@@ -29,7 +29,7 @@ use crate::store::Store;
 
 const KEY: &str = "mcp";
 pub const PATH: &str = "/mcp";
-/// 写进 Codex / Claude Code 配置里的服务名
+/// 写进 Codex / Claude Code / OpenCode / DSH 配置里的服务名
 pub const SERVER_NAME: &str = "looklook";
 const PROTOCOL_VERSIONS: &[&str] = &["2025-06-18", "2025-03-26", "2024-11-05"];
 

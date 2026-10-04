@@ -23,7 +23,7 @@ else
   BIN=$HOME/.local/bin
 fi
 
-say "安装到 $PREFIX ..."
+say "安装到 / Installing to $PREFIX ..."
 mkdir -p "$PREFIX" "$BIN"
 # 先停掉正在运行的旧版本，避免替换正在使用的文件。
 if [ "$(id -u)" = 0 ]; then systemctl stop looklook.service 2>/dev/null || true
@@ -63,28 +63,38 @@ if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
     printf '%s' "$UNIT" | sed "s|__EXEC__|$PREFIX/looklook|; s|__USER__|User=root|; s|__TARGET__|multi-user.target|" >/etc/systemd/system/looklook.service
     systemctl daemon-reload || true
     systemctl enable looklook.service >/dev/null 2>&1 || true
-    [ $START = 1 ] && { systemctl restart looklook.service || say "启动失败，请查看：journalctl -u looklook"; }
+    [ $START = 1 ] && { systemctl restart looklook.service || say "启动失败，请查看 / Failed to start, see: journalctl -u looklook"; }
   elif systemctl --user show-environment >/dev/null 2>&1; then
     mkdir -p "$HOME/.config/systemd/user"
     printf '%s' "$UNIT" | sed "s|__EXEC__|$PREFIX/looklook|; s|__USER__||; s|__TARGET__|default.target|" >"$HOME/.config/systemd/user/looklook.service"
     systemctl --user daemon-reload || true
     systemctl --user enable looklook.service >/dev/null 2>&1 || true
-    [ $START = 1 ] && { systemctl --user restart looklook.service || say "启动失败，请查看：journalctl --user -u looklook"; }
+    [ $START = 1 ] && { systemctl --user restart looklook.service || say "启动失败，请查看 / Failed to start, see: journalctl --user -u looklook"; }
     # 让服务在没有登录桌面/SSH 时也运行（服务器开机即可远程使用）。
     if ! loginctl show-user "$(id -un)" -p Linger 2>/dev/null | grep -q yes; then
-      loginctl enable-linger "$(id -un)" 2>/dev/null || say "提示：运行 sudo loginctl enable-linger $(id -un) 可以让看看在你没有登录时也保持运行。"
+      loginctl enable-linger "$(id -un)" 2>/dev/null || { say "提示：运行 sudo loginctl enable-linger $(id -un) 可以让看看在你没有登录时也保持运行。"; say "Tip: run sudo loginctl enable-linger $(id -un) to keep Looklook running while you're logged out."; }
     fi
   else
-    say "没有可用的 systemd 用户服务，请手动启动：nohup $PREFIX/looklook run --no-browser >/dev/null 2>&1 &"
+    say "没有可用的 systemd 用户服务，请手动启动 / No systemd user service; start it yourself:"
+    say "  nohup $PREFIX/looklook run --no-browser >/dev/null 2>&1 &"
   fi
 else
-  say "没有 systemd，请手动启动：nohup $PREFIX/looklook run --no-browser >/dev/null 2>&1 &"
+  say "没有 systemd，开机后请手动启动 / No systemd; after a reboot start it yourself:"
+  say "  nohup $PREFIX/looklook run --no-browser >/dev/null 2>&1 &"
   [ $START = 1 ] && nohup "$PREFIX/looklook" run --no-browser >/dev/null 2>&1 &
 fi
 
-case ":$PATH:" in *":$BIN:"*) ;; *) say "提示：把 $BIN 加入 PATH 后可以直接使用 looklook 命令。" ;; esac
+# 在 PATH 里就直接写 looklook，否则写完整路径（复制就能运行）
+LL=looklook
+case ":$PATH:" in *":$BIN:"*) ;; *) LL=$BIN/looklook; say "提示：把 $BIN 加入 PATH 后可以直接使用 looklook 命令 / Tip: add $BIN to PATH to run looklook directly." ;; esac
 say ""
-say "✓ 看看客户端已安装。"
-say "  登录（没有图形界面的服务器）：$BIN/looklook login --email 你的邮箱"
-say "  打开管理台（有桌面时）：      $BIN/looklook open"
-say "  通过 SSH 使用：ssh -L 1234:127.0.0.1:1234 这台服务器，然后在本地浏览器打开 looklook url 显示的地址"
+say "✓ 看看客户端已安装 / Looklook client installed"
+say ""
+cmd() { printf '  %s %-8s %s\n' "$LL" "$1" "$2"; }
+cmd login "登录，在手机或任意浏览器上批准 / Sign in, approve on your phone or any browser"
+cmd status "查看状态 / Show status"
+cmd upgrade "升级到最新版本 / Upgrade to the latest version"
+cmd -h "全部命令 / All commands"
+say ""
+say "  通过 SSH 打开管理台 / Open the console over SSH:"
+say "    ssh -L 1234:127.0.0.1:1234 <server>  →  http://127.0.0.1:1234/"

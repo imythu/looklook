@@ -50,4 +50,8 @@ sleep 2
 "$APP/looklook" open || true
 echo ""
 echo "✓ 看看客户端已安装，并会在每次登录 Mac 后自动运行。"
-echo "  以后打开管理台：$APP/looklook open"
+echo "✓ Looklook client installed; it starts every time you log in to your Mac."
+echo ""
+echo "  $APP/looklook open     打开管理台 / Open the console"
+echo "  $APP/looklook upgrade  升级到最新版本 / Upgrade to the latest version"
+echo "  $APP/looklook -h       全部命令 / All commands"

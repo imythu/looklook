@@ -1,9 +1,15 @@
-//! 一键把看看的 MCP 接口和配套技能装进 Codex / Claude Code。
+//! 一键把看看的 MCP 接口和配套技能装进 Codex / Claude Code / OpenCode / DSH（DeepSeek Harness）。
 //!
 //! - **Claude Code**：用它自己的命令 `claude mcp add --scope user`（`~/.claude.json` 由它自己维护，
 //!   别的会话随时在改，不直接写）；状态从 `~/.claude.json` 里读。设置了 `CLAUDE_CONFIG_DIR` 时跟着它走。
 //! - **Codex**：直接改 `$CODEX_HOME/config.toml`（默认 `~/.codex`）的 `[mcp_servers.looklook]`，
 //!   用 toml_edit 保留用户原来的格式与注释。
+//! - **OpenCode**：改全局配置 `opencode.json` 的 `mcp.looklook`（`$OPENCODE_CONFIG_DIR`，
+//!   否则 `$XDG_CONFIG_HOME/opencode`，默认 `~/.config/opencode`，Windows 上也是这个位置）。保留其他键的顺序；
+//!   文件里有注释（JSONC）解析不了时报错，不覆盖。
+//! - **DSH**：MCP 服务是 home 层补丁 `$DSH_HOME/cordis.patch.yml`（默认 `~/.dsh`）里的一行
+//!   `@deepseek-ai/dsh-mcp-client`，所有 profile（网页、桌面、命令行）都会读到。
+//!   我们只管自己写的那一段（用注释标记首尾），文件其余部分原样保留。
 //! - **技能**：写到 `<配置目录>/skills/<名字>/SKILL.md`。“自动”和“先问”两种只能装一种，装一种时删掉另一种。
 //!
 //! 状态里的 `mcp`：`none` 没装；`ok` 地址和令牌都对；`stale` 装过但地址或令牌已经变了（换了令牌、端口），要重装。
@@ -22,15 +28,19 @@ use crate::gateway::mcp::SERVER_NAME;
 pub enum Agent {
     Claude,
     Codex,
+    OpenCode,
+    Dsh,
 }
 
 impl Agent {
-    pub const ALL: [Agent; 2] = [Agent::Claude, Agent::Codex];
+    pub const ALL: [Agent; 4] = [Agent::Claude, Agent::Codex, Agent::OpenCode, Agent::Dsh];
 
     pub fn parse(s: &str) -> Option<Self> {
         match s {
             "claude" => Some(Agent::Claude),
             "codex" => Some(Agent::Codex),
+            "opencode" => Some(Agent::OpenCode),
+            "dsh" => Some(Agent::Dsh),
             _ => None,
         }
     }
@@ -39,18 +49,20 @@ impl Agent {
         match self {
             Agent::Claude => "claude",
             Agent::Codex => "codex",
+            Agent::OpenCode => "opencode",
+            Agent::Dsh => "dsh",
         }
     }
 
-    /// 配置目录：`~/.claude` / `~/.codex`
+    /// 配置目录：`~/.claude` / `~/.codex` / `~/.config/opencode` / `~/.dsh`
     fn dir(self) -> PathBuf {
-        let (env, default) = match self {
-            Agent::Claude => ("CLAUDE_CONFIG_DIR", ".claude"),
-            Agent::Codex => ("CODEX_HOME", ".codex"),
-        };
-        match std::env::var_os(env).filter(|v| !v.is_empty()) {
-            Some(v) => PathBuf::from(v),
-            None => home().join(default),
+        let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        match self {
+            Agent::Claude => env("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home().join(".claude")),
+            Agent::Codex => env("CODEX_HOME").unwrap_or_else(|| home().join(".codex")),
+            Agent::OpenCode => env("OPENCODE_CONFIG_DIR")
+                .unwrap_or_else(|| env("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config")).join("opencode")),
+            Agent::Dsh => env("DSH_HOME").unwrap_or_else(|| home().join(".dsh")),
         }
     }
 
@@ -87,6 +99,14 @@ fn claude_fallback() -> Option<String> {
 
 fn codex_toml() -> PathBuf {
     Agent::Codex.dir().join("config.toml")
+}
+
+fn opencode_json() -> PathBuf {
+    Agent::OpenCode.dir().join("opencode.json")
+}
+
+fn dsh_patch() -> PathBuf {
+    Agent::Dsh.dir().join("cordis.patch.yml")
 }
 
 // ---------------- 技能 ----------------
@@ -174,12 +194,17 @@ pub async fn status(shell: &str, url: &str, token: &str) -> Vec<Status> {
                 let cli = match a {
                     Agent::Claude => found.claude.is_some(),
                     Agent::Codex => found.codex.is_some(),
+                    Agent::OpenCode => found.opencode.is_some(),
+                    Agent::Dsh => found.dsh.is_some(),
                 };
+                let available = cli || a.dir().is_dir();
                 let configured = match a {
                     Agent::Claude => claude_mcp(&url, &tok),
                     Agent::Codex => codex_mcp(&url, &tok),
+                    Agent::OpenCode => opencode_mcp(&url, &tok),
+                    Agent::Dsh => dsh_mcp(&url, &tok),
                 };
-                Status { agent: a.id(), available: cli || a.dir().is_dir(), mcp: configured, skill: installed_skill(a) }
+                Status { agent: a.id(), available, mcp: configured, skill: installed_skill(a) }
             })
             .collect()
     })
@@ -213,6 +238,26 @@ fn codex_mcp(url: &str, token: &str) -> &'static str {
     judge(Some(e.get("url").and_then(|v| v.as_str()).unwrap_or("")), auth, url, token)
 }
 
+fn opencode_mcp(url: &str, token: &str) -> &'static str {
+    let Ok(raw) = std::fs::read_to_string(opencode_json()) else { return "none" };
+    let Ok(v) = serde_json::from_str::<Value>(&raw) else { return "none" };
+    let e = &v["mcp"][SERVER_NAME];
+    if e.is_null() {
+        return "none";
+    }
+    judge(Some(e["url"].as_str().unwrap_or("")), e["headers"]["Authorization"].as_str(), url, token)
+}
+
+fn dsh_mcp(url: &str, token: &str) -> &'static str {
+    let Ok(raw) = std::fs::read_to_string(dsh_patch()) else { return "none" };
+    let Some(block) = dsh_block(&raw) else { return "none" };
+    // 我们自己写的段落，每个值都是一行 `key: "json 字符串"`
+    let field = |key: &str| {
+        block.lines().find_map(|l| l.trim().strip_prefix(key)?.strip_prefix(": ").and_then(|v| serde_json::from_str::<String>(v).ok()))
+    };
+    judge(Some(field("url").as_deref().unwrap_or("")), field("Authorization").as_deref(), url, token)
+}
+
 // ---------------- 安装 / 卸载 ----------------
 
 fn failed(agent: Agent, detail: impl std::fmt::Display) -> LocalError {
@@ -232,9 +277,9 @@ pub async fn install(agent: Agent, shell: &str, url: &str, token: &str, skill: O
                 .await
                 .map_err(|e| failed(agent, e))?;
         }
-        Agent::Codex => {
+        Agent::Codex | Agent::OpenCode | Agent::Dsh => {
             let (url, token) = (url.to_string(), token.to_string());
-            tokio::task::spawn_blocking(move || codex_write(Some((&url, &token))))
+            tokio::task::spawn_blocking(move || write_config(agent, Some((&url, &token))))
                 .await
                 .map_err(|e| failed(agent, e))?
                 .map_err(|e| failed(agent, e))?;
@@ -257,8 +302,8 @@ pub async fn uninstall(agent: Agent, shell: &str) -> Result<(), LocalError> {
                 let _ = run_cli(shell, &cli, &["mcp", "remove", "--scope", "user", SERVER_NAME]).await;
             }
         }
-        Agent::Codex => {
-            tokio::task::spawn_blocking(|| codex_write(None)).await.map_err(|e| failed(agent, e))?.map_err(|e| failed(agent, e))?;
+        Agent::Codex | Agent::OpenCode | Agent::Dsh => {
+            tokio::task::spawn_blocking(move || write_config(agent, None)).await.map_err(|e| failed(agent, e))?.map_err(|e| failed(agent, e))?;
         }
     }
     tokio::task::spawn_blocking(move || set_skill(agent, None)).await.map_err(|e| failed(agent, e))?.map_err(|e| failed(agent, e))
@@ -296,15 +341,23 @@ async fn run_cli(shell: &str, cli: &str, args: &[&str]) -> Result<(), String> {
     Err(msg.chars().take(300).collect())
 }
 
-/// 改 Codex 的 config.toml：`Some((url, token))` 写入，`None` 删除。
-fn codex_write(entry: Option<(&str, &str)>) -> anyhow::Result<()> {
-    let path = codex_toml();
+/// 改配置文件内容：拿到原文件和要写的 `(url, token)`（`None` 删除），返回新内容；没有要改的返回 `None`。
+type Edit = fn(&str, Option<(&str, &str)>) -> anyhow::Result<Option<String>>;
+
+/// 改直接写文件的那几个助手的配置：`Some((url, token))` 写入，`None` 删除。
+fn write_config(agent: Agent, entry: Option<(&str, &str)>) -> anyhow::Result<()> {
+    let (path, edit): (PathBuf, Edit) = match agent {
+        Agent::Codex => (codex_toml(), codex_edit),
+        Agent::OpenCode => (opencode_json(), opencode_edit),
+        Agent::Dsh => (dsh_patch(), dsh_edit),
+        Agent::Claude => unreachable!("Claude Code 用它自己的命令改配置"),
+    };
     let raw = match std::fs::read_to_string(&path) {
         Ok(s) => s,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.into()),
     };
-    let Some(out) = codex_edit(&raw, entry)? else { return Ok(()) };
+    let Some(out) = edit(&raw, entry)? else { return Ok(()) };
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -341,6 +394,74 @@ fn codex_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Option<S
     Ok(Some(doc.to_string()))
 }
 
+/// 改 OpenCode 的 opencode.json；返回新的文件内容，没有要改的返回 `None`。
+fn opencode_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Option<String>> {
+    let mut doc: Value = if raw.trim().is_empty() {
+        serde_json::json!({ "$schema": "https://opencode.ai/config.json" })
+    } else {
+        serde_json::from_str(raw).map_err(|e| anyhow::anyhow!("opencode.json: {e}"))?
+    };
+    let root = doc.as_object_mut().ok_or_else(|| anyhow::anyhow!("opencode.json: not an object"))?;
+    match entry {
+        Some((url, token)) => {
+            let mcp = root.entry("mcp").or_insert_with(|| Value::Object(Default::default()));
+            let mcp = mcp.as_object_mut().ok_or_else(|| anyhow::anyhow!("opencode.json: mcp is not an object"))?;
+            mcp.insert(
+                SERVER_NAME.into(),
+                serde_json::json!({ "type": "remote", "url": url, "enabled": true, "headers": { "Authorization": format!("Bearer {token}") } }),
+            );
+        }
+        None => {
+            let Some(mcp) = root.get_mut("mcp").and_then(|m| m.as_object_mut()) else { return Ok(None) };
+            if mcp.shift_remove(SERVER_NAME).is_none() {
+                return Ok(None);
+            }
+        }
+    }
+    Ok(Some(serde_json::to_string_pretty(&doc)? + "\n"))
+}
+
+const DSH_BEGIN: &str = "# >>> looklook (managed by Looklook; changes inside are overwritten) >>>";
+const DSH_END: &str = "# <<< looklook <<<";
+
+/// 找到我们写的那一段（含首尾标记行）。
+fn dsh_block_range(raw: &str) -> Option<std::ops::Range<usize>> {
+    let start = raw.find(DSH_BEGIN)?;
+    let end = start + raw[start..].find(DSH_END)? + DSH_END.len();
+    let end = if raw[end..].starts_with("\r\n") { end + 2 } else if raw[end..].starts_with('\n') { end + 1 } else { end };
+    Some(start..end)
+}
+
+fn dsh_block(raw: &str) -> Option<&str> {
+    dsh_block_range(raw).map(|r| &raw[r])
+}
+
+/// 改 DSH 的 profile 补丁文件（YAML 列表）：只增删我们自己那一段；返回新的文件内容，没有要改的返回 `None`。
+fn dsh_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Option<String>> {
+    let mut out = match dsh_block_range(raw) {
+        Some(r) => format!("{}{}", &raw[..r.start], &raw[r.end..]),
+        None if entry.is_none() => return Ok(None),
+        None => raw.to_string(),
+    };
+    if let Some((url, token)) = entry {
+        // 空列表 `[]` 不能再接 `- ` 行
+        if out.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).eq(["[]"]) {
+            out = out.lines().filter(|l| l.trim() != "[]").map(|l| format!("{l}\n")).collect();
+        }
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        // JSON 字符串同时是合法的 YAML 双引号字符串
+        let q = |s: &str| serde_json::to_string(s).expect("string");
+        out.push_str(&format!(
+            "{DSH_BEGIN}\n- insert:\n    - id: mcp-{SERVER_NAME}\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: {SERVER_NAME}\n        transport: streamable-http\n        url: {}\n        headers:\n          Authorization: {}\n{DSH_END}\n",
+            q(url),
+            q(&format!("Bearer {token}")),
+        ));
+    }
+    Ok(Some(out))
+}
+
 /// 先写临时文件再改名，写到一半退出也不会留下半个配置文件。
 fn write_atomic(path: &Path, data: &[u8]) -> std::io::Result<()> {
     let tmp = path.with_extension(format!("looklook-{}.tmp", std::process::id()));
@@ -371,6 +492,43 @@ mod tests {
         // 空文件不会多出一个空的 [mcp_servers]
         let fresh = codex_edit("", Some(("u", "t"))).unwrap().unwrap();
         assert!(!fresh.contains("[mcp_servers]\n"));
+    }
+
+    #[test]
+    fn opencode_config_roundtrip() {
+        let raw = "{\n  \"model\": \"x\",\n  \"$schema\": \"s\",\n  \"mcp\": { \"other\": { \"type\": \"local\" } }\n}";
+        let out = opencode_edit(raw, Some(("http://127.0.0.1:1234/mcp", "llmcp_a"))).unwrap().unwrap();
+        // 保留原来的键顺序
+        assert!(out.find("\"model\"").unwrap() < out.find("\"$schema\"").unwrap());
+        let v: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(v["mcp"]["looklook"]["type"], "remote");
+        assert_eq!(v["mcp"]["looklook"]["headers"]["Authorization"], "Bearer llmcp_a");
+        assert_eq!(v["mcp"]["other"]["type"], "local");
+        let removed = opencode_edit(&out, None).unwrap().unwrap();
+        assert!(!removed.contains("looklook") && removed.contains("\"other\""));
+        assert!(opencode_edit(&removed, None).unwrap().is_none());
+        let fresh: Value = serde_json::from_str(&opencode_edit("", Some(("u", "t"))).unwrap().unwrap()).unwrap();
+        assert_eq!(fresh["mcp"]["looklook"]["url"], "u");
+        assert!(opencode_edit("{ // jsonc\n}", Some(("u", "t"))).is_err(), "带注释的不覆盖");
+    }
+
+    #[test]
+    fn dsh_config_roundtrip() {
+        let raw = "# mine\n- id: tools\n  disabled: true";
+        let out = dsh_edit(raw, Some(("http://127.0.0.1:1234/mcp", "llmcp_a"))).unwrap().unwrap();
+        assert!(out.starts_with("# mine\n- id: tools\n  disabled: true\n# >>> looklook"));
+        assert!(out.contains("        url: \"http://127.0.0.1:1234/mcp\"\n        headers:\n          Authorization: \"Bearer llmcp_a\"\n"));
+        let block = dsh_block(&out).unwrap();
+        assert!(block.ends_with("# <<< looklook <<<\n"));
+        // 再写一次是替换不是追加
+        let again = dsh_edit(&out, Some(("http://127.0.0.1:1244/mcp", "llmcp_b"))).unwrap().unwrap();
+        assert_eq!(again.matches(DSH_BEGIN).count(), 1);
+        assert!(again.contains("Bearer llmcp_b") && !again.contains("llmcp_a"));
+        let removed = dsh_edit(&again, None).unwrap().unwrap();
+        assert_eq!(removed, "# mine\n- id: tools\n  disabled: true\n");
+        assert!(dsh_edit(&removed, None).unwrap().is_none());
+        let empty = dsh_edit("# x\n[]\n", Some(("u", "t"))).unwrap().unwrap();
+        assert!(empty.starts_with("# x\n# >>> looklook"));
     }
 
     #[test]

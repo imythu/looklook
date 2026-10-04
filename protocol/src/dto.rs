@@ -73,6 +73,32 @@ pub struct RelayParams {
     pub gateway_mac_key: String,
 }
 
+/// `GET /api/client/v1/relays`：用户可以选的线路（中转）。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayChoices {
+    pub items: Vec<RelayChoice>,
+    /// 用户自选的中转名；None = 自动。
+    pub preferred: Option<String>,
+    /// 当前所在的中转名（自选的中转不可用时与 `preferred` 不同）。
+    pub current: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RelayChoice {
+    /// 中转名（`r2`…），选择时提交这个值。
+    pub name: String,
+    /// 用户在这个中转上的地址（`alice.r2.example.com`）；中转没开直连时为 None。
+    pub address: Option<String>,
+    /// 测延迟的地址：中转直连入口（443）上的 `/_ll/ping`。中转没开直连时为 None，不能测。
+    pub ping_url: Option<String>,
+}
+
+/// `PUT /api/client/v1/relays/preference`：`relay` 为 None = 自动。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetRelayPreference {
+    pub relay: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LoginResponse {
     pub device_id: String,

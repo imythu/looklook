@@ -1,4 +1,4 @@
-// 本机网页 → AI 助手：打开 MCP 接口后，Codex / Claude Code 在开发时可以自己查看、添加本机网页。
+// 本机网页 → AI 助手：打开 MCP 接口后，Codex / Claude Code / OpenCode / DSH 在开发时可以自己查看、添加本机网页。
 // 令牌和配置都只在这台机器上；只有直接在本机（或允许的局域网）打开管理台时显示。
 import { Bot, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -8,7 +8,7 @@ import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { Button, Card, CopyButton, ErrorNote, FoldNote, Note, Skeleton, Switch, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 
-const AGENT_NAME = { claude: 'Claude Code', codex: 'Codex' };
+const AGENT_NAME = { claude: 'Claude Code', codex: 'Codex', opencode: 'OpenCode', dsh: 'DSH (DeepSeek Harness)' };
 
 function AgentRow({ a, skill, enabled, busy, onInstall, onRemove }) {
   const { t } = useTranslation();

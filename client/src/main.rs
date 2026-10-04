@@ -5,10 +5,13 @@
 //! looklook open            在浏览器中打开管理台
 //! looklook url             打印管理台地址（本机与局域网）
 //! looklook access          查看或修改访问控制（局域网访问、白名单、访问码）
-//! looklook login           通过浏览器授权登录（命令行显示授权码与网址）
+//! looklook login           授权登录（命令行显示授权码、网址与二维码，可在手机上批准）
 //! looklook logout          退出登录
 //! looklook status          查看状态
+//! looklook update          检查并安装新版本（别名 upgrade）
 //! ```
+//!
+//! 命令行的帮助与输出是中英双语的：没有图形界面的服务器上没有界面语言可选。
 //!
 //! Windows / macOS 上直接启动（双击图标、开始菜单、程序坞）是桌面应用：应用窗口显示管理台，
 //! 系统托盘常驻（`src/desktop.rs`）。Windows 发布构建（release，非 debug）去掉控制台窗口
@@ -59,52 +62,67 @@ use crate::paths::Paths;
 use crate::store::Store;
 
 #[derive(Parser)]
-#[command(name = "looklook", version, about = "看看客户端：随时随地操作你的电脑和 AI 助手")]
+#[command(
+    name = "looklook",
+    version,
+    about = "看看客户端：随时随地操作你的电脑和 AI 助手\nLooklook client: reach your computer and AI assistants from anywhere",
+    after_help = HELP_EXAMPLES
+)]
 struct Cli {
-    /// 数据目录（默认按系统惯例）
+    /// 数据目录（默认按系统惯例）/ Data directory (system default if omitted)
     #[arg(long, env = "LOOKLOOK_HOME", global = true)]
     home: Option<PathBuf>,
-    /// 管理台监听地址。默认 0.0.0.0:1234（被占用时依次 +10，用上的端口记在本机数据库）；
-    /// 监听所有网卡但只放行本机，局域网与白名单在“设置 → 访问控制”里允许。指定后只用这个地址
+    /// 管理台监听地址，默认 0.0.0.0:1234（被占用时依次 +10）/ Console address, default 0.0.0.0:1234 (steps up by 10 if taken)
     #[arg(long, env = "LOOKLOOK_LISTEN", global = true)]
     listen: Option<SocketAddr>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
 
+const HELP_EXAMPLES: &str = "\
+没有图形界面的服务器 / Servers without a desktop:
+  looklook login            登录：显示授权码和二维码，用手机或任意浏览器批准
+                            Sign in: shows a code and QR code to approve from your phone or any browser
+  looklook status           查看登录状态 / Show sign-in status
+  looklook upgrade          升级到最新版本 / Upgrade to the latest version
+  looklook access lan on    允许局域网设备打开管理台 / Let LAN devices open the console
+
+子命令的帮助 / Help for a command: looklook <command> -h";
+
 #[derive(Subcommand)]
 enum Cmd {
-    /// 启动客户端（默认）
+    /// 启动客户端（默认）/ Start the client (default)
     Run {
-        /// 看看服务端地址（仅未登录时生效）
+        /// 看看服务端地址（仅未登录时生效）/ Looklook server URL (only while signed out)
         #[arg(long, env = "LOOKLOOK_SERVER")]
         server: Option<String>,
-        /// 启动后不打开浏览器
+        /// 启动后不打开浏览器 / Don't open the browser
         #[arg(long)]
         no_browser: bool,
     },
-    /// 在浏览器中打开管理台
+    /// 在浏览器中打开管理台 / Open the console in the browser
     Open,
-    /// 打印管理台地址
+    /// 打印管理台地址 / Print the console address
     Url,
-    /// 查看或修改访问控制（没有屏幕的机器，如 NAS，用它开启局域网访问）
+    /// 查看或修改访问控制 / Show or change who may open the console
     Access {
         #[command(subcommand)]
         action: Option<AccessCmd>,
     },
-    /// 登录看看账户
+    /// 登录看看账户（在手机或任意浏览器上批准）/ Sign in (approve from your phone or any browser)
     Login,
-    /// 退出登录
+    /// 退出登录 / Sign out
     Logout {
-        /// 连不上服务器时也清除本机登录
+        /// 连不上服务器时也清除本机登录 / Clear the local sign-in even if the server can't be reached
         #[arg(long)]
         force: bool,
     },
-    /// 查看状态
+    /// 查看状态 / Show status
     Status,
-    /// 检查并安装新版本（安装后客户端自动重启，终端里的任务不受影响）
+    /// 检查并安装新版本，终端里的任务不受影响 / Check for and install a new version; running tasks keep running
+    #[command(visible_alias = "upgrade")]
     Update {
-        /// 只检查，不安装
+        /// 只检查，不安装 / Only check, don't install
         #[arg(long)]
         check: bool,
     },
@@ -112,13 +130,13 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum AccessCmd {
-    /// 允许 / 不允许局域网里的其他设备打开管理台
+    /// 允许 / 不允许局域网设备打开管理台 / Allow or block LAN devices
     Lan { state: OnOff },
-    /// 访问码：on 开启、off 关闭、new 换一个新的
+    /// 访问码：on 开启、off 关闭、new 换新的 / Access code: on, off, or new
     Code { action: CodeAction },
-    /// 把 IP 或网段加入白名单，例如 203.0.113.7 或 203.0.113.0/24
+    /// 把 IP 或网段加入白名单 / Add an IP or range to the whitelist (e.g. 203.0.113.0/24)
     Allow { ip: String },
-    /// 从白名单移除
+    /// 从白名单移除 / Remove from the whitelist
     Remove { ip: String },
 }
 
@@ -153,7 +171,7 @@ fn main() -> Result<()> {
             println!("{}", local_url(&cli.home, cli_listen)?);
             if let Ok(v) = rt.block_on(call(&cli.home, cli_listen, "GET", "/api/access", None)) {
                 if let (true, Some(ip)) = (v["allow_lan"].as_bool() == Some(true), v["lan_ips"][0].as_str()) {
-                    println!("局域网：http://{}:{}/", ip, v["port"]);
+                    println!("局域网 / LAN: http://{}:{}/", ip, v["port"]);
                 }
             }
             Ok(())
@@ -168,7 +186,7 @@ fn main() -> Result<()> {
         Some(Cmd::Status) => {
             let v = rt.block_on(call(&cli.home, cli_listen, "GET", "/api/status", None))?;
             print_status(&v["account"]);
-            println!("终端方式：{}", v["capabilities"]["backend"].as_str().unwrap_or("-"));
+            println!("终端方式 / Terminal backend: {}", v["capabilities"]["backend"].as_str().unwrap_or("-"));
             Ok(())
         }
         Some(Cmd::Update { check }) => rt.block_on(cli_update(&cli.home, cli_listen, check)),
@@ -180,21 +198,21 @@ async fn cli_update(home: &Option<PathBuf>, listen: SocketAddr, check_only: bool
     let u = call(home, listen, "GET", "/api/update", None).await?;
     let current = u["current"].as_str().unwrap_or("-").to_string();
     if u["available"].as_bool() != Some(true) {
-        println!("已是最新版本：{current}");
+        println!("已是最新版本 / Already up to date: {current}");
         return Ok(());
     }
     let version = u["version"].as_str().unwrap_or("-");
-    println!("有新版本：{current} → {version}{}", if u["required"].as_bool() == Some(true) { "（必须更新）" } else { "" });
+    println!("有新版本 / New version: {current} → {version}{}", if u["required"].as_bool() == Some(true) { "（必须更新 / required）" } else { "" });
     if let Some(notes) = u["notes"].as_str().filter(|n| !n.is_empty()) {
         println!("\n{notes}\n");
     }
     if check_only {
-        println!("运行 looklook update 安装。");
+        println!("运行 looklook upgrade 安装。/ Run looklook upgrade to install it.");
         return Ok(());
     }
     if u["can_install"].as_bool() != Some(true) {
         let reason = u["cannot_reason"].as_str().unwrap_or("unsupported");
-        bail!("不能在这里自动更新（{reason}），请到看看网页的“下载”页下载新版本手动安装");
+        bail!("不能在这里自动更新（{reason}），请到看看网页的“下载”页下载新版本手动安装\nCan't update automatically here ({reason}); download the new version from the Download page on the Looklook website");
     }
     call(home, listen, "POST", "/api/update/install", Some(json!({}))).await?;
     let mut last = String::new();
@@ -204,21 +222,21 @@ async fn cli_update(home: &Option<PathBuf>, listen: SocketAddr, check_only: bool
         // 重启期间连不上是正常的
         let Ok(s) = call(home, listen, "GET", "/api/status", None).await else { continue };
         if s["version"].as_str().is_some_and(|v| v != current) {
-            println!("已更新到 {}，客户端已重新启动。", s["version"].as_str().unwrap_or("-"));
+            println!("已更新到 {0}，客户端已重新启动。/ Updated to {0}; the client has restarted.", s["version"].as_str().unwrap_or("-"));
             return Ok(());
         }
         let job = &s["update"]["job"];
         let line = match job["state"].as_str().unwrap_or("") {
             "downloading" => {
                 let mb = |v: &Value| v.as_u64().map(|n| format!("{:.1} MB", n as f64 / 1048576.0));
-                format!("正在下载… {} / {}", mb(&job["done"]).unwrap_or_default(), mb(&job["total"]).unwrap_or_else(|| "?".into()))
+                format!("正在下载 / Downloading… {} / {}", mb(&job["done"]).unwrap_or_default(), mb(&job["total"]).unwrap_or_else(|| "?".into()))
             }
-            "installing" => "正在安装…".into(),
-            "restarting" => "正在重启…".into(),
+            "installing" => "正在安装 / Installing…".into(),
+            "restarting" => "正在重启 / Restarting…".into(),
             "failed" => {
                 let detail = job["detail"].as_str().unwrap_or_default();
                 let why = cli_error(job["code"].as_str().unwrap_or("UPDATE_FAILED"), &Value::Null);
-                bail!("更新失败：{why}{}", if detail.is_empty() { String::new() } else { format!("（{detail}）") });
+                bail!("更新失败 / Update failed: {why}{}", if detail.is_empty() { String::new() } else { format!("（{detail}）") });
             }
             _ => continue,
         };
@@ -227,7 +245,7 @@ async fn cli_update(home: &Option<PathBuf>, listen: SocketAddr, check_only: bool
             last = line;
         }
     }
-    bail!("等了 15 分钟还没完成，运行 looklook status 查看客户端状态")
+    bail!("等了 15 分钟还没完成，运行 looklook status 查看客户端状态\nNot finished after 15 minutes; run looklook status to check the client")
 }
 
 /// `None`（直接双击/开机启动）与 `looklook run` 走同一条路：Windows/macOS 是桌面应用（窗口 + 托盘，
@@ -531,7 +549,7 @@ async fn call(home: &Option<PathBuf>, listen: SocketAddr, method: &str, path: &s
     if let Some(b) = body {
         req = req.json(&b);
     }
-    let resp = req.send().await.context("连不上看看客户端，请先运行 looklook")?;
+    let resp = req.send().await.context(NOT_RUNNING)?;
     let status = resp.status();
     let v: Value = resp.json().await.unwrap_or(Value::Null);
     if !status.is_success() {
@@ -541,36 +559,74 @@ async fn call(home: &Option<PathBuf>, listen: SocketAddr, method: &str, path: &s
     Ok(v)
 }
 
-/// 浏览器授权登录：打印授权码与网址，等待用户在任意设备的浏览器里批准。
+const NOT_RUNNING: &str = "连不上看看客户端，请先启动它：looklook run（安装为服务时：systemctl --user start looklook）\n\
+Can't reach the Looklook client. Start it with: looklook run (installed as a service: systemctl --user start looklook)";
+
+/// 授权登录：打印授权码、网址和二维码，等用户在任意设备（通常是手机）的浏览器里批准。
+/// 没有图形界面的服务器就靠它登录；Ctrl+C 取消。
 async fn cli_login(home: &Option<PathBuf>, listen: SocketAddr) -> Result<()> {
+    let st = call(home, listen, "GET", "/api/status", None).await?;
+    if st["account"]["logged_in"].as_bool() == Some(true) {
+        print_status(&st["account"]);
+        println!("要换账户，先运行 looklook logout / To switch accounts, run looklook logout first");
+        return Ok(());
+    }
     let v = call(home, listen, "POST", "/api/auth/login", Some(json!({}))).await?;
-    println!("请在浏览器中打开下面的网址，核对授权码并批准这台电脑：");
-    println!("  网址：{}", v["verification_url"].as_str().unwrap_or("-"));
-    println!("  授权码：{}", v["user_code"].as_str().unwrap_or("-"));
-    loop {
-        tokio::time::sleep(Duration::from_secs(2)).await;
-        let s = call(home, listen, "GET", "/api/auth/status", None).await?;
-        match s["state"].as_str() {
-            Some("approved") => break,
-            Some("failed") => {
-                let code = s["error"]["code"].as_str().unwrap_or("INTERNAL");
-                let mut msg = cli_error(code, &s["error"]["params"]);
-                if code == "DEVICE_LIMIT_REACHED" {
-                    if let Ok(st) = call(home, listen, "GET", "/api/status", None).await {
-                        if let Some(server) = st["account"]["server"].as_str() {
-                            msg.push_str(&format!("\n  网址：{}/devices", server.trim_end_matches('/')));
+    let url = v["verification_url"].as_str().unwrap_or("-");
+    println!("用手机扫描二维码，或在任意设备的浏览器中打开下面的网址，核对授权码后批准这台电脑：");
+    println!("Scan the QR code with your phone, or open the link in any browser, check the code and approve this computer:");
+    if let Some(qr) = qr_text(url) {
+        println!("\n{qr}");
+    }
+    println!("  网址 / Link: {url}");
+    println!("  授权码 / Code: {}", v["user_code"].as_str().unwrap_or("-"));
+    let minutes = v["expires_in"].as_u64().map(|s| s.div_ceil(60)).unwrap_or(10);
+    println!("\n等待批准…（{minutes} 分钟内有效，Ctrl+C 取消）/ Waiting for approval… (valid for {minutes} min, Ctrl+C to cancel)");
+    if util::has_desktop() {
+        util::open_url(url);
+    }
+    let wait = async {
+        loop {
+            tokio::time::sleep(Duration::from_secs(2)).await;
+            let s = call(home, listen, "GET", "/api/auth/status", None).await?;
+            match s["state"].as_str() {
+                Some("approved") => return Ok(()),
+                Some("failed") => {
+                    let code = s["error"]["code"].as_str().unwrap_or("INTERNAL");
+                    let mut msg = cli_error(code, &s["error"]["params"]);
+                    if code == "DEVICE_LIMIT_REACHED" {
+                        if let Ok(st) = call(home, listen, "GET", "/api/status", None).await {
+                            if let Some(server) = st["account"]["server"].as_str() {
+                                msg.push_str(&format!("\n  {}/devices", server.trim_end_matches('/')));
+                            }
                         }
                     }
+                    bail!("{msg}")
                 }
-                bail!("{msg}")
+                Some("idle") => bail!("授权已取消 / Sign-in was cancelled"),
+                _ => {}
             }
-            Some("idle") => bail!("授权已取消"),
-            _ => {}
+        }
+    };
+    tokio::select! {
+        r = wait => r?,
+        _ = tokio::signal::ctrl_c() => {
+            let _ = call(home, listen, "POST", "/api/auth/login/cancel", Some(json!({}))).await;
+            bail!("授权已取消 / Sign-in was cancelled")
         }
     }
     let v = call(home, listen, "GET", "/api/status", None).await?;
+    println!("✓ 登录成功 / Signed in");
     print_status(&v["account"]);
     Ok(())
+}
+
+/// 网址的终端二维码（两行像素拼一个字符）。颜色反过来画：深色背景的终端最常见，
+/// 这样扫出来是白底黑码，和 `qrencode -t UTF8` 一样。
+fn qr_text(url: &str) -> Option<String> {
+    use qrcode::render::unicode::Dense1x2;
+    let code = qrcode::QrCode::with_error_correction_level(url, qrcode::EcLevel::L).ok()?;
+    Some(code.render::<Dense1x2>().dark_color(Dense1x2::Light).light_color(Dense1x2::Dark).quiet_zone(true).build())
 }
 
 /// `looklook access`：查看或修改访问控制，然后打印当前状态。
@@ -588,52 +644,55 @@ async fn cli_access(home: &Option<PathBuf>, listen: SocketAddr, action: Option<A
         Some(b) => call(home, listen, "PUT", "/api/access", Some(b)).await?,
         None => call(home, listen, "GET", "/api/access", None).await?,
     };
-    let on = |k: &str| if v[k].as_bool() == Some(true) { "开启" } else { "关闭" };
-    println!("这台电脑自己：总是可以打开，不需要访问码");
+    let on = |k: &str| if v[k].as_bool() == Some(true) { "开启 / on" } else { "关闭 / off" };
+    println!("这台电脑自己 / This computer: 总是可以打开，不需要访问码 / always allowed, no code needed");
     match v["lan_ips"][0].as_str() {
-        Some(ip) => println!("局域网访问：{}（局域网地址 http://{ip}:{}/）", on("allow_lan"), v["port"]),
-        None => println!("局域网访问：{}", on("allow_lan")),
+        Some(ip) => println!("局域网访问 / LAN access: {}（http://{ip}:{}/）", on("allow_lan"), v["port"]),
+        None => println!("局域网访问 / LAN access: {}", on("allow_lan")),
     }
     let ips: Vec<&str> = v["allowed_ips"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
-    println!("白名单：{}", if ips.is_empty() { "（无）".to_string() } else { ips.join("、") });
-    println!("访问码：{}{}", on("code_enabled"), if v["code_enabled"].as_bool() == Some(true) { format!("，{}", v["code"].as_str().unwrap_or("")) } else { String::new() });
+    println!("白名单 / Whitelist: {}", if ips.is_empty() { "（无 / none）".to_string() } else { ips.join(", ") });
+    println!("访问码 / Access code: {}{}", on("code_enabled"), if v["code_enabled"].as_bool() == Some(true) { format!(", {}", v["code"].as_str().unwrap_or("")) } else { String::new() });
     if !ips.is_empty() && v["code_enabled"].as_bool() != Some(true) {
-        println!("提示：已添加白名单，建议开启访问码：looklook access code on");
+        println!("提示：已添加白名单，建议开启访问码 / Tip: with a whitelist, turn on the access code: looklook access code on");
     }
     Ok(())
 }
 
 fn cli_error(code: &str, params: &Value) -> String {
     match code {
-        "AUTHORIZATION_EXPIRED" => "授权已过期，请重新登录".into(),
-        "AUTHORIZATION_DENIED" => "授权被拒绝".into(),
-        "DEVICE_ALREADY_LOGGED_IN" => format!(
-            "这个账户已经在“{}”上登录。请先在那台电脑上退出，或到看看网页的“登录的电脑”里让它退出登录。",
-            params["device_name"].as_str().unwrap_or("另一台电脑")
-        ),
+        "AUTHORIZATION_EXPIRED" => "授权已过期，请重新运行 looklook login / The code expired; run looklook login again".into(),
+        "AUTHORIZATION_DENIED" => "授权被拒绝 / Sign-in was denied".into(),
+        "DEVICE_ALREADY_LOGGED_IN" => {
+            let name = params["device_name"].as_str().unwrap_or("另一台电脑 / another computer");
+            format!(
+                "这个账户已经在“{name}”上登录。请先在那台电脑上退出，或到看看网页的“登录的电脑”里让它退出登录。\n\
+                 This account is already signed in on \"{name}\". Sign out there first, or sign it out under Devices on the Looklook website."
+            )
+        }
         "DEVICE_LIMIT_REACHED" => device_limit_text(params),
-        "MEMBERSHIP_EXPIRED" => "会员已到期，请先在看看网页续费".into(),
-        "ACCOUNT_DISABLED" => "账户已停用".into(),
-        "NETWORK" => "连不上看看服务器，请检查网络".into(),
-        "ALREADY_LOGGED_IN" => "已经登录了".into(),
-        "CLIENT_VERSION_UNSUPPORTED" => "客户端版本太旧，请先升级".into(),
+        "MEMBERSHIP_EXPIRED" => "会员已到期，请先在看看网页续费 / Membership expired; renew it on the Looklook website".into(),
+        "ACCOUNT_DISABLED" => "账户已停用 / This account is disabled".into(),
+        "NETWORK" => "连不上看看服务器，请检查网络 / Can't reach the Looklook server; check the network".into(),
+        "ALREADY_LOGGED_IN" => "已经登录了 / Already signed in".into(),
+        "CLIENT_VERSION_UNSUPPORTED" => "客户端版本太旧，请先运行 looklook upgrade / This client is too old; run looklook upgrade".into(),
         "VALIDATION_FAILED" => match params["rule"].as_str() {
-            Some("ip_format") => "IP 格式不对，例如 203.0.113.7 或 203.0.113.0/24".into(),
-            Some("ip_prefix") => "网段长度不对，IPv4 是 /8 到 /32".into(),
-            Some("ip_too_wide") => "范围太大，不能对整个互联网开放".into(),
-            Some("ip_loopback") => "这台电脑自己本来就可以打开，不用添加".into(),
-            Some("ip_too_many") => "白名单最多 32 项".into(),
-            Some(r) => format!("填写的内容不正确：{r}"),
-            None => "填写的内容不正确".into(),
+            Some("ip_format") => "IP 格式不对，例如 203.0.113.7 或 203.0.113.0/24 / Invalid IP, e.g. 203.0.113.7 or 203.0.113.0/24".into(),
+            Some("ip_prefix") => "网段长度不对，IPv4 是 /8 到 /32 / Invalid prefix length; IPv4 takes /8 to /32".into(),
+            Some("ip_too_wide") => "范围太大，不能对整个互联网开放 / Range too wide; it can't open to the whole internet".into(),
+            Some("ip_loopback") => "这台电脑自己本来就可以打开，不用添加 / This computer is always allowed; no need to add it".into(),
+            Some("ip_too_many") => "白名单最多 32 项 / The whitelist holds at most 32 entries".into(),
+            Some(r) => format!("填写的内容不正确 / Invalid input: {r}"),
+            None => "填写的内容不正确 / Invalid input".into(),
         },
-        "REMOTE_FORBIDDEN" => "这个操作只能在这台电脑或局域网里进行".into(),
-        "UPDATE_BUSY" => "已经在更新了".into(),
-        "UPDATE_NONE" => "已是最新版本".into(),
-        "UPDATE_CHECKSUM" => "下载的安装包校验不通过，请重试".into(),
-        "UPDATE_DOWNLOAD_FAILED" => "下载安装包失败，请检查网络后重试".into(),
-        "UPDATE_UNSUPPORTED" => "不能在这里自动更新，请到看看网页的“下载”页手动安装".into(),
-        "UPDATE_FAILED" => "安装没有完成，原来的版本保持不变".into(),
-        other => format!("操作失败：{other}"),
+        "REMOTE_FORBIDDEN" => "这个操作只能在这台电脑或局域网里进行 / Only allowed from this computer or the LAN".into(),
+        "UPDATE_BUSY" => "已经在更新了 / An update is already running".into(),
+        "UPDATE_NONE" => "已是最新版本 / Already up to date".into(),
+        "UPDATE_CHECKSUM" => "下载的安装包校验不通过，请重试 / The download failed its checksum; try again".into(),
+        "UPDATE_DOWNLOAD_FAILED" => "下载安装包失败，请检查网络后重试 / Download failed; check the network and try again".into(),
+        "UPDATE_UNSUPPORTED" => "不能在这里自动更新，请到看看网页的“下载”页手动安装 / Can't update automatically here; install from the Download page".into(),
+        "UPDATE_FAILED" => "安装没有完成，原来的版本保持不变 / Install didn't finish; the previous version is unchanged".into(),
+        other => format!("操作失败 / Failed: {other}"),
     }
 }
 
@@ -641,35 +700,36 @@ fn cli_error(code: &str, params: &Value) -> String {
 fn device_limit_text(params: &Value) -> String {
     let devices = params["devices"].as_array().cloned().unwrap_or_default();
     let max = params["max"].as_i64().map(|n| n.to_string()).unwrap_or_else(|| devices.len().to_string());
-    let mut out = format!("这个账户最多同时在 {max} 台电脑上登录，现在已经满了：");
+    let mut out = format!("这个账户最多同时在 {max} 台电脑上登录，现在已经满了：\nThis account can be signed in on at most {max} computers, and that's full:");
     for d in &devices {
-        let name = d["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("未命名电脑");
+        let name = d["name"].as_str().filter(|s| !s.is_empty()).unwrap_or("未命名电脑 / unnamed");
         let os = d["os"].as_str().filter(|s| !s.is_empty()).map(|s| format!("（{s}）")).unwrap_or_default();
         let state = if d["online"].as_bool() == Some(true) {
-            "在线".to_string()
+            "在线 / online".to_string()
         } else {
             match d["last_seen_at"].as_str() {
-                Some(t) => format!("最后在线 {}", t.replace('T', " ").split('.').next().unwrap_or(t).trim_end_matches('Z')),
-                None => "不在线".to_string(),
+                Some(t) => format!("最后在线 / last seen {}", t.replace('T', " ").split('.').next().unwrap_or(t).trim_end_matches('Z')),
+                None => "不在线 / offline".to_string(),
             }
         };
         out.push_str(&format!("\n  · {name}{os}  {state}"));
     }
-    out.push_str("\n请到看看网页的“我的电脑”里让其中一台退出登录，然后再登录。");
+    out.push_str("\n请到看看网页的“我的电脑”里让其中一台退出登录，然后再登录。\nSign one of them out under My computers on the Looklook website, then sign in again.");
     out
 }
 
 fn print_status(v: &Value) {
     let v = if v.get("account").is_some() { &v["account"] } else { v };
     if v["logged_in"].as_bool() != Some(true) {
-        println!("未登录（服务端：{}）", v["server"].as_str().unwrap_or("-"));
+        println!("未登录 / Not signed in（服务端 / server: {}）", v["server"].as_str().unwrap_or("-"));
+        println!("登录 / Sign in: looklook login");
         return;
     }
     let s = &v["session"];
-    println!("已登录：{}（{}）", s["user"]["nickname"].as_str().unwrap_or(""), s["user"]["username"].as_str().unwrap_or(""));
-    println!("专属地址：{}", s["user_host_url"].as_str().unwrap_or("-"));
-    println!("可以使用到：{}", s["membership_expires_at"].as_str().unwrap_or("-"));
+    println!("已登录 / Signed in: {}（{}）", s["user"]["nickname"].as_str().unwrap_or(""), s["user"]["username"].as_str().unwrap_or(""));
+    println!("专属地址 / Your address: {}", s["user_host_url"].as_str().unwrap_or("-"));
+    println!("可以使用到 / Membership until: {}", s["membership_expires_at"].as_str().unwrap_or("-"));
     if v["allowed"].as_bool() != Some(true) {
-        println!("当前不可用：{}", v["reason"].as_str().unwrap_or("-"));
+        println!("当前不可用 / Unavailable: {}", v["reason"].as_str().unwrap_or("-"));
     }
 }

@@ -1,6 +1,6 @@
 [package]
 name = "looklook-client"
-version = "1.5.1"
+version = "1.6.0"
 edition = "2021"
 license = "MIT"
 description = "看看客户端：在自己的电脑上运行终端与 AI 助手，并通过看看服务端随时随地访问"
@@ -19,7 +19,7 @@ anyhow = "1"
 thiserror = "2"
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -47,6 +47,8 @@ hostname = "0.4"
 # 列出本机网卡地址：设置页显示“局域网里用这个地址打开”
 local-ip-address = "0.6"
 rpassword = "7"
+# `looklook login` 在终端里显示授权网址的二维码（没有图形界面的服务器用手机扫码批准）
+qrcode = { version = "0.14", default-features = false }
 
 # 加固（详细设计任务 3）：运行文件自校验（sha2）、主进程日志文件（没有控制台时也留痕，任务 7a）。
 sha2 = "0.10"

@@ -1,4 +1,4 @@
-//! AI 命令行工具：检测 Codex / Claude Code / Node.js 是否已安装，并生成安装命令。
+//! AI 命令行工具：检测 Codex / Claude Code / OpenCode / DSH（DeepSeek Harness）/ Node.js 是否已安装，并生成安装命令。
 //! 安装在一个普通终端里进行，用户能看到进度与报错；npm 镜像可选淘宝（npmmirror）、腾讯或官方。
 
 use std::time::Duration;
@@ -6,12 +6,14 @@ use std::time::Duration;
 use serde::Serialize;
 use tokio::process::Command;
 
-pub const TOOLS: &[&str] = &["codex", "claude", "node", "npm"];
+pub const TOOLS: &[&str] = &["codex", "claude", "opencode", "dsh", "node", "npm"];
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Detected {
     pub codex: Option<String>,
     pub claude: Option<String>,
+    pub opencode: Option<String>,
+    pub dsh: Option<String>,
     pub node: Option<String>,
     pub npm: Option<String>,
 }
@@ -21,6 +23,8 @@ impl Detected {
         let slot = match name {
             "codex" => &mut self.codex,
             "claude" => &mut self.claude,
+            "opencode" => &mut self.opencode,
+            "dsh" => &mut self.dsh,
             "node" => &mut self.node,
             "npm" => &mut self.npm,
             _ => return,
@@ -78,6 +82,8 @@ pub fn package(tool: &str) -> Option<&'static str> {
     match tool {
         "codex" => Some("@openai/codex"),
         "claude" => Some("@anthropic-ai/claude-code"),
+        "opencode" => Some("opencode-ai"),
+        "dsh" => Some("@deepseek-ai/dsh"),
         _ => None,
     }
 }
@@ -94,6 +100,8 @@ mod tests {
     fn commands() {
         assert_eq!(install_command("codex", "npmmirror").unwrap(), "npm install -g @openai/codex --registry=https://registry.npmmirror.com/");
         assert!(install_command("claude", "tencent").unwrap().contains("mirrors.cloud.tencent.com"));
+        assert_eq!(install_command("opencode", "official").unwrap(), "npm install -g opencode-ai --registry=https://registry.npmjs.org/");
+        assert_eq!(install_command("dsh", "npmmirror").unwrap(), "npm install -g @deepseek-ai/dsh --registry=https://registry.npmmirror.com/");
         assert!(install_command("vim", "official").is_none());
     }
 
@@ -102,7 +110,7 @@ mod tests {
     async fn detects_shell_builtins_path() {
         let d = detect("/bin/sh").await;
         // 测试环境不一定装了这些工具；只要求解析不出错，且找到的都是绝对路径。
-        for p in [d.codex, d.claude, d.node, d.npm].into_iter().flatten() {
+        for p in [d.codex, d.claude, d.opencode, d.dsh, d.node, d.npm].into_iter().flatten() {
             assert!(p.starts_with('/'));
         }
     }

@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Initial, useLogout, useStatus, webUrl } from '../App.jsx';
 import { api } from '../shared/api.js';
 import { daysLeft, formatDate } from '../shared/time.js';
+import RelayPicker from '../shared/RelayPicker.jsx';
 import RelayStatus from '../shared/RelayStatus.jsx';
 import { Button, Card, CopyButton, Time, useLoad } from '../shared/ui.jsx';
 
@@ -65,6 +66,7 @@ export default function Account() {
           <dd className="mono">{status.account.server}</dd>
         </dl>
       </Card>
+      <RelayPicker />
       <div className="inline" style={{ marginBottom: 24 }}>
         <a className="btn btn-ghost" href={webUrl(status, '/account')} target="_blank" rel="noopener noreferrer">
           <ExternalLink size={18} /> {t('account.manage')}

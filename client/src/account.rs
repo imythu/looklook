@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use looklook_protocol::dto::{
     AccountSummary, AuthorizePollRequest, AuthorizeStartRequest, AuthorizeStartResponse, CreateTunnel, DeviceInfo, HeartbeatRequest,
-    HeartbeatResponse, LoginResponse, RelayParams,
-    RotateConfirmRequest, RotateRequest, RotateResponse, TerminalReport, Tunnel, TunnelList, UpdateHint, UpdateTunnel,
+    HeartbeatResponse, LoginResponse, RelayChoices, RelayParams,
+    RotateConfirmRequest, RotateRequest, RotateResponse, SetRelayPreference, TerminalReport, Tunnel, TunnelList, UpdateHint, UpdateTunnel,
 };
 use looklook_protocol::signing::{self, b64, rotate_canonical};
 use serde::{Deserialize, Serialize};
@@ -618,14 +618,7 @@ impl Account {
         self.persist_clock();
         // 升级前保存的通道参数没有中转名与网关 MAC 密钥，远程入口无法校验，重新获取一次。
         if r.relay_changed || s.relay.gateway_mac_key.is_empty() {
-            match platform.call::<RelayParams>("GET", "/relay", signer, None::<&()>).await {
-                Ok(relay) => {
-                    self.update_session(|s| s.relay = relay).map_err(internal)?;
-                    // 换了中转：新中转上的路由表要尽快有本机的终端
-                    self.request_terminal_report();
-                }
-                Err(e) => tracing::warn!(error = %e, "获取新的远程访问参数失败"),
-            }
+            self.refresh_relay(&platform, signer).await?;
         }
         if r.rotate_key {
             if let Err(e) = self.rotate_key().await {
@@ -634,6 +627,19 @@ impl Account {
         }
         *lock_mut(&self.revoked) = r.revoked_sids.into_iter().collect();
         Ok(r.next_heartbeat_seconds.max(60) as u64)
+    }
+
+    /// 重新获取通道参数；会话一变，`relay::run` 就用新参数重连。
+    async fn refresh_relay(&self, platform: &Platform, signer: Signer<'_>) -> PResult<()> {
+        match platform.call::<RelayParams>("GET", "/relay", signer, None::<&()>).await {
+            Ok(relay) => {
+                self.update_session(|s| s.relay = relay).map_err(internal)?;
+                // 换了中转：新中转上的路由表要尽快有本机的终端
+                self.request_terminal_report();
+            }
+            Err(e) => tracing::warn!(error = %e, "获取新的远程访问参数失败"),
+        }
+        Ok(())
     }
 
     fn heartbeat_request(&self) -> HeartbeatRequest {
@@ -791,6 +797,24 @@ impl Account {
         })
         .map_err(internal)?;
         Ok(a)
+    }
+
+    /// 可选的线路（中转）与当前所在、用户自选的线路。
+    pub async fn relays(&self) -> PResult<RelayChoices> {
+        self.signed("GET", "/relays", None::<&()>).await
+    }
+
+    /// 记住用户选的线路（None = 自动）。平台立即改派，这里马上换用新参数，不等下一次心跳。
+    pub async fn set_relay(&self, relay: Option<String>) -> PResult<RelayChoices> {
+        let r: RelayChoices = self.signed("PUT", "/relays/preference", Some(&SetRelayPreference { relay })).await?;
+        let _g = self.busy.lock().await;
+        if let Some((s, key)) = self.creds() {
+            if r.current.as_ref().is_some_and(|c| *c != s.relay.name) {
+                let platform = self.platform();
+                self.refresh_relay(&platform, Signer { device: &s.device_id, key_id: &s.key_id, key: &key }).await?;
+            }
+        }
+        Ok(r)
     }
 
     pub async fn tunnels(&self) -> PResult<TunnelList> {

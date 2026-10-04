@@ -128,5 +128,7 @@
   "UPDATE_FAILED": "安装更新失败，原来的版本没有改动。（{{detail}}）",
   "AGENT_NOT_FOUND": "这台电脑上没有找到这个 AI 助手，请先安装",
   "AGENT_INSTALL_FAILED": "安装失败：{{detail}}",
-  "MCP_DISABLED": "请先打开“允许 AI 助手添加网页”"
+  "MCP_DISABLED": "请先打开“允许 AI 助手添加网页”",
+  "DSH_EXISTS": "这台电脑上已经有 DSH 了，请在终端列表里打开它",
+  "DSH_NEEDS_PERSISTENT": "DSH 需要能在后台持续运行的终端，这台电脑上不支持"
 }

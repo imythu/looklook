@@ -395,6 +395,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
   display: flex; align-items: center; gap: 4px; min-height: 52px; padding: 4px 8px; padding-top: calc(4px + env(safe-area-inset-top));
   background: #171a22; color: #e3e6ee; border-bottom: 1px solid #2a2f3b;
 }
+.term-bar[hidden] { display: none; }
 .term-bar .btn-plain { color: #c5cad6; }
 .term-bar .btn-plain:hover { color: #fff; }
 .term-title { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; font-weight: 600; }
@@ -403,7 +404,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .term-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: var(--term-bg, #11131a); }
 .term-empty { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; }
 .term-empty .card { max-width: 420px; width: 100%; }
+/* 按键大小随屏幕变：竖屏按宽度（vw），横屏按高度（vh）。vw/vh 不随手机键盘弹出变化，不会引起终端重排。 */
 .keybar {
+  --key-h: clamp(38px, 11vw, 50px); --key-fs: clamp(13px, 3.6vw, 17px); --key-glyph: clamp(16px, 4.8vw, 22px); --key-icon: clamp(17px, 5vw, 24px);
   position: relative; display: grid; gap: 5px; padding: 6px max(6px, env(safe-area-inset-right)) calc(6px + env(safe-area-inset-bottom)) max(6px, env(safe-area-inset-left));
   background: #171a22; border-top: 1px solid #2a2f3b; user-select: none; -webkit-user-select: none;
 }
@@ -431,7 +434,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 }
 .keybar-handle span { width: 36px; height: 4px; border-radius: 2px; background: #3a4152; transition: background .15s; }
 .keybar-handle:active span, .keybar-handle:focus-visible span { background: #8b93ff; }
-.keybar-row { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+.keybar-row { grid-template-columns: repeat(9, minmax(0, 1fr)); }
 /* 修饰键提示浮在按键条上方，不占高度（否则每点一次修饰键终端都要重新排版） */
 .keybar-mods {
   position: absolute; left: 50%; bottom: calc(100% + 8px); transform: translateX(-50%); z-index: 2; max-width: calc(100% - 24px);
@@ -440,15 +443,18 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
   animation: fade .15s;
 }
 .key {
-  display: grid; place-items: center; align-content: center; gap: 2px; min-width: 0; min-height: 40px; padding: 0 2px; border-radius: 9px;
-  border: 1px solid #2f3442; background: #1f232d; color: #e3e6ee; font: 600 14px/1 var(--mono); cursor: pointer;
+  display: grid; place-items: center; align-content: center; gap: 2px; min-width: 0; min-height: var(--key-h); padding: 0 2px; border-radius: 9px;
+  border: 1px solid #2f3442; background: #1f232d; color: #e3e6ee; font: 600 var(--key-fs)/1 var(--mono); cursor: pointer;
   touch-action: manipulation; -webkit-tap-highlight-color: transparent; -webkit-touch-callout: none;
 }
 .key:active { background: #2f3442; }
 .key:focus-visible { outline: 2px solid #8b93ff; outline-offset: 1px; }
-.key-glyph { font-size: 18px; }
-.keybar-symbol .key { font-size: 16px; min-height: 38px; }
-.key-hint { min-height: 46px; }
+.key-glyph { font-size: var(--key-glyph); }
+.key-icon { width: var(--key-icon); height: var(--key-icon); }
+.key-enter { border-color: #3d4360; background: #262a3a; }
+.key[aria-pressed="true"]:not(.key-mod) { color: #b4b9ff; }
+.keybar-symbol .key { font-size: calc(var(--key-glyph) - 2px); min-height: calc(var(--key-h) - 2px); }
+.key-hint { min-height: calc(var(--key-h) + 6px); }
 .key-hint small { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 500 11px/1.2 system-ui, sans-serif; color: #8a91a3; }
 .key-mod[data-state="once"] { border-color: #8b93ff; color: #b4b9ff; background: rgba(139, 147, 255, .14); }
 .key-mod[data-state="lock"] { border-color: #8b93ff; color: #11131a; background: #8b93ff; box-shadow: inset 0 -3px 0 rgba(0, 0, 0, .25); }
@@ -457,9 +463,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 }
 /* 手机横屏：高度很紧，按键压扁、组合键说明隐藏、面板可滚动 */
 @media (max-height: 500px) {
-  .keybar { gap: 4px; padding-top: 4px; }
+  .keybar { --key-h: clamp(30px, 8vh, 38px); --key-fs: clamp(12px, 3.2vh, 15px); --key-glyph: clamp(15px, 4.2vh, 19px); --key-icon: clamp(15px, 4.6vh, 20px); gap: 4px; padding-top: 4px; }
   .keybar-grid { gap: 4px; }
-  .key, .key-hint, .keybar-symbol .key { min-height: 32px; }
+  .key, .key-hint, .keybar-symbol .key { min-height: var(--key-h); }
   .key-hint small { display: none; }
   .keybar-tabs button { min-height: 28px; }
   .keybar-panel { max-height: 42vh; overflow-y: auto; overscroll-behavior: contain; }
@@ -761,3 +767,20 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .device-limit-list { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 6px; }
 .device-limit-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; border-radius: 10px; background: var(--panel); }
 .device-limit-list li > :last-child { flex: none; }
+
+/* 远程线路选择 */
+.relay-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.relay-option {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px; min-height: 48px;
+  border: 1px solid var(--line); border-radius: var(--radius-sm); cursor: pointer;
+}
+.relay-option:hover { border-color: color-mix(in srgb, var(--brand) 35%, var(--line)); }
+.relay-option.selected { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.relay-option .block { display: block; overflow-wrap: anywhere; }
+.relay-option .tag { margin-left: 8px; }
+.tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: 1px; }
+.tag-ok { background: var(--ok-soft); color: var(--ok); }
+.latency { font-size: 13px; font-weight: 600; white-space: nowrap; }
+.latency-fast { color: var(--ok); }
+.latency-ok { color: var(--warn); }
+.latency-slow { color: var(--danger); }

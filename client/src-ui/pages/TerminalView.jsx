@@ -1,12 +1,12 @@
 // 终端页：整页显示一个终端（同源 iframe 打开 /i/{id}/）。手机上底部有按键条（Esc、Tab、Ctrl/Alt/Shift、方向键、组合键、符号、F1–F12…）。
-import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, GripHorizontal, Keyboard, Maximize2, Minimize2, Play, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, GripHorizontal, Maximize2, Minimize2, PanelBottom, Play, RefreshCw, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
-import KeyBar, { isTouch, useKeybarShown, useVisibleViewport } from '../shared/KeyBar.jsx';
+import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import { useTermFiles } from './TermFiles.jsx';
@@ -148,10 +148,10 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
     }
   };
   const running = inst?.running;
-  const viewport = useVisibleViewport(touch && full);
+  const mobile = useTouchTerminal(frame, touch && full);
   const files = useTermFiles({ id, inst, frame, enabled: Boolean(running && status.account.allowed), touch, hostOs: status.capabilities.os, keybar: Boolean(running && touch && full) });
   const shell = full
-    ? { position: 'fixed', inset: 0, zIndex: 60, display: 'flex', flexDirection: 'column', ...viewport }
+    ? { position: 'fixed', inset: 0, zIndex: 60, display: 'flex', flexDirection: 'column', ...mobile.style }
     : {
         position: 'fixed',
         left: rect.x,
@@ -170,6 +170,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
     <section ref={wrap} className="embedded-term" style={{ background: '#11131a', ...shell }} aria-label={inst?.name ?? id}>
       <header
         className="term-bar"
+        hidden={mobile.cramped}
         style={full ? undefined : { paddingTop: 4, minHeight: 44, cursor: moving ? 'grabbing' : 'grab', touchAction: 'none', userSelect: 'none' }}
         onPointerDown={begin('move')}
         onPointerMove={onMove}
@@ -193,7 +194,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
             {collapsed ? <ChevronDown size={19} /> : <ChevronUp size={19} />}
           </button>
         )}
-        <button type="button" className={iconBtn} onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
+        <button type="button" className={iconBtn} onPointerDown={touch ? keepFocus : undefined} onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
           {full ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
         </button>
         {!full && (
@@ -215,7 +216,8 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: '#11131a', pointerEvents: moving ? 'none' : 'auto' }}
             onLoad={() => {
               setLoaded(true);
-              frame.current?.contentWindow?.focus();
+              // 手机上不自动弹出键盘，点终端才弹（见 KeyBar.jsx 开头的说明）。
+              if (!touch) frame.current?.contentWindow?.focus();
             }}
           />
         ) : (
@@ -247,7 +249,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
         {files.layer}
       </div>
       {/* 手机上悬浮小窗太挤，全屏时才显示按键条 */}
-      {running && touch && full && <KeyBar frame={frame} os={status.capabilities.os} />}
+      {running && touch && full && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
     </section>
   );
 }
@@ -261,7 +263,7 @@ export default function TerminalView({ id }) {
   const [reloadKey, setReloadKey] = useState(0);
   const [touch] = useState(isTouch);
   const [keys, setKeys] = useKeybarShown();
-  const viewport = useVisibleViewport(touch);
+  const mobile = useTouchTerminal(frame, touch);
   const [full, setFull] = useState(false);
   const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -347,7 +349,7 @@ export default function TerminalView({ id }) {
           allow="clipboard-read; clipboard-write; fullscreen"
           onLoad={() => {
             setLoaded(true);
-            frame.current?.contentWindow?.focus();
+            if (!touch) frame.current?.contentWindow?.focus();
           }}
         />
       </>
@@ -355,8 +357,9 @@ export default function TerminalView({ id }) {
   }
 
   return (
-    <div className="term-page" style={{ '--term-bg': light ? '#fbfbfd' : '#11131a', ...viewport }}>
-      <header className="term-bar">
+    <div className="term-page" style={{ '--term-bg': light ? '#fbfbfd' : '#11131a', ...mobile.style }}>
+      {/* 横屏打字时屏幕极矮：先藏起顶栏，键盘收起后回来 */}
+      <header className="term-bar" hidden={mobile.cramped}>
         <button type="button" className="btn btn-plain btn-icon" onClick={() => navigate('/')} aria-label={t('term.back')}>
           <ArrowLeft size={20} />
         </button>
@@ -369,11 +372,11 @@ export default function TerminalView({ id }) {
         </button>
         {files.button}
         {touch && (
-          <button type="button" className="btn btn-plain btn-icon" onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
-            <Keyboard size={19} />
+          <button type="button" className="btn btn-plain btn-icon" onPointerDown={keepFocus} onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
+            <PanelBottom size={19} />
           </button>
         )}
-        <button type="button" className="btn btn-plain btn-icon" onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
+        <button type="button" className="btn btn-plain btn-icon" onPointerDown={touch ? keepFocus : undefined} onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
           {full ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
         </button>
         <button type="button" className="btn btn-plain btn-icon" onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
@@ -384,7 +387,7 @@ export default function TerminalView({ id }) {
         {body}
         {files.layer}
       </div>
-      {touch && keys && running && allowed && <KeyBar frame={frame} os={status.capabilities.os} />}
+      {touch && keys && running && allowed && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
     </div>
   );
 }

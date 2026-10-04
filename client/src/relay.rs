@@ -244,6 +244,53 @@ fn start(p: &RelayParams, local: SocketAddr, path: &std::path::Path) -> anyhow::
     Ok((tx, task))
 }
 
+/// 测一条线路的延迟（毫秒）：向中转直连入口（443）的 `/_ll/ping` 发请求。第一次请求建立连接
+/// （DNS、TCP、TLS），不计入；之后在同一连接上再发 `PING_SAMPLES` 次，取最小值，约等于一次往返。
+/// 不走系统代理：远程通道本身也是直连中转。
+pub async fn ping(url: &str) -> Result<u32, String> {
+    const PING_SAMPLES: usize = 3;
+    let mut b = reqwest::Client::builder();
+    // 与通道相同的开发用解析覆盖（`*.localhost`、`LOOKLOOK_RESOLVE`）
+    if let Some(u) = reqwest::Url::parse(url).ok().filter(|u| u.host_str().is_some()) {
+        let host = u.host_str().unwrap_or_default();
+        if let Some(ip) = localhost_addr(host).or_else(|| resolve_override(host)) {
+            b = b.resolve(host, SocketAddr::new(ip, u.port_or_known_default().unwrap_or(443)));
+        }
+    }
+    let http = b
+        .no_proxy()
+        .timeout(Duration::from_secs(3))
+        .pool_max_idle_per_host(1)
+        .user_agent(concat!("looklook-client/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let once = || async {
+        let t = std::time::Instant::now();
+        let r = http.get(url).send().await.map_err(|e| ping_error(&e))?;
+        if !r.status().is_success() {
+            return Err(format!("HTTP {}", r.status().as_u16()));
+        }
+        Ok(t.elapsed())
+    };
+    once().await?;
+    let mut best = Duration::MAX;
+    for _ in 0..PING_SAMPLES {
+        best = best.min(once().await?);
+    }
+    Ok(best.as_millis().clamp(1, u32::MAX as u128) as u32)
+}
+
+fn ping_error(e: &reqwest::Error) -> String {
+    tracing::debug!(error = ?e, "线路测速失败");
+    if e.is_timeout() {
+        "timeout".into()
+    } else if e.is_connect() {
+        "connect".into()
+    } else {
+        "network".into()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +321,37 @@ mod tests {
         assert!(t.contains("[client.services.u1024]"));
         assert!(t.contains("token = \"t\\\"k\""));
         assert!(t.contains("local_addr = \"127.0.0.1:41999\""));
+    }
+
+    #[tokio::test]
+    async fn ping_measures_round_trips_on_one_connection() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let hits = Arc::new(AtomicUsize::new(0));
+        let conns = Arc::new(AtomicUsize::new(0));
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = l.local_addr().unwrap();
+        let (h, c) = (hits.clone(), conns.clone());
+        tokio::spawn(async move {
+            loop {
+                let (s, _) = l.accept().await.unwrap();
+                c.fetch_add(1, Ordering::SeqCst);
+                let h = h.clone();
+                tokio::spawn(async move {
+                    let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
+                        h.fetch_add(1, Ordering::SeqCst);
+                        let status = if req.uri().path() == "/_ll/ping" { 204 } else { 404 };
+                        async move { Ok::<_, std::convert::Infallible>(hyper::Response::builder().status(status).body(String::new()).unwrap()) }
+                    });
+                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(s), svc).await;
+                });
+            }
+        });
+        let ms = ping(&format!("http://{addr}/_ll/ping")).await.unwrap();
+        assert!((1..1000).contains(&ms), "{ms}");
+        assert_eq!(hits.load(Ordering::SeqCst), 4);
+        assert_eq!(conns.load(Ordering::SeqCst), 1, "samples reuse the warm-up connection");
+        assert_eq!(ping(&format!("http://{addr}/nope")).await, Err("HTTP 404".into()));
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+        assert_eq!(ping(&format!("http://{closed}/_ll/ping")).await, Err("connect".into()));
     }
 }

@@ -133,7 +133,7 @@
       "short": "关掉终端页面后，里面的程序会结束"
     },
     "empty_title": "还没有终端",
-    "empty_body": "新建一个终端，让 Codex、Claude Code 或任何命令在这台电脑上运行。关掉网页也不会停。",
+    "empty_body": "新建一个终端，让 Codex、Claude Code、OpenCode 或任何命令在这台电脑上运行。关掉网页也不会停。",
     "pages_tip": "电脑上开着网页想在外面看？试试",
     "remote_open": "在新标签页打开",
     "remote_qr_show": "显示二维码",
@@ -162,6 +162,14 @@
     "claude": {
       "title": "Claude Code",
       "desc": "启动 Anthropic Claude Code"
+    },
+    "opencode": {
+      "title": "OpenCode",
+      "desc": "启动 OpenCode"
+    },
+    "dsh": {
+      "title": "DSH",
+      "desc": "DeepSeek Harness 网页界面"
     },
     "custom": {
       "title": "自己输入命令",
@@ -241,6 +249,7 @@
     "full_access": "以全部权限打开",
     "full_access_hint_codex": "使用 --dangerously-bypass-approvals-and-sandbox：不再询问确认，且不启用沙箱。",
     "full_access_hint_claude": "使用 --dangerously-skip-permissions：跳过所有权限确认。",
+    "full_access_hint_opencode": "使用 --auto：没有明确拒绝的权限都自动同意。",
     "root_confirm": "我确认以 root 身份、带全部权限启动",
     "root_confirm_hint": "当前客户端以 root 运行，AI 工具将拥有整台机器的最高权限，请谨慎使用。"
   },
@@ -296,7 +305,7 @@
     "mcp": {
       "title": "让 AI 助手自动添加网页",
       "enable": "允许 AI 助手添加网页",
-      "intro": "打开后，这台电脑上的 Codex、Claude Code 在开发时可以自己查看和添加本机网页：发现开发中的网站（比如 localhost:5173）就给出外面能打开的地址。AI 助手用单独的令牌连接，只能从这台电脑上连接，不能删除网页。",
+      "intro": "打开后，这台电脑上的 Codex、Claude Code、OpenCode、DSH 在开发时可以自己查看和添加本机网页：发现开发中的网站（比如 localhost:5173）就给出外面能打开的地址。AI 助手用单独的令牌连接，只能从这台电脑上连接，不能删除网页。",
       "skill": "AI 助手发现网页时",
       "skill_auto": "直接添加",
       "skill_ask": "先问我",
@@ -482,7 +491,7 @@
   },
   "guide": {
     "title": "第一次用？三步上手",
-    "s1": "选一个想用的工具（普通终端、Codex 或 Claude Code），点“新建终端”。",
+    "s1": "选一个想用的工具（普通终端、Codex、Claude Code、OpenCode 或 DSH），点“新建终端”。",
     "s2": "在弹出的终端里像平时一样输入命令，关掉网页任务也不会停。",
     "s3": "想在手机上继续？打开页面顶部的专属地址，登录同一个账户就行。",
     "dismiss": "知道了"
@@ -496,6 +505,8 @@
     "right": "右",
     "bksp": "退格",
     "enter": "回车",
+    "ime_show": "弹出键盘",
+    "ime_hide": "收起键盘",
     "locked": "{{key}}（已锁定）",
     "mods_once": "{{keys}} + 下一个键 · 再点一下锁定",
     "mods_locked": "{{keys}} 已锁定 · 再点一下取消",
@@ -731,5 +742,40 @@
       "NOT_A_FILE": "这不是普通文件，没法下载。",
       "CLIENT_UNREACHABLE": "连不上这台电脑，网络恢复后点重试会接着传。"
     }
+  },
+  "relays": {
+    "title": "远程线路",
+    "intro": "用手机或其他电脑远程打开这台电脑时，数据要经过一条看看的线路。看看会自动帮你选一条能用的，一般不用管。",
+    "when_slow": "如果远程打开时觉得卡、打字有延迟，可以在下面换一条延迟更低的线路。看看会记住你的选择，下次不用再选。",
+    "auto": "自动选择（推荐）",
+    "auto_hint": "自动用一条能用的线路；线路出问题时会自动换一条",
+    "auto_now": "现在用的是 {{name}}",
+    "line": "线路 {{name}}",
+    "in_use": "正在使用",
+    "ms": "{{ms}} 毫秒",
+    "speed": {
+      "fast": "很快",
+      "ok": "一般",
+      "slow": "较慢"
+    },
+    "measuring": "正在测速，大约需要几秒…",
+    "measuring_short": "测速中…",
+    "retest": "重新测速",
+    "no_test": "这条线路暂时不能测速",
+    "unreachable": "连不上",
+    "none": "暂时没有可以选的线路。",
+    "fallback": "你选的线路 {{preferred}} 暂时用不了，已经临时换到 {{current}}。等它恢复，会自动换回来。",
+    "switched": "已换到线路 {{name}}",
+    "saved": "已记住你的选择",
+    "latency_explain": "延迟：数据从这台电脑到线路跑一个来回要多久，数字越小越快。",
+    "switch_note": "换线路时，正在远程打开的页面会断开几秒，然后自动连上。你的专属地址不变。"
+  },
+  "dsh": {
+    "open": "打开 DSH",
+    "open_hint": "打开 DSH 的网页；在这台电脑上和在外面都是同一个地址",
+    "output": "查看 DSH 的输出",
+    "starting": "DSH 还在启动，页面没打开的话稍后刷新一下",
+    "form_note": "DSH 是网页界面，一台电脑一个。看看会选一个空闲端口并为它添加本机网页，打开 DSH（本机或远程）就是打开这个网页。",
+    "workdir_hint": "DSH 的默认项目文件夹，别的项目文件夹在 DSH 里添加。"
   }
 }

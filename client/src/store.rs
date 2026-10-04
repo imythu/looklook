@@ -37,7 +37,7 @@ pub struct InstanceRow {
     pub id: String,
     pub name: String,
     pub workdir: String,
-    /// `shell` | `codex` | `claude` | `custom`
+    /// `shell` | `codex` | `claude` | `opencode` | `dsh` | `custom`
     pub launch: String,
     pub command: String,
     /// 使用的 shell：空为默认（Windows 依次 pwsh → Windows PowerShell → cmd；其他系统为登录 shell），

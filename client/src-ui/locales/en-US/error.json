@@ -128,5 +128,7 @@
   "UPDATE_FAILED": "Installing the update failed; your current version is unchanged. ({{detail}})",
   "AGENT_NOT_FOUND": "This AI assistant wasn't found on this computer; install it first",
   "AGENT_INSTALL_FAILED": "Installation failed: {{detail}}",
-  "MCP_DISABLED": "Turn on \"Allow AI assistants to add pages\" first"
+  "MCP_DISABLED": "Turn on \"Allow AI assistants to add pages\" first",
+  "DSH_EXISTS": "DSH is already set up on this computer; open it from the terminal list",
+  "DSH_NEEDS_PERSISTENT": "DSH needs terminals that keep running in the background, which this computer doesn't support"
 }

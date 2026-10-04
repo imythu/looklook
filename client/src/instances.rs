@@ -31,7 +31,7 @@ pub const PORT_RANGE: (u16, u16) = (41000, 41999);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TMUX_SOCKET: &str = "looklook";
-const LAUNCHES: &[&str] = &["shell", "codex", "claude", "custom"];
+const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "custom"];
 
 #[derive(Debug, Clone)]
 pub enum Backend {
@@ -122,10 +122,12 @@ pub struct View {
     pub last_activity_at: Option<String>,
     pub error: Option<String>,
     pub url: String,
-    /// 以全部权限启动（仅 Codex / Claude Code）
+    /// 以全部权限启动（仅 Codex / Claude Code / OpenCode）
     pub full_access: bool,
     /// 用户已确认以 root 身份带全部权限启动
     pub root_confirmed: bool,
+    /// DSH：网页界面监听的本机端口
+    pub web_port: Option<u16>,
 }
 
 /// 启动选项（不在 SQLite 的 instances 表里，单独存在 kv：`instance_opts.{id}`）。
@@ -135,7 +137,13 @@ pub struct Opts {
     pub full_access: bool,
     #[serde(default)]
     pub root_confirmed: bool,
+    /// DSH 网页界面的端口（新建时选定，之后不变）
+    #[serde(default)]
+    pub web_port: Option<u16>,
 }
+
+/// DSH 网页界面的端口从这里开始找（`dsh web` 自己默认 3080）；避开终端用的 41000–41999。
+const WEB_PORT_START: u16 = 3080;
 
 fn opts_key(id: &str) -> String {
     format!("instance_opts.{id}")
@@ -151,6 +159,9 @@ pub struct Input {
     pub auto_start: Option<bool>,
     pub full_access: Option<bool>,
     pub root_confirmed: Option<bool>,
+    /// DSH 网页界面的端口（只在新建时由网关填写，不接受请求里的值）
+    #[serde(skip)]
+    pub web_port: Option<u16>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -215,6 +226,7 @@ impl Instances {
         View {
             full_access: opts.full_access,
             root_confirmed: opts.root_confirmed,
+            web_port: opts.web_port,
             running,
             task_alive: sessions.map(|_| sess.is_some()),
             started_at: sess.map(|(c, _)| ts(*c)),
@@ -236,6 +248,20 @@ impl Instances {
 
     pub fn is_reserved_port(port: u16) -> bool {
         (PORT_RANGE.0..=PORT_RANGE.1).contains(&port)
+    }
+
+    /// 这台电脑上的 DSH（只有一个：一个 `dsh web` 进程管理所有项目文件夹）。
+    pub fn dsh(&self) -> Result<Option<InstanceRow>, LocalError> {
+        Ok(self.store.instances()?.into_iter().find(|r| r.launch == "dsh"))
+    }
+
+    /// 给 DSH 网页界面挑一个现在没被占用的端口：3080 起往后找，都不行再让系统分配。
+    pub fn pick_web_port() -> Result<u16, LocalError> {
+        let bind = |p: u16| TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, p))).ok();
+        if let Some(p) = (WEB_PORT_START..WEB_PORT_START + 100).find(|p| bind(*p).is_some()) {
+            return Ok(p);
+        }
+        bind(0).and_then(|l| l.local_addr().ok()).map(|a| a.port()).ok_or_else(|| LocalError::new("NO_FREE_PORT"))
     }
 
     // ---------------- 增删改 ----------------
@@ -265,10 +291,19 @@ impl Instances {
         Ok(())
     }
 
-    /// 全部权限选项：只对 Codex / Claude Code 有意义；root 运行时必须确认。
+    /// 全部权限选项：只对 Codex / Claude Code / OpenCode 有意义（DSH 的权限在它自己的网页里设置）；
+    /// root 运行时必须确认。DSH 必须有网页端口。
     fn validate_opts(row: &InstanceRow, opts: &mut Opts) -> Result<(), LocalError> {
-        if !matches!(row.launch.as_str(), "codex" | "claude") {
-            *opts = Opts::default();
+        if row.launch == "dsh" {
+            if opts.web_port.is_none() {
+                return Err(LocalError::invalid("web_port", "required"));
+            }
+        } else {
+            opts.web_port = None;
+        }
+        if !matches!(row.launch.as_str(), "codex" | "claude" | "opencode") {
+            opts.full_access = false;
+            opts.root_confirmed = false;
             return Ok(());
         }
         if !opts.full_access {
@@ -306,7 +341,14 @@ impl Instances {
             row.name = default_name(&row.launch, self.store.instances()?.len() + 1);
         }
         self.validate(&mut row)?;
-        let mut opts = Opts { full_access: input.full_access.unwrap_or(false), root_confirmed: input.root_confirmed.unwrap_or(false) };
+        if row.launch == "dsh" && self.dsh()?.is_some() {
+            return Err(LocalError::new("DSH_EXISTS"));
+        }
+        let mut opts = Opts {
+            full_access: input.full_access.unwrap_or(false),
+            root_confirmed: input.root_confirmed.unwrap_or(false),
+            web_port: input.web_port,
+        };
         Self::validate_opts(&row, &mut opts)?;
         self.store.insert_instance(&row)?;
         self.store.set(&opts_key(&row.id), &opts)?;
@@ -324,6 +366,10 @@ impl Instances {
             row.workdir = v;
         }
         if let Some(v) = input.launch {
+            // DSH 带着自己的端口和网页映射，不能和别的启动方式互相改
+            if (v == "dsh") != (row.launch == "dsh") {
+                return Err(LocalError::invalid("launch", "invalid"));
+            }
             row.launch = v;
         }
         if let Some(v) = input.command {
@@ -789,6 +835,9 @@ pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[Strin
 
 /// Codex：`--dangerously-bypass-approvals-and-sandbox`（不再询问、不启用沙箱）。
 /// Claude Code：`--dangerously-skip-permissions`；它在 root 下会拒绝运行，需要同时设置 `IS_SANDBOX=1`。
+/// OpenCode：`--auto`（没有明确拒绝的权限都自动同意）。
+/// DSH：`dsh web` 只监听 127.0.0.1 的网页界面，经本机网页映射打开（本机、远程都是同一个地址）；
+/// 工作目录是默认项目，别的项目文件夹在网页里添加。
 pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<String> {
     match row.launch.as_str() {
         "codex" if opts.full_access => Some("codex --dangerously-bypass-approvals-and-sandbox".into()),
@@ -796,6 +845,9 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
         "claude" if opts.full_access && root => Some("IS_SANDBOX=1 claude --dangerously-skip-permissions".into()),
         "claude" if opts.full_access => Some("claude --dangerously-skip-permissions".into()),
         "claude" => Some("claude".into()),
+        "opencode" if opts.full_access => Some("opencode --auto".into()),
+        "opencode" => Some("opencode".into()),
+        "dsh" => opts.web_port.map(|p| format!("dsh web --no-open --port {p}")),
         "custom" => Some(row.command.clone()),
         _ => None,
     }
@@ -805,6 +857,8 @@ fn default_name(launch: &str, n: usize) -> String {
     match launch {
         "codex" => format!("Codex {n}"),
         "claude" => format!("Claude Code {n}"),
+        "opencode" => format!("OpenCode {n}"),
+        "dsh" => "DSH".into(),
         _ => format!("终端 {n}"),
     }
 }
@@ -1060,7 +1114,7 @@ mod tests {
     #[test]
     fn full_access_flags() {
         let mut r = row();
-        let on = Opts { full_access: true, root_confirmed: true };
+        let on = Opts { full_access: true, root_confirmed: true, web_port: None };
         assert_eq!(launch_command_line(&r, Opts::default(), false), None);
         r.launch = "codex".into();
         assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("codex"));
@@ -1069,20 +1123,32 @@ mod tests {
         assert_eq!(launch_command_line(&r, on, false).as_deref(), Some("claude --dangerously-skip-permissions"));
         assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("IS_SANDBOX=1 claude --dangerously-skip-permissions"));
         assert_eq!(launch_command_line(&r, Opts::default(), true).as_deref(), Some("claude"));
+        r.launch = "opencode".into();
+        assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("opencode --auto"));
+        assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("opencode"));
+        r.launch = "dsh".into();
+        let web = Opts { web_port: Some(3080), ..Opts::default() };
+        assert_eq!(launch_command_line(&r, web, false).as_deref(), Some("dsh web --no-open --port 3080"));
     }
 
     #[test]
     fn opts_validation() {
         let mut r = row();
-        let mut o = Opts { full_access: true, root_confirmed: true };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(o == Opts::default(), "shell 终端忽略全部权限选项");
         r.launch = "claude".into();
-        let mut o = Opts { full_access: false, root_confirmed: true };
+        let mut o = Opts { full_access: false, root_confirmed: true, web_port: None };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(!o.root_confirmed);
-        let mut o = Opts { full_access: true, root_confirmed: false };
+        let mut o = Opts { full_access: true, root_confirmed: false, web_port: None };
         assert_eq!(Instances::validate_opts(&r, &mut o).is_err(), crate::platform::is_root());
+        r.launch = "dsh".into();
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None };
+        assert!(Instances::validate_opts(&r, &mut o).is_err(), "DSH 必须有网页端口");
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: Some(3080) };
+        Instances::validate_opts(&r, &mut o).unwrap();
+        assert!(o == Opts { web_port: Some(3080), ..Opts::default() }, "DSH 没有全部权限选项");
     }
 
     #[test]
