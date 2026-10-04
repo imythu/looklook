@@ -281,7 +281,7 @@ fn init_tracing(paths: &Paths) {
 }
 
 async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<String>, no_browser: bool, shutdown: CancellationToken) -> Result<()> {
-    let paths = Paths::discover(home)?;
+    let mut paths = Paths::discover(home)?;
     init_tracing(&paths);
     // 更新后由旧版本拉起：等旧进程退出，不再打开浏览器（管理台页面会自己刷新）
     let restarted = std::env::var_os(updater::RESTART_ENV).is_some();
@@ -341,6 +341,8 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         }
     }
     updater::rescue_mux_backups(); // 要在第一次调用会话保持程序之前
+    updater::settle_trzsz();
+    paths.trzsz = paths::find_trzsz();
     let instances = Instances::new(store.clone(), paths.clone());
     let updater = updater::Updater::new(store.clone(), paths.clone(), account.clone(), shutdown.clone());
     let metrics = metrics::Metrics::new();

@@ -58,7 +58,7 @@ try {
   }
   Copy-Item -Force (Join-Path $src 'psmux.exe') $app
   Get-ChildItem $app -Filter '*.exe.old*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
-  foreach ($item in 'looklook.exe', 'looklook-term.exe', 'fonts', 'trzsz', 'LICENSES', 'uninstall.bat') {
+  foreach ($item in 'looklook.exe', 'looklook-term.exe', 'trz.exe', 'tsz.exe', 'fonts', 'LICENSES', 'uninstall.bat') {
     $p = Join-Path $src $item
     if (Test-Path $p) { Copy-Item -Recurse -Force $p $app }
   }

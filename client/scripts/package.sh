@@ -4,7 +4,7 @@
 #   scripts/package.sh                       全部平台
 #   scripts/package.sh linux-x86_64 ...      指定平台：linux-x86_64 linux-aarch64 darwin-aarch64 windows-x86_64
 #
-# 安装包内容（顶层目录 looklook/）：looklook 可执行文件、trzsz/（trz、tsz）、ttyd 1.7.7（改名为 looklook-term）、会话保持程序（tmux 改名为 looklook-mux；Windows 上的 psmux 保留原名 psmux.exe，见 src/paths.rs 的 MUX_EXE）、终端字体、许可证、安装脚本。
+# 安装包内容（顶层目录 looklook/）：looklook 可执行文件、trzsz/（trz、tsz；Windows 上是顶层的 trz.exe、tsz.exe）、ttyd 1.7.7（改名为 looklook-term）、会话保持程序（tmux 改名为 looklook-mux；Windows 上的 psmux 保留原名 psmux.exe，见 src/paths.rs 的 MUX_EXE）、终端字体、许可证、安装脚本。
 # Linux 包可直接用看看网页“下载”页的一行命令安装：curl -fsSL <地址> | tar -xz && ./looklook/install.sh
 #
 # Windows / macOS 另外生成桌面应用安装程序（Tauri，见 src/desktop.rs 与 tauri.conf.json），给普通用户双击安装：
@@ -167,7 +167,9 @@ for t in "$@"; do
   cp "vendor/$t/$ttyd" "$stage/$term"
   cp "vendor/$t/$mux" "$stage/$muxout"
   cp -R vendor/fonts "$stage/fonts"
-  cp -R "vendor/$t/trzsz" "$stage/trzsz"   # trz / tsz（src/paths.rs 的 TRZSZ_DIR）
+  # trz / tsz（src/paths.rs 的 TRZSZ_DIR）。Windows 上放在顶层、客户端启动时再挪进 trzsz\：
+  # 1.5.0 及以前的更新程序替换新目录时会被杀毒软件挡住（拒绝访问），单个文件不会
+  if [[ $t == windows-* ]]; then cp "vendor/$t"/trzsz/*.exe "$stage/"; else cp -R "vendor/$t/trzsz" "$stage/trzsz"; fi
   rm -f "$stage/fonts/.version"
   licenses "$stage" "$t"
   case $t in

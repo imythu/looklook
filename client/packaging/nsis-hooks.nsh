@@ -14,4 +14,6 @@
 !macro NSIS_HOOK_PREUNINSTALL
   Delete "$SMSTARTUP\看看.lnk"
   Delete "$SMSTARTUP\looklook-tray-autostart.cmd"
+  ; trz.exe / tsz.exe 由客户端启动时挪进这个目录，不在安装包的文件清单里
+  RMDir /r "$INSTDIR\trzsz"
 !macroend

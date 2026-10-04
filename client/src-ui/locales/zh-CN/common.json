@@ -357,6 +357,7 @@
     "backend_persistent": "支持：关掉网页后任务继续运行",
     "backend_direct": "不支持：关掉网页后程序会结束",
     "server": "服务器",
+    "source": "源代码",
     "check_update": "检查更新",
     "up_to_date": "已经是最新版本",
     "beta": "Beta 测试版"

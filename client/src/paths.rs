@@ -42,8 +42,10 @@ pub const MUX_EXE: &str = if cfg!(windows) { "psmux.exe" } else { "looklook-mux"
 const LEGACY_MUX_EXE: &str = if cfg!(windows) { "psmux.exe" } else { "mux" };
 /// 随包的 trzsz（`trz` / `tsz`）放在资源目录的这个子目录里：会话的 `PATH` 只加这一个目录，
 /// 不会把 looklook、looklook-term、安装脚本等一起暴露成命令。
+/// Windows 的压缩包里 trz.exe / tsz.exe 不在这个目录里、而是放在顶层，启动时再挪进来（`updater::settle_trzsz`）：
+/// 1.5.0 及以前的更新程序把刚复制好的目录整个改名到位，杀毒软件还在扫描里面新的 exe 时改名会“拒绝访问”，更新失败。
 pub const TRZSZ_DIR: &str = "trzsz";
-const TRZ_EXE: &str = if cfg!(windows) { "trz.exe" } else { "trz" };
+pub const TRZSZ_EXES: [&str; 2] = if cfg!(windows) { ["trz.exe", "tsz.exe"] } else { ["trz", "tsz"] };
 /// 终端服务进程名（清理遗留进程时用来确认身份）
 pub const TERM_PROCESS_NAMES: [&str; 2] = ["looklook-term", "ttyd"];
 
@@ -80,8 +82,7 @@ impl Paths {
             .map(PathBuf::from)
             .or_else(|| dirs.iter().flat_map(|d| [d.join(MUX_EXE), d.join(LEGACY_MUX_EXE)]).find(|p| p.is_file()));
         let fonts = dirs.iter().map(|d| d.join("fonts")).find(|p| p.join("fonts.css").is_file());
-        let trzsz = dirs.iter().map(|d| d.join(TRZSZ_DIR)).find(|p| p.join(TRZ_EXE).is_file());
-        Ok(Self { home, ttyd, mux, fonts, trzsz })
+        Ok(Self { home, ttyd, mux, fonts, trzsz: find_trzsz() })
     }
 
     pub fn db(&self) -> PathBuf {
@@ -122,6 +123,11 @@ impl Paths {
         }
         std::env::join_paths(v).ok()
     }
+}
+
+/// 随包 trzsz 所在的目录。
+pub fn find_trzsz() -> Option<PathBuf> {
+    resource_dirs().into_iter().map(|d| d.join(TRZSZ_DIR)).find(|p| p.join(TRZSZ_EXES[0]).is_file())
 }
 
 /// macOS 应用包（`Looklook.app/Contents/MacOS/looklook`）的资源目录 `Contents/Resources`。

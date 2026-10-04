@@ -357,6 +357,7 @@
     "backend_persistent": "Supported: tasks keep running after you close the page",
     "backend_direct": "Not supported: programs end when you close the page",
     "server": "Server",
+    "source": "Source code",
     "check_update": "Check for updates",
     "up_to_date": "You're up to date",
     "beta": "Beta"

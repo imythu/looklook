@@ -1,6 +1,6 @@
 [package]
 name = "looklook-client"
-version = "1.5.0"
+version = "1.5.1"
 edition = "2021"
 license = "MIT"
 description = "看看客户端：在自己的电脑上运行终端与 AI 助手，并通过看看服务端随时随地访问"

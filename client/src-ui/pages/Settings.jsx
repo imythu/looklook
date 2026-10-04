@@ -11,6 +11,9 @@ import { DiagCard } from '../shared/Report.jsx';
 import { UpdateCheck } from '../shared/Update.jsx';
 import { Button, Card, ErrorNote, Field, useAction, useLoad, useToast } from '../shared/ui.jsx';
 
+// 开源仓库（MIT）
+const SOURCE_URL = 'https://github.com/imythu/looklook';
+
 const SYSTEM_CJK = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace';
 
 export function fontFamily(font) {
@@ -141,6 +144,10 @@ export default function Settings() {
           <dd>{t(caps.persistent ? 'settings.backend_persistent' : 'settings.backend_direct')}</dd>
           <dt>{t('settings.server')}</dt>
           <dd className="mono">{status.account.server}</dd>
+          <dt>{t('settings.source')}</dt>
+          <dd>
+            <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">github.com/imythu/looklook</a> · MIT
+          </dd>
         </dl>
         <UpdateCheck />
       </Card>

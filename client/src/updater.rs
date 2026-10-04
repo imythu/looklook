@@ -535,7 +535,24 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// 把解压出来的文件放进安装目录。每一项：旧的改名备份 → 新的先复制成临时名再改名到位；出错时撤销已做的替换。
+/// Windows 上改名偶尔会被别的程序挡住（拒绝访问 / 文件正被使用），例如杀毒软件正在扫描刚复制好的程序，
+/// 一般几秒内就放开了：重试一会儿。
+fn rename_retry(from: &Path, to: &Path) -> std::io::Result<()> {
+    let mut tries = 0;
+    loop {
+        match std::fs::rename(from, to) {
+            Err(e) if cfg!(windows) && tries < 20 && (e.kind() == std::io::ErrorKind::PermissionDenied || e.raw_os_error() == Some(32)) => {
+                tries += 1;
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            r => return r,
+        }
+    }
+}
+
+/// 把解压出来的文件放进安装目录。每一项：旧的改名备份 → 新的放到位；出错时撤销已做的替换。
+/// 文件先复制成临时名再改名到位。目录不这样做：Windows 上目录里只要有文件被打开（杀毒软件在扫描刚复制的程序），
+/// 整个目录就不能改名（拒绝访问），所以旧目录挪开后直接复制到原位置。
 fn apply(src: &Path, dir: &Path) -> Result<(), LocalError> {
     let res = resource_dir(dir);
     let bundled = res != dir;
@@ -552,23 +569,30 @@ fn apply(src: &Path, dir: &Path) -> Result<(), LocalError> {
     let result = (|| -> std::io::Result<()> {
         for item in &items {
             let Some(name) = item.file_name() else { continue };
+            // 出错时说明是哪个文件
+            let at = |e: std::io::Error| std::io::Error::new(e.kind(), format!("{}: {e}", name.to_string_lossy()));
             let to = if name == exe { dir } else { res.as_path() };
             let dest = to.join(name);
-            let tmp = to.join(format!(".{}.new", name.to_string_lossy()));
-            let _ = remove_any(&tmp);
-            copy_tree(item, &tmp)?;
+            let tmp = (!item.is_dir()).then(|| to.join(format!(".{}.new", name.to_string_lossy())));
+            if let Some(tmp) = &tmp {
+                let _ = remove_any(tmp);
+                copy_tree(item, tmp).map_err(at)?;
+            }
             let backup = if dest.exists() {
                 let b = backup_name(&dest);
                 if let Some(parent) = b.parent() {
-                    std::fs::create_dir_all(parent)?;
+                    std::fs::create_dir_all(parent).map_err(at)?;
                 }
-                std::fs::rename(&dest, &b)?;
+                rename_retry(&dest, &b).map_err(at)?;
                 Some(b)
             } else {
                 None
             };
             done.push((dest.clone(), backup));
-            std::fs::rename(&tmp, &dest)?;
+            match &tmp {
+                Some(tmp) => rename_retry(tmp, &dest).map_err(at)?,
+                None => copy_tree(item, &dest).map_err(at)?,
+            }
         }
         Ok(())
     })();
@@ -576,7 +600,7 @@ fn apply(src: &Path, dir: &Path) -> Result<(), LocalError> {
         for (dest, backup) in done.into_iter().rev() {
             let _ = remove_any(&dest);
             if let Some(b) = backup {
-                let _ = std::fs::rename(&b, &dest);
+                let _ = rename_retry(&b, &dest);
             }
         }
         return Err(fail(e));
@@ -594,12 +618,53 @@ fn apply(src: &Path, dir: &Path) -> Result<(), LocalError> {
     Ok(())
 }
 
+/// Windows 的压缩包把 trz.exe / tsz.exe 放在顶层（见 paths.rs 的 `TRZSZ_DIR`），启动时挪进 trzsz 目录。
+/// 要在找随包 trzsz（`paths::find_trzsz`）之前调用。
+pub fn settle_trzsz() {
+    let Ok(dir) = install_dir() else { return };
+    settle_trzsz_in(&resource_dir(&dir));
+}
+
+fn settle_trzsz_in(res: &Path) {
+    let sub = res.join(crate::paths::TRZSZ_DIR);
+    for name in crate::paths::TRZSZ_EXES {
+        let flat = res.join(name);
+        if !flat.is_file() {
+            continue;
+        }
+        let dest = sub.join(name);
+        let moved = std::fs::create_dir_all(&sub).and_then(|_| {
+            // 旧的可能正在终端里运行：改名挪开，下次启动时清理
+            let backup = if dest.exists() {
+                let b = backup_name(&dest);
+                rename_retry(&dest, &b)?;
+                Some(b)
+            } else {
+                None
+            };
+            rename_retry(&flat, &dest).inspect_err(|_| {
+                if let Some(b) = &backup {
+                    let _ = std::fs::rename(b, &dest);
+                }
+            })?;
+            if let Some(b) = backup {
+                let _ = remove_any(&b);
+            }
+            Ok(())
+        });
+        if let Err(e) = moved {
+            tracing::warn!(file = %flat.display(), error = %e, "无法把随包的 trzsz 放进 trzsz 目录");
+        }
+    }
+}
+
 /// 启动时清理上次更新留下的备份文件与下载目录。
 fn cleanup_leftovers(paths: &Paths) {
     let _ = std::fs::remove_dir_all(paths.home.join("updates"));
     let Ok(dir) = install_dir() else { return };
     let res = resource_dir(&dir);
-    let dirs = if res == dir { vec![dir] } else { vec![dir, res] };
+    let trzsz = res.join(crate::paths::TRZSZ_DIR);
+    let dirs = if res == dir { vec![dir, trzsz] } else { vec![dir, res, trzsz] };
     for e in dirs.iter().filter_map(|d| std::fs::read_dir(d).ok()).flatten().filter_map(|e| e.ok()) {
         let name = e.file_name().to_string_lossy().into_owned();
         let backup = name.contains(".old") && !name.starts_with('.');
@@ -730,6 +795,25 @@ mod tests {
         rescue_mux_backups_in(tmp.path());
         let names: Vec<String> = std::fs::read_dir(tmp.path()).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
         assert_eq!(names, vec![MUX_EXE.to_string()]);
+    }
+
+    #[test]
+    fn settle_moves_flat_trzsz_into_its_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let [trz, tsz] = crate::paths::TRZSZ_EXES;
+        let sub = tmp.path().join(crate::paths::TRZSZ_DIR);
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(sub.join(trz), "old").unwrap();
+        std::fs::write(tmp.path().join(trz), "new").unwrap();
+        std::fs::write(tmp.path().join(tsz), "new").unwrap();
+        settle_trzsz_in(tmp.path());
+        assert_eq!(std::fs::read_to_string(sub.join(trz)).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(sub.join(tsz)).unwrap(), "new");
+        assert!(!tmp.path().join(trz).exists() && !tmp.path().join(tsz).exists());
+        let names: Vec<String> = std::fs::read_dir(&sub).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        assert_eq!(names.len(), 2, "{names:?}");
+        settle_trzsz_in(tmp.path()); // 已经挪好时什么也不做
+        assert_eq!(std::fs::read_to_string(sub.join(trz)).unwrap(), "new");
     }
 
     #[cfg(unix)]
