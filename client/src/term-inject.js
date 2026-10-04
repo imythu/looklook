@@ -135,8 +135,10 @@
   }
   function stopEvent(e) { e.preventDefault(); e.stopImmediatePropagation(); e.stopPropagation(); }
   // 捕获阶段，在 xterm（粘贴）和 ttyd 的 trzsz 插件（拖放时自动输入 trz）之前处理。
+  // 粘贴文件只在 PC 上接管（手机上走面板里的“选择文件/照片”）。
+  function touchDevice() { return Boolean(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches); }
   window.addEventListener('paste', function (e) {
-    if (!filesWanted() || !e.clipboardData) return;
+    if (!filesWanted() || !e.clipboardData || touchDevice()) return;
     var files = fileList(e.clipboardData);
     if (!files.length) return; // 纯文本粘贴照常交给终端
     stopEvent(e);

@@ -672,8 +672,16 @@
     "limit_action": "Open \"My computers\""
   },
   "files": {
-    "button": "Files",
+    "button": "Upload",
+    "button_hint": "Upload files (or drag them onto the terminal, or paste)",
     "title": "Files",
+    "tip_title": "You can upload files to this computer",
+    "tip_pc": "Click here to choose files, drag files onto the terminal, or copy and paste them (Ctrl+V / ⌘V).",
+    "tip_pc_ai": "Paste a screenshot (Ctrl+V / ⌘V) to send it to the AI. You can also drag files onto the terminal or click here.",
+    "tip_touch": "Tap here to pick files or photos from your phone. They're saved to the terminal's current folder.",
+    "tip_touch_ai": "Tap here to pick photos or files and send them straight to the AI.",
+    "tip_ok": "Got it",
+    "tip_try": "Try it",
     "close": "Close",
     "where": "Where the files go",
     "to_ai": "Send to AI",

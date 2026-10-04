@@ -6,7 +6,7 @@ import vm from 'node:vm';
 
 import { ApiError } from './api.js';
 import { UploadStore, runUpload } from './uploader.js';
-import { formatBytes, isShellCommand, joinPaths, nextChunk, quotePath, routeFor, transferAction } from './xfer.js';
+import { agentPastes, formatBytes, isShellCommand, joinPaths, nextChunk, quotePath, routeFor, transferAction } from './xfer.js';
 
 test('quotePath: POSIX', () => {
   assert.equal(quotePath('/home/a/x.png', 'linux'), '/home/a/x.png');
@@ -25,6 +25,13 @@ test('quotePath: Windows', () => {
 
 test('joinPaths', () => {
   assert.equal(joinPaths(['/a/b.png', '/a/c d.png'], 'linux'), "/a/b.png '/a/c d.png'");
+});
+
+test('agentPastes: one paste per file, files before images', () => {
+  const paths = ['/u/shot.png', '/u/data.csv', '/u/my shot.JPG', '/u/my notes.md'];
+  assert.deepEqual(agentPastes(paths, 'claude', 'linux'), ['@/u/data.csv ', '@"/u/my notes.md" ', '/u/shot.png ', "'/u/my shot.JPG' "]);
+  assert.deepEqual(agentPastes(paths, 'codex', 'linux'), ['/u/data.csv ', '"/u/my notes.md" ', '/u/shot.png ', "'/u/my shot.JPG' "]);
+  assert.deepEqual(agentPastes(['C:\\u\\a b.png'], 'codex', 'windows'), ['"C:\\u\\a b.png" ']);
 });
 
 test('routeFor follows §3.3', () => {
@@ -141,7 +148,7 @@ test('UploadStore: batch callback and cancel', async () => {
 });
 
 // ---------- term-inject.js ----------
-function loadInject({ files = true } = {}) {
+function loadInject({ files = true, touch = false } = {}) {
   const posted = [];
   const listeners = {};
   class FakeWS {
@@ -166,6 +173,7 @@ function loadInject({ files = true } = {}) {
     parent: { postMessage: (m) => posted.push(m) },
     addEventListener: (t, f, capture) => (listeners[t] ||= []).push({ f, capture }),
     setTimeout: () => 0,
+    matchMedia: () => ({ matches: touch }),
   };
   const ctx = {
     window: win,
@@ -230,6 +238,15 @@ test('term-inject: paste with files is intercepted, text paste is not', () => {
   assert.equal(posted[0].type, 'looklook:files');
   assert.equal(posted[0].source, 'paste');
   assert.equal(posted[0].files[0], file);
+});
+
+test('term-inject: file paste is PC-only', () => {
+  const { posted, listeners } = loadInject({ touch: true });
+  const file = { name: 'a.png', size: 1 };
+  const e = fakeEvent({ types: ['Files'], items: [{ kind: 'file', getAsFile: () => file }], files: [file] });
+  fire(listeners, 'paste', e);
+  assert.ok(!e.prevented);
+  assert.equal(posted.length, 0);
 });
 
 test('term-inject: drop is intercepted only when the console asks for it', () => {

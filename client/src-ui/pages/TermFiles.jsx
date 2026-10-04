@@ -1,6 +1,6 @@
 // 终端的“文件”面板（docs/FILE_TRANSFER.md §3）：标题栏回形针按钮、PC 浮层 / 手机底部抽屉、拖放遮罩、rz/sz 模式。
 // iframe 里的 term-inject.js 负责粘贴、拖放、rz/sz 横幅检测，通过 postMessage 交给这里（§5）；上传见 shared/uploader.js。
-import { Download, Image as ImageIcon, Paperclip, RotateCw, Upload, X } from 'lucide-react';
+import { Download, Image as ImageIcon, RotateCw, Upload, X } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -9,7 +9,7 @@ import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { uploadStore } from '../shared/uploader.js';
 import { CopyButton, useToast } from '../shared/ui.jsx';
-import { formatBytes, isAiInstance, joinPaths, routeFor, transferAction } from '../shared/xfer.js';
+import { agentPastes, formatBytes, isAiInstance, joinPaths, routeFor, transferAction } from '../shared/xfer.js';
 
 const REMOTE_QUIET_MS = 120000; // 关掉“rz 在另一台电脑上”的说明后，这段时间内同类横幅不再弹出
 const POLL_MS = 3000;
@@ -70,6 +70,56 @@ function ProgressRing({ ratio }) {
       <circle cx="18" cy="18" r={r} className="files-ring-fg" strokeDasharray={c} strokeDashoffset={c * (1 - Math.min(1, ratio))} />
     </svg>
   );
+}
+
+// 第一次用终端时，在“上传”按钮下方提示一次上传/拖放/粘贴（只存在本浏览器里，存不了也只是多提示几次）。
+const TIP_KEY = 'll-files-tip';
+const TIP_MAX_SHOWS = 3; // 没点“知道了”时最多自动出现几次
+const TIP_DELAY_MS = 1200;
+const TIP_AUTOHIDE_MS = 20000;
+let tipShowing = false; // 同一页有多个终端时只提示一个
+
+function tipState() {
+  try {
+    return JSON.parse(localStorage.getItem(TIP_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+function saveTip(p) {
+  try {
+    localStorage.setItem(TIP_KEY, JSON.stringify({ ...tipState(), ...p }));
+  } catch {
+    // 隐私模式等
+  }
+}
+const tipWanted = () => {
+  const s = tipState();
+  return !s.done && (s.n ?? 0) < TIP_MAX_SHOWS;
+};
+
+/** 提示气泡的位置：按钮下方，箭头对准按钮。悬浮小窗可以被拖动，所以显示期间定时重新计算。 */
+function useTipPos(anchor, shown) {
+  const [pos, setPos] = useState(null);
+  useLayoutEffect(() => {
+    if (!shown) return undefined;
+    const on = () => {
+      const r = anchor.current?.getBoundingClientRect();
+      if (!r || !r.width) return setPos(null);
+      const width = Math.min(300, window.innerWidth - 16);
+      const center = r.left + r.width / 2;
+      const left = Math.max(8, Math.min(center - width + 36, window.innerWidth - width - 8));
+      setPos({ top: r.bottom + 10, left, width, arrow: Math.max(14, Math.min(width - 14, center - left)) });
+    };
+    on();
+    const iv = setInterval(on, 400);
+    window.addEventListener('resize', on);
+    return () => {
+      clearInterval(iv);
+      window.removeEventListener('resize', on);
+    };
+  }, [shown]);
+  return pos;
 }
 
 function TaskRow({ task, store, touch }) {
@@ -148,6 +198,35 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   const ai = isAiInstance(inst);
   const visibleH = useVisibleHeight(touch && open);
   const pos = usePopoverPos(btn, open && !touch);
+  const [tip, setTip] = useState(false);
+  const tipPos = useTipPos(btn, tip);
+
+  // 第一次提示：终端可用后稍等再出现，到时自动收起（不算“知道了”，下次还会再提示，最多 TIP_MAX_SHOWS 次）。
+  useEffect(() => {
+    if (!enabled || !tipWanted()) return undefined;
+    let hide;
+    const show = setTimeout(() => {
+      if (tipShowing || !tipWanted()) return;
+      tipShowing = true;
+      saveTip({ n: (tipState().n ?? 0) + 1 });
+      setTip(true);
+      hide = setTimeout(() => setTip(false), TIP_AUTOHIDE_MS);
+    }, TIP_DELAY_MS);
+    return () => {
+      clearTimeout(show);
+      clearTimeout(hide);
+    };
+  }, [enabled]);
+  useEffect(() => {
+    if (!tip) return undefined;
+    return () => {
+      tipShowing = false;
+    };
+  }, [tip]);
+  const tipDone = () => {
+    saveTip({ done: true });
+    setTip(false);
+  };
 
   // 告诉 term-inject.js：由管理台接管粘贴/拖放的文件。iframe 重新加载后元素会换，所以每次渲染都设置。
   useEffect(() => {
@@ -178,6 +257,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
 
   const upload = (files, { dest, insert: fill }, after) => {
     if (!files.length) return;
+    tipDone(); // 已经会用了，不用再提示
     store.add(files, {
       dest,
       onDone: async (fresh, all) => {
@@ -185,7 +265,9 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
         if (failed.length) toast(t('files.failed', { name: failed[0].name, reason: err(failed[0].error) }), 'error');
         if (fresh.length && fill) {
           const d = await loadInfo().catch(() => null);
-          paste(joinPaths(fresh.map((x) => x.path), quoteOs(d)));
+          const paths = fresh.map((x) => x.path);
+          if (dest === 'attach' && ai) for (const text of agentPastes(paths, inst.launch, quoteOs(d))) paste(text);
+          else paste(joinPaths(paths, quoteOs(d)));
         }
         after?.(fresh, all);
       },
@@ -219,6 +301,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   };
 
   const openPanel = () => {
+    tipDone();
     setOpen(true);
     loadInfo(true).catch(() => {});
   };
@@ -370,16 +453,19 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
     <button
       ref={btn}
       type="button"
-      className="btn btn-plain btn-icon files-btn"
+      className="btn btn-plain files-btn"
       onPointerDown={tap}
       onClick={() => (open ? close() : openPanel())}
       aria-expanded={open}
       aria-haspopup="dialog"
-      aria-label={active ? t('files.uploading_n', { n: active }) : t('files.button')}
-      title={active ? t('files.uploading_n', { n: active }) : t('files.button')}
+      aria-label={active ? t('files.uploading_n', { n: active }) : t('files.button_hint')}
+      title={active ? t('files.uploading_n', { n: active }) : t('files.button_hint')}
     >
-      <Paperclip size={18} />
-      {active > 0 && <ProgressRing ratio={ratio} />}
+      <span className="files-ico">
+        <Upload size={17} />
+        {active > 0 && <ProgressRing ratio={ratio} />}
+      </span>
+      <span className="files-btn-label">{t('files.button')}</span>
       {active > 1 && <span className="files-count">{active}</span>}
     </button>
   ) : null;
@@ -543,6 +629,23 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
           <section ref={panel} className="files-panel files-pop" style={pos} role="dialog" aria-label={title}>
             {content}
           </section>,
+          portalTarget,
+        )}
+      {tip && enabled && !open && tipPos && portalTarget &&
+        createPortal(
+          <div className="files-tip" style={{ top: tipPos.top, left: tipPos.left, width: tipPos.width, '--arrow': `${tipPos.arrow}px` }} role="status">
+            <p className="files-tip-title">{t('files.tip_title')}</p>
+            <p>{t(`files.tip_${touch ? 'touch' : 'pc'}${ai ? '_ai' : ''}`)}</p>
+            <div className="files-tip-actions">
+              <button type="button" className="btn btn-plain" onPointerDown={tap} onClick={tipDone}>
+                {t('files.tip_ok')}
+              </button>
+              <button type="button" className="btn btn-primary" onPointerDown={tap} onClick={openPanel}>
+                <Upload size={15} />
+                {t('files.tip_try')}
+              </button>
+            </div>
+          </div>,
           portalTarget,
         )}
     </>

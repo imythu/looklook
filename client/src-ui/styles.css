@@ -472,8 +472,30 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 }
 
 /* ---------- 终端文件面板（TermFiles.jsx） ---------- */
-.files-btn { position: relative; }
-.files-ring { position: absolute; inset: 5px; width: calc(100% - 10px); height: calc(100% - 10px); transform: rotate(-90deg); pointer-events: none; }
+.term-bar { container-type: inline-size; }
+.files-btn { position: relative; gap: 4px; min-width: 44px; padding: 0 10px 0 6px; font-size: 14px; font-weight: 600; }
+.files-ico { position: relative; display: grid; place-items: center; width: 30px; height: 30px; flex: none; }
+.files-ring { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); pointer-events: none; }
+/* 标题栏太窄（小屏、缩小的悬浮窗）时只留图标 */
+@container (max-width: 440px) {
+  .files-btn { padding: 0; width: 44px; justify-content: center; }
+  .files-btn-label { display: none; }
+}
+.files-tip {
+  position: fixed; z-index: 70; padding: 12px 14px 8px; border-radius: 12px; background: #8b93ff; color: #11131a;
+  font-size: 14px; line-height: 1.5; box-shadow: 0 10px 30px rgba(0, 0, 0, .35); animation: fade .2s;
+}
+.files-tip::before {
+  content: ''; position: absolute; top: -6px; left: calc(var(--arrow, 50%) - 6px); width: 12px; height: 12px;
+  background: inherit; transform: rotate(45deg); border-radius: 2px;
+}
+.files-tip p { margin: 0; }
+.files-tip-title { font-weight: 700; margin-bottom: 2px !important; }
+.files-tip-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.files-tip-actions .btn { min-height: 36px; padding: 0 12px; font-size: 14px; }
+.files-tip-actions .btn-plain, .files-tip-actions .btn-plain:hover { color: #11131a; }
+.files-tip-actions .btn-primary { background: #11131a; color: #e3e6ee; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { .files-tip { animation: none; } }
 .files-ring circle { fill: none; stroke-width: 2.5; }
 .files-ring-bg { stroke: rgba(139, 147, 255, .22); }
 .files-ring-fg { stroke: #8b93ff; stroke-linecap: round; transition: stroke-dashoffset .3s; }

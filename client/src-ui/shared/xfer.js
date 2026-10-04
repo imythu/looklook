@@ -31,6 +31,25 @@ export function quotePath(path, os) {
 /** 多个路径用空格分隔，各自加引号。 */
 export const joinPaths = (paths, os) => paths.map((p) => quotePath(p, os)).join(' ');
 
+// Claude Code / Codex 把“单独一次粘贴的图片路径”变成图片附件 [Image #N]（实测 Claude Code 2.1、Codex 0.157）。
+const IMAGE_EXT = /\.(png|jpe?g|gif|webp)$/i;
+const hasSpace = (p) => /\s/.test(p);
+
+/**
+ * 把上传好的文件按 AI 的习惯填进输入框（§3.3），返回要逐次粘贴的文本：
+ * - 图片：路径单独粘贴一次，两边都会显示成 [Image #N]（Codex 一次粘贴里有多个路径就只当普通文字）；
+ * - 其他文件：Claude Code 用 @路径（含空格时 @"路径"），Codex 用路径本身（含空格时 "路径"），与它们的 @ 文件补全插入的一致。
+ * 先文件后图片：Claude Code 异步读取图片，图片总会落在同一批文字之后，这样顺序不会乱。每段末尾带一个空格分隔。
+ */
+export function agentPastes(paths, agent, os) {
+  const files = paths.filter((p) => !IMAGE_EXT.test(p)).map((p) => {
+    const q = hasSpace(p) ? `"${p}"` : p;
+    return `${agent === 'claude' ? '@' : ''}${q} `;
+  });
+  const images = paths.filter((p) => IMAGE_EXT.test(p)).map((p) => `${quotePath(p, os)} `);
+  return [...files, ...images];
+}
+
 /** 1.2 MB 这样的大小。 */
 export function formatBytes(n) {
   if (!Number.isFinite(n) || n < 0) return '';
