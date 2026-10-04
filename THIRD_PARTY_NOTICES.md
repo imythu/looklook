@@ -8,6 +8,7 @@ Release packages bundle these programs and fonts. They are downloaded or built b
 | tmux (shipped as `looklook-mux`) | 3.7c | ISC | https://github.com/tmux/tmux |
 | libevent (linked into tmux) | see `build-mux.sh` | BSD-3-Clause | https://github.com/libevent/libevent |
 | utf8proc (linked into tmux) | see `build-mux.sh` | MIT | https://github.com/JuliaStrings/utf8proc |
+| trzsz (file transfer helper) | 1.2.0 | MIT | https://github.com/trzsz/trzsz-go |
 | psmux (Windows) | 3.3.8 | MIT | https://github.com/psmux/psmux |
 | JetBrains Mono | 2.304 | SIL OFL 1.1 | https://github.com/JetBrains/JetBrainsMono |
 | LXGW WenKai Mono (subset) | 1.522 | SIL OFL 1.1 | https://github.com/lxgw/LxgwWenKai |
