@@ -1,0 +1,19 @@
+[package]
+name = "looklook-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+description = "Looklook client <-> server shared protocol: signing, DTOs, error codes, gateway token, session capability, username rules"
+
+[lib]
+name = "looklook_protocol"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+hex = "0.4"
+thiserror = "2"

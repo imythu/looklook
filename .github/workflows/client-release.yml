@@ -1,0 +1,298 @@
+# 看看客户端发布（手动触发；维护者在私有仓库里用 scripts/release.sh publish 导出代码、推送并触发）：
+# 检查版本与更新说明 → 三个平台并行构建安装包（Linux、Windows、macOS 各用一台 runner）
+# → 汇总生成 release.json 与 SHA256SUMS → 打标签 client-v{版本} 并创建 GitHub Release（附全部安装包）。
+# 看看服务端定期同步这里最新的 10 个 Release 到自己的下载目录（官网下载用这些文件），也可以直接从 Release 下载。
+# macOS 必须在 macOS runner 上原生编译：托盘等依赖要链接 Apple 系统框架，Linux 上用 zig 交叉编译没有 macOS SDK。
+# Windows 与 Linux 包在 Linux runner 上用 zig 交叉编译（各自独立的 job，并行）。任何一个平台失败都不会发布。
+# Windows / macOS 另外产出桌面应用安装程序（Tauri：NSIS setup.exe、.dmg），随版本一起发布。
+#
+# 版本号取 client/Cargo.toml；已发布的版本不可覆盖（发布前先提高版本号）。
+# 更新说明必须中英文都有：client/release-notes/{版本}.zh-CN.md 与 .en-US.md，缺任何一份时在构建前失败。
+#
+# 需要的仓库 secrets：
+#   LOOKLOOK_SERVER_URL     客户端默认服务端地址，编译时写入（https://…）
+#   LOOKLOOK_PLATFORM_KEYS  可选：内置平台公钥 p1=<base64url>（见服务端 /.well-known/looklook.json）
+name: client-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 发布通道
+        type: choice
+        options: [stable, beta]
+        default: stable
+      min_supported_version:
+        description: 最低支持版本（可选；低于它的客户端被要求更新，且不能登录）
+        type: string
+        required: false
+
+concurrency:
+  group: client-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # 推送 client-v* 标签；暂存安装包的草稿 Release
+
+# 各平台安装包先挂到一个草稿 Release 上，发布任务再取回：Release 附件不占 Actions 构件存储配额
+# （构件配额满了以后整个发布会失败，用量要 6–12 小时才重新计算）。发布结束后删除这个草稿。
+
+env:
+  ZIG_VERSION: 0.15.2
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - name: 版本
+        id: v
+        run: |
+          set -euo pipefail
+          v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/client-v$v" >/dev/null; then
+            echo "::error::client-v$v 已发布：先提高 client/Cargo.toml 的版本号"
+            exit 1
+          fi
+          for lang in zh-CN en-US; do
+            f="release-notes/$v.$lang.md"
+            if ! grep -qs '[^[:space:]]' "$f"; then
+              echo "::error::缺少或为空：client/${f}（更新说明必须中英文都有）"
+              exit 1
+            fi
+            if grep -qF '<!-- draft' "$f"; then
+              echo "::error::client/${f} 还是草稿：改好后删掉 <!-- draft … --> 注释"
+              exit 1
+            fi
+          done
+          echo "发布 ${v}（${{ inputs.channel }}）" >> "$GITHUB_STEP_SUMMARY"
+      - name: 暂存安装包的草稿 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING: client-staging-${{ github.run_id }}
+        run: gh release create "$STAGING" --draft --title "$STAGING（发布中转，自动删除）" --notes "client-release 运行 ${{ github.run_id }} 的暂存安装包"
+
+  # Linux（x86_64 + ARM64）与 Windows 各占一台 runner，并行；都用 zig 交叉编译。
+  build:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            platforms: linux-x86_64 linux-aarch64
+            rust_targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+          - name: windows
+            platforms: windows-x86_64
+            rust_targets: x86_64-pc-windows-gnu
+    defaults:
+      run:
+        working-directory: client
+    env:
+      ZIG_SHA256: 02aa270f183da276e5b5920b1dac44a63f1a49e55050ebde3aecc9eb82f93239
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+          key: ${{ matrix.name }}
+          cache-bin: true
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: |
+            client/.cache
+            client/vendor
+          key: client-vendor-${{ matrix.name }}-${{ hashFiles('client/scripts/fetch-vendor.sh', 'client/scripts/build-mux.sh', 'client/scripts/build-fonts.py', 'client/scripts/data/**') }}
+
+      - name: 构建工具
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y -q python3-fonttools python3-brotli
+          # Windows 桌面应用：嵌入图标与清单（windres）、生成 NSIS 安装程序（makensis）。
+          # Tauri CLI 在 Linux 宿主上只要开了 tray-icon 就用 pkg-config 查 appindicator（目标是 Windows 也查），
+          # 查不到会直接崩溃，所以还要装 libayatana-appindicator3-dev。
+          if [[ "${{ matrix.name }}" == windows ]]; then
+            sudo apt-get install -y -q binutils-mingw-w64-x86-64 nsis pkg-config libayatana-appindicator3-dev
+          fi
+          curl -fsSL --retry 3 -o /tmp/zig.tar.xz "https://ziglang.org/download/$ZIG_VERSION/zig-x86_64-linux-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256  /tmp/zig.tar.xz" | sha256sum -c -
+          sudo mkdir -p /opt/zig && sudo tar -C /opt/zig -xJf /tmp/zig.tar.xz
+          command -v cargo-zigbuild >/dev/null || cargo install cargo-zigbuild --locked
+
+      - name: 打包
+        env:
+          LOOKLOOK_SERVER_URL: ${{ secrets.LOOKLOOK_SERVER_URL }}
+          LOOKLOOK_PLATFORM_KEYS: ${{ secrets.LOOKLOOK_PLATFORM_KEYS }}
+        run: |
+          set -euo pipefail
+          [[ $LOOKLOOK_SERVER_URL == https://* ]] || { echo "::error::secret LOOKLOOK_SERVER_URL 未设置或不是 https 地址"; exit 1; }
+          [[ -n $LOOKLOOK_PLATFORM_KEYS ]] || unset LOOKLOOK_PLATFORM_KEYS
+          npm ci --no-audit --no-fund
+          scripts/package.sh ${{ matrix.platforms }}
+
+      - name: 暂存安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING: client-staging-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/looklook-*.tar.gz dist/looklook-*.zip dist/looklook-*-setup.exe)
+          (( ${#files[@]} )) || { echo "::error::没有安装包"; exit 1; }
+          gh release upload "$STAGING" "${files[@]}" --clobber
+
+  # macOS（Apple 芯片）：在 macOS runner 上原生编译客户端；随包的 ttyd 用 zig 编译（脚本只依赖系统自带的 libSystem）。
+  macos:
+    needs: prepare
+    runs-on: macos-14
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: client
+    env:
+      ZIG_SHA256_MACOS: 3cc2bab367e185cdfb27501c4b30b1b0653c28d9f73df8dc91488e66ece5fa6b
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: client
+          key: macos
+          cache-on-failure: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: actions/cache@v4
+        with:
+          path: |
+            client/.cache
+            client/vendor
+          key: client-vendor-macos-${{ hashFiles('client/scripts/fetch-vendor.sh', 'client/scripts/build-mux.sh', 'client/scripts/build-ttyd-macos.sh', 'client/scripts/build-fonts.py', 'client/scripts/data/**') }}
+
+      # 打包脚本用 bash 4（关联数组）、GNU tar（--owner）与 sha256sum：macOS 自带的是 bash 3.2 / bsdtar。
+      - name: 构建工具
+        run: |
+          set -euo pipefail
+          brew install bash coreutils gnu-tar
+          prefix=$(brew --prefix)
+          {
+            echo "$prefix/opt/coreutils/libexec/gnubin"
+            echo "$prefix/opt/gnu-tar/libexec/gnubin"
+            echo "$prefix/bin"
+          } >> "$GITHUB_PATH"
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install --quiet fonttools brotli
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+          curl -fsSL --retry 3 -o /tmp/zig.tar.xz "https://ziglang.org/download/$ZIG_VERSION/zig-aarch64-macos-$ZIG_VERSION.tar.xz"
+          echo "$ZIG_SHA256_MACOS  /tmp/zig.tar.xz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/zig" && tar -C "$RUNNER_TEMP/zig" -xJf /tmp/zig.tar.xz
+          echo "$RUNNER_TEMP/zig/zig-aarch64-macos-$ZIG_VERSION" >> "$GITHUB_PATH"
+
+      - name: 打包
+        env:
+          LOOKLOOK_SERVER_URL: ${{ secrets.LOOKLOOK_SERVER_URL }}
+          LOOKLOOK_PLATFORM_KEYS: ${{ secrets.LOOKLOOK_PLATFORM_KEYS }}
+        run: |
+          set -euo pipefail
+          bash --version | head -1
+          [[ $LOOKLOOK_SERVER_URL == https://* ]] || { echo "::error::secret LOOKLOOK_SERVER_URL 未设置或不是 https 地址"; exit 1; }
+          [[ -n $LOOKLOOK_PLATFORM_KEYS ]] || unset LOOKLOOK_PLATFORM_KEYS
+          npm ci --no-audit --no-fund
+          scripts/package.sh darwin-aarch64
+
+      - name: 暂存安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING: client-staging-${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/looklook-*.tar.gz dist/looklook-*.dmg)
+          (( ${#files[@]} )) || { echo "::error::没有安装包"; exit 1; }
+          gh release upload "$STAGING" "${files[@]}" --clobber
+
+  # 三个平台都成功后才发布：汇总安装包 → release.json → 标签与 GitHub Release。
+  publish:
+    needs: [prepare, build, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: client
+    steps:
+      - uses: actions/checkout@v4
+      - name: 取回安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STAGING: client-staging-${{ github.run_id }}
+        run: gh release download "$STAGING" --dir dist --pattern 'looklook-*'
+
+      - name: 版本目录
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          MIN_SUPPORTED: ${{ inputs.min_supported_version }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+          python3 scripts/release-info.py --channel "$CHANNEL" --min-supported "$MIN_SUPPORTED"
+          # 四个平台缺一不可
+          for t in linux-x86_64 linux-aarch64 darwin-aarch64 windows-x86_64; do
+            ls dist/release/"$VERSION"/looklook-"$VERSION"-"$t".* >/dev/null || { echo "::error::缺少 $t 的安装包"; exit 1; }
+          done
+          for f in windows-x86_64-setup.exe darwin-aarch64.dmg; do
+            [[ -f dist/release/$VERSION/looklook-$VERSION-$f ]] || { echo "::error::缺少桌面安装程序 looklook-$VERSION-$f"; exit 1; }
+          done
+          { echo '```json'; cat "dist/release/$VERSION/release.json"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+
+      - name: 标签与 GitHub Release
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+          CHANNEL: ${{ inputs.channel }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git tag "client-v$VERSION" "$GITHUB_SHA"
+          git push origin "client-v$VERSION"
+          dir="dist/release/$VERSION"
+          python3 -c 'import json,sys; i=json.load(open(sys.argv[1])); print("### 中文\n\n" + i["notes_zh"] + "\n\n### English\n\n" + i["notes_en"])' "$dir/release.json" > /tmp/notes.md
+          flags=(--title "Looklook client $VERSION" --notes-file /tmp/notes.md --verify-tag)
+          # beta 通道或带预发布后缀的版本号（如 1.0.1-beta）标为 Pre-release
+          [[ $CHANNEL == stable && $VERSION != *-* ]] || flags+=(--prerelease)
+          gh release create "client-v$VERSION" "$dir"/* "${flags[@]}"
+
+  # 无论成败都删掉暂存安装包的草稿 Release（只留正式的 client-v* Release）。
+  cleanup:
+    needs: [prepare, build, macos, publish]
+    if: always() && needs.prepare.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: 删除草稿 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          STAGING: client-staging-${{ github.run_id }}
+        run: gh release delete "$STAGING" --yes || true

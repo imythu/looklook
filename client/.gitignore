@@ -1,0 +1,12 @@
+/target/
+/node_modules/
+/ttyd-manager.db
+*.log
+.DS_Store
+# 下载缓存与随包资源（scripts/fetch-vendor.sh 生成）、发布包（scripts/package.sh 生成）
+/.cache/
+/vendor/
+/dist/
+# Tauri 构建时生成（tauri-build）
+/gen/
+__pycache__/

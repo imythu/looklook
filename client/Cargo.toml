@@ -1,0 +1,89 @@
+[package]
+name = "looklook-client"
+version = "1.5.0"
+edition = "2021"
+license = "MIT"
+description = "看看客户端：在自己的电脑上运行终端与 AI 助手，并通过看看服务端随时随地访问"
+
+[[bin]]
+name = "looklook"
+path = "src/main.rs"
+
+[dependencies]
+# 客户端与服务端共用的协议（签名规范串、DTO、错误码、网关令牌）
+looklook-protocol = { path = "../protocol" }
+# 内置 rathole 客户端（远程访问通道），不再单独分发 rathole 可执行文件
+rathole = { version = "0.5", default-features = false, features = ["client", "noise"] }
+
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive", "env"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+time = { version = "0.3", features = ["serde", "formatting", "parsing", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+futures-util = "0.3"
+axum = "0.8"
+tower = { version = "0.5", features = ["util"] }
+hyper = { version = "1", features = ["full"] }
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+bytes = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+rusqlite = { version = "0.32", features = ["bundled"] }
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+rand = "0.8"
+base64 = "0.22"
+data-encoding = "2"
+rust-embed = "8"
+mime_guess = "2"
+dirs = "6"
+hostname = "0.4"
+# 列出本机网卡地址：设置页显示“局域网里用这个地址打开”
+local-ip-address = "0.6"
+rpassword = "7"
+
+# 加固（详细设计任务 3）：运行文件自校验（sha2）、主进程日志文件（没有控制台时也留痕，任务 7a）。
+sha2 = "0.10"
+# 一键安装 MCP：改 Codex 的 config.toml，保留用户原来的格式与注释
+toml_edit = "0.25"
+tracing-appender = "0.2"
+# 本机 CPU、内存、磁盘、网络与进程数据（管理台“系统”页，src/metrics.rs）
+sysinfo = { version = "0.39", default-features = false, features = ["system", "disk", "network"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# 桌面应用（Windows / macOS）：Tauri 窗口直接显示管理台，关闭窗口后留在系统托盘（src/desktop.rs）。
+# 放在按平台生效的 [target] 依赖里，原生 Linux 构建不会编译它们，也不需要 GTK / WebKitGTK。
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-single-instance = "2"
+
+[dev-dependencies]
+tempfile = "3"
+# 测试里用暂停的时钟验证去抖（tokio::time::pause）
+tokio = { version = "1", features = ["test-util"] }
+
+# build.rs：异或混淆编译期密钥；目标是 Windows / macOS 时再生成 Tauri 的应用上下文（tauri.conf.json）。
+# 构建依赖按宿主平台筛选（不是目标平台），在 Linux 上交叉编译 Windows 也要用到，所以不能放进 [target] 表；
+# build.rs 只在目标是 Windows / macOS 时调用它。
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[profile.release]
+# 加固/打包（任务 3）：牺牲一些编译时间换更小的体积和更难看懂的反汇编，只是提高成本，
+# 不是不可破解——真正想拆的人照样能拆，见 docs/FAQ.md。
+opt-level = 3
+strip = true
+lto = true
+codegen-units = 1
+panic = "abort"
+
+# This client is independent from the server workspace.
+[workspace]
