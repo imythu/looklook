@@ -81,6 +81,9 @@ pub struct RelayChoices {
     pub preferred: Option<String>,
     /// 当前所在的中转名（自选的中转不可用时与 `preferred` 不同）。
     pub current: Option<String>,
+    /// `preferred` 是客户端按延迟自动选的（不是用户手动选的）。`preferred` 为 None 时也算自动。
+    #[serde(default)]
+    pub auto_picked: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -97,6 +100,15 @@ pub struct RelayChoice {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetRelayPreference {
     pub relay: Option<String>,
+    /// 客户端按延迟自动选的：只在用户没有手动选线路时生效，不覆盖手动选择。
+    #[serde(default)]
+    pub auto: bool,
+}
+
+/// 给设备改名：`PUT /api/client/v1/device/name`（签名）与网页 `PATCH /api/web/v1/devices/{id}`。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RenameDevice {
+    pub name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,6 +188,9 @@ pub struct HeartbeatResponse {
     /// 近 1 天内被吊销的子站会话短 id（会话凭证的 `sid`），客户端拒绝带这些凭证的请求。
     #[serde(default)]
     pub revoked_sids: Vec<String>,
+    /// 平台上这台设备的名称：在网页上改过名时与客户端上报的不同，客户端据此同步本机设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub device_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

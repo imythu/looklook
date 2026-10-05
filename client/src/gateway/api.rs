@@ -53,6 +53,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
         .route("/settings", get(get_settings).put(put_settings))
+        .route("/device/name", put(put_device_name))
         .route("/access", get(get_access).put(put_access))
         .route("/mcp", get(get_mcp).put(put_mcp))
         .route("/mcp/install", post(mcp_install))
@@ -129,6 +130,7 @@ async fn status(State(app): State<App>, Extension(access): Extension<Access>) ->
         "console": app.console_info(),
         "update": app.updater.view(),
         "metrics": app.metrics.brief(),
+        "relay_check": app.relay_watch.view(),
     }))
 }
 
@@ -600,29 +602,11 @@ fn is_hidden(e: &std::fs::DirEntry, name: &str) -> bool {
 
 // ---------------- 线路（中转） ----------------
 
-/// 可选的线路，以及从这台电脑到每条线路的延迟（并发测，最多几秒）。
+/// 可选的线路，以及从这台电脑到每条线路的延迟（并发测，最多几秒）。结果也交给后台测速，更新提示。
 async fn list_relays(State(app): State<App>) -> R<Json<Value>> {
-    let list = app.account.relays().await?;
-    let pings = futures_util::future::join_all(list.items.iter().map(|i| async {
-        match &i.ping_url {
-            Some(u) => crate::relay::ping(u).await,
-            None => Err("unsupported".to_string()),
-        }
-    }))
-    .await;
-    let items: Vec<Value> = list
-        .items
-        .iter()
-        .zip(pings)
-        .map(|(i, p)| {
-            let (latency_ms, error) = match p {
-                Ok(ms) => (Some(ms), None),
-                Err(e) => (None, Some(e)),
-            };
-            json!({ "name": i.name, "address": i.address, "latency_ms": latency_ms, "error": error })
-        })
-        .collect();
-    Ok(Json(json!({ "items": items, "preferred": list.preferred, "current": list.current })))
+    let c = crate::relay_watch::measure(&app.account).await?;
+    app.relay_watch.record(c.clone());
+    Ok(Json(json!({ "items": c.items, "preferred": c.preferred, "current": c.current, "auto": c.auto, "best": c.best })))
 }
 
 #[derive(Deserialize)]
@@ -631,7 +615,8 @@ struct RelayPreference {
 }
 
 async fn set_relay(State(app): State<App>, Json(req): Json<RelayPreference>) -> R<Json<Value>> {
-    let r = app.account.set_relay(req.relay).await?;
+    let r = app.account.set_relay(req.relay, false).await?;
+    app.relay_watch.changed();
     Ok(Json(json!({ "preferred": r.preferred, "current": r.current })))
 }
 
@@ -684,8 +669,20 @@ async fn put_settings(State(app): State<App>, Json(s): Json<Settings>) -> R<Json
         }
         _ => return Err(LocalError::new("WORKDIR_NOT_FOUND").with("path", s.default_workdir)),
     }
-    s.save(&app.store)?;
+    app.account.save_settings(&s).await?;
     Ok(Json(s))
+}
+
+#[derive(Deserialize)]
+struct DeviceName {
+    name: String,
+}
+
+/// 只改电脑名称（远程打开时在电脑列表里改名用；为空 = 用主机名）。
+async fn put_device_name(State(app): State<App>, Json(req): Json<DeviceName>) -> R<Json<Value>> {
+    let s = Settings { device_name: req.name, ..Settings::load(&app.store) }.normalized();
+    app.account.save_settings(&s).await?;
+    Ok(Json(json!({ "name": s.device_name(), "custom": !s.device_name.is_empty() })))
 }
 
 // ---------------- 访问控制 ----------------

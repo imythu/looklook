@@ -763,6 +763,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .device-head { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 15px; margin: 4px 0 10px; min-width: 0; }
 .device-head > .ellipsis { max-width: 60%; }
 .device-offline .device-head { color: var(--muted); margin-bottom: 14px; }
+.device-head .device-rename { width: 36px; min-height: 36px; margin: -6px 0 -6px -6px; color: var(--muted); }
+.device-head .device-rename:hover { color: var(--text); }
 .device-empty { margin: 0 0 16px; }
 .device-limit-list { list-style: none; padding: 0; margin: 0 0 10px; display: grid; gap: 6px; }
 .device-limit-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 6px 10px; border-radius: 10px; background: var(--panel); }
@@ -780,6 +782,10 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .relay-option .tag { margin-left: 8px; }
 .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: 1px; }
 .tag-ok { background: var(--ok-soft); color: var(--ok); }
+.tag:not(.tag-ok) { background: var(--brand-soft); color: var(--brand); }
+/* 跳到页面里的卡片（#relays）时不被吸顶的顶栏挡住 */
+.anchor { scroll-margin-top: 76px; }
+.relay-hint .btn-ghost { white-space: nowrap; }
 .latency { font-size: 13px; font-weight: 600; white-space: nowrap; }
 .latency-fast { color: var(--ok); }
 .latency-ok { color: var(--warn); }

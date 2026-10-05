@@ -36,7 +36,7 @@ import { useTranslation } from "react-i18next";
 
 import { SafetyNote, useStatus } from "../App.jsx";
 import { api, deviceApi, rememberTerminals, terminalDevice } from "../shared/api.js";
-import { deviceName, osLabel, useDevices } from "../shared/devices.jsx";
+import { deviceName, osLabel, RenameDeviceDialog, useDevices } from "../shared/devices.jsx";
 import { urlHost } from "../shared/host.js";
 import { errorText } from "../shared/i18n.js";
 import { Link, useRouter } from "../shared/router.jsx";
@@ -1392,12 +1392,21 @@ async function loadGroups(online) {
 /** 一台电脑的终端：标题（名称、系统、在线状态）+ 卡片；离线的电脑只显示一行“离线”。 */
 function DeviceGroup({ device, group, renderCard }) {
   const { t } = useTranslation();
+  const devices = useDevices();
+  const [renaming, setRenaming] = useState(false);
+  const [renamed, setRenamed] = useState(null); // 平台下发新名称前先显示刚改的
   const items = group?.items ?? [];
+  const name = renamed && renamed.from === device.name ? renamed.name : deviceName(t, device);
   return (
-    <section className={`device-group ${device.online ? "" : "device-offline"}`} aria-label={deviceName(t, device)}>
+    <section className={`device-group ${device.online ? "" : "device-offline"}`} aria-label={name}>
       <h2 className="device-head">
         <Monitor size={17} aria-hidden="true" />
-        <span className="ellipsis">{deviceName(t, device)}</span>
+        <span className="ellipsis">{name}</span>
+        {device.online && (
+          <button type="button" className="btn btn-plain btn-icon device-rename" onClick={() => setRenaming(true)} aria-label={t("devices.rename")} title={t("devices.rename")}>
+            <Pencil size={15} />
+          </button>
+        )}
         {device.os && <span className="muted small">{osLabel(device.os)}</span>}
         <span className={`badge ${device.online ? "badge-ok" : ""}`}>{t(device.online ? "devices.online" : "devices.offline")}</span>
         {device.online && group && !group.error && <span className="muted small">{t("devices.count", { count: items.length })}</span>}
@@ -1412,6 +1421,17 @@ function DeviceGroup({ device, group, renderCard }) {
         ) : (
           <div className="instances">{items.map(renderCard)}</div>
         ))}
+      {renaming && (
+        <RenameDeviceDialog
+          device={{ ...device, name }}
+          onClose={() => setRenaming(false)}
+          onDone={(n) => {
+            setRenaming(false);
+            setRenamed({ from: device.name, name: n });
+            setTimeout(() => devices.reload?.(), 1500);
+          }}
+        />
+      )}
     </section>
   );
 }

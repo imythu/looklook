@@ -53,6 +53,8 @@ pub struct Inner {
     pub instances: Arc<Instances>,
     pub updater: Arc<crate::updater::Updater>,
     pub metrics: Arc<crate::metrics::Metrics>,
+    /// 后台线路测速（自动选择、偏慢提示）
+    pub relay_watch: Arc<crate::relay_watch::RelayWatch>,
     /// 终端文件传输：进行中的分块上传（docs/FILE_TRANSFER.md §4）
     pub transfers: Arc<crate::transfer::Transfers>,
     pub store: Arc<Store>,

@@ -5,8 +5,9 @@ import { useTranslation } from 'react-i18next';
 import { Initial, useLogout, useStatus, webUrl } from '../App.jsx';
 import { api } from '../shared/api.js';
 import { daysLeft, formatDate } from '../shared/time.js';
-import RelayPicker from '../shared/RelayPicker.jsx';
+import { RELAYS_ANCHOR } from '../shared/RelayPicker.jsx';
 import RelayStatus from '../shared/RelayStatus.jsx';
+import { Link } from '../shared/router.jsx';
 import { Button, Card, CopyButton, Time, useLoad } from '../shared/ui.jsx';
 
 export default function Account() {
@@ -64,9 +65,18 @@ export default function Account() {
           </dd>
           <dt>{t('account.server')}</dt>
           <dd className="mono">{status.account.server}</dd>
+          {status.relay && status.relay.state !== 'off' && (
+            <>
+              <dt>{t('relays.title')}</dt>
+              <dd>
+                {status.relay_check?.current ? t('relays.line', { name: status.relay_check.current }) : '—'}
+                {' · '}
+                <Link to={`/settings#${RELAYS_ANCHOR}`}>{t('relays.change_in_settings')}</Link>
+              </dd>
+            </>
+          )}
         </dl>
       </Card>
-      <RelayPicker />
       <div className="inline" style={{ marginBottom: 24 }}>
         <a className="btn btn-ghost" href={webUrl(status, '/account')} target="_blank" rel="noopener noreferrer">
           <ExternalLink size={18} /> {t('account.manage')}

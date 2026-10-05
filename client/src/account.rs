@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 use ed25519_dalek::SigningKey;
 use looklook_protocol::dto::{
     AccountSummary, AuthorizePollRequest, AuthorizeStartRequest, AuthorizeStartResponse, CreateTunnel, DeviceInfo, HeartbeatRequest,
-    HeartbeatResponse, LoginResponse, RelayChoices, RelayParams,
+    HeartbeatResponse, LoginResponse, RelayChoices, RelayParams, RenameDevice,
     RotateConfirmRequest, RotateRequest, RotateResponse, SetRelayPreference, TerminalReport, Tunnel, TunnelList, UpdateHint, UpdateTunnel,
 };
 use looklook_protocol::signing::{self, b64, rotate_canonical};
@@ -626,6 +626,15 @@ impl Account {
             }
         }
         *lock_mut(&self.revoked) = r.revoked_sids.into_iter().collect();
+        // 在看看网页上改了电脑名称：同步到本机设置（与心跳同在 busy 锁里，本机同时改名时以本机为准）。
+        if let Some(name) = r.device_name.filter(|n| !n.is_empty()) {
+            let mut settings = Settings::load(&self.store);
+            if name != settings.device_name() {
+                tracing::info!(%name, "电脑名称已在网页上修改，同步到本机");
+                settings.device_name = if name == crate::util::host_name() { String::new() } else { name };
+                settings.save(&self.store).map_err(internal)?;
+            }
+        }
         Ok(r.next_heartbeat_seconds.max(60) as u64)
     }
 
@@ -799,14 +808,33 @@ impl Account {
         Ok(a)
     }
 
+    /// 保存本机设置；电脑名称变了时立即告诉平台（远程入口的电脑列表马上显示新名称）。
+    /// 在 busy 锁里保存：进行中的心跳带回的旧名称不会覆盖刚改的名称。通知失败不要紧，下一次心跳会带上新名称。
+    pub async fn save_settings(&self, settings: &Settings) -> anyhow::Result<()> {
+        let renamed = {
+            let _g = self.busy.lock().await;
+            let old = Settings::load(&self.store).device_name();
+            settings.save(&self.store)?;
+            old != settings.device_name()
+        };
+        if renamed && self.creds().is_some() {
+            let body = RenameDevice { name: settings.device_name() };
+            if let Err(e) = self.signed::<Value>("PUT", "/device/name", Some(&body)).await {
+                tracing::warn!(error = %e, "电脑名称同步到平台失败，下次心跳再同步");
+            }
+        }
+        Ok(())
+    }
+
     /// 可选的线路（中转）与当前所在、用户自选的线路。
     pub async fn relays(&self) -> PResult<RelayChoices> {
         self.signed("GET", "/relays", None::<&()>).await
     }
 
     /// 记住用户选的线路（None = 自动）。平台立即改派，这里马上换用新参数，不等下一次心跳。
-    pub async fn set_relay(&self, relay: Option<String>) -> PResult<RelayChoices> {
-        let r: RelayChoices = self.signed("PUT", "/relays/preference", Some(&SetRelayPreference { relay })).await?;
+    /// `auto`：后台测速自动选的（平台不会用它覆盖用户手动选的线路）。
+    pub async fn set_relay(&self, relay: Option<String>, auto: bool) -> PResult<RelayChoices> {
+        let r: RelayChoices = self.signed("PUT", "/relays/preference", Some(&SetRelayPreference { relay, auto })).await?;
         let _g = self.busy.lock().await;
         if let Some((s, key)) = self.creds() {
             if r.current.as_ref().is_some_and(|c| *c != s.relay.name) {
@@ -1050,6 +1078,7 @@ mod tests {
                         update: None,
                         relay_changed: false,
                         revoked_sids: vec![],
+                        device_name: None,
                     };
                     (StatusCode::OK, serde_json::to_vec(&r).unwrap())
                 } else {

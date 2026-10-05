@@ -680,7 +680,12 @@
     "logout_body": "\"{{name}}\" will be signed out. Its sessions keep running but can't be used until you sign in again.",
     "limit_title": "This account is already signed in on {{max}} computers, the limit",
     "limit_body": "Sign one of them out under \"My computers\" on the Looklook website, then come back and sign in again.",
-    "limit_action": "Open \"My computers\""
+    "limit_action": "Open \"My computers\"",
+    "rename": "Rename",
+    "rename_title": "Rename this computer",
+    "rename_hint": "Pick a name you'll recognize. It's what you see in the computer list when you open remotely. Leave it empty to use the computer's host name.",
+    "renamed": "Renamed",
+    "name_placeholder": "e.g. Office PC, Home MacBook"
   },
   "files": {
     "button": "Upload",
@@ -745,10 +750,10 @@
   },
   "relays": {
     "title": "Remote route",
-    "intro": "When you open this computer from your phone or another computer, the data travels through one of Looklook's routes. Looklook picks a working one for you automatically, so usually there's nothing to do.",
-    "when_slow": "If remote access feels slow or typing lags, pick a route with lower latency below. Looklook remembers your choice, so you only need to do this once.",
-    "auto": "Choose automatically (recommended)",
-    "auto_hint": "Uses a route that works and switches to another one if it has problems",
+    "intro": "When you open this computer from your phone or another computer, the data goes through a Looklook route. Looklook tests the routes regularly and uses the one with the lowest latency, so you usually don't need to do anything.",
+    "when_slow": "If remote access feels laggy or typing is delayed, pick a route with lower latency below. Once you pick one yourself it won't switch automatically, and Looklook remembers your choice. If a route gets noticeably slow, you'll see a reminder at the top of the page.",
+    "auto": "Automatic (recommended)",
+    "auto_hint": "This computer tests the routes regularly and uses the one with the lowest latency. It only switches when no terminal is open, and moves to another route if one fails",
     "auto_now": "Currently using {{name}}",
     "line": "Route {{name}}",
     "in_use": "In use",
@@ -768,7 +773,15 @@
     "switched": "Switched to route {{name}}",
     "saved": "Your choice is saved",
     "latency_explain": "Latency is how long data takes to travel from this computer to the route and back. Lower is faster.",
-    "switch_note": "Switching routes disconnects any open remote pages for a few seconds, then they reconnect on their own. Your personal address stays the same."
+    "switch_note": "Switching routes disconnects any open remote pages for a few seconds, then they reconnect on their own. Your personal address stays the same.",
+    "fastest": "Fastest",
+    "change_in_settings": "Change in Settings",
+    "hint_now": "Remote access is a bit slow: your current route {{name}} takes about {{ms}} ms, ",
+    "hint_now_down": "Remote access is a bit slow: your current route {{name}} isn't responding, ",
+    "hint_better": "while route {{name}} takes only about {{ms}} ms.",
+    "hint_auto": "It will switch automatically when no terminal is open, or you can switch now.",
+    "hint_go": "Switch route",
+    "hint_dismiss": "Got it, don't remind me for now"
   },
   "dsh": {
     "open": "Open DSH",

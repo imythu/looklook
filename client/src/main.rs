@@ -35,6 +35,7 @@ mod metrics;
 mod paths;
 mod platform;
 mod relay;
+mod relay_watch;
 mod settings;
 mod shells;
 mod store;
@@ -364,6 +365,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     let instances = Instances::new(store.clone(), paths.clone());
     let updater = updater::Updater::new(store.clone(), paths.clone(), account.clone(), shutdown.clone());
     let metrics = metrics::Metrics::new();
+    let relay_watch = relay_watch::RelayWatch::new(account.clone());
     let transfers = transfer::Transfers::new(paths.clone());
     instances.recover().await;
     let relay = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
@@ -382,6 +384,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         instances: instances.clone(),
         updater: updater.clone(),
         metrics: metrics.clone(),
+        relay_watch: relay_watch.clone(),
         transfers: transfers.clone(),
         store: store.clone(),
         paths: paths.clone(),
@@ -407,6 +410,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(instances.clone().supervise(account.clone())),
         tokio::spawn(updater.clone().run()),
         tokio::spawn(metrics.run()),
+        tokio::spawn(relay_watch.run(shutdown.clone())),
         tokio::spawn(transfers.run()),
         {
             let account = account.clone();

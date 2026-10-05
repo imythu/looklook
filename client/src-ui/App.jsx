@@ -18,6 +18,7 @@ import { daysLeft, formatTime } from './shared/time.js';
 import { BrandMark, Button, FoldNote, LangSwitch, Note, Skeleton, useConfirm, useToast } from './shared/ui.jsx';
 import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
+import { RelayHint } from './shared/RelayPicker.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
 
 const StatusCtx = createContext({ status: null, reload: () => {} });
@@ -243,6 +244,7 @@ function ConsoleLayout({ path, stale, children }) {
       <GateBanner />
       <UpdateBanner />
       <JustUpdatedBanner />
+      <RelayHint />
       <div className="console">
         <SideNav open={open} onClose={() => setOpen(false)} />
         <main className="shell console-main" key={switcher ? devices.selected : 'all'}>

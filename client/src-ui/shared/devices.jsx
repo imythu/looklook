@@ -5,7 +5,8 @@ import { Monitor } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { configureDevices, fetchDevices } from './api.js';
+import { configureDevices, deviceApi, fetchDevices } from './api.js';
+import { Button, ErrorNote, Field, Modal, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
 const NONE = { ready: true, multi: false, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
@@ -107,5 +108,42 @@ export function DeviceSwitcher() {
         ))}
       </select>
     </label>
+  );
+}
+
+/**
+ * 给电脑改名（远程打开、多台电脑时在终端页每台电脑的标题旁）：请求发给那台电脑，由它保存到本机设置并立即同步到平台。
+ * 远程入口的电脑列表由平台下发，稍等一下再刷新。`onDone(name)` 在保存成功后调用。
+ */
+export function RenameDeviceDialog({ device, onClose, onDone }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [name, setName] = useState(device.name || '');
+  const { busy, error, run } = useAction();
+  const submit = async (e) => {
+    e.preventDefault();
+    const r = await run(() => deviceApi(device.id).put('/device/name', { name: name.trim() }));
+    if (r) {
+      toast(t('devices.renamed'));
+      onDone?.(r.name);
+    }
+  };
+  return (
+    <Modal open onClose={onClose} title={t('devices.rename_title')}>
+      <form onSubmit={submit}>
+        <Field label={t('settings.device_name')} hint={t('devices.rename_hint')}>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={64} autoFocus placeholder={t('devices.name_placeholder')} />
+        </Field>
+        <ErrorNote error={error} />
+        <div className="modal-actions">
+          <Button variant="ghost" onClick={onClose}>
+            {t('action.cancel')}
+          </Button>
+          <Button type="submit" busy={busy}>
+            {t('action.save')}
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }

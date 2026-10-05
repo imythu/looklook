@@ -126,7 +126,7 @@ impl Drop for TerminalGuard {
 }
 
 /// 已经多久没有打开的终端了（毫秒）；有终端连着时为 None。
-fn terminals_idle_ms() -> Option<i64> {
+pub(crate) fn terminals_idle_ms() -> Option<i64> {
     (OPEN_TERMINALS.load(std::sync::atomic::Ordering::Relaxed) == 0).then(|| crate::util::system_ms() - TERMINALS_SEEN.load(std::sync::atomic::Ordering::Relaxed))
 }
 

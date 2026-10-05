@@ -6,6 +6,7 @@
 // 5. 文件传输（docs/FILE_TRANSFER.md §5）：在输出里发现 rz / sz 时通知管理台；嵌在管理台里时把粘贴/拖进来的文件交给管理台上传；
 //    提供 window.looklookPaste(text)，管理台上传完成后把路径填进终端。
 // 6. 手机上管住键盘的弹出：只有用户点了终端（或按键条要求）才弹出，并把聚焦变化告诉外层（规则见 src-ui/shared/KeyBar.jsx 开头）。
+// 7. 手机上滑动终端翻看上文（含 AI 编程助手的输出），见 setupTouchScroll。
 (function () {
   'use strict';
   var tries = 0;
@@ -284,8 +285,81 @@
     }, true);
   }
 
+  // 手机上滑动翻看：xterm.js 的触摸滑动只滚动它自己的回滚区。终端跑在会话保持程序（tmux，备用屏幕、开了鼠标）里时
+  // 回滚区是空的，滑动什么也不做——AI 编程助手和普通命令行都一样。这里把竖向滑动换成滚轮事件交给 xterm，
+  // 和电脑上用鼠标滚轮完全一样：开了鼠标上报时变成滚轮上报（tmux 进入翻看模式，滑回底部自动退出），
+  // 否则滚动 xterm 的回滚区，或在备用屏幕里变成上下方向键（xterm 的默认行为）。松手后带惯性继续滚一会儿。
+  function setupTouchScroll(term) {
+    var el = term.element;
+    if (!touch || !el) return;
+    var screen = el.querySelector('.xterm-screen') || el;
+    // 不让浏览器自己处理竖向拖动（拖动整个页面）；双指缩放照常。
+    el.style.touchAction = 'pinch-zoom';
+    var start = null, scrolling = false, lastY = 0, lastT = 0, vel = 0, acc = 0, x = 0, y = 0, fling = 0;
+    function rowHeight() { return Math.max(8, screen.clientHeight / (term.rows || 24)); }
+    // 开了鼠标上报时每个滚轮事件只上报一次（tmux 一次滚 5 行），攒够约 2.5 行的滑动距离再发一次，滚动速度跟手。
+    function mouseMode() { return Boolean(term.modes && term.modes.mouseTrackingMode && term.modes.mouseTrackingMode !== 'none'); }
+    function scrollBy(d) {
+      acc += d;
+      var step = mouseMode() ? rowHeight() * 2.5 : 1;
+      while (Math.abs(acc) >= step) {
+        var delta = acc > 0 ? step : -step;
+        if (step === 1) delta = acc;
+        acc -= delta;
+        screen.dispatchEvent(new WheelEvent('wheel', { deltaY: delta, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+      }
+    }
+    el.addEventListener('touchstart', function (e) {
+      cancelAnimationFrame(fling);
+      if (e.touches.length !== 1) { start = null; return; }
+      var t = e.touches[0];
+      start = { x: t.clientX, y: t.clientY };
+      scrolling = false;
+    }, { capture: true, passive: true });
+    el.addEventListener('touchmove', function (e) {
+      if (!start || e.touches.length !== 1) { start = null; return; }
+      var t = e.touches[0];
+      if (!scrolling) {
+        var dx = t.clientX - start.x, dy = t.clientY - start.y;
+        if (Math.abs(dy) < 10 || Math.abs(dy) < Math.abs(dx)) return;
+        scrolling = true;
+        lastY = t.clientY; lastT = e.timeStamp; vel = 0; acc = 0;
+      }
+      // 自己处理：不让 xterm 再按它的方式滚一遍，也不让页面跟着动
+      e.preventDefault();
+      e.stopPropagation();
+      x = t.clientX; y = t.clientY;
+      var d = lastY - t.clientY; // 手指往上 = 往下看新内容（滚轮向下）
+      var dt = Math.max(1, e.timeStamp - lastT);
+      vel = 0.8 * (d / dt) + 0.2 * vel;
+      lastY = t.clientY; lastT = e.timeStamp;
+      if (d) scrollBy(d);
+    }, { capture: true, passive: false });
+    function end(e) {
+      if (!start) return;
+      var was = scrolling;
+      start = null; scrolling = false;
+      if (!was) return;
+      e.stopPropagation();
+      // 停顿后才松手不算甩动
+      var v = e.timeStamp - lastT > 80 ? 0 : vel;
+      if (Math.abs(v) < 0.3) return;
+      var prev = performance.now();
+      (function step(now) {
+        var dt = Math.min(48, now - prev);
+        prev = now;
+        scrollBy(v * dt);
+        v *= Math.pow(0.95, dt / 16);
+        if (Math.abs(v) > 0.05) fling = requestAnimationFrame(step);
+      })(prev + 16);
+    }
+    el.addEventListener('touchend', end, { capture: true, passive: true });
+    el.addEventListener('touchcancel', function () { start = null; scrolling = false; }, { capture: true, passive: true });
+  }
+
   function setup(term) {
     setupIme(term);
+    setupTouchScroll(term);
     // opts.focus === false：按键条发送时不聚焦终端，免得手机键盘被弹出来。
     window.looklookSend = function (data, opts) { send(term, data); if (!opts || opts.focus !== false) term.focus(); };
     // 管理台上传完成后填路径：term.paste 会在程序开启 bracketed paste 时自动包上 ESC[200~ … ESC[201~。
