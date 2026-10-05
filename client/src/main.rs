@@ -395,6 +395,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         limiter: Default::default(),
         lan_ips: gateway::access::own_lan_ips(),
         remote: Default::default(),
+        direct: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     let open_base = app.write_open_file()?;

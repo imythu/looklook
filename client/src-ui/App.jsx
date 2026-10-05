@@ -12,6 +12,7 @@ import System from './pages/System.jsx';
 import Terminals from './pages/Terminals.jsx';
 import TerminalView from './pages/TerminalView.jsx';
 import { api, selectedDevice } from './shared/api.js';
+import { configureDirect, probeDirect } from './shared/direct.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
 import { Link, Router, useCanonicalPath } from './shared/router.jsx';
 import { daysLeft, formatTime } from './shared/time.js';
@@ -326,6 +327,13 @@ function Shell() {
   }, []);
   const devices = useDeviceState(status?.access === 'remote');
   devRef.current = devices;
+  // 远程打开时在后台探测能不能直连本机（终端走最快的路，见 shared/direct.js）
+  const remote = status?.access === 'remote';
+  const directKey = devices.multi ? devices.items.map((d) => `${d.id}:${d.os}:${d.online}`).join(',') : status?.capabilities?.os;
+  if (status && devices.ready) configureDirect({ remote, os: status.capabilities?.os, devices: devices.multi ? devices.items : null });
+  useEffect(() => {
+    if (status && devices.ready) probeDirect(devices.multi ? devices.items : null);
+  }, [remote, devices.ready, devices.multi, directKey]);
   // 设备列表加载后、切换电脑后，取选中那台电脑的状态
   useEffect(() => {
     if (devices.multi) reload();

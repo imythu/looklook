@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
+import { frameOrigin, termFocus, termPaste, termSend } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
 import { uploadStore } from '../shared/uploader.js';
 import { CopyButton, useToast } from '../shared/ui.jsx';
@@ -253,7 +254,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   );
 
   const quoteOs = (d) => (d?.sep === '\\' || d?.os === 'windows' || (!d && hostOs === 'windows') ? 'windows' : 'posix');
-  const paste = (text) => frame.current?.contentWindow?.looklookPaste?.(text, { focus: !touch });
+  const paste = (text) => termPaste(frame, text, { focus: !touch });
 
   const upload = (files, { dest, insert: fill }, after) => {
     if (!files.length) return;
@@ -289,7 +290,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
       setMode(null);
     }
     setOpen(false);
-    if (!touch) frame.current?.contentWindow?.focus();
+    if (!touch) termFocus(frame);
   }, [id, touch]);
 
   const endTransfer = (m) => {
@@ -327,8 +328,8 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   };
   useEffect(() => {
     const on = (e) => {
-      if (e.origin !== location.origin || !e.data || typeof e.data !== 'object') return;
       if (!frame.current || e.source !== frame.current.contentWindow) return; // 同页可能有多个终端
+      if (e.origin !== frameOrigin(frame) || !e.data || typeof e.data !== 'object') return; // 本机直连时终端跨源
       const { type } = e.data;
       if (type === 'looklook:files' && Array.isArray(e.data.files)) live.current.files(e.data.files, e.data.source);
       else if (type === 'looklook:dragging') {
@@ -439,7 +440,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   };
 
   const cancelRemote = () => {
-    frame.current?.contentWindow?.looklookSend?.(CANCEL_ZMODEM, { focus: !touch });
+    termSend(frame, CANCEL_ZMODEM, { focus: !touch });
     toast(t('files.remote_canceled'));
     remoteQuietUntil.current = Date.now() + REMOTE_QUIET_MS;
     setMode(null);

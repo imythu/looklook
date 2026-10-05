@@ -279,7 +279,11 @@
     "missing_title": "Can't find this terminal",
     "locked_title": "Can't open the terminal right now",
     "stopped_title": "This terminal hasn't started",
-    "stopped_body": "You can use it once it starts."
+    "stopped_body": "You can use it once it starts.",
+    "direct": "Direct",
+    "direct_hint": "This browser runs on the same computer, so the terminal connects to it directly without the relay (round trip about {{ms}} ms; via the relay about {{relay}} ms).",
+    "relay_ms": "{{ms}} ms",
+    "relay_hint": "Connected through a remote route; round trip about {{ms}} ms. Typing delay mostly comes from network distance: a route closer to both you and the computer (Settings → Route) is faster, and opening it on the computer itself connects directly."
   },
   "pages": {
     "title": "Local pages",

@@ -7,9 +7,20 @@
 //    提供 window.looklookPaste(text)，管理台上传完成后把路径填进终端。
 // 6. 手机上管住键盘的弹出：只有用户点了终端（或按键条要求）才弹出，并把聚焦变化告诉外层（规则见 src-ui/shared/KeyBar.jsx 开头）。
 // 7. 手机上滑动终端翻看上文（含 AI 编程助手的输出），见 setupTouchScroll。
+// 8. 本机直连（gateway/direct.rs）：远程子站页面直接嵌入 http://127.0.0.1 上的终端，外层与终端跨源。
+//    外层在地址的 # 后面带上自己的来源（ll-parent=…），消息只发给、只收自这个来源的父窗口；
+//    能嵌入这里的来源已由本机的 CSP frame-ancestors 限定，所以写错了来源只会收不到消息。
 (function () {
   'use strict';
   var tries = 0;
+  var HASH = {};
+  (location.hash || '').replace(/^#/, '').split('&').forEach(function (kv) {
+    var i = kv.indexOf('=');
+    if (i > 0) { try { HASH[kv.slice(0, i)] = decodeURIComponent(kv.slice(i + 1)); } catch (e) { /* 忽略 */ } }
+  });
+  var PARENT = /^https?:\/\/[a-z0-9.:\[\]-]+$/i.test(HASH['ll-parent'] || '') ? HASH['ll-parent'] : location.origin;
+  var CROSS = PARENT !== location.origin;
+  function fromParent(e) { return e.source === window.parent && e.origin === PARENT && e.data && typeof e.data === 'object'; }
   // 与管理台共用语言设置（同源 localStorage）；英文未翻译时回退中文。
   var TEXT = {
     'zh-CN': { copied: '已复制', connecting: '正在连接终端…', lost: '连接断开了，正在自动重连…', back: '已重新连接', reload: '立即重连' },
@@ -17,7 +28,7 @@
   };
   function tr(key) {
     var lang = 'zh-CN';
-    try { lang = localStorage.getItem('ll_locale') || (navigator.language || '').indexOf('en') === 0 && 'en-US' || 'zh-CN'; } catch (e) { /* 忽略 */ }
+    try { lang = (CROSS && HASH['ll-lang']) || localStorage.getItem('ll_locale') || (navigator.language || '').indexOf('en') === 0 && 'en-US' || 'zh-CN'; } catch (e) { /* 忽略 */ }
     return (TEXT[lang] && TEXT[lang][key]) || TEXT['zh-CN'][key];
   }
 
@@ -83,10 +94,11 @@
 
   // ---------- 文件传输 ----------
   function toParent(msg) {
-    try { if (window.parent !== window) window.parent.postMessage(msg, location.origin); } catch (e) { /* 忽略 */ }
+    try { if (window.parent !== window) window.parent.postMessage(msg, PARENT); } catch (e) { /* 忽略 */ }
   }
   // 管理台在 iframe 元素上设置 looklookFiles = true 才接管粘贴/拖放；裸 /i/{id}/ 保持浏览器默认行为。
   function filesWanted() {
+    if (CROSS) return HASH['ll-files'] === '1'; // 跨源时读不到 frameElement
     try { return Boolean(window.frameElement && window.frameElement.looklookFiles); } catch (e) { return false; }
   }
 
@@ -393,10 +405,14 @@
     // 中文字体按需分片下载，完成后再适配一次。
     document.fonts.addEventListener && document.fonts.addEventListener('loadingdone', function () { refit(term); });
     // 父窗口（管理台）尺寸变化时同步。
+    // 跨源（本机直连）时外层不能直接调用 looklookSend / looklookPaste，改发消息。
     window.addEventListener('message', function (e) {
-      if (e.origin !== location.origin || !e.data || typeof e.data !== 'object') return;
-      if (e.data.type === 'looklook:send' && typeof e.data.data === 'string') window.looklookSend(e.data.data);
-      if (e.data.type === 'looklook:fit') refit(term);
+      if (!fromParent(e)) return;
+      var d = e.data, opts = d.opts && typeof d.opts === 'object' ? d.opts : undefined;
+      if (d.type === 'looklook:send' && typeof d.data === 'string') window.looklookSend(d.data, opts);
+      if (d.type === 'looklook:paste' && typeof d.data === 'string') window.looklookPaste(d.data, opts);
+      if (d.type === 'looklook:focus') term.focus();
+      if (d.type === 'looklook:fit') refit(term);
     });
   }
 

@@ -54,6 +54,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/device/name", put(put_device_name))
+        .route("/direct", post(direct))
         .route("/access", get(get_access).put(put_access))
         .route("/mcp", get(get_mcp).put(put_mcp))
         .route("/mcp/install", post(mcp_install))
@@ -114,6 +115,20 @@ fn require_local(access: &Access) -> R<()> {
     } else {
         Err(LocalError::new("REMOTE_FORBIDDEN"))
     }
+}
+
+/// 本机直连的口令（只在远程打开时，见 gateway/direct.rs）。写请求已由 `guard` 确认 `Origin` 就是这个子站。
+async fn direct(State(app): State<App>, Extension(access): Extension<Access>, headers: axum::http::HeaderMap) -> R<Json<Value>> {
+    if access.is_local() {
+        return Err(LocalError::not_found());
+    }
+    let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("");
+    // 管理台只绑在某个局域网地址上时，127.0.0.1 连不到它。
+    let ip = app.ui_addr.ip();
+    if !super::direct::valid_origin(origin) || !(ip.is_unspecified() || ip.is_loopback()) {
+        return Ok(Json(json!({ "available": false })));
+    }
+    Ok(Json(json!({ "available": true, "port": app.ui_addr.port(), "nonce": app.direct.issue(origin) })))
 }
 
 // ---------------- 状态与账户 ----------------

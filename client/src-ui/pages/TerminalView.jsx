@@ -1,10 +1,11 @@
 // 终端页：整页显示一个终端（同源 iframe 打开 /i/{id}/）。手机上底部有按键条（Esc、Tab、Ctrl/Alt/Shift、方向键、组合键、符号、F1–F12…）。
-import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, GripHorizontal, Maximize2, Minimize2, PanelBottom, Play, RefreshCw, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, GripHorizontal, Maximize2, Minimize2, PanelBottom, Play, RefreshCw, X, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
+import { termFit, termFocus, useLatency, useTermSrc } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -41,7 +42,31 @@ function TermConnecting({ onRetry }) {
 
 const EMBED_MIN_W = 320;
 const EMBED_MIN_H = 200;
-const fit = (frame) => frame.current?.contentWindow?.postMessage({ type: 'looklook:fit' }, location.origin);
+const fit = termFit;
+
+/**
+ * 终端怎么连的：本机直连时显示“直连”；经中转时显示往返时间（远程打开才有），慢的时候标黄，
+ * 让人知道卡顿来自网络距离（详见悬停说明）。本机/局域网打开时什么也不显示。
+ */
+function LinkBadge({ id, direct }) {
+  const { t } = useTranslation();
+  const { relayMs, directMs } = useLatency(id);
+  if (direct) {
+    return (
+      <span className="link-badge link-direct" title={t('term.direct_hint', { ms: directMs ?? 1, relay: relayMs ?? '?' })}>
+        <Zap size={12} aria-hidden="true" />
+        {t('term.direct')}
+      </span>
+    );
+  }
+  if (relayMs === null) return null;
+  return (
+    <span className={`link-badge ${relayMs >= SLOW_MS ? 'link-slow' : ''}`} title={t('term.relay_hint', { ms: relayMs })}>
+      {t('term.relay_ms', { ms: relayMs })}
+    </span>
+  );
+}
+const SLOW_MS = 150;
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
 let cascade = 0;
 
@@ -71,6 +96,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
   const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [touch] = useState(isTouch);
+  const link = useTermSrc(id, reloadKey);
   useEffect(() => {
     const on = () => {
       if (!document.fullscreenElement) setFull(false);
@@ -181,6 +207,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
         <span className="term-title">
           <span className={`dot ${running ? 'on' : ''}`} />
           <span className="ellipsis">{inst?.name ?? id}</span>
+          {running && <LinkBadge id={id} direct={link.direct} />}
         </span>
         <button type="button" className={iconBtn} onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
           <RefreshCw size={17} />
@@ -206,18 +233,18 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
       <div style={{ display: collapsed && !full ? 'none' : 'block', position: 'relative', height: full ? undefined : rect.h - 44, flex: full ? 1 : undefined, minHeight: 0 }}>
         {running && !loaded && <TermConnecting onRetry={() => { setLoaded(false); setReloadKey((k) => k + 1); }} />}
         {running ? (
-          <iframe
-            key={reloadKey}
+          link.src && <iframe
+            key={`${reloadKey}:${link.src}`}
             ref={frame}
-            src={`/i/${id}/`}
+            src={link.src}
             title={inst.name}
-            allow="clipboard-read; clipboard-write; fullscreen"
+            allow="clipboard-read; clipboard-write; fullscreen; local-network-access"
             // 拖动/缩放时 iframe 会吞掉指针事件，期间先让它穿透。
             style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: '#11131a', pointerEvents: moving ? 'none' : 'auto' }}
             onLoad={() => {
               setLoaded(true);
               // 手机上不自动弹出键盘，点终端才弹（见 KeyBar.jsx 开头的说明）。
-              if (!touch) frame.current?.contentWindow?.focus();
+              if (!touch) termFocus(frame);
             }}
           />
         ) : (
@@ -267,6 +294,7 @@ export default function TerminalView({ id }) {
   const [full, setFull] = useState(false);
   const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const link = useTermSrc(id, reloadKey);
   const [inst, error, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
   const allowed = status.account.allowed;
   const running = inst?.running;
@@ -289,7 +317,7 @@ export default function TerminalView({ id }) {
   }, []);
   // 终端所在页面尺寸变化（按键条显示/隐藏）时让终端重新适配。
   useEffect(() => {
-    frame.current?.contentWindow?.postMessage({ type: 'looklook:fit' }, location.origin);
+    termFit(frame);
   }, [keys]);
 
   const start = async () => {
@@ -341,17 +369,19 @@ export default function TerminalView({ id }) {
     body = (
       <>
         {!loaded && <TermConnecting onRetry={() => { setLoaded(false); setReloadKey((k) => k + 1); }} />}
-        <iframe
-          key={reloadKey}
-          ref={frame}
-          src={`/i/${id}/`}
-          title={inst.name}
-          allow="clipboard-read; clipboard-write; fullscreen"
-          onLoad={() => {
-            setLoaded(true);
-            if (!touch) frame.current?.contentWindow?.focus();
-          }}
-        />
+        {link.src && (
+          <iframe
+            key={`${reloadKey}:${link.src}`}
+            ref={frame}
+            src={link.src}
+            title={inst.name}
+            allow="clipboard-read; clipboard-write; fullscreen; local-network-access"
+            onLoad={() => {
+              setLoaded(true);
+              if (!touch) termFocus(frame);
+            }}
+          />
+        )}
       </>
     );
   }
@@ -366,6 +396,7 @@ export default function TerminalView({ id }) {
         <span className="term-title">
           <span className={`dot ${running && allowed ? 'on' : ''}`} />
           <span className="ellipsis">{inst?.name ?? '…'}</span>
+          {running && allowed && <LinkBadge id={id} direct={link.direct} />}
         </span>
         <button type="button" className="btn btn-plain btn-icon" onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
           <RefreshCw size={18} />

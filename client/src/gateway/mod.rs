@@ -11,6 +11,7 @@
 pub mod access;
 mod api;
 mod assets;
+pub mod direct;
 pub mod mcp;
 mod proxy;
 mod remote;
@@ -69,6 +70,8 @@ pub struct Inner {
     pub lan_ips: Vec<IpAddr>,
     /// 远程入口的凭证缓存与 jti 去重
     pub remote: remote::Verifier,
+    /// 远程打开时的本机直连（口令、可嵌入本机终端的来源）
+    pub direct: direct::Direct,
 }
 
 impl Inner {
@@ -110,6 +113,7 @@ pub fn router(app: App) -> Router {
         .route("/i/{id}", get(|axum::extract::Path(id): axum::extract::Path<String>| async move { Redirect::permanent(&format!("/i/{id}/")) }))
         .route("/i/{id}/", any(terminal))
         .route("/i/{id}/{*rest}", any(terminal))
+        .route(direct::PING_PATH, get(direct::ping).options(direct::ping))
         .route(mcp::PATH, axum::routing::post(mcp::handle).get(mcp::not_allowed).delete(mcp::not_allowed))
         .route("/fonts/{*path}", get(assets::font))
         .route("/static/term.js", get(assets::term_js))
@@ -118,11 +122,13 @@ pub fn router(app: App) -> Router {
         .with_state(app)
 }
 
-/// 管理台、终端页只允许同源嵌入；地址里的一次性口令不随 Referer 泄露。
+/// 管理台、终端页只允许同源嵌入（本机直连的终端页改用 CSP `frame-ancestors`，见 `terminal`）；地址里的一次性口令不随 Referer 泄露。
 async fn security_headers(req: Request, next: Next) -> Response {
     let mut r = next.run(req).await;
     let h = r.headers_mut();
-    h.entry("x-frame-options").or_insert(HeaderValue::from_static("SAMEORIGIN"));
+    if !h.contains_key(header::CONTENT_SECURITY_POLICY) {
+        h.entry("x-frame-options").or_insert(HeaderValue::from_static("SAMEORIGIN"));
+    }
     h.entry("x-content-type-options").or_insert(HeaderValue::from_static("nosniff"));
     h.entry("referrer-policy").or_insert(HeaderValue::from_static("no-referrer"));
     r
@@ -212,6 +218,8 @@ async fn relay_entry(app: App, inner: Router, mut req: Request) -> Response {
 /// 终端：`/i/{id}/…` → 对应 ttyd。
 async fn terminal(State(app): State<App>, req: Request) -> Response {
     let access = req.extensions().get::<Access>().cloned().unwrap_or(Access::Local);
+    // 本机直连：同一台电脑上的浏览器从用户的远程子站页面嵌入这里的终端（见 direct.rs）。
+    let embed = (access.is_local() && req.extensions().get::<access::Peer>() == Some(&access::Peer::Local)).then(|| app.direct.frame_ancestors()).flatten();
     let id = req.uri().path().trim_start_matches("/i/").split('/').next().unwrap_or("").to_string();
     let gate = app.account.gate();
     if !gate.allowed() {
@@ -225,7 +233,11 @@ async fn terminal(State(app): State<App>, req: Request) -> Response {
     }
     let index = req.method() == Method::GET && req.uri().path() == format!("/i/{id}/");
     let opts = proxy::Opts { auth: Some(auth), host: None, inject_fonts: index, rewrite_location: None, terminal: true };
-    proxy::forward(&app.http, req, port, opts).await
+    let mut r = proxy::forward(&app.http, req, port, opts).await;
+    if let Some(v) = embed.and_then(|v| HeaderValue::from_str(&v).ok()) {
+        r.headers_mut().insert(header::CONTENT_SECURITY_POLICY, v);
+    }
+    r
 }
 
 /// 写请求与 WebSocket 的来源检查：`Origin` 必须是当前站点本身。
@@ -286,6 +298,9 @@ pub struct Conn {
 
 impl axum::extract::connect_info::Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for Conn {
     fn connect_info(s: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        // 每个新连接调用一次，顺便关掉 Nagle：终端按键与回显都是小包，不能攒着等确认
+        // （macOS / Windows 的回环上能多等几十到两百毫秒）。
+        let _ = s.io().set_nodelay(true);
         Conn { remote: *s.remote_addr(), local: s.io().local_addr().ok() }
     }
 }
