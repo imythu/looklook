@@ -657,9 +657,18 @@ impl Instances {
 
     /// 终端里最近的输出（tmux 面板与回滚缓冲区最后约 200 行）。非 tmux 后端或会话不在时返回 None。
     pub async fn recent_output(&self, id: &str) -> Option<String> {
+        self.capture(id, "-200").await
+    }
+
+    /// 终端的全部输出（含整个回滚缓冲区）。
+    pub async fn full_output(&self, id: &str) -> Option<String> {
+        self.capture(id, "-").await
+    }
+
+    async fn capture(&self, id: &str, start: &str) -> Option<String> {
         let Backend::Tmux(_) = self.backend else { return None };
         let target = format!("{}:", exact(&Self::session_name(id)));
-        let out = self.tmux(&["capture-pane", "-p", "-J", "-S", "-200", "-t", &target]).await.ok()?;
+        let out = self.tmux(&["capture-pane", "-p", "-J", "-S", start, "-t", &target]).await.ok()?;
         if !out.status.success() {
             return None;
         }

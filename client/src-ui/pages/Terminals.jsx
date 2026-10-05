@@ -939,6 +939,36 @@ export function ShellPicker({ value, onChange, data, inherit }) {
 }
 
 /** 新建 / 编辑终端。 */
+/** 后台安装的进度：最后几十行输出，自动滚到底；结束后给出结果。 */
+function InstallProgress({ job, tool, onRetry, busy }) {
+  const { t } = useTranslation();
+  const ref = useRef(null);
+  const lines = job.output.split("\n");
+  const tail = lines.slice(-200).join("\n");
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [tail]);
+  const kind = job.state === "failed" ? "error" : job.state === "ok" ? "ok" : "info";
+  return (
+    <Note kind={kind}>
+      <b>{t(`tools.job_${job.state}`, { tool })}</b>
+      <pre ref={ref} className="install-log mono" aria-live="polite">
+        {tail}
+      </pre>
+      {job.state === "running" && <p className="small muted" style={{ margin: "6px 0 0" }}>{t("tools.job_running_hint")}</p>}
+      {job.state === "failed" && (
+        <div className="row" style={{ marginTop: 8 }}>
+          <span className="small">{t("tools.job_failed_hint")}</span>
+          <Button variant="secondary" busy={busy} onClick={onRetry}>
+            {t("tools.retry")}
+          </Button>
+        </div>
+      )}
+    </Note>
+  );
+}
+
 export function InstanceDialog({ open, onClose, initial, preset, device: wantDevice, onSaved }) {
   const { t } = useTranslation();
   const { status: selectedStatus } = useStatus();
@@ -1031,18 +1061,29 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
     // 新建成功后不直接跳转，由列表页询问怎么打开（当前页小窗或新标签页）。
     onSaved?.(editing ? null : r);
   };
+  // 安装在后台进行（不建终端），进度就显示在这里；关掉对话框也不影响，再打开还能看到。
+  const [job, setJob] = useState(null);
+  useEffect(() => setJob(null), [open, launch, dev]);
+  useEffect(() => {
+    if (!open || !AI_TOOLS.includes(launch)) return undefined;
+    let alive = true;
+    let timer = null;
+    const poll = async () => {
+      const j = await client.get(`/tools/install/${launch}`).catch(() => null);
+      if (!alive) return;
+      setJob(j);
+      if (j?.state === "running") timer = setTimeout(poll, 1000);
+      else if (j?.state === "ok") reloadTools();
+    };
+    poll();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [open, launch, dev, job?.started_at]);
   const install = async () => {
-    const r = await run(() =>
-      client.post("/tools/install", {
-        tool: launch,
-        mirror,
-        name: t("tools.install_name", { tool: t(`launch.${launch}.title`) }),
-      }),
-    );
-    if (!r) return;
-    if (dev && r.id) rememberTerminals(dev, [r]);
-    onClose();
-    onSaved?.(r);
+    const r = await run(() => client.post("/tools/install", { tool: launch, mirror }));
+    if (r) setJob(r);
   };
   return (
     <Modal
@@ -1085,7 +1126,9 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
             );
           })}
         </div>
-        {missing && (
+        {job?.tool === launch && (missing || job.state === "ok") ? (
+          <InstallProgress job={job} tool={t(`launch.${launch}.title`)} onRetry={install} busy={busy} />
+        ) : missing && (
           <Note kind="warn">
             <b>{t("tools.missing", { tool: t(`launch.${launch}.title`) })}</b>
             {tools.tools.npm ? (
@@ -1398,7 +1441,7 @@ function DeviceGroup({ device, group, renderCard }) {
   const items = group?.items ?? [];
   const name = renamed && renamed.from === device.name ? renamed.name : deviceName(t, device);
   return (
-    <section className={`device-group ${device.online ? "" : "device-offline"}`} aria-label={name}>
+    <section id={`device-${device.id}`} className={`device-group ${device.online ? "" : "device-offline"}`} aria-label={name}>
       <h2 className="device-head">
         <Monitor size={17} aria-hidden="true" />
         <span className="ellipsis">{name}</span>
@@ -1436,6 +1479,27 @@ function DeviceGroup({ device, group, renderCard }) {
   );
 }
 
+// 打开着的终端小窗记在 sessionStorage：页面被刷新（例如远程会话续期时的自动跳转）后还在。
+const EMBED_KEY = "looklook.embedded";
+function useEmbedded() {
+  const [list, setList] = useState(() => {
+    try {
+      const v = JSON.parse(sessionStorage.getItem(EMBED_KEY) || "[]");
+      return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(EMBED_KEY, JSON.stringify(list));
+    } catch {
+      /* 无痕模式等：只是刷新后不恢复 */
+    }
+  }, [list]);
+  return [list, setList];
+}
+
 export default function Terminals() {
   const { t } = useTranslation();
   const { status } = useStatus();
@@ -1448,7 +1512,7 @@ export default function Terminals() {
   const allowed = status.account.allowed;
   const [dialog, setDialog] = useState(null);
   const [logs, setLogs] = useState(null);
-  const [embedded, setEmbedded] = useState([]);
+  const [embedded, setEmbedded] = useEmbedded();
   useEffect(() => {
     const id = setInterval(reload, 5000);
     return () => clearInterval(id);
@@ -1486,6 +1550,19 @@ export default function Terminals() {
       {/* 终端列表是主角：远程打开卡片与安全提醒放在列表后面，提醒折叠成一行 */}
       {!multi && <BackendNote />}
       <ErrorNote error={error} />
+      {/* 打开着的终端小窗放在列表外面：列表刷新、单台/多台切换、短暂拿不到列表时都不会重新挂载 */}
+      {embedded.map((id) => (
+        <EmbeddedTerminal
+          key={id}
+          id={id}
+          inst={items.find((i) => i.id === id)}
+          onClose={() => setEmbedded((l) => l.filter((x) => x !== id))}
+          onStart={async () => {
+            await api.post(`/instances/${id}/start`);
+            reload();
+          }}
+        />
+      ))}
       {!data && !error ? (
         <div className="instances">
           <Skeleton height={190} />
@@ -1532,36 +1609,12 @@ export default function Terminals() {
         </Card>
       ) : multi ? (
         <>
-          {embedded.map((id) => (
-            <EmbeddedTerminal
-              key={id}
-              id={id}
-              inst={items.find((i) => i.id === id)}
-              onClose={() => setEmbedded((l) => l.filter((x) => x !== id))}
-              onStart={async () => {
-                await api.post(`/instances/${id}/start`);
-                reload();
-              }}
-            />
-          ))}
           {devices.items.map((d) => (
             <DeviceGroup key={d.id} device={d} group={data?.groups?.[d.id]} renderCard={renderCard} />
           ))}
         </>
       ) : (
         <>
-          {embedded.map((id) => (
-            <EmbeddedTerminal
-              key={id}
-              id={id}
-              inst={items.find((i) => i.id === id)}
-              onClose={() => setEmbedded((l) => l.filter((x) => x !== id))}
-              onStart={async () => {
-                await api.post(`/instances/${id}/start`);
-                reload();
-              }}
-            />
-          ))}
           <div className="instances">
             {items.map(renderCard)}
           </div>

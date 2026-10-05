@@ -40,8 +40,18 @@ pub fn status() -> RelayStatus {
     STATUS.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
+/// 通道刚连上（控制通道建立）时通知：客户端马上向平台发一次心跳，平台立即把这台电脑标为在线。
+static CONNECTED: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub fn connected() -> &'static tokio::sync::Notify {
+    &CONNECTED
+}
+
 fn set_status(state: &'static str, reason: Option<&'static str>, detail: Option<String>) {
     let mut s = STATUS.lock().unwrap_or_else(|e| e.into_inner());
+    if state == "connected" && s.state != "connected" {
+        CONNECTED.notify_one();
+    }
     // 同一个失败原因反复重试时只累加次数，不刷新“开始时间”。
     let same = s.state == state && s.reason == reason;
     s.failures = match state {

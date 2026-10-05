@@ -41,7 +41,9 @@
     "logout": "退出登录",
     "menu": "菜单",
     "close_menu": "关闭菜单",
-    "remote": "远程访问中"
+    "remote": "远程访问中",
+    "remote_ms": "{{ms}} ms",
+    "remote_latency_hint": "往返 {{ms}} 毫秒（浏览器 → 中转 → 这台电脑）。超过 150 毫秒打字会感觉慢，可以在设置里换一条远程线路。"
   },
   "unreachable": {
     "title": "连不上看看",
@@ -255,7 +257,7 @@
   },
   "tools": {
     "missing": "这台电脑还没有安装 {{tool}}",
-    "install_hint": "可以一键安装（安装过程会在一个新终端里显示）。国内网络推荐用淘宝镜像。",
+    "install_hint": "可以一键安装（在后台安装，进度显示在这里）。国内网络推荐用淘宝镜像。",
     "mirror": "下载来源",
     "mirrors": {
       "npmmirror": "淘宝镜像（推荐）",
@@ -266,7 +268,12 @@
     "need_node": "安装它需要先安装 Node.js。",
     "node_link": "下载 Node.js",
     "recheck": "已安装，重新检查",
-    "install_name": "安装 {{tool}}"
+    "job_running": "正在安装 {{tool}}…",
+    "job_running_hint": "装完会自动检测，可以先关掉这个窗口，回来还能看到进度。",
+    "job_ok": "{{tool}} 已安装",
+    "job_failed": "{{tool}} 安装失败",
+    "job_failed_hint": "看看上面的报错；网络问题可以换个下载来源再试。",
+    "retry": "重试"
   },
   "term": {
     "back": "返回",
@@ -283,7 +290,9 @@
     "direct": "直连",
     "direct_hint": "浏览器就在这台电脑上：终端直接连本机，不经过中转（往返约 {{ms}} 毫秒，经中转约 {{relay}} 毫秒）。",
     "relay_ms": "{{ms}} ms",
-    "relay_hint": "经远程线路连接，往返约 {{ms}} 毫秒。打字的延迟主要来自网络距离：在“设置 → 远程线路”里换一条离你和电脑都近的线路会更快；在这台电脑本机打开则会自动直连。"
+    "relay_hint": "经远程线路连接，往返约 {{ms}} 毫秒。打字的延迟主要来自网络距离：在“设置 → 远程线路”里换一条离你和电脑都近的线路会更快；在这台电脑本机打开则会自动直连。",
+    "newline_hint": "换行",
+    "newline_title": "按 Shift+Enter 在输入框里换行，Enter 发送"
   },
   "pages": {
     "title": "本机网页",
@@ -565,7 +574,8 @@
     "collapse": "收起按键（也可以向下滑）",
     "expand": "展开按键（也可以向上滑）",
     "categories": "按键分类",
-    "this_computer": "本机"
+    "this_computer": "本机",
+    "newline": "换行"
   },
   "shell": {
     "label": "Shell（命令行程序）",
@@ -678,8 +688,8 @@
     "last_seen": "最后在线",
     "count": "{{count}} 个会话",
     "no_terminals": "这台电脑上还没有会话",
-    "switch": "选择电脑",
-    "switch_hint": "这个页面显示的是所选电脑上的内容",
+    "switch": "切换电脑",
+    "switch_hint": "本机网页、系统和设置按电脑分开，选一台查看",
     "create_on": "在哪台电脑上新建",
     "logout_body": "将退出“{{name}}”的登录。它上面的会话不会被关闭，但在重新登录前无法使用。",
     "limit_title": "这个账户已经在 {{max}} 台电脑上登录，达到上限",
@@ -689,7 +699,13 @@
     "rename_title": "给电脑改个名字",
     "rename_hint": "起一个好认的名字，远程打开时在电脑列表里看到的就是它。留空则用电脑的主机名。",
     "renamed": "已改名",
-    "name_placeholder": "例如：办公室电脑、家里的 MacBook"
+    "name_placeholder": "例如：办公室电脑、家里的 MacBook",
+    "mine": "我的电脑",
+    "list_hint": "终端按电脑分组显示，点一台跳到它的终端",
+    "tip_switch": "你登录了 {{count}} 台电脑，点这里切换",
+    "tip_list": "你登录了 {{count}} 台电脑，点这里查看",
+    "default": "默认",
+    "help": "多台电脑怎么用？"
   },
   "files": {
     "button": "上传",

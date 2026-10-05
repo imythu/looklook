@@ -67,6 +67,19 @@ function LinkBadge({ id, direct }) {
   );
 }
 const SLOW_MS = 150;
+// AI 编程助手的输入框：⇧↵ 换行（term-inject.js 把它改成 Ctrl+J）。电脑上在顶栏空位里小字提示，手机上看按键条。
+const NEWLINE_LAUNCHES = ['codex', 'claude', 'opencode'];
+function NewlineHint({ inst, touch }) {
+  const { t } = useTranslation();
+  if (touch || !inst?.running || !NEWLINE_LAUNCHES.includes(inst.launch)) return null;
+  return (
+    <span className="term-hint" title={t('term.newline_title')}>
+      <kbd>⇧</kbd>
+      <kbd>↵</kbd>
+      {t('term.newline_hint')}
+    </span>
+  );
+}
 const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
 let cascade = 0;
 
@@ -209,6 +222,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
           <span className="ellipsis">{inst?.name ?? id}</span>
           {running && <LinkBadge id={id} direct={link.direct} />}
         </span>
+        {(full || rect.w >= 640) && <NewlineHint inst={inst} touch={touch} />}
         <button type="button" className={iconBtn} onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
           <RefreshCw size={17} />
         </button>
@@ -398,6 +412,7 @@ export default function TerminalView({ id }) {
           <span className="ellipsis">{inst?.name ?? '…'}</span>
           {running && allowed && <LinkBadge id={id} direct={link.direct} />}
         </span>
+        <NewlineHint inst={inst} touch={touch} />
         <button type="button" className="btn btn-plain btn-icon" onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
           <RefreshCw size={18} />
         </button>

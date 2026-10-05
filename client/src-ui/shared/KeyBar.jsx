@@ -135,6 +135,7 @@ export default function KeyBar({ frame, os, ime, tight }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [mods, setMods] = useState(NO_MODS);
+  const newline = Boolean(mods.shift && !mods.ctrl && !mods.alt);
   const [pref, setPref] = useState(loadPref);
   const [open, setOpen] = useState(false);
   // 键盘弹着时自动收成一行；用户在这期间动了把手就不再自动收，键盘收起后重置。
@@ -318,8 +319,9 @@ export default function KeyBar({ frame, os, ime, tight }) {
     }
     if (id === 'enter') {
       return (
-        <button key={id} type="button" className="key key-enter" aria-label={t('keybar.enter')} title={t('keybar.enter')} {...handlers(KEYS.enter)}>
-          <CornerDownLeft className="key-icon" aria-hidden="true" />
+        // 按着 ⇧ 时回车键变成“换行”，顺便告诉用户 ⇧↵ 可以换行
+        <button key={id} type="button" className={`key key-enter ${newline ? 'key-newline' : ''}`} aria-label={t(newline ? 'keybar.newline' : 'keybar.enter')} title={t(newline ? 'keybar.newline' : 'keybar.enter')} {...handlers(KEYS.enter)}>
+          {newline ? <span>{t('keybar.newline')}</span> : <CornerDownLeft className="key-icon" aria-hidden="true" />}
         </button>
       );
     }

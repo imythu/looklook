@@ -25,6 +25,8 @@ type R<T> = Result<T, LocalError>;
 pub fn routes(app: App) -> Router<App> {
     Router::new()
         .route("/status", get(status))
+        // 远程打开时顶栏测往返时间（浏览器 → 中转 → 这台电脑）
+        .route("/ping", get(|| async { StatusCode::NO_CONTENT }))
         .route("/auth/login", post(login))
         .route("/auth/login/cancel", post(login_cancel))
         .route("/auth/status", get(login_status))
@@ -62,6 +64,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/shells", get(get_shells))
         .route("/tools", get(get_tools))
         .route("/tools/install", post(install_tool))
+        .route("/tools/install/{tool}", get(install_job))
         .route("/diag", get(diag_list))
         .route("/diag/clear", post(diag_clear))
         .route("/diag/ui-error", post(diag_ui_error))
@@ -317,7 +320,54 @@ async fn instance_page(State(app): State<App>, Path(id): Path<String>) -> R<Json
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     };
-    Ok(Json(json!({ "url": tunnel.url, "ready": ready })))
+    let token = if ready { dsh_token(&app, &id).await } else { None };
+    let url = match &token {
+        Some(t) => with_query(&tunnel.url, "token", t),
+        None => tunnel.url.clone(),
+    };
+    Ok(Json(json!({ "url": url, "ready": ready })))
+}
+
+/// 这次运行的 `dsh web` 打印的启动口令（`dsh web: http://127.0.0.1:P/?token=…`）。浏览器带着它打开一次，
+/// DSH 就发一个 30 天的 Cookie（按 Host 区分；本机网页映射把 Host 改成 localhost:P，所以本机、远程是同一个）。
+/// 口令每次启动都换；一直带着当前的口令打开即可（已有 Cookie 时 DSH 直接跳回首页）。
+/// 刚开始监听时那一行可能还没打印，最多再等 10 秒。回滚缓冲区被冲掉时用上次看到的。
+async fn dsh_token(app: &App, id: &str) -> Option<String> {
+    static SEEN: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(t) = app.instances.full_output(id).await.as_deref().and_then(parse_dsh_token) {
+            let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            seen.retain(|(k, _)| k != id);
+            seen.push((id.to_string(), t.clone()));
+            return Some(t);
+        }
+        if tokio::time::Instant::now() >= deadline {
+            let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+            return seen.iter().find(|(k, _)| k == id).map(|(_, t)| t.clone());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+}
+
+/// 输出里最后一个 `dsh web:` 行的口令。
+fn parse_dsh_token(text: &str) -> Option<String> {
+    text.lines().rev().filter(|l| l.contains("dsh web:")).find_map(|l| {
+        let t: String = l.split("token=").nth(1)?.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').collect();
+        (t.len() >= 16).then_some(t)
+    })
+}
+
+fn with_query(url: &str, key: &str, value: &str) -> String {
+    let (base, frag) = url.split_once('#').map_or((url, None), |(b, f)| (b, Some(f)));
+    let sep = if base.contains('?') { '&' } else { '?' };
+    let base = if base.contains('?') || base.ends_with('/') || base.matches('/').count() > 2 { base.to_string() } else { format!("{base}/") };
+    let mut out = format!("{base}{sep}{key}={value}");
+    if let Some(f) = frag {
+        out.push('#');
+        out.push_str(f);
+    }
+    out
 }
 
 async fn get_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
@@ -878,19 +928,17 @@ struct InstallReq {
     tool: String,
     #[serde(default)]
     mirror: String,
-    /// 终端名称（界面按语言生成）
-    #[serde(default)]
-    name: Option<String>,
 }
 
+/// 在后台装（不建终端）；界面用 `GET /tools/install/{tool}` 看进度。
 async fn install_tool(State(app): State<App>, Json(req): Json<InstallReq>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
-    let cmd = tools::install_command(&req.tool, &req.mirror).ok_or_else(|| LocalError::invalid("tool", "invalid"))?;
-    let v = app
-        .instances
-        .create(Input { name: req.name, launch: Some("custom".into()), command: Some(cmd), ..Default::default() })
-        .await?;
-    Ok((StatusCode::CREATED, Json(app.instances.start(&v.row.id).await?)))
+    let job = tools::start_install(app.instances.shell(), &req.tool, &req.mirror).ok_or_else(|| LocalError::invalid("tool", "invalid"))?;
+    Ok((StatusCode::ACCEPTED, Json(job)))
+}
+
+async fn install_job(Path(tool): Path<String>) -> R<Json<tools::Job>> {
+    tools::job(&tool).map(Json).ok_or_else(LocalError::not_found)
 }
 
 // ---------------- 错误记录与问题报告 ----------------
@@ -1046,6 +1094,16 @@ mod tests {
         assert_eq!(hidden("hidden=false"), Some(false));
         assert_eq!(hidden("path=x"), Some(false));
         assert_eq!(hidden("hidden=maybe"), None);
+    }
+
+    #[test]
+    fn dsh_token_and_url() {
+        let out = "old\ndsh web: http://127.0.0.1:3080/?token=aaaaaaaaaaaaaaaaaaaa\nrestart\ndsh web: http://127.0.0.1:3080/?token=ozazZIiC1LJAIc8v7EAa-jgOFmru1Kqh_bd8KubxLQ\n[x] other\n";
+        assert_eq!(parse_dsh_token(out).as_deref(), Some("ozazZIiC1LJAIc8v7EAa-jgOFmru1Kqh_bd8KubxLQ"));
+        assert_eq!(parse_dsh_token("token=abc\n"), None);
+        assert_eq!(with_query("https://a--b.r2.example.com", "token", "T"), "https://a--b.r2.example.com/?token=T");
+        assert_eq!(with_query("https://a--b.r2.example.com/", "token", "T"), "https://a--b.r2.example.com/?token=T");
+        assert_eq!(with_query("http://127.0.0.1:41002/?x=1", "token", "T"), "http://127.0.0.1:41002/?x=1&token=T");
     }
 
     fn q(path: &std::path::Path, hidden: bool) -> FsQ {

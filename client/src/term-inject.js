@@ -10,6 +10,7 @@
 // 8. 本机直连（gateway/direct.rs）：远程子站页面直接嵌入 http://127.0.0.1 上的终端，外层与终端跨源。
 //    外层在地址的 # 后面带上自己的来源（ll-parent=…），消息只发给、只收自这个来源的父窗口；
 //    能嵌入这里的来源已由本机的 CSP frame-ancestors 限定，所以写错了来源只会收不到消息。
+// 9. ⇧↵ 换行（发 Ctrl+J）；Windows / Linux 上 Ctrl+V 只粘贴、不再把 ^V 发给程序。见 setupKeys。
 (function () {
   'use strict';
   var tries = 0;
@@ -191,6 +192,7 @@
   // 值为 null / 'once'（只作用于下一个键）/ 'lock'。规则与 src-ui/shared/keys.js 的 modChar 相同。
   var fromKeybar = false;
   function modChar(ch, m) {
+    if (ch === '\r' && m.shift && !m.ctrl && !m.alt) return '\n'; // ⇧ + 手机键盘的回车 = 换行（同 ⇧↵）
     var out = m.shift ? ch.toUpperCase() : ch;
     if (m.ctrl) {
       var c = out.toUpperCase().charCodeAt(0);
@@ -369,9 +371,30 @@
     el.addEventListener('touchcancel', function () { start = null; scrolling = false; }, { capture: true, passive: true });
   }
 
+  // 在捕获阶段拦下几个键，不替换 ttyd 自己的按键处理。输入法正在组字时不管。
+  // - ⇧↵ 换行：xterm.js 把 Shift+Enter 也当回车（\r）发出去，AI 编程助手就直接提交了。
+  //   改发 Ctrl+J（\n）：Claude Code、Codex、OpenCode 都把它当输入框里的换行，普通 shell 里与回车一样。
+  // - Ctrl+V（Windows / Linux 的粘贴键）：xterm.js 除了粘贴文字，还会把 ^V 发给程序，Claude Code 收到 ^V
+  //   就去读那台电脑的剪贴板找图片，提示“No image found in clipboard”。这里只让浏览器粘贴，不发 ^V；
+  //   图片由管理台上传后填路径。macOS 上粘贴是 ⌘V，^V 照常发送（vim 的列选择等）。
+  var MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
+  function setupKeys(term) {
+    document.addEventListener('keydown', function (e) {
+      if (!term.textarea || e.target !== term.textarea || e.isComposing || e.keyCode === 229) return;
+      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        send(term, '\n');
+      } else if (!MAC && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'v' || e.key === 'V')) {
+        e.stopImmediatePropagation(); // 不 preventDefault：浏览器照常触发粘贴
+      }
+    }, true);
+  }
+
   function setup(term) {
     setupIme(term);
     setupTouchScroll(term);
+    setupKeys(term);
     // opts.focus === false：按键条发送时不聚焦终端，免得手机键盘被弹出来。
     window.looklookSend = function (data, opts) { send(term, data); if (!opts || opts.focus !== false) term.focus(); };
     // 管理台上传完成后填路径：term.paste 会在程序开启 bracketed paste 时自动包上 ESC[200~ … ESC[201~。

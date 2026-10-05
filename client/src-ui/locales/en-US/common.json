@@ -41,7 +41,9 @@
     "logout": "Sign out",
     "menu": "Menu",
     "close_menu": "Close menu",
-    "remote": "Remote access on"
+    "remote": "Remote access on",
+    "remote_ms": "{{ms}} ms",
+    "remote_latency_hint": "Round trip {{ms}} ms (browser → relay → this computer). Above 150 ms typing feels slow; you can switch the remote route in Settings."
   },
   "unreachable": {
     "title": "Can't reach Looklook",
@@ -255,7 +257,7 @@
   },
   "tools": {
     "missing": "{{tool}} isn't installed on this computer",
-    "install_hint": "You can install it in one click (the install progress shows in a new terminal). In mainland China, the Taobao mirror is recommended.",
+    "install_hint": "Install it in one click (runs in the background; progress shows here).",
     "mirror": "Download source",
     "mirrors": {
       "npmmirror": "Taobao mirror (recommended)",
@@ -266,7 +268,12 @@
     "need_node": "Installing it requires Node.js first.",
     "node_link": "Download Node.js",
     "recheck": "Installed, check again",
-    "install_name": "Install {{tool}}"
+    "job_running": "Installing {{tool}}…",
+    "job_running_hint": "It's detected automatically when done. You can close this window and come back to check progress.",
+    "job_ok": "{{tool}} is installed",
+    "job_failed": "Installing {{tool}} failed",
+    "job_failed_hint": "Check the error above; for network problems, try another download source.",
+    "retry": "Retry"
   },
   "term": {
     "back": "Back",
@@ -283,7 +290,9 @@
     "direct": "Direct",
     "direct_hint": "This browser runs on the same computer, so the terminal connects to it directly without the relay (round trip about {{ms}} ms; via the relay about {{relay}} ms).",
     "relay_ms": "{{ms}} ms",
-    "relay_hint": "Connected through a remote route; round trip about {{ms}} ms. Typing delay mostly comes from network distance: a route closer to both you and the computer (Settings → Route) is faster, and opening it on the computer itself connects directly."
+    "relay_hint": "Connected through a remote route; round trip about {{ms}} ms. Typing delay mostly comes from network distance: a route closer to both you and the computer (Settings → Route) is faster, and opening it on the computer itself connects directly.",
+    "newline_hint": "newline",
+    "newline_title": "Shift+Enter adds a new line, Enter sends"
   },
   "pages": {
     "title": "Local pages",
@@ -565,7 +574,8 @@
     "collapse": "Collapse keys (or swipe down)",
     "expand": "Expand keys (or swipe up)",
     "categories": "Key categories",
-    "this_computer": "This PC"
+    "this_computer": "This PC",
+    "newline": "Newline"
   },
   "shell": {
     "label": "Shell",
@@ -678,8 +688,8 @@
     "last_seen": "Last online",
     "count": "Sessions: {{count}}",
     "no_terminals": "No sessions on this computer yet",
-    "switch": "Choose computer",
-    "switch_hint": "This page shows the selected computer",
+    "switch": "Switch computer",
+    "switch_hint": "Local pages, system and settings are per computer; pick one to view",
     "create_on": "Create on computer",
     "logout_body": "\"{{name}}\" will be signed out. Its sessions keep running but can't be used until you sign in again.",
     "limit_title": "This account is already signed in on {{max}} computers, the limit",
@@ -689,7 +699,13 @@
     "rename_title": "Rename this computer",
     "rename_hint": "Pick a name you'll recognize. It's what you see in the computer list when you open remotely. Leave it empty to use the computer's host name.",
     "renamed": "Renamed",
-    "name_placeholder": "e.g. Office PC, Home MacBook"
+    "name_placeholder": "e.g. Office PC, Home MacBook",
+    "mine": "My computers",
+    "list_hint": "Terminals are grouped by computer; pick one to jump to its terminals",
+    "tip_switch": "You're signed in on {{count}} computers. Switch here",
+    "tip_list": "You're signed in on {{count}} computers. See them here",
+    "default": "default",
+    "help": "How do several computers work?"
   },
   "files": {
     "button": "Upload",

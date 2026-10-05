@@ -559,7 +559,7 @@ impl Account {
                 Err(e) => {
                     failures += 1;
                     tracing::warn!(error = %e, failures, "心跳失败");
-                    let interval = self.session().map(|s| s.heartbeat_interval as u64).unwrap_or(600);
+                    let interval = self.session().map(|s| s.heartbeat_interval as u64).unwrap_or(60);
                     Duration::from_secs((15u64 << failures.min(6)).min(interval))
                 }
             };
@@ -570,6 +570,8 @@ impl Account {
                 tokio::select! {
                     _ = tokio::time::sleep_until(deadline) => break,
                     _ = self.wake.notified() => break,
+                    // 远程通道刚连上：立即心跳，平台马上看到这台电脑在线（中转那边由 presence 连接同时上报）
+                    _ = crate::relay::connected().notified() => break,
                     r = changed.changed() => {
                         if r.is_err() {
                             return;

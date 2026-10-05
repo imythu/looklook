@@ -319,10 +319,33 @@ pub fn local_app(app: App) -> Router {
 
 pub fn relay_app(app: App) -> Router {
     let inner = router(app.clone());
-    Router::new().fallback(move |req: Request| {
+    Router::new().route(looklook_protocol::PRESENCE_PATH, get(presence)).fallback(move |req: Request| {
         let (app, inner) = (app.clone(), inner.clone());
         async move { relay_entry(app, inner, req).await }
     })
+}
+
+/// 设备在线（中转经通道请求，见 `looklook_protocol::PRESENCE_PATH`）：连上就立即回一个心跳，之后定时回，
+/// 中转收到第一个心跳就把这台电脑标为在线，连接断了、心跳停了就马上标为离线。
+/// 只有中转本机能连到这个端口，内容也只是心跳，不需要令牌。
+async fn presence() -> Response {
+    use futures_util::StreamExt;
+    let beats = futures_util::stream::unfold(true, |first| async move {
+        if !first {
+            tokio::time::sleep(std::time::Duration::from_secs(looklook_protocol::PRESENCE_BEAT_SECS)).await;
+        }
+        Some((Ok::<_, std::convert::Infallible>(axum::body::Bytes::from_static(b"1\n")), false))
+    })
+    .boxed();
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "text/plain"),
+            (axum::http::header::CACHE_CONTROL, "no-store"),
+            (axum::http::HeaderName::from_static(looklook_protocol::PRESENCE_HEADER), "1"),
+        ],
+        axum::body::Body::from_stream(beats),
+    )
+        .into_response()
 }
 
 #[cfg(test)]

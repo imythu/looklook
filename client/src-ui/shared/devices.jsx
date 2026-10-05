@@ -1,8 +1,8 @@
 // 多设备（服务端 docs/05 §9）：远程打开时，同一个账户可能有好几台电脑在线。
 // 终端页合并显示所有电脑的终端；本机网页、设置、系统等按电脑的页面用顶栏的“电脑”切换，选择记在 sessionStorage。
 // 本机/局域网打开不请求设备列表，只有一台电脑时界面与单设备完全一样。
-import { Monitor } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
+import { Check, ChevronDown, HelpCircle, Monitor, X } from 'lucide-react';
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { configureDevices, deviceApi, fetchDevices } from './api.js';
@@ -48,7 +48,9 @@ export function pickSelected(items, def, want) {
 export function useDeviceState(remote, onSelect) {
   const [list, setList] = useState(null); // null = 还没加载
   const [want, setWant] = useState(stored);
-  const load = useCallback(() => fetchDevices().then((d) => setList(d ?? { items: [], default: null, max: null })), []);
+  // 一次没拿到（网络抖动、中转重启）时保留上一次的列表：清空会让页面在“单台/多台”之间来回切换，
+  // 整个页面重新挂载，打开着的终端小窗也就没了。只有第一次拿不到时才当作没有设备。
+  const load = useCallback(() => fetchDevices().then((d) => setList((prev) => d ?? prev ?? { items: [], default: null, max: null })), []);
   useEffect(() => {
     if (!remote) return undefined;
     load();
@@ -91,23 +93,131 @@ export function deviceName(t, d) {
   return d?.name || t('devices.unnamed');
 }
 
-/** 顶栏的电脑切换（只在多台电脑、按电脑的页面上显示）。 */
-export function DeviceSwitcher() {
+const TIP_KEY = 'looklook.device-tip';
+
+function tipSeen() {
+  try {
+    return localStorage.getItem(TIP_KEY) === '1';
+  } catch {
+    return true;
+  }
+}
+
+function markTipSeen() {
+  try {
+    localStorage.setItem(TIP_KEY, '1');
+  } catch {
+    /* 无痕模式等：只是下次还会提示 */
+  }
+}
+
+/**
+ * 顶栏的电脑切换（多台电脑时在所有页面显示）：一个写着当前电脑名的按钮，点开是电脑列表。
+ * - 按电脑的页面（本机网页、系统、设置）：选一台就切换到那台；
+ * - 终端页（合并显示所有电脑）：按钮写“N 台电脑”，点一台跳到它的终端分组。
+ * 第一次看到时在按钮下面提示一次“在这里切换电脑”，免得用户不知道有这个入口。
+ * `helpUrl`：多台电脑的说明（看看网页的常见问题）。
+ */
+export function DeviceSwitcher({ perDevice, helpUrl }) {
   const { t } = useTranslation();
   const d = useDevices();
+  const [open, setOpen] = useState(false);
+  const [tip, setTip] = useState(() => !tipSeen());
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => {
+      if (e.type === 'keydown' ? e.key === 'Escape' : !ref.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
   if (!d.multi) return null;
+  const current = d.byId(d.selected);
+  const online = d.items.filter((x) => x.online).length;
+  const dismissTip = () => {
+    markTipSeen();
+    setTip(false);
+  };
+  const toggle = () => {
+    dismissTip();
+    setOpen((o) => !o);
+  };
+  const pick = (x) => {
+    setOpen(false);
+    if (perDevice) {
+      if (x.id !== d.selected) d.select(x.id);
+      return;
+    }
+    document.getElementById(`device-${x.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
   return (
-    <label className="device-switch" title={t('devices.switch_hint')}>
-      <Monitor size={16} aria-hidden="true" />
-      <select value={d.selected ?? ''} onChange={(e) => d.select(e.target.value)} aria-label={t('devices.switch')}>
-        {d.items.map((x) => (
-          <option key={x.id} value={x.id} disabled={!x.online}>
-            {deviceName(t, x)}
-            {x.online ? '' : ` · ${t('devices.offline')}`}
-          </option>
-        ))}
-      </select>
-    </label>
+    <div className="device-switch" ref={ref}>
+      <button type="button" className="device-pill" aria-haspopup="menu" aria-expanded={open} onClick={toggle} title={t(perDevice ? 'devices.switch_hint' : 'devices.list_hint')}>
+        <Monitor size={16} aria-hidden="true" />
+        {perDevice ? (
+          <>
+            <span className={`device-dot ${current?.online ? 'on' : ''}`} aria-hidden="true" />
+            <span className="ellipsis">{deviceName(t, current)}</span>
+          </>
+        ) : (
+          <span className="ellipsis">
+            {online}/{d.items.length}
+            <span className="pill-word"> {t('devices.online')}</span>
+          </span>
+        )}
+        <ChevronDown size={15} aria-hidden="true" className="device-chev" />
+      </button>
+      {tip && !open && (
+        <div className="device-tip" role="note">
+          <span>{t(perDevice ? 'devices.tip_switch' : 'devices.tip_list', { count: d.items.length })}</span>
+          <button type="button" className="btn btn-plain btn-icon" onClick={dismissTip} aria-label={t('action.close')}>
+            <X size={14} />
+          </button>
+        </div>
+      )}
+      {open && (
+        <div className="device-menu" role="menu" aria-label={t('devices.switch')}>
+          <div className="device-menu-head">
+            <b>{t(perDevice ? 'devices.switch' : 'devices.mine')}</b>
+            <span className="small muted">{t(perDevice ? 'devices.switch_hint' : 'devices.list_hint')}</span>
+          </div>
+          {d.items.map((x) => {
+            const selected = perDevice && x.id === d.selected;
+            return (
+              <button
+                key={x.id}
+                type="button"
+                role={perDevice ? 'menuitemradio' : 'menuitem'}
+                aria-checked={perDevice ? selected : undefined}
+                className={`device-item ${selected ? 'selected' : ''}`}
+                disabled={perDevice && !x.online}
+                onClick={() => pick(x)}
+              >
+                <span className={`device-dot ${x.online ? 'on' : ''}`} aria-hidden="true" />
+                <span className="device-item-text">
+                  <span className="ellipsis">{deviceName(t, x)}</span>
+                  <span className="small muted">
+                    {[osLabel(x.os), t(x.online ? 'devices.online' : 'devices.offline'), x.id === d.def ? t('devices.default') : null].filter(Boolean).join(' · ')}
+                  </span>
+                </span>
+                {selected && <Check size={16} aria-hidden="true" />}
+              </button>
+            );
+          })}
+          {helpUrl && (
+            <a className="device-menu-foot small" href={helpUrl} target="_blank" rel="noopener noreferrer">
+              <HelpCircle size={14} aria-hidden="true" />
+              {t('devices.help')}
+            </a>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 

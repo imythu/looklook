@@ -255,6 +255,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .note-warn { background: var(--warn-soft); color: var(--warn); }
 .note-ok { background: var(--ok-soft); color: var(--ok); }
 .note-fold { display: block; padding: 0; }
+.install-log { margin: 6px 0 0; max-height: 180px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; }
 .note-fold summary { display: flex; gap: 8px; align-items: center; padding: 8px 12px; min-height: 36px; cursor: pointer; list-style: none; font-size: 13.5px; }
 .note-fold summary::-webkit-details-marker { display: none; }
 .note-fold-chev { flex: none; transition: transform .15s; }
@@ -266,6 +267,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .badge-ok { background: var(--ok-soft); color: var(--ok); }
 .badge-warn { background: var(--warn-soft); color: var(--warn); }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
+.remote-badge { white-space: nowrap; font-variant-numeric: tabular-nums; }
+
 
 .toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; display: grid; gap: 8px; width: min(92vw, 380px); pointer-events: none; }
 .toast { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-radius: 14px; background: #1f2330; color: #fff; box-shadow: var(--shadow-lg); font-size: 14px; animation: rise .2s ease-out; }
@@ -455,6 +458,11 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .key-glyph { font-size: var(--key-glyph); }
 .key-icon { width: var(--key-icon); height: var(--key-icon); }
 .key-enter { border-color: #3d4360; background: #262a3a; }
+.key-newline span { font-size: calc(var(--key-fs) * .8); }
+/* 终端顶栏里的“⇧↵ 换行”：只占顶栏里的空位，窄了就藏起来，不挤终端 */
+.term-hint { flex: none; display: inline-flex; align-items: center; gap: 4px; margin-right: 4px; color: #8a91a3; font-size: 12px; white-space: nowrap; user-select: none; }
+.term-hint kbd { min-width: 20px; padding: 0 4px; border: 1px solid #3a4152; border-bottom-width: 2px; border-radius: 5px; font: 13px/18px var(--font); text-align: center; color: #c5cad6; }
+@media (max-width: 719px) { .term-hint { display: none; } }
 .key[aria-pressed="true"]:not(.key-mod) { color: #b4b9ff; }
 .keybar-symbol .key { font-size: calc(var(--key-glyph) - 2px); min-height: calc(var(--key-h) - 2px); }
 .key-hint { min-height: calc(var(--key-h) + 6px); }
@@ -756,10 +764,36 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .side-link.active .nav-meta { color: inherit; }
 
 /* 多设备（远程打开、多台电脑）：顶栏的电脑切换、终端页按电脑分组、登录上限列表 */
-.device-switch { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--muted); }
-.device-switch select { min-height: 34px; max-width: 220px; padding: 4px 8px; font-size: 14px; }
+/* 顶栏的电脑切换：写着电脑名的按钮 + 下拉列表 */
+.device-switch { position: relative; display: inline-flex; min-width: 0; }
+.device-pill { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 240px; min-height: 34px; padding: 4px 10px 4px 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel); color: var(--text); font: inherit; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+.device-pill:hover, .device-pill[aria-expanded="true"] { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); background: var(--brand-soft); }
+.device-pill > svg { flex: none; color: var(--muted); }
+.device-pill .device-chev { transition: transform .15s; }
+.device-pill[aria-expanded="true"] .device-chev { transform: rotate(180deg); }
+.device-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: #a0a6b4; }
+.device-dot.on { background: var(--ok); box-shadow: 0 0 0 3px var(--ok-soft); }
+.device-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 70; width: min(300px, calc(100vw - 24px)); padding: 6px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow-lg); }
+.device-menu-head { display: grid; gap: 2px; padding: 8px 10px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; font-size: 14px; }
+.device-item { display: flex; align-items: center; gap: 10px; width: 100%; min-height: 48px; padding: 6px 10px; border: 0; border-radius: 10px; background: none; color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.device-item:hover:not(:disabled) { background: var(--panel-2); }
+.device-item.selected { background: var(--brand-soft); }
+.device-item:disabled { cursor: not-allowed; opacity: .55; }
+.device-item > svg { flex: none; color: var(--brand); }
+.device-item-text { display: grid; min-width: 0; flex: 1; font-size: 14px; }
+.device-menu-foot { display: flex; align-items: center; gap: 6px; margin-top: 4px; padding: 8px 10px 4px; border-top: 1px solid var(--line); color: var(--muted); }
+.device-menu-foot:hover { color: var(--brand); }
+.device-tip { position: absolute; top: calc(100% + 8px); right: 0; z-index: 69; display: flex; align-items: center; gap: 4px; width: max-content; max-width: min(260px, calc(100vw - 24px)); padding: 6px 4px 6px 12px; border-radius: 10px; background: var(--brand); color: var(--on-brand); font-size: 13px; box-shadow: var(--shadow-lg); }
+.device-tip::before { content: ""; position: absolute; top: -5px; right: 22px; width: 10px; height: 10px; background: var(--brand); transform: rotate(45deg); }
+.device-tip .btn { color: inherit; width: 28px; min-height: 28px; }
 @media (max-width: 559px) {
-  .device-switch select { max-width: 42vw; }
+  .device-pill { flex-shrink: 0; max-width: 34vw; padding: 4px 8px; gap: 5px; }
+  .device-pill .pill-word, .device-pill .device-chev { display: none; }
+  .device-switch { flex-shrink: 0; }
+  /* 手机上下拉列表贴着屏幕两边，不跟着按钮的位置 */
+  .device-menu { position: fixed; top: 58px; left: 12px; right: 12px; width: auto; }
+  .device-tip { position: fixed; top: 60px; right: 12px; }
+  .device-tip::before { display: none; }
   .topbar .hide-narrow, .topbar:has(.device-switch) .brand-text { display: none; }
 }
 .device-group { margin-bottom: 8px; }

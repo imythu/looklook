@@ -54,7 +54,8 @@ const K = {
   pgdn: { label: 'PgDn', seq: tilde(6), repeat: true },
   ins: { label: 'Ins', seq: tilde(2) },
   del: { label: 'Del', seq: tilde(3), repeat: true },
-  enter: { label: '↵', seq: (m) => (m.alt ? '\x1b\r' : '\r') },
+  // ⇧↵ 换行：发 Ctrl+J（\n），Claude Code / Codex / OpenCode 都当作输入框里的换行；普通 shell 里与回车一样。
+  enter: { label: '↵', seq: (m) => (m.shift && !m.ctrl && !m.alt ? '\n' : m.alt ? '\x1b\r' : '\r') },
   bksp: { label: '⌫', seq: (m) => (m.ctrl ? '\x08' : m.alt ? '\x1b\x7f' : '\x7f'), repeat: true },
 };
 

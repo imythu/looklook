@@ -104,6 +104,61 @@ export function useLogout() {
   };
 }
 
+/** 往返时间（毫秒）：每 10 秒经中转请求一次这台电脑的 /api/ping，取最近 3 次的中位数，免得一次抖动就跳。 */
+function useRemoteLatency(enabled) {
+  const [ms, setMs] = useState(null);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const samples = [];
+    let alive = true;
+    const once = async () => {
+      if (document.hidden) return;
+      const t0 = performance.now();
+      try {
+        await api.get('/ping');
+      } catch (e) {
+        if (e.status === 0 || e.status >= 500) {
+          if (alive) setMs(null);
+          return;
+        }
+        // 旧版客户端没有这个接口（404）也是一次完整的往返
+      }
+      samples.push(performance.now() - t0);
+      if (samples.length > 3) samples.shift();
+      const sorted = [...samples].sort((a, b) => a - b);
+      if (alive) setMs(Math.round(sorted[Math.floor(sorted.length / 2)]));
+    };
+    once();
+    const id = setInterval(once, 10000);
+    window.addEventListener('focus', once);
+    return () => {
+      alive = false;
+      clearInterval(id);
+      window.removeEventListener('focus', once);
+    };
+  }, [enabled]);
+  return ms;
+}
+
+const SLOW_MS = 150;
+const VERY_SLOW_MS = 400;
+
+/** 顶栏的“远程访问中 · 86 ms”。 */
+function RemoteBadge({ narrow }) {
+  const { t } = useTranslation();
+  const ms = useRemoteLatency(true);
+  const kind = ms === null ? 'badge-ok' : ms >= VERY_SLOW_MS ? 'badge-danger' : ms >= SLOW_MS ? 'badge-warn' : 'badge-ok';
+  return (
+    <span className={`badge ${kind} remote-badge`} title={ms === null ? t('nav.remote') : t('nav.remote_latency_hint', { ms })}>
+      <span className={narrow ? 'hide-narrow' : undefined}>
+        {t('nav.remote')}
+        {ms !== null && <span aria-hidden="true"> · </span>}
+      </span>
+      {ms !== null && <span>{t('nav.remote_ms', { ms })}</span>}
+    </span>
+  );
+}
+
 function GateBanner() {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
@@ -234,8 +289,8 @@ function ConsoleLayout({ path, stale, children }) {
           </Link>
         </span>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
-          {switcher && <DeviceSwitcher />}
-          {status.access === 'remote' && <span className={`badge badge-ok ${switcher ? 'hide-narrow' : ''}`}>{t('nav.remote')}</span>}
+          {devices.multi && <DeviceSwitcher perDevice={switcher} helpUrl={webUrl(status, '/docs/faq')} />}
+          {status.access === 'remote' && <RemoteBadge narrow={devices.multi} />}
           <LangSwitch />
           <Link to="/account" aria-label={t('nav.account')}>
             <Initial name={s.user.nickname} />
@@ -370,7 +425,9 @@ function Shell() {
   } else if (TERM.test(path)) {
     body = <TerminalView id={path.match(TERM)[1]} />;
   } else {
-    const login = status.account.session?.device_id;
+    // 换了登录（退出后重新登录）时重置终端页。远程打开时状态来自选中的那台电脑，选中的电脑一变 device_id 就变，
+    // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
+    const login = remote ? 'remote' : status.account.session?.device_id;
     const page = { '/': <Terminals key={login} />, '/pages': <Pages />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
     body = (
       <ConsoleLayout path={path} stale={devices.multi && statusDevice !== devices.selected}>
