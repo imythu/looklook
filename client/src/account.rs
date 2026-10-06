@@ -162,6 +162,8 @@ pub struct Account {
     revoked: RwLock<std::collections::HashSet<String>>,
     /// 需要重新上报终端列表（登录、换中转）时加一，见 [`Account::report_terminals_loop`]。
     report: watch::Sender<u64>,
+    /// 平台看到的这台电脑的公网 IP（心跳下发），判断远程打开的浏览器是否在同一网络（gateway/lan.rs）。
+    public_ip: RwLock<Option<std::net::IpAddr>>,
 }
 
 fn lock<T>(l: &RwLock<T>) -> std::sync::RwLockReadGuard<'_, T> {
@@ -207,7 +209,13 @@ impl Account {
             started: Instant::now(),
             revoked: RwLock::default(),
             report: watch::channel(0).0,
+            public_ip: RwLock::new(None),
         }))
+    }
+
+    /// 平台最近一次看到的这台电脑的公网 IP（旧平台不下发时为 None）。
+    pub fn public_ip(&self) -> Option<std::net::IpAddr> {
+        *lock(&self.public_ip)
     }
 
     pub fn platform(&self) -> Arc<Platform> {
@@ -628,6 +636,9 @@ impl Account {
             }
         }
         *lock_mut(&self.revoked) = r.revoked_sids.into_iter().collect();
+        if let Some(ip) = r.public_ip.as_deref().and_then(|v| v.parse().ok()) {
+            *lock_mut(&self.public_ip) = Some(ip);
+        }
         // 在看看网页上改了电脑名称：同步到本机设置（与心跳同在 busy 锁里，本机同时改名时以本机为准）。
         if let Some(name) = r.device_name.filter(|n| !n.is_empty()) {
             let mut settings = Settings::load(&self.store);
@@ -1081,6 +1092,7 @@ mod tests {
                         relay_changed: false,
                         revoked_sids: vec![],
                         device_name: None,
+                        public_ip: None,
                     };
                     (StatusCode::OK, serde_json::to_vec(&r).unwrap())
                 } else {

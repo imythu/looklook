@@ -693,6 +693,60 @@ pub async fn download(path: &str) -> R<Response> {
         .into_response())
 }
 
+/// 预览最多读这么多字节；更大的文件界面提示下载。
+pub const PREVIEW_MAX: u64 = 1024 * 1024;
+
+pub async fn preview(path: &str) -> R<Response> {
+    use tokio::io::AsyncReadExt;
+    let p = PathBuf::from(path);
+    if !p.is_absolute() {
+        return Err(LocalError::invalid("path", "absolute"));
+    }
+    let m = match tokio::fs::metadata(&p).await {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(LocalError::not_found().with("path", path)),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(LocalError::new("FORBIDDEN").with("path", path)),
+        Err(e) => return Err(e.into()),
+    };
+    if !m.is_file() {
+        return Err(LocalError::new("NOT_A_FILE").with("path", path));
+    }
+    let f = match tokio::fs::File::open(&p).await {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(LocalError::new("FORBIDDEN").with("path", path)),
+        Err(e) => return Err(e.into()),
+    };
+    let mut buf = Vec::with_capacity(m.len().min(PREVIEW_MAX) as usize);
+    f.take(PREVIEW_MAX).read_to_end(&mut buf).await?;
+    let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let kind = preview_type(&ext);
+    Ok((
+        [
+            (header::CONTENT_TYPE, kind.to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+            (header::CONTENT_SECURITY_POLICY, "sandbox; default-src 'none'".into()),
+            (header::CACHE_CONTROL, "no-store".into()),
+            (header::HeaderName::from_static("x-looklook-size"), m.len().to_string()),
+        ],
+        buf,
+    )
+        .into_response())
+}
+
+/// 预览的 Content-Type：常见位图按扩展名，其余（含 SVG、HTML）都当纯文本。
+fn preview_type(ext: &str) -> &'static str {
+    match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "avif" => "image/avif",
+        _ => "text/plain; charset=utf-8",
+    }
+}
+
 /// `attachment; filename="<ASCII 近似>"; filename*=UTF-8''<百分号编码>`（RFC 6266 / RFC 5987）
 fn content_disposition(name: &str) -> String {
     let ascii: String = name.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' }).collect();
@@ -710,6 +764,30 @@ fn content_disposition(name: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preview_types_never_execute() {
+        assert_eq!(preview_type("png"), "image/png");
+        assert_eq!(preview_type("jpeg"), "image/jpeg");
+        for ext in ["svg", "html", "htm", "xml", "js", ""] {
+            assert_eq!(preview_type(ext), "text/plain; charset=utf-8", "{ext}");
+        }
+    }
+
+    #[tokio::test]
+    async fn preview_truncates_and_sandboxes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let big = tmp.path().join("big.html");
+        std::fs::write(&big, vec![b'a'; PREVIEW_MAX as usize + 10]).unwrap();
+        let r = preview(&big.display().to_string()).await.ok().unwrap();
+        assert_eq!(r.headers()["content-type"], "text/plain; charset=utf-8");
+        assert!(r.headers()["content-security-policy"].to_str().unwrap().contains("sandbox"));
+        assert_eq!(r.headers()["x-looklook-size"], (PREVIEW_MAX + 10).to_string().as_str());
+        let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
+        assert_eq!(body.len() as u64, PREVIEW_MAX);
+        assert!(preview("relative/path").await.is_err());
+        assert!(preview(&tmp.path().display().to_string()).await.is_err(), "目录不能预览");
+    }
 
     fn paths(home: &Path) -> Paths {
         Paths { home: home.to_path_buf(), ttyd: None, mux: None, fonts: None, trzsz: None }

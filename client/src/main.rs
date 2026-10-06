@@ -370,6 +370,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     instances.recover().await;
     let relay = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     // 监听 0.0.0.0 时，本机命令行和浏览器仍然用 127.0.0.1 连。
+    let ui_bind_ip = ui.local_addr()?.ip();
     let ui_addr = match ui.local_addr()? {
         a if a.ip().is_unspecified() => SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), a.port()),
         a => a,
@@ -389,6 +390,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         store: store.clone(),
         paths: paths.clone(),
         ui_addr,
+        ui_bind_ip,
         relay_addr,
         http: gateway::proxy_client(),
         access: std::sync::RwLock::new(access),
@@ -396,6 +398,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         lan_ips: gateway::access::own_lan_ips(),
         remote: Default::default(),
         direct: Default::default(),
+        lan: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     let open_base = app.write_open_file()?;

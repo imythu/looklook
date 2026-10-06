@@ -16,6 +16,12 @@ const HINT_SNOOZE_MS = 24 * 3600 * 1000;
 
 const AUTO = '';
 
+/** 所在地：“美国 · 加利福尼亚州” / “United States · California”。 */
+export function placeName(loc, lang) {
+  const pick = (n) => (n ? (String(lang).startsWith('zh') ? n.zh : n.en) || n.en || n.zh : '');
+  return [pick(loc.country), pick(loc.region)].filter(Boolean).join(' · ');
+}
+
 function speed(ms) {
   if (ms == null) return null;
   return ms < 80 ? 'fast' : ms < 200 ? 'ok' : 'slow';
@@ -33,7 +39,7 @@ function Latency({ item }) {
 }
 
 export default function RelayPicker() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { status } = useStatus();
   const toast = useToast();
   const save = useAction();
@@ -92,6 +98,7 @@ export default function RelayPicker() {
               <input type="radio" name="relay" checked={selected === i.name} disabled={save.busy} onChange={() => choose(i.name)} />
               <span className="grow">
                 <b>{t('relays.line', { name: i.name })}</b>
+                {i.location && <span className="relay-where">{placeName(i.location, i18n.language)}</span>}
                 {data.current === i.name && <span className="tag tag-ok">{t('relays.in_use')}</span>}
                 {data.best === i.name && data.items.length > 1 && <span className="tag">{t('relays.fastest')}</span>}
                 {i.address && <span className="mono small muted block">{i.address}</span>}

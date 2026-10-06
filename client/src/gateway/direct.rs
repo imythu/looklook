@@ -6,7 +6,8 @@
 //! 3. 通过后终端 iframe 直接打开 `http://127.0.0.1:{端口}/i/{id}/`（回环地址不算混合内容）；
 //!    本机访问的终端页对登记过的来源放开 `frame-ancestors`（见 `frame_ancestors`）。
 //!
-//! 局域网地址不在这里：https 页面里请求 `http://192.168.x.x` 会被浏览器当作混合内容拦下，探测和嵌入都做不到。
+//! 局域网地址不在这里：https 页面里请求 `http://192.168.x.x` 会被浏览器当作混合内容拦下，探测和嵌入都做不到；
+//! 局域网改为整页切换，见 `lan.rs` 与 docs/LAN_SWITCH.md。
 
 use std::collections::HashMap;
 use std::sync::Mutex;

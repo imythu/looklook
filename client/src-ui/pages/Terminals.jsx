@@ -35,7 +35,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { SafetyNote, useStatus } from "../App.jsx";
-import { api, deviceApi, rememberTerminals, terminalDevice } from "../shared/api.js";
+import { api, ApiError, deviceApi, rememberTerminals, terminalDevice } from "../shared/api.js";
 import { deviceName, osLabel, RenameDeviceDialog, useDevices } from "../shared/devices.jsx";
 import { urlHost } from "../shared/host.js";
 import { errorText } from "../shared/i18n.js";
@@ -1413,23 +1413,57 @@ export function Promotions() {
   ));
 }
 
-/** 多台电脑：分别向每台在线的电脑要终端列表；一台出错不影响其他。 */
-async function loadGroups(online) {
-  const groups = await Promise.all(
-    online.map((d) =>
-      deviceApi(d.id)
-        .get("/instances")
-        .then(
-          (r) => {
-            const items = Array.isArray(r?.items) ? r.items : [];
-            rememberTerminals(d.id, items);
-            return { id: d.id, items };
-          },
-          (error) => ({ id: d.id, items: [], error }),
-        ),
-    ),
-  );
-  return { items: groups.flatMap((g) => g.items), groups: Object.fromEntries(groups.map((g) => [g.id, g])) };
+const GROUP_TIMEOUT_MS = 10000;
+
+/**
+ * 多台电脑：分别向每台在线的电脑要终端列表，各自独立。一台卡住（超时）或出错只影响它自己那一组，
+ * 其他电脑的终端先显示出来；同一台电脑上一次还没返回时不重复请求。
+ */
+function useDeviceGroups(online, key) {
+  const [groups, setGroups] = useState({});
+  const inflight = useRef(new Set());
+  const alive = useRef(true);
+  const ids = useRef([]);
+  ids.current = online ? online.map((d) => d.id) : [];
+  const loadOne = (id) => {
+    if (inflight.current.has(id)) return;
+    inflight.current.add(id);
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), GROUP_TIMEOUT_MS);
+    deviceApi(id)
+      .get("/instances", { signal: ctl.signal })
+      .then(
+        (r) => {
+          const items = Array.isArray(r?.items) ? r.items : [];
+          rememberTerminals(id, items);
+          return { id, items };
+        },
+        // 超时：保留上一次拿到的列表，免得卡一下就整组消失
+        (e) => ({ id, error: e?.name === "AbortError" ? new ApiError(0, "DEVICE_TIMEOUT") : e }),
+      )
+      .then((g) => {
+        clearTimeout(timer);
+        inflight.current.delete(id);
+        if (!alive.current || !ids.current.includes(id)) return;
+        setGroups((all) => ({ ...all, [id]: g.error ? { ...all[id], id, items: all[id]?.items ?? [], error: g.error } : g }));
+      });
+  };
+  const reload = () => ids.current.forEach(loadOne);
+  useEffect(() => {
+    alive.current = true;
+    setGroups((all) => Object.fromEntries(Object.entries(all).filter(([id]) => ids.current.includes(id))));
+    reload();
+    return () => {
+      alive.current = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  if (!online) return [null, reload];
+  const list = ids.current.map((id) => groups[id]).filter(Boolean);
+  const items = list.flatMap((g) => g.items);
+  // 还有电脑没返回、其他电脑也都没有终端时继续显示骨架，免得先闪一下“还没有终端”
+  const settled = items.length > 0 || list.length === ids.current.length;
+  return [settled ? { items, groups } : null, reload];
 }
 
 /** 一台电脑的终端：标题（名称、系统、在线状态）+ 卡片；离线的电脑只显示一行“离线”。 */
@@ -1452,12 +1486,11 @@ function DeviceGroup({ device, group, renderCard }) {
         )}
         {device.os && <span className="muted small">{osLabel(device.os)}</span>}
         <span className={`badge ${device.online ? "badge-ok" : ""}`}>{t(device.online ? "devices.online" : "devices.offline")}</span>
-        {device.online && group && !group.error && <span className="muted small">{t("devices.count", { count: items.length })}</span>}
+        {device.online && group && (!group.error || items.length > 0) && <span className="muted small">{t("devices.count", { count: items.length })}</span>}
       </h2>
+      {device.online && group?.error && <ErrorNote error={group.error} />}
       {device.online &&
-        (group?.error ? (
-          <ErrorNote error={group.error} />
-        ) : !group ? (
+        (group?.error && items.length === 0 ? null : !group ? (
           <Skeleton height={120} />
         ) : items.length === 0 ? (
           <p className="muted small device-empty">{t("devices.no_terminals")}</p>
@@ -1508,13 +1541,19 @@ export default function Terminals() {
   const online = multi ? devices.items.filter((d) => d.online) : [];
   const onlineKey = online.map((d) => d.id).join(",");
   // 只有一台电脑（或本机/局域网打开）时和以前一样只看这台
-  const [data, error, reload] = useLoad(() => (multi ? loadGroups(online) : api.get("/instances")), [multi, onlineKey]);
+  const [single, singleError, reloadSingle] = useLoad(() => (multi ? Promise.resolve(null) : api.get("/instances")), [multi]);
+  const [grouped, reloadGroups] = useDeviceGroups(multi ? online : null, `${multi}:${onlineKey}`);
+  const data = multi ? grouped : single;
+  const error = multi ? null : singleError;
+  const reload = () => (multi ? reloadGroups() : reloadSingle());
   const allowed = status.account.allowed;
   const [dialog, setDialog] = useState(null);
   const [logs, setLogs] = useState(null);
   const [embedded, setEmbedded] = useEmbedded();
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
   useEffect(() => {
-    const id = setInterval(reload, 5000);
+    const id = setInterval(() => reloadRef.current(), 5000);
     return () => clearInterval(id);
   }, []);
   const items = data?.items ?? [];

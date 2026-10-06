@@ -471,7 +471,9 @@
     "fw_lan": "To let other devices at home open it: tick only \"Private networks\" and click \"Allow access\". Don't tick \"Public networks\" (cafés, airports, etc.).",
     "fw_profile": "Allowed but still can't connect: in Windows Settings → Network & Internet → Wi‑Fi (or Ethernet) → your network, set the network profile type to \"Private\".",
     "fw_fix": "Clicked the wrong option and want to change it: open Control Panel → Windows Defender Firewall → Allow an app through Windows Firewall → Change settings, find looklook and tick only \"Private\". You can also run this in PowerShell as administrator:",
-    "fw_never": "To never see this prompt: set the environment variable LOOKLOOK_LISTEN=127.0.0.1:1234 and reopen Looklook. Then the dashboard can only be opened on this computer, and LAN access won't work."
+    "fw_never": "To never see this prompt: set the environment variable LOOKLOOK_LISTEN=127.0.0.1:1234 and reopen Looklook. Then the dashboard can only be opened on this computer, and LAN access won't work.",
+    "lan_switch": "Offer the local network when opened remotely",
+    "lan_switch_hint": "When you open Looklook remotely with your account while on the same network as this computer (say, your phone at home), the page offers a faster direct connection over the local network. Only browsers signed in to your account can switch; it doesn't need \"Allow LAN\" above or the access code."
   },
   "relay": {
     "state": {
@@ -810,5 +812,41 @@
     "starting": "DSH is still starting; refresh the page in a moment if it doesn't load",
     "form_note": "DSH runs as a web page, one per computer. Looklook picks a free port and adds a local page for it, so opening DSH (here or remotely) opens that page.",
     "workdir_hint": "DSH's default project folder. Add other project folders inside DSH."
+  },
+  "fb": {
+    "tabs": "Terminal and files",
+    "tab_term": "Terminal",
+    "tab_files": "Files",
+    "up": "Up one folder",
+    "location": "Current folder",
+    "copy_path": "Copy folder path",
+    "copied": "Path copied",
+    "copy_failed": "The browser didn't allow copying",
+    "cwd": "Back to the terminal's current folder",
+    "home": "Home folder",
+    "hidden": "Show hidden files",
+    "insert": "Insert the path into the terminal",
+    "wrap": "Wrap long lines",
+    "close_preview": "Close preview",
+    "loading": "Loading…",
+    "binary": "This file isn't text, so it can't be previewed. Download it to open it.",
+    "truncated": "Only the first {{size}} is shown. Download the file to see all of it.",
+    "empty_file": "(empty file)",
+    "denied": "Looklook isn't allowed to read this folder.",
+    "moved": "That folder no longer exists; showing the nearest one above it.",
+    "empty": "This folder is empty.",
+    "link": "Shortcut (symbolic link)"
+  },
+  "lan": {
+    "hint": "You're on the same network as this computer. Connect over the local network instead of the remote route for snappier typing.",
+    "auto": "Switch automatically in this browser from now on",
+    "open": "Use local network",
+    "dismiss": "Not now",
+    "open_term": "Open this terminal over the local network in a new tab (faster)",
+    "open_term_unsure": "Open this terminal over the local network (you need to be on the same network as this computer)",
+    "badge": "LAN",
+    "badge_hint": "Connected to this computer directly over the local network, not through a remote route. If you leave this network you'll be offered the remote address.",
+    "lost": "Can't reach this computer; you may have left its network. Your terminals are still running. Continue at the remote address.",
+    "back_remote": "Back to remote address"
   }
 }

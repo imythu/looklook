@@ -20,6 +20,7 @@ import { BrandMark, Button, FoldNote, LangSwitch, Note, Skeleton, useConfirm, us
 import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
+import { LanBanner, LanFallback, useLanPage } from './shared/lan.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
 
 const StatusCtx = createContext({ status: null, reload: () => {} });
@@ -275,6 +276,7 @@ function ConsoleLayout({ path, stale, children }) {
   const [open, setOpen] = useState(false);
   useEffect(() => setOpen(false), [path]);
   const s = status.account.session;
+  const lanPage = useLanPage();
   return (
     <>
       <header className="topbar">
@@ -291,6 +293,11 @@ function ConsoleLayout({ path, stale, children }) {
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
           {devices.multi && <DeviceSwitcher perDevice={switcher} helpUrl={webUrl(status, '/docs/faq')} />}
           {status.access === 'remote' && <RemoteBadge narrow={devices.multi} />}
+          {lanPage && (
+            <span className="badge badge-ok" title={t('lan.badge_hint')}>
+              {t('lan.badge')}
+            </span>
+          )}
           <LangSwitch />
           <Link to="/account" aria-label={t('nav.account')}>
             <Initial name={s.user.nickname} />
@@ -298,6 +305,8 @@ function ConsoleLayout({ path, stale, children }) {
         </span>
       </header>
       <GateBanner />
+      <LanFallback />
+      {status.access === 'remote' && <LanBanner device={devices.multi ? devices.selected : undefined} />}
       <UpdateBanner />
       <JustUpdatedBanner />
       <RelayHint />

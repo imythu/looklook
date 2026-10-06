@@ -94,6 +94,25 @@ pub struct RelayChoice {
     pub address: Option<String>,
     /// 测延迟的地址：中转直连入口（443）上的 `/_ll/ping`。中转没开直连时为 None，不能测。
     pub ping_url: Option<String>,
+    /// 中转所在地（按 IP 库或管理员填写，到省/州一级）；未知时为 None。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub location: Option<RelayLocation>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayLocation {
+    /// ISO 3166-1 两位代码（可能为空字符串）
+    #[serde(default)]
+    pub country_code: String,
+    pub country: LocalizedName,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub region: Option<LocalizedName>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LocalizedName {
+    pub en: String,
+    pub zh: String,
 }
 
 /// `PUT /api/client/v1/relays/preference`：`relay` 为 None = 自动。
@@ -191,6 +210,10 @@ pub struct HeartbeatResponse {
     /// 平台上这台设备的名称：在网页上改过名时与客户端上报的不同，客户端据此同步本机设置。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_name: Option<String>,
+    /// 平台看到的这台设备的公网 IP。远程打开时浏览器的公网 IP 与它相同，
+    /// 说明浏览器多半和这台电脑在同一个网络里，界面提示改走局域网（客户端 gateway/lan.rs）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

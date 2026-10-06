@@ -219,6 +219,12 @@ export default function AccessCard() {
         </div>
       )}
 
+      {data.lan_switch !== undefined && (
+        <Toggle checked={data.lan_switch} onChange={(v) => save({ lan_switch: v })} disabled={busy} title={t('access.lan_switch')}>
+          {t('access.lan_switch_hint')}
+        </Toggle>
+      )}
+
       {status.capabilities.os === 'windows' && <WindowsFirewall exe={data.exe} />}
 
       <Toggle checked={data.code_enabled} onChange={(v) => save({ code_enabled: v })} disabled={busy} title={t('access.code')}>

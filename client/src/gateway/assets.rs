@@ -54,6 +54,10 @@ fn text(kind: &str) -> (&'static str, &'static str) {
         "upstream_down" => ("终端暂时没有响应", "请稍后刷新；如果一直这样，可以在看看客户端里重启这个终端。"),
         "port_reserved" => ("这个地址不能用作本机网页", "它是看看自己在使用的端口，请换一个网页地址。"),
         "page_down" => ("电脑上的这个网页没有在运行", "请先在电脑上启动它（比如运行 npm run dev），再刷新本页。"),
+        "lan_expired" => (
+            "局域网链接已失效 / Link expired",
+            "这个链接只能用一次、1 分钟内有效。请回到远程页面，再点一次“改用局域网”。This one-time link has expired; go back to the remote page and switch again.",
+        ),
         _ => ("出了点问题", "请稍后再试。"),
     }
 }

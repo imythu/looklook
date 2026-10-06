@@ -43,6 +43,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/files", get(instance_files))
         .route("/instances/{id}/uploads", post(create_upload))
         .route("/instances/{id}/download", get(download))
+        .route("/instances/{id}/fs", get(instance_fs))
+        .route("/instances/{id}/preview", get(preview))
         .route("/instances/{id}/transfer/finish", post(end_transfer))
         .route("/instances/{id}/transfer/cancel", post(end_transfer))
         // 只有上传块放宽请求体上限（一块 8 MiB），其他接口仍是默认的 2 MB
@@ -57,6 +59,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/device/name", put(put_device_name))
         .route("/direct", post(direct))
+        .route("/lan", get(lan_info))
+        .route("/lan/ticket", post(lan_ticket))
         .route("/access", get(get_access).put(put_access))
         .route("/mcp", get(get_mcp).put(put_mcp))
         .route("/mcp/install", post(mcp_install))
@@ -132,6 +136,60 @@ async fn direct(State(app): State<App>, Extension(access): Extension<Access>, he
         return Ok(Json(json!({ "available": false })));
     }
     Ok(Json(json!({ "available": true, "port": app.ui_addr.port(), "nonce": app.direct.issue(origin) })))
+}
+
+// ---------------- 远程打开 → 改走局域网（gateway/lan.rs） ----------------
+
+/// 这台电脑的局域网地址（管理台只绑在回环地址上时没有）。
+fn lan_urls(app: &App) -> Vec<String> {
+    let ip = app.ui_bind_ip;
+    let ips: Vec<std::net::IpAddr> = if ip.is_unspecified() {
+        app.lan_ips.clone()
+    } else if access::is_lan(ip) {
+        vec![ip]
+    } else {
+        Vec::new()
+    };
+    let port = app.ui_addr.port();
+    ips.iter()
+        .map(|ip| match ip {
+            std::net::IpAddr::V6(v6) => format!("http://[{v6}]:{port}"),
+            v4 => format!("http://{v4}:{port}"),
+        })
+        .collect()
+}
+
+/// `GET /api/lan`（只限远程打开）：能不能改走局域网、浏览器看起来是不是在同一个网络。
+/// `same_network`：浏览器的公网 IP（中转转发的 `X-Forwarded-For`）与平台看到的这台电脑的公网 IP 相同；不知道时为 null。
+async fn lan_info(State(app): State<App>, Extension(access): Extension<Access>, headers: axum::http::HeaderMap) -> R<Json<Value>> {
+    if access.is_local() {
+        return Err(LocalError::not_found());
+    }
+    let urls = lan_urls(&app);
+    let enabled = app.access().lan_switch && !urls.is_empty();
+    let browser: Option<std::net::IpAddr> = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.split(',').next())
+        .and_then(|v| v.trim().parse().ok());
+    tracing::debug!(?browser, own = ?app.account.public_ip(), "局域网：比较公网 IP");
+    let same = match (browser, app.account.public_ip()) {
+        (Some(b), Some(own)) => Some(super::lan::same_network(b, own)),
+        _ => None,
+    };
+    Ok(Json(json!({ "enabled": enabled, "same_network": same, "urls": urls })))
+}
+
+/// `POST /api/lan/ticket`（只限远程打开）：一次性票据，60 秒内在局域网地址上兑换。
+async fn lan_ticket(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
+    if access.is_local() {
+        return Err(LocalError::not_found());
+    }
+    let urls = lan_urls(&app);
+    if !app.access().lan_switch || urls.is_empty() {
+        return Err(LocalError::new("LAN_SWITCH_OFF"));
+    }
+    Ok(Json(json!({ "ticket": app.lan.issue(), "path": super::lan::REDEEM_PATH, "urls": urls })))
 }
 
 // ---------------- 状态与账户 ----------------
@@ -491,6 +549,9 @@ struct FsQ {
     path: String,
     #[serde(default, deserialize_with = "de_flag")]
     hidden: bool,
+    /// 同时列出文件（终端页的“文件”标签）；默认只列子目录（选工作目录）
+    #[serde(default, deserialize_with = "de_flag")]
+    files: bool,
 }
 
 /// 查询串布尔值：接受 `1/0`、`true/false`、`yes/no`、`on/off`，空值视为 false
@@ -507,6 +568,13 @@ fn de_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
 struct FsEntry {
     name: String,
     is_dir: bool,
+    /// 以下只在 `files=1` 时给出
+    #[serde(skip_serializing_if = "Option::is_none")]
+    size: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mtime_ms: Option<i64>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    link: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -579,15 +647,27 @@ fn list_dirs(q: &FsQ) -> Result<FsList, LocalError> {
                 .filter_map(|e| {
                     let name = e.file_name().to_string_lossy().into_owned();
                     // 跟随符号链接判断是否目录；目标读不到属性（受保护位置）时按目录项本身的类型算
-                    let is_dir = match std::fs::metadata(e.path()) {
-                        Ok(m) => m.is_dir(),
-                        Err(_) => e.file_type().map(|t| t.is_dir()).unwrap_or(false),
+                    let meta = std::fs::metadata(e.path()).ok();
+                    let is_dir = match &meta {
+                        Some(m) => m.is_dir(),
+                        None => e.file_type().map(|t| t.is_dir()).unwrap_or(false),
                     };
-                    (is_dir && (q.hidden || !is_hidden(&e, &name))).then_some(FsEntry { name, is_dir })
+                    if !(is_dir || q.files) || !(q.hidden || !is_hidden(&e, &name)) {
+                        return None;
+                    }
+                    let (size, mtime_ms, link) = if q.files {
+                        let mtime = meta.as_ref().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                        let link = e.file_type().is_ok_and(|t| t.is_symlink());
+                        (meta.as_ref().filter(|m| m.is_file()).map(|m| m.len()), mtime.map(|d| d.as_millis() as i64), link)
+                    } else {
+                        (None, None, false)
+                    };
+                    Some(FsEntry { name, is_dir, size, mtime_ms, link })
                 })
                 .collect();
-            entries.sort_by_key(|e| e.name.to_lowercase());
-            entries.truncate(2000);
+            // 文件夹在前（选工作目录时本来就只有文件夹）
+            entries.sort_by_key(|e| (!e.is_dir, e.name.to_lowercase()));
+            entries.truncate(if q.files { 5000 } else { 2000 });
         }
         // Linux/macOS 的 EACCES、EPERM（含 macOS 隐私保护拒绝）和 Windows 的“拒绝访问”都归到这里
         Err(e) if e.kind() == ErrorKind::PermissionDenied => denied = true,
@@ -610,6 +690,25 @@ fn list_dirs(q: &FsQ) -> Result<FsList, LocalError> {
         roots: roots(),
         home: dirs::home_dir().map(|p| p.display().to_string()),
     })
+}
+
+/// `GET /api/instances/{id}/fs?path=&hidden=`：终端页“文件”标签，列出文件夹和文件；路径为空时从终端的当前目录开始。
+/// 挂在终端下面是为了多设备时按终端路由到它所在的电脑；能用管理台的人本来就有完整的 shell，不另加路径限制。
+async fn instance_fs(State(app): State<App>, Path(id): Path<String>, Query(mut q): Query<FsQ>) -> R<Json<FsList>> {
+    if q.path.trim().is_empty() {
+        q.path = transfer::files_info(&app.instances, &app.paths, &id).await?.cwd;
+    } else {
+        app.instances.get(&id).await?;
+    }
+    q.files = true;
+    fs_list(Query(q)).await
+}
+
+/// `GET /api/instances/{id}/preview?path=`：预览文件的前 [`transfer::PREVIEW_MAX`] 字节。
+/// 只按扩展名给出几种位图类型，其余一律 `text/plain`，并加 `sandbox` CSP：用户目录里的 HTML/SVG 不能在管理台的源上执行。
+async fn preview(State(app): State<App>, Path(id): Path<String>, Query(q): Query<PathQ>) -> R<Response> {
+    app.instances.get(&id).await?;
+    transfer::preview(&q.path).await
 }
 
 /// 顶层位置。Windows 用 GetLogicalDrives 的位图列出盘符：不访问磁盘，没插卡的读卡器、断开的网络盘也不会卡住。
@@ -760,6 +859,7 @@ fn access_view(app: &App, peer: Option<Peer>) -> Value {
         "code_enabled": c.code_enabled,
         "code": c.code,
         "open_host": c.open_host,
+        "lan_switch": c.lan_switch,
         "port": app.ui_addr.port(),
         "lan_ips": app.lan_ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
         "peer": peer,
@@ -788,6 +888,7 @@ struct AccessReq {
     /// 自己设置访问码
     code: Option<String>,
     open_host: Option<String>,
+    lan_switch: Option<bool>,
 }
 
 async fn put_access(State(app): State<App>, Extension(access): Extension<Access>, peer: Option<Extension<Peer>>, Json(req): Json<AccessReq>) -> R<Json<Value>> {
@@ -814,6 +915,9 @@ async fn put_access(State(app): State<App>, Extension(access): Extension<Access>
     }
     if let Some(v) = req.code_enabled {
         c.code_enabled = v;
+    }
+    if let Some(v) = req.lan_switch {
+        c.lan_switch = v;
     }
     if req.new_code {
         c.code = access::generate_code();
@@ -1107,7 +1211,23 @@ mod tests {
     }
 
     fn q(path: &std::path::Path, hidden: bool) -> FsQ {
-        FsQ { path: path.display().to_string(), hidden }
+        FsQ { path: path.display().to_string(), hidden, files: false }
+    }
+
+    #[test]
+    fn fs_list_with_files_puts_folders_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(tmp.path().join("zdir")).unwrap();
+        std::fs::write(tmp.path().join("a.txt"), b"hello").unwrap();
+        std::fs::write(tmp.path().join(".hidden"), b"x").unwrap();
+        let r = list_dirs(&FsQ { files: true, ..q(tmp.path(), false) }).ok().unwrap();
+        let names: Vec<_> = r.entries.iter().map(|e| (e.name.as_str(), e.is_dir, e.size)).collect();
+        assert_eq!(names, [("zdir", true, None), ("a.txt", false, Some(5))]);
+        assert!(r.entries.iter().all(|e| e.mtime_ms.is_some()));
+        // 不带 files 时只列文件夹，也不带大小和时间
+        let r = list_dirs(&q(tmp.path(), false)).ok().unwrap();
+        assert_eq!(r.entries.len(), 1);
+        assert!(r.entries[0].mtime_ms.is_none());
     }
 
     #[test]

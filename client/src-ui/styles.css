@@ -815,6 +815,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 }
 .relay-option:hover { border-color: color-mix(in srgb, var(--brand) 35%, var(--line)); }
 .relay-option.selected { border-color: var(--brand); background: color-mix(in srgb, var(--brand) 6%, transparent); }
+.relay-where { margin-left: 8px; color: var(--muted); font-size: 13px; }
 .relay-option .block { display: block; overflow-wrap: anywhere; }
 .relay-option .tag { margin-left: 8px; }
 .tag { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; vertical-align: 1px; }
@@ -827,3 +828,55 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .latency-fast { color: var(--ok); }
 .latency-ok { color: var(--warn); }
 .latency-slow { color: var(--danger); }
+
+/* ---------- 终端页“文件”标签（FileBrowser.jsx） ---------- */
+.term-tabs { flex: none; display: inline-flex; gap: 2px; padding: 2px; margin: 0 4px; border-radius: 10px; background: rgba(255, 255, 255, .06); }
+.term-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: #9aa1b2; font: 500 13px/1 var(--font); cursor: pointer; }
+.term-tab:hover { color: #e3e6ee; }
+.term-tab.on { background: #2a2f3b; color: #fff; }
+.term-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+@container (max-width: 520px) {
+  .term-tab { padding: 0 9px; }
+  .term-tab-label { display: none; }
+}
+.term-files-tab { position: absolute; inset: 0; z-index: 3; background: var(--bg); color: var(--text); }
+.fb { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.fb-bar { flex: none; display: flex; align-items: center; gap: 2px; padding: 4px 8px; border-bottom: 1px solid var(--line); background: var(--panel); }
+.fb-bar .btn-icon.on, .fb-preview-head .btn-icon.on { color: var(--brand); }
+.fb-crumbs { flex: 1; min-width: 0; display: flex; align-items: center; overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
+.fb-crumbs::-webkit-scrollbar { display: none; }
+.fb-crumb { display: inline-flex; align-items: center; }
+.fb-crumb-btn { border: 0; background: none; color: var(--muted); font: 14px/1 var(--font); padding: 8px 5px; border-radius: 6px; cursor: pointer; }
+.fb-crumb-btn:hover { color: var(--text); background: var(--panel-2); }
+.fb-crumb-btn[aria-current] { color: var(--text); font-weight: 600; }
+.fb-main { flex: 1; min-height: 0; display: flex; }
+.fb-list { flex: 1; min-width: 0; overflow-y: auto; padding: 4px 0 calc(8px + env(safe-area-inset-bottom)); }
+.fb-pad { padding: 8px 14px; margin: 0; }
+.fb-row { display: flex; align-items: center; gap: 8px; padding: 0 6px 0 4px; border-bottom: 1px solid color-mix(in srgb, var(--line) 50%, transparent); }
+.fb-row:hover, .fb-row.selected { background: var(--panel-2); }
+.fb-name { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 42px; padding: 0 8px; border: 0; background: none; color: inherit; font: 14px/1.3 var(--font); text-align: left; cursor: pointer; }
+.fb-dir { color: var(--brand); flex: none; }
+.fb-name > svg { flex: none; }
+.fb-meta { flex: none; width: 76px; text-align: right; font-variant-numeric: tabular-nums; }
+.fb-acts { flex: none; display: inline-flex; }
+.fb-acts .btn-icon { width: 36px; min-height: 36px; }
+.fb-preview { flex: 1.3; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--panel); }
+.fb-preview-head { flex: none; display: flex; align-items: center; gap: 6px; padding: 4px 6px 4px 12px; border-bottom: 1px solid var(--line); }
+.fb-preview-body { flex: 1; min-height: 0; overflow: auto; }
+.fb-preview-body img { display: block; max-width: 100%; height: auto; margin: 12px auto; background: repeating-conic-gradient(var(--panel-2) 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
+.fb-text { margin: 0; padding: 10px 14px; font: 13px/1.5 var(--mono); tab-size: 4; white-space: pre; }
+.fb-text.fb-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fb-note { border-bottom: 1px dashed var(--line); }
+@media (max-width: 719px) {
+  .fb-time { display: none; }
+  .fb-meta { width: 64px; }
+  /* 手机上预览盖住列表，关掉回到列表 */
+  .fb-has-preview .fb-list { display: none; }
+  .fb-preview { border-left: 0; }
+}
+
+/* ---------- 远程 ⇄ 局域网（shared/lan.jsx） ---------- */
+.lan-banner { align-items: center; }
+.lan-auto { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.lan-auto input { width: 16px; height: 16px; margin: 0; }
+.term-page > .lan-lost { flex: none; }

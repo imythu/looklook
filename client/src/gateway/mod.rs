@@ -12,6 +12,7 @@ pub mod access;
 mod api;
 mod assets;
 pub mod direct;
+pub mod lan;
 pub mod mcp;
 mod proxy;
 mod remote;
@@ -61,6 +62,8 @@ pub struct Inner {
     pub store: Arc<Store>,
     pub paths: Paths,
     pub ui_addr: SocketAddr,
+    /// 管理台实际监听的 IP（`ui_addr` 在监听 0.0.0.0 时写成 127.0.0.1，供本机连接用）
+    pub ui_bind_ip: IpAddr,
     pub relay_addr: SocketAddr,
     pub http: HttpClient,
     /// 直接访问控制（局域网、白名单、访问码、打开地址），改设置时同步更新
@@ -72,6 +75,8 @@ pub struct Inner {
     pub remote: remote::Verifier,
     /// 远程打开时的本机直连（口令、可嵌入本机终端的来源）
     pub direct: direct::Direct,
+    /// 远程打开 → 改走局域网的票据与通行 Cookie
+    pub lan: lan::Lan,
 }
 
 impl Inner {
@@ -141,14 +146,29 @@ pub async fn local_guard(State(app): State<App>, mut req: Request, next: Next) -
     let peer_ip = conn.map(|c| c.remote.ip().to_canonical()).unwrap_or(IpAddr::from([127, 0, 0, 1]));
     let same_host = conn.and_then(|c| c.local).is_some_and(|l| l.ip().to_canonical() == peer_ip);
     let cfg = app.access();
-    let peer = access::classify(peer_ip, &cfg, same_host);
-    if peer == access::Peer::Denied {
-        return assets::denied_page(&peer_ip.to_string());
-    }
+    let mut peer = access::classify(peer_ip, &cfg, same_host);
     if !host_name(req.headers()).is_some_and(|n| access::host_allowed(n, cfg.open_host().as_ref())) {
+        if peer == access::Peer::Denied {
+            return assets::denied_page(&peer_ip.to_string());
+        }
         return (StatusCode::FORBIDDEN, "forbidden host").into_response();
     }
-    if peer.needs_code(&cfg) && !cookie(req.headers(), access::COOKIE).is_some_and(|v| ct_eq(v, &cfg.cookie_value())) {
+    // 从远程页面切过来的局域网浏览器（lan.rs）：兑换票据，或带着兑换得到的 Cookie
+    let lan_ok = cfg.lan_switch && (access::is_lan(peer_ip) || peer == access::Peer::Local);
+    if lan_ok && req.uri().path() == lan::REDEEM_PATH && req.method() == Method::GET {
+        let q: std::collections::HashMap<String, String> =
+            axum::extract::Query::try_from_uri(req.uri()).map(|q: axum::extract::Query<_>| q.0).unwrap_or_default();
+        let get = |k: &str| q.get(k).map(String::as_str).unwrap_or("");
+        return lan::redeem_response(&app.lan, get("t"), get("to"), peer_ip);
+    }
+    let lan_pass = lan_ok && peer != access::Peer::Local && cookie(req.headers(), lan::COOKIE).is_some_and(|v| app.lan.pass_ok(v, peer_ip));
+    if peer == access::Peer::Denied {
+        if !lan_pass {
+            return assets::denied_page(&peer_ip.to_string());
+        }
+        peer = access::Peer::Lan;
+    }
+    if peer.needs_code(&cfg) && !lan_pass && !cookie(req.headers(), access::COOKIE).is_some_and(|v| ct_eq(v, &cfg.cookie_value())) {
         if req.uri().path() == access::FORM_PATH && req.method() == Method::POST {
             return submit_code(&app, &cfg, peer_ip, req).await;
         }

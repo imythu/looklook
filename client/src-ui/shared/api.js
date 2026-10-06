@@ -82,7 +82,9 @@ async function request(method, path, body, options = {}) {
   if (device) headers['X-LL-Device'] = device;
   let res;
   try {
-    res = await fetch(`/api${path}`, { signal: options.signal, method, headers, credentials: 'same-origin', body: body === undefined ? undefined : JSON.stringify(body) });
+    // no-store：浏览器（Chrome 的缓存锁）会让同一网址的并发 GET 排队等前一个返回。多台电脑时各台的
+    // `/api/instances` 网址相同、只是 X-LL-Device 不同，一台卡住会让其他电脑的请求也一起等。
+    res = await fetch(`/api${path}`, { signal: options.signal, method, headers, credentials: 'same-origin', cache: 'no-store', body: body === undefined ? undefined : JSON.stringify(body) });
   } catch (e) {
     if (e.name === 'AbortError') throw e;
     throw new ApiError(0, 'CLIENT_UNREACHABLE');

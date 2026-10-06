@@ -45,11 +45,14 @@ pub struct AccessConfig {
     pub code: String,
     /// 启动时打开的地址（主机部分）；为空表示 127.0.0.1。看看装在 NAS 等别的机器上时使用。
     pub open_host: String,
+    /// 远程打开（已登录看看账号）的浏览器在同一网络时，可以一键改走局域网（gateway/lan.rs），
+    /// 不受 `allow_lan` 和访问码限制。默认开。
+    pub lan_switch: bool,
 }
 
 impl Default for AccessConfig {
     fn default() -> Self {
-        Self { allow_lan: false, allowed_ips: Vec::new(), code_enabled: false, code: generate_code(), open_host: String::new() }
+        Self { allow_lan: false, allowed_ips: Vec::new(), code_enabled: false, code: generate_code(), open_host: String::new(), lan_switch: true }
     }
 }
 

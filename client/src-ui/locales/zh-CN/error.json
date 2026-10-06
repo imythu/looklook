@@ -81,6 +81,8 @@
     "ip_too_many": "白名单最多 32 项",
     "code_length": "访问码需要 8 到 64 个字符"
   },
+  "LAN_SWITCH_OFF": "已关闭“远程打开时可以改走局域网”（设置 → 访问控制）",
+  "DEVICE_TIMEOUT": "这台电脑没有及时响应，正在重试",
   "CLIENT_UNREACHABLE": "连不上这台电脑上的看看，它可能已经退出",
   "NOT_LOGGED_IN": "请先登录",
   "ALREADY_LOGGED_IN": "已经登录了",

@@ -81,6 +81,8 @@
     "ip_too_many": "The allowlist holds at most 32 entries",
     "code_length": "The access code must be 8 to 64 characters"
   },
+  "LAN_SWITCH_OFF": "Switching to the local network is turned off (Settings → Access)",
+  "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
   "CLIENT_UNREACHABLE": "Can't reach Looklook on this computer; it may have quit",
   "NOT_LOGGED_IN": "Please sign in first",
   "ALREADY_LOGGED_IN": "Already signed in",

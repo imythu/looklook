@@ -1,15 +1,17 @@
 // 终端页：整页显示一个终端（同源 iframe 打开 /i/{id}/）。手机上底部有按键条（Esc、Tab、Ctrl/Alt/Shift、方向键、组合键、符号、F1–F12…）。
-import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, GripHorizontal, Maximize2, Minimize2, PanelBottom, Play, RefreshCw, X, Zap } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, FolderOpen, GripHorizontal, Maximize2, Minimize2, PanelBottom, Play, RefreshCw, SquareTerminal, X, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
-import { api } from '../shared/api.js';
-import { termFit, termFocus, useLatency, useTermSrc } from '../shared/direct.js';
+import { api, terminalDevice } from '../shared/api.js';
+import { LanButton, LanFallback, useLanPage } from '../shared/lan.jsx';
+import { termFit, termFocus, termPaste, useLatency, useTermSrc } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
+import FileBrowser from './FileBrowser.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
@@ -295,6 +297,25 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
   );
 }
 
+/** 终端页顶栏的两个标签：终端 / 文件。切到“文件”时终端 iframe 不卸载，会话保持连接。 */
+function TermTabs({ tab, onChange }) {
+  const { t } = useTranslation();
+  const tabs = [
+    ['term', SquareTerminal, t('fb.tab_term')],
+    ['files', FolderOpen, t('fb.tab_files')],
+  ];
+  return (
+    <div className="term-tabs" role="tablist" aria-label={t('fb.tabs')}>
+      {tabs.map(([key, Icon, label]) => (
+        <button key={key} type="button" role="tab" aria-selected={tab === key} className={`term-tab ${tab === key ? 'on' : ''}`} onClick={() => onChange(key)} title={label}>
+          <Icon size={16} aria-hidden="true" />
+          <span className="term-tab-label">{label}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export default function TerminalView({ id }) {
   const { t } = useTranslation();
   const { status } = useStatus();
@@ -309,6 +330,8 @@ export default function TerminalView({ id }) {
   const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const link = useTermSrc(id, reloadKey);
+  const [tab, setTab] = useState('term');
+  const lanPage = useLanPage();
   const [inst, error, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
   const allowed = status.account.allowed;
   const running = inst?.running;
@@ -329,10 +352,15 @@ export default function TerminalView({ id }) {
     document.addEventListener('fullscreenchange', on);
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
-  // 终端所在页面尺寸变化（按键条显示/隐藏）时让终端重新适配。
+  // 终端所在页面尺寸变化（按键条显示/隐藏、从“文件”切回来）时让终端重新适配。
   useEffect(() => {
     termFit(frame);
-  }, [keys]);
+    if (tab === 'term' && !touch) termFocus(frame);
+  }, [keys, tab]);
+  const insertPath = (text) => {
+    setTab('term');
+    termPaste(frame, text);
+  };
 
   const start = async () => {
     setStarting(true);
@@ -402,6 +430,7 @@ export default function TerminalView({ id }) {
 
   return (
     <div className="term-page" style={{ '--term-bg': light ? '#fbfbfd' : '#11131a', ...mobile.style }}>
+      <LanFallback />
       {/* 横屏打字时屏幕极矮：先藏起顶栏，键盘收起后回来 */}
       <header className="term-bar" hidden={mobile.cramped}>
         <button type="button" className="btn btn-plain btn-icon" onClick={() => navigate('/')} aria-label={t('term.back')}>
@@ -410,14 +439,18 @@ export default function TerminalView({ id }) {
         <span className="term-title">
           <span className={`dot ${running && allowed ? 'on' : ''}`} />
           <span className="ellipsis">{inst?.name ?? '…'}</span>
-          {running && allowed && <LinkBadge id={id} direct={link.direct} />}
+          {running && allowed && (lanPage ? <span className="link-badge link-direct" title={t('lan.badge_hint')}>{t('lan.badge')}</span> : <LinkBadge id={id} direct={link.direct} />)}
         </span>
-        <NewlineHint inst={inst} touch={touch} />
-        <button type="button" className="btn btn-plain btn-icon" onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
-          <RefreshCw size={18} />
-        </button>
+        {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
+        {running && allowed && <TermTabs tab={tab} onChange={setTab} />}
+        {tab === 'term' && (
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
+            <RefreshCw size={18} />
+          </button>
+        )}
         {files.button}
-        {touch && (
+        {running && allowed && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} />}
+        {touch && tab === 'term' && (
           <button type="button" className="btn btn-plain btn-icon" onPointerDown={keepFocus} onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
             <PanelBottom size={19} />
           </button>
@@ -432,8 +465,13 @@ export default function TerminalView({ id }) {
       <div className="term-frame">
         {body}
         {files.layer}
+        {running && allowed && tab === 'files' && (
+          <div className="term-files-tab">
+            <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
+          </div>
+        )}
       </div>
-      {touch && keys && running && allowed && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
+      {touch && keys && running && allowed && tab === 'term' && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
     </div>
   );
 }
