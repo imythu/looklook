@@ -842,14 +842,14 @@ pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[Strin
     a
 }
 
-/// Codex：`--dangerously-bypass-approvals-and-sandbox`（不再询问、不启用沙箱）。
+/// Codex：`--yolo`（即 `--dangerously-bypass-approvals-and-sandbox`，不再询问、不启用沙箱）。
 /// Claude Code：`--dangerously-skip-permissions`；它在 root 下会拒绝运行，需要同时设置 `IS_SANDBOX=1`。
 /// OpenCode：`--auto`（没有明确拒绝的权限都自动同意）。
 /// DSH：`dsh web` 只监听 127.0.0.1 的网页界面，经本机网页映射打开（本机、远程都是同一个地址）；
 /// 工作目录是默认项目，别的项目文件夹在网页里添加。
 pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<String> {
     match row.launch.as_str() {
-        "codex" if opts.full_access => Some("codex --dangerously-bypass-approvals-and-sandbox".into()),
+        "codex" if opts.full_access => Some("codex --yolo".into()),
         "codex" => Some("codex".into()),
         "claude" if opts.full_access && root => Some("IS_SANDBOX=1 claude --dangerously-skip-permissions".into()),
         "claude" if opts.full_access => Some("claude --dangerously-skip-permissions".into()),
@@ -1127,7 +1127,7 @@ mod tests {
         assert_eq!(launch_command_line(&r, Opts::default(), false), None);
         r.launch = "codex".into();
         assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("codex"));
-        assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("codex --dangerously-bypass-approvals-and-sandbox"));
+        assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("codex --yolo"));
         r.launch = "claude".into();
         assert_eq!(launch_command_line(&r, on, false).as_deref(), Some("claude --dangerously-skip-permissions"));
         assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("IS_SANDBOX=1 claude --dangerously-skip-permissions"));

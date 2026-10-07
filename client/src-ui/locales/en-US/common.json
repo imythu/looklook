@@ -249,7 +249,7 @@
     "create": "Create and open",
     "workdir_autocreate": "You can type or edit the path. If the folder doesn't exist it will be created automatically (including parents).",
     "full_access": "Open with all permissions",
-    "full_access_hint_codex": "Uses --dangerously-bypass-approvals-and-sandbox: no approval prompts and no sandbox.",
+    "full_access_hint_codex": "Uses --yolo: no approval prompts and no sandbox.",
     "full_access_hint_claude": "Uses --dangerously-skip-permissions: skips all permission prompts.",
     "full_access_hint_opencode": "Uses --auto: automatically approves every permission that isn't explicitly denied.",
     "root_confirm": "I confirm starting as root with full permissions",
