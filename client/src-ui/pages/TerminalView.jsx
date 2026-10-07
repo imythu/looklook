@@ -96,8 +96,9 @@ function initialRect() {
 /**
  * 悬浮终端：在当前页面上方以可拖动、可缩放的小窗口显示 /i/{id}/，不改变当前标签页地址。
  * 拖动标题栏移动，拖右下角（或按 ↑ ↓ ← → 调整）缩放，支持折叠和全屏。
+ * 开着多个时像桌面窗口一样：点哪个（包括点进终端里）哪个就到最上面，`z` 是它在这些小窗里的层级。
  */
-export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
+export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onClose, onStart }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const wrap = useRef(null);
@@ -192,23 +193,23 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
   const mobile = useTouchTerminal(frame, touch && full);
   const files = useTermFiles({ id, inst, frame, enabled: Boolean(running && status.account.allowed), touch, hostOs: status.capabilities.os, keybar: Boolean(running && touch && full) });
   const shell = full
-    ? { position: 'fixed', inset: 0, zIndex: 60, display: 'flex', flexDirection: 'column', ...mobile.style }
+    ? { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', flexDirection: 'column', ...mobile.style }
     : {
         position: 'fixed',
         left: rect.x,
         top: rect.y,
         width: rect.w,
-        zIndex: 55,
+        zIndex: z,
         display: 'flex',
         flexDirection: 'column',
         borderRadius: 12,
         overflow: 'hidden',
-        border: '1px solid #3a4152',
-        boxShadow: '0 12px 40px rgba(0,0,0,.45)',
+        border: `1px solid ${active ? '#59627a' : '#343a4a'}`,
+        boxShadow: active ? '0 16px 48px rgba(0,0,0,.55)' : '0 8px 28px rgba(0,0,0,.35)',
       };
   const iconBtn = 'btn btn-plain btn-icon';
   return (
-    <section ref={wrap} className="embedded-term" style={{ background: '#11131a', ...shell }} aria-label={inst?.name ?? id}>
+    <section ref={wrap} className="embedded-term" style={{ background: '#11131a', ...shell }} aria-label={inst?.name ?? id} data-embed-id={id} onPointerDownCapture={() => onRaise?.()}>
       <header
         className="term-bar"
         hidden={mobile.cramped}
@@ -229,6 +230,7 @@ export function EmbeddedTerminal({ id, inst, onClose, onStart }) {
           <RefreshCw size={17} />
         </button>
         {files.button}
+        {running && status.account.allowed && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} autoSwitch={false} />}
         <button type="button" className={iconBtn} onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
           <ExternalLink size={17} />
         </button>

@@ -1550,6 +1550,29 @@ export default function Terminals() {
   const [dialog, setDialog] = useState(null);
   const [logs, setLogs] = useState(null);
   const [embedded, setEmbedded] = useEmbedded();
+  // 小窗的前后顺序（最后一个在最上面）。和 embedded 分开存：调整层级不能改变渲染顺序，否则 iframe 会被重新加载。
+  const [stack, setStack] = useState(embedded);
+  const raise = (id) => setStack((s) => (s[s.length - 1] === id ? s : [...s.filter((x) => x !== id), id]));
+  // 点进终端时指针事件被 iframe 吞掉，外面收不到，只能看焦点落在了哪个小窗里。
+  // 从一个终端直接点到另一个终端时本页不会再收到 blur，所以开着多个时再定时看一眼。
+  useEffect(() => {
+    if (embedded.length < 2) return undefined;
+    const check = () => {
+      const id = document.activeElement?.closest?.(".embedded-term")?.dataset.embedId;
+      if (id) setStack((s) => (s[s.length - 1] === id ? s : [...s.filter((x) => x !== id), id]));
+    };
+    const onBlur = () => setTimeout(check, 0);
+    window.addEventListener("blur", onBlur);
+    const timer = setInterval(check, 300);
+    return () => {
+      window.removeEventListener("blur", onBlur);
+      clearInterval(timer);
+    };
+  }, [embedded.length]);
+  const layer = (id) => {
+    const i = stack.indexOf(id);
+    return i < 0 ? stack.length + 1 : i + 1;
+  };
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
   useEffect(() => {
@@ -1560,7 +1583,11 @@ export default function Terminals() {
   const [created, setCreated] = useState(null);
   const { navigate } = useRouter();
   // 手机上的悬浮小窗太挤、也没有按键条，直接进整页终端。
-  const openHere = (id) => (isTouch() ? navigate(`/t/${id}`) : setEmbedded((l) => (l.includes(id) ? l : [...l, id])));
+  const openHere = (id) => {
+    if (isTouch()) return navigate(`/t/${id}`);
+    setEmbedded((l) => (l.includes(id) ? l : [...l, id]));
+    raise(id); // 已经开着的再点“打开”就把它提到最上面
+  };
   const create = (preset) => setDialog({ preset });
   const saved = (row) => {
     reload();
@@ -1590,18 +1617,27 @@ export default function Terminals() {
       {!multi && <BackendNote />}
       <ErrorNote error={error} />
       {/* 打开着的终端小窗放在列表外面：列表刷新、单台/多台切换、短暂拿不到列表时都不会重新挂载 */}
-      {embedded.map((id) => (
-        <EmbeddedTerminal
-          key={id}
-          id={id}
-          inst={items.find((i) => i.id === id)}
-          onClose={() => setEmbedded((l) => l.filter((x) => x !== id))}
-          onStart={async () => {
-            await api.post(`/instances/${id}/start`);
-            reload();
-          }}
-        />
-      ))}
+      {/* 小窗各自的层级只在这一层里比较，整体仍在页面内容之上、弹窗提示之下 */}
+      <div className="embed-layer">
+        {embedded.map((id) => (
+          <EmbeddedTerminal
+            key={id}
+            id={id}
+            inst={items.find((i) => i.id === id)}
+            z={layer(id)}
+            active={embedded.length < 2 || stack[stack.length - 1] === id}
+            onRaise={() => raise(id)}
+            onClose={() => {
+              setEmbedded((l) => l.filter((x) => x !== id));
+              setStack((s) => s.filter((x) => x !== id));
+            }}
+            onStart={async () => {
+              await api.post(`/instances/${id}/start`);
+              reload();
+            }}
+          />
+        ))}
+      </div>
       {!data && !error ? (
         <div className="instances">
           <Skeleton height={190} />

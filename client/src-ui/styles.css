@@ -881,3 +881,6 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .lan-auto { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; color: var(--muted); cursor: pointer; }
 .lan-auto input { width: 16px; height: 16px; margin: 0; }
 .term-page > .lan-lost { flex: none; }
+
+/* 悬浮终端小窗：自成一层，小窗之间的前后顺序由各自的 z-index 决定（见 Terminals.jsx） */
+.embed-layer { position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 55; }

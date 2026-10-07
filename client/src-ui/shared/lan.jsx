@@ -158,12 +158,15 @@ export function LanBanner({ device }) {
   );
 }
 
-/** 终端页标题栏：同一网络（或不确定）时的“局域网”按钮，在新标签页里经局域网打开这个终端。 */
-export function LanButton({ id, device }) {
+/**
+ * 终端页标题栏：同一网络（或不确定）时的“局域网”按钮，在新标签页里经局域网打开这个终端。
+ * `autoSwitch`：开了自动切换时把当前页跳过去；悬浮小窗里关掉（整个管理台页面由 LanBanner 负责跳）。
+ */
+export function LanButton({ id, device, autoSwitch = true }) {
   const { t } = useTranslation();
   const info = useLan(device);
   const open = useOpenLan(device);
-  useAutoSwitch(info, device, `/t/${id}`);
+  useAutoSwitch(autoSwitch ? info : null, device, `/t/${id}`);
   if (!info?.enabled || info.same_network === false) return null;
   return (
     <button type="button" className="btn btn-plain btn-icon" onClick={() => open(`/t/${id}`)} aria-label={t('lan.open_term')} title={t(info.same_network ? 'lan.open_term' : 'lan.open_term_unsure')}>
