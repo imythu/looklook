@@ -132,5 +132,9 @@
   "AGENT_INSTALL_FAILED": "安装失败：{{detail}}",
   "MCP_DISABLED": "请先打开“允许 AI 助手添加网页”",
   "DSH_EXISTS": "这台电脑上已经有 DSH 了，请在终端列表里打开它",
-  "DSH_NEEDS_PERSISTENT": "DSH 需要能在后台持续运行的终端，这台电脑上不支持"
+  "DSH_NEEDS_PERSISTENT": "DSH 需要能在后台持续运行的终端，这台电脑上不支持",
+  "MODEL_KEY_REQUIRED": "请填写 API Key",
+  "MODEL_DISCLAIMER_REQUIRED": "请先阅读并同意免责声明",
+  "MODEL_URL_UNSUPPORTED": "接口地址不支持：必须是 https:// 开头，路径里只能有字母、数字和 - . _ ~ /",
+  "MODEL_PROVIDER_GONE": "这个服务商已下线或不再支持该客户端，请刷新后重新选择"
 }

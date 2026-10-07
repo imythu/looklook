@@ -32,6 +32,7 @@ mod hardening;
 mod instances;
 mod listen;
 mod metrics;
+mod model;
 mod paths;
 mod platform;
 mod relay;

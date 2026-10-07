@@ -884,3 +884,14 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 
 /* 悬浮终端小窗：自成一层，小窗之间的前后顺序由各自的 z-index 决定（见 Terminals.jsx） */
 .embed-layer { position: fixed; top: 0; left: 0; width: 0; height: 0; z-index: 55; }
+
+/* 设置 → 模型服务商 */
+.model-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; margin-bottom: 12px; }
+.model-option { text-align: left; }
+.model-option[aria-checked="true"] { border-color: var(--brand); background: var(--brand-soft); }
+.model-option-head { display: flex; align-items: center; gap: 8px; min-width: 0; width: 100%; }
+.model-logo { width: 28px; height: 28px; flex: none; border-radius: 8px; object-fit: contain; display: grid; place-items: center; background: var(--panel-2); color: var(--muted); font-weight: 700; font-size: 13px; }
+.model-detail { padding: 10px 12px; margin-bottom: 14px; border-radius: 12px; background: var(--panel-2); }
+.model-terms { margin: 6px 0 10px; padding-left: 1.2em; display: grid; gap: 4px; font-size: 13px; line-height: 1.55; }
+.model-line { display: flex; align-items: flex-start; gap: 6px; margin: -6px 0 14px; }
+.model-line svg { flex: none; margin-top: 2px; }

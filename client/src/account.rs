@@ -867,6 +867,15 @@ impl Account {
         self.signed("POST", "/reports", Some(body)).await
     }
 
+    /// 上报“选用了某个模型服务商”（服务端 §4.11.1，只用于统计选用人数；不带 API Key）。
+    pub async fn select_model_provider(&self, id: &str, client: &str) -> PResult<()> {
+        let (s, key) = self.creds().ok_or_else(|| api("NOT_LOGGED_IN"))?;
+        let body = serde_json::json!({ "client": client });
+        self.platform()
+            .call_empty("POST", &format!("/model-providers/{}/selection", path_seg(id)), Signer { device: &s.device_id, key_id: &s.key_id, key: &key }, Some(&body))
+            .await
+    }
+
     pub async fn create_tunnel(&self, req: &CreateTunnel) -> PResult<Tunnel> {
         self.signed("POST", "/tunnels", Some(req)).await
     }

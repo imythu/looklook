@@ -132,5 +132,9 @@
   "AGENT_INSTALL_FAILED": "Installation failed: {{detail}}",
   "MCP_DISABLED": "Turn on \"Allow AI assistants to add pages\" first",
   "DSH_EXISTS": "DSH is already set up on this computer; open it from the terminal list",
-  "DSH_NEEDS_PERSISTENT": "DSH needs terminals that keep running in the background, which this computer doesn't support"
+  "DSH_NEEDS_PERSISTENT": "DSH needs terminals that keep running in the background, which this computer doesn't support",
+  "MODEL_KEY_REQUIRED": "Please enter an API key",
+  "MODEL_DISCLAIMER_REQUIRED": "Please read and accept the disclaimer first",
+  "MODEL_URL_UNSUPPORTED": "Unsupported endpoint: it must start with https:// and the path may only contain letters, digits and - . _ ~ /",
+  "MODEL_PROVIDER_GONE": "This provider is no longer available for this client. Refresh and choose again."
 }

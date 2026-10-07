@@ -848,5 +848,43 @@
     "badge_hint": "Connected to this computer directly over the local network, not through a remote route. If you leave this network you'll be offered the remote address.",
     "lost": "Can't reach this computer; you may have left its network. Your terminals are still running. Continue at the remote address.",
     "back_remote": "Back to remote address"
+  },
+  "model": {
+    "title": "Model providers",
+    "intro": "Route Claude Code and Codex through a third-party API (relay or aggregator) and pay the provider with an API key. Without one, the official API and your own sign-in are used.",
+    "official": "Official (default)",
+    "choose": "Choose provider",
+    "change": "Change",
+    "reset": "Use official",
+    "reset_title": "Switch {{agent}} back to the official API?",
+    "reset_body": "The API key saved on this computer will be deleted. Running terminals are not affected until they restart.",
+    "reset_done": "Back to the official API. Restart terminals to apply.",
+    "restart_note": "Applies to terminals created or restarted afterwards; running terminals keep their current API.",
+    "pick_title": "Provider for {{agent}}",
+    "provider": "Provider",
+    "custom": "Custom",
+    "custom_desc": "Enter an endpoint from another provider",
+    "custom_name": "Name",
+    "custom_url": "Endpoint",
+    "custom_url_hint_claude": "The provider's Anthropic-compatible URL (ANTHROPIC_BASE_URL). Must be https.",
+    "custom_url_hint_codex": "The provider's OpenAI Responses-compatible URL, usually ending in /v1. Must be https.",
+    "none": "No recommended providers yet. Choose “Custom” to enter an endpoint.",
+    "list_failed": "Couldn't load the recommended list (server unreachable). You can use “Custom” for now.",
+    "endpoint": "Endpoint",
+    "homepage": "Website",
+    "key_hint": "Create it on the provider's website. It stays on this computer and is never uploaded to Looklook.",
+    "key_keep": "Leave empty to keep the saved key. Enter a new one if you switched providers.",
+    "saved": "Provider for {{agent}} saved. Applies to new or restarted terminals.",
+    "form_official": "Uses the official API",
+    "form_using": "Uses {{name}}",
+    "form_change": "Change",
+    "disclaimer": {
+      "title": "Disclaimer: third-party services are provided by the providers",
+      "third_party": "Providers in this list are run by third parties; items marked “Ad” are sponsored. Looklook does not provide or operate these services and makes no guarantee of their availability, stability, security, model authenticity or compliance.",
+      "data": "Once enabled, your conversations with the AI, code and file contents in the terminal are sent directly to the provider you choose. Judge their trustworthiness yourself and don't use them for sensitive or confidential data.",
+      "key": "Your API key stays on this computer; Looklook never uploads or reads it. Keep it safe and revoke it with the provider if it leaks.",
+      "cost": "Charges, top-ups, refunds and support are between you and the provider. Looklook is not liable for costs, data leaks, account actions or other losses arising from third-party services. You must also follow the model vendor's terms and local laws.",
+      "agree": "I have read and agree to the above, and use third-party services at my own risk"
+    }
   }
 }

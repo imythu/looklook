@@ -42,6 +42,7 @@ import { errorText } from "../shared/i18n.js";
 import { Link, useRouter } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
 import { EmbeddedTerminal } from "./TerminalView.jsx";
+import { ModelChoiceLine } from "./ModelProviders.jsx";
 import { isTouch } from "../shared/KeyBar.jsx";
 import RelayStatus from "../shared/RelayStatus.jsx";
 import {
@@ -1202,6 +1203,7 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
           data={shells}
           inherit={status.settings?.default_shell || null}
         />
+        <ModelChoiceLine client={client} device={dev} launch={launch} />
         {canFull && (
           <div style={{ marginBottom: 12 }}>
             <label

@@ -76,6 +76,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/diag/bundle.txt", get(diag_bundle_text))
         .route("/diag/report", post(diag_report))
         .route("/promotions", get(promotions))
+        .route("/model-providers", get(get_model_providers))
+        .route("/model-providers/{agent}", put(put_model_provider).delete(delete_model_provider))
         .route("/metrics", get(metrics))
         .route("/update", get(update))
         .route("/update/install", post(update_install))
@@ -99,7 +101,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "fs" | "settings" | "tools" | "tunnels" | "metrics") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -1135,6 +1137,125 @@ async fn promotions(State(app): State<App>, Query(q): Query<LocaleQ>) -> Json<Va
     let locale = q.locale.filter(|l| l == "en-US").unwrap_or_else(|| "zh-CN".into());
     let r: Result<Value, _> = app.account.platform().public(&format!("/promotions?slot=client_home&locale={locale}")).await;
     Json(r.unwrap_or_else(|_| json!({ "items": [] })))
+}
+
+// ---------------- 模型服务商（第三方中转站，见 model.rs） ----------------
+
+/// 平台推荐的服务商（含推广）；连不上平台时为空列表并带上错误码，已保存的选择照常显示。
+async fn platform_providers(app: &App, locale: &str) -> Result<Vec<Value>, LocalError> {
+    let r: Value = app.account.platform().public(&format!("/model-providers?locale={locale}")).await?;
+    Ok(r.get("items").and_then(Value::as_array).cloned().unwrap_or_default())
+}
+
+#[derive(Deserialize)]
+struct ModelQ {
+    #[serde(default)]
+    locale: Option<String>,
+    /// 只要本机保存的选择，不取平台列表（新建终端表单里显示用）
+    #[serde(default)]
+    local: bool,
+}
+
+async fn get_model_providers(State(app): State<App>, Query(q): Query<ModelQ>) -> Json<Value> {
+    let locale = q.locale.filter(|l| l == "en-US").unwrap_or_else(|| "zh-CN".into());
+    let (providers, error) = match q.local {
+        true => (vec![], None),
+        false => match platform_providers(&app, &locale).await {
+            Ok(p) => (p, None),
+            Err(e) => (vec![], Some(e.code)),
+        },
+    };
+    Json(model_view(&app, providers, error))
+}
+
+fn model_view(app: &App, providers: Vec<Value>, error: Option<String>) -> Value {
+    use crate::model::{self, ModelAgent};
+    let agents: Vec<Value> = ModelAgent::ALL
+        .iter()
+        .map(|a| {
+            json!({
+                "agent": a.id(),
+                "client": a.platform_client(),
+                "choice": model::choice(&app.store, *a),
+                "key_set": model::key_set(&app.paths.home, *a),
+            })
+        })
+        .collect();
+    json!({
+        "accepted_at": model::disclaimer_accepted(&app.store),
+        "agents": agents,
+        "providers": providers,
+        "error": error,
+    })
+}
+
+#[derive(Deserialize)]
+struct ModelReq {
+    /// 平台列表里的服务商；不填表示自填接口地址（`name` + `base_url`）
+    #[serde(default)]
+    provider_id: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    base_url: Option<String>,
+    /// 不填沿用已保存的 Key
+    #[serde(default)]
+    api_key: Option<String>,
+    /// 同意免责声明（第一次保存时必须）
+    #[serde(default)]
+    accept: bool,
+}
+
+fn model_agent(s: &str) -> R<crate::model::ModelAgent> {
+    crate::model::ModelAgent::parse(s).ok_or_else(LocalError::not_found)
+}
+
+async fn put_model_provider(State(app): State<App>, Path(agent): Path<String>, Json(req): Json<ModelReq>) -> R<Json<Value>> {
+    use crate::model::{self, Choice};
+    let agent = model_agent(&agent)?;
+    if req.accept {
+        model::accept_disclaimer(&app.store)?;
+    } else if model::disclaimer_accepted(&app.store).is_none() {
+        return Err(LocalError::new("MODEL_DISCLAIMER_REQUIRED"));
+    }
+    let client = agent.platform_client();
+    let choice = match req.provider_id.as_deref().filter(|s| !s.is_empty()) {
+        // 接口地址以平台下发的为准，不信任请求里的
+        Some(id) => {
+            let list = platform_providers(&app, "zh-CN").await?;
+            let p = list.iter().find(|p| p["id"].as_str() == Some(id)).ok_or_else(|| LocalError::new("MODEL_PROVIDER_GONE"))?;
+            let base_url = p["clients"]
+                .as_array()
+                .and_then(|cs| cs.iter().find(|c| c["client"].as_str() == Some(client)))
+                .and_then(|c| c["base_url"].as_str())
+                .ok_or_else(|| LocalError::new("MODEL_PROVIDER_GONE"))?;
+            Choice { provider_id: Some(id.into()), name: p["name"].as_str().unwrap_or_default().into(), base_url: base_url.into(), selected_at: crate::util::now_rfc3339() }
+        }
+        None => {
+            let name: String = req.name.as_deref().unwrap_or("").trim().chars().filter(|c| !c.is_control()).take(40).collect();
+            if name.is_empty() {
+                return Err(LocalError::invalid("name", "required"));
+            }
+            let base_url = req.base_url.as_deref().unwrap_or("").trim().trim_end_matches('/').to_string();
+            Choice { provider_id: None, name, base_url, selected_at: crate::util::now_rfc3339() }
+        }
+    };
+    model::save(&app.store, &app.paths.home, agent, &choice, req.api_key.as_deref())?;
+    // 统计选用人数；失败不影响使用
+    if let Some(id) = choice.provider_id.clone() {
+        let account = app.account.clone();
+        tokio::spawn(async move {
+            if let Err(e) = account.select_model_provider(&id, client).await {
+                tracing::debug!(error = %e, "模型服务商选用上报失败");
+            }
+        });
+    }
+    Ok(Json(model_view(&app, vec![], None)))
+}
+
+async fn delete_model_provider(State(app): State<App>, Path(agent): Path<String>) -> R<Json<Value>> {
+    crate::model::clear(&app.store, &app.paths.home, model_agent(&agent)?)?;
+    Ok(Json(model_view(&app, vec![], None)))
 }
 
 /// 立即检查更新（“检查更新”按钮）。`locale` 决定更新说明的语言。

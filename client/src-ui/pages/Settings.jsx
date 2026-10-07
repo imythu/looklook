@@ -1,10 +1,11 @@
-// 设置：终端字体与配色、默认文件夹、电脑名称、远程线路、访问控制、语言；关于与检查更新。
+// 设置：终端字体与配色、默认文件夹、电脑名称、模型服务商、远程线路、访问控制、语言；关于与检查更新。
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
 import AccessCard from './Access.jsx';
+import ModelProvidersCard from './ModelProviders.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
 import { DiagCard } from '../shared/Report.jsx';
@@ -120,6 +121,7 @@ export default function Settings() {
           </Button>
         </Card>
       </form>
+      <ModelProvidersCard />
       <RelayPicker />
       <AccessCard />
       <DiagCard />

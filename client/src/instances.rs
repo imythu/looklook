@@ -557,7 +557,7 @@ impl Instances {
             Backend::Direct => match typed {
                 Some(cmd) => {
                     let auto = crate::shells::resolve("", "")?;
-                    auto.run(&cmd).unwrap_or_else(|| auto.interactive())
+                    auto.run(&self.model_wrap(row, &cmd, auto.family)).unwrap_or_else(|| auto.interactive())
                 }
                 None => program,
             },
@@ -565,16 +565,24 @@ impl Instances {
     }
 
     /// 在终端选用的 shell 里运行启动命令（普通终端只打开 shell）。认不出的 shell 没法通过参数传命令：
-    /// 返回打开 shell 的命令行，外加要在会话建好后输入的命令。
+    /// 返回打开 shell 的命令行，外加要在会话建好后输入的命令（未加模型服务商环境，输入前再按实际的 shell 加）。
     fn program_for(&self, row: &InstanceRow) -> Result<(Vec<String>, Option<String>), LocalError> {
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
         Ok(match self.launch_command(row).filter(|c| !c.trim().is_empty()) {
             None => (shell.interactive(), None),
-            Some(cmd) => match shell.run(&cmd) {
+            Some(cmd) => match shell.run(&self.model_wrap(row, &cmd, shell.family)) {
                 Some(v) => (v, None),
                 None => (shell.interactive(), Some(cmd)),
             },
         })
+    }
+
+    /// Claude Code / Codex 选了第三方模型服务商时，按 shell 的写法加上接口地址与 Key（见 model.rs）。
+    fn model_wrap(&self, row: &InstanceRow, cmd: &str, family: crate::shells::Family) -> String {
+        match crate::model::launch_env(&self.store, &self.paths.home, &row.launch) {
+            Some(env) => env.wrap(cmd, family),
+            None => cmd.to_string(),
+        }
     }
 
     /// 启动类型对应的命令行（含“全部权限”参数）；普通终端为 None。
@@ -647,6 +655,7 @@ impl Instances {
         }
         // 认不出的 shell（例如 wsl）：等它起来，再把启动命令“打”进去。
         if let Some(cmd) = typed {
+            let cmd = self.model_wrap(row, &cmd, crate::shells::Family::Other);
             tokio::time::sleep(Duration::from_millis(800)).await;
             let target = format!("{}:", exact(&name));
             let _ = self.tmux(&["send-keys", "-t", &target, "-l", &cmd]).await;
