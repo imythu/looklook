@@ -274,7 +274,20 @@ impl Bundle {
 
 pub fn bundle(meta: Value, logs_dir: &Path, secrets: &[String]) -> Bundle {
     let errors = errors_text(&recent().into_iter().take(200).collect::<Vec<_>>());
-    Bundle { meta, errors: redact(&errors, secrets), logs: redact(&log_tail(logs_dir, 400), secrets) }
+    // 与服务端上限一致（错误记录 128 KiB、日志 256 KiB），保证报告请求体不超过服务端限制。
+    Bundle { meta, errors: tail_bytes(&redact(&errors, secrets), 128 * 1024), logs: tail_bytes(&redact(&log_tail(logs_dir, 400), secrets), 256 * 1024) }
+}
+
+/// 超过 `max` 字节时只保留末尾（最近的内容最有用），不在 UTF-8 字符中间切开。
+fn tail_bytes(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut start = s.len() - max;
+    while !s.is_char_boundary(start) {
+        start += 1;
+    }
+    format!("…{}", &s[start..])
 }
 
 /// 运行信息（不含账户秘密）。
