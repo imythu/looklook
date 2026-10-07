@@ -428,7 +428,7 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
       </div>
       <div className="instance-meta">
         <span className="one-line">
-          {t(`launch.${inst.launch}.title`)}
+          <span className="nowrap">{t(`launch.${inst.launch}.title`)}</span>
           {inst.launch === "custom" && (
             <span className="mono ellipsis">· {inst.command}</span>
           )}

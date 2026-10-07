@@ -75,6 +75,7 @@ p { margin: 0 0 12px; }
 .icon { width: 20px; height: 20px; flex: none; }
 .ellipsis { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; word-break: normal; }
 .one-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.nowrap { flex: none; white-space: nowrap; }
 .one-line .btn { min-height: 36px; }
 .profile { display: flex; align-items: center; gap: 16px; }
 
