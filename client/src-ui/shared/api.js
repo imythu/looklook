@@ -113,6 +113,32 @@ function reloadForSession() {
   window.location.reload();
 }
 
+/**
+ * 读文件内容（预览、下载）用：带上多设备的 X-LL-Device，返回原始 Response；出错时抛 ApiError。
+ * 普通链接（<a href> / <img src>）带不了请求头，远程有多台电脑时只有 `/api/instances/{id}/…` 能按终端转发，
+ * 其他路径要用这个取回再显示或保存。
+ */
+export async function fetchRaw(path, options = {}) {
+  const headers = {};
+  const device = await deviceFor(path, options);
+  if (device) headers['X-LL-Device'] = device;
+  let res;
+  try {
+    res = await fetch(`/api${path}`, { signal: options.signal, headers, credentials: 'same-origin', cache: 'no-store' });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new ApiError(0, 'CLIENT_UNREACHABLE');
+  }
+  if (!res.ok) {
+    const e = (await res.json().catch(() => null))?.error ?? {};
+    throw new ApiError(res.status, e.code ?? 'INTERNAL', e.params ?? {});
+  }
+  return res;
+}
+
+/** 普通链接能不能直接打开不属于终端的接口（远程且有多台电脑时不能，见 fetchRaw）。 */
+export const plainLinksWork = () => !routing.multi;
+
 function client(device) {
   const o = device === undefined ? {} : { device };
   return {

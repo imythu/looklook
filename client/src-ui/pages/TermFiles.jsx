@@ -6,6 +6,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
+import { baseName, isImageName, PastedTray } from '../shared/Attachments.jsx';
 import { frameOrigin, termFocus, termPaste, termSend } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
 import { uploadStore } from '../shared/uploader.js';
@@ -201,6 +202,8 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   const pos = usePopoverPos(btn, open && !touch);
   const [tip, setTip] = useState(false);
   const tipPos = useTipPos(btn, tip);
+  // 这次粘贴 / 拖进来、存进附件目录的图片：终端右下角显示缩略图，点开看大图或删除（附件的管理在设置页）
+  const [shots, setShots] = useState([]);
 
   // 第一次提示：终端可用后稍等再出现，到时自动收起（不算“知道了”，下次还会再提示，最多 TIP_MAX_SHOWS 次）。
   useEffect(() => {
@@ -264,6 +267,10 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
       onDone: async (fresh, all) => {
         const failed = all.filter((x) => x.state === 'error');
         if (failed.length) toast(t('files.failed', { name: failed[0].name, reason: err(failed[0].error) }), 'error');
+        if (dest === 'attach') {
+          const imgs = fresh.filter((x) => isImageName(x.path)).map((x) => ({ instance: id, name: baseName(x.path), path: x.path, size: x.size, image: true, modified: Math.floor(Date.now() / 1000) }));
+          if (imgs.length) setShots((xs) => [...xs.filter((x) => !imgs.some((y) => y.path === x.path)), ...imgs]);
+        }
         if (fresh.length && fill) {
           const d = await loadInfo().catch(() => null);
           const paths = fresh.map((x) => x.path);
@@ -606,6 +613,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   const portalTarget = typeof document !== 'undefined' ? (document.fullscreenElement ?? document.body) : null;
   const layer = (
     <>
+      {enabled && !open && <PastedTray items={shots} touch={touch} onRemove={(item) => setShots((xs) => xs.filter((x) => x.path !== item.path))} onClear={() => setShots([])} />}
       {dragging && enabled && (
         <div className="files-drop" aria-hidden="true">
           <div>

@@ -120,7 +120,10 @@ pub fn run(rt: tokio::runtime::Runtime, home: Option<PathBuf>, listen: Option<So
         .setup(move |app| {
             let handle = app.handle().clone();
             #[cfg(target_os = "macos")]
-            autostart::default_on(home.as_ref());
+            {
+                autostart::default_on(home.as_ref());
+                disable_app_nap();
+            }
             let items = tray(&handle)?;
             app.manage(items.clone());
             let rt_running = running.clone();
@@ -317,6 +320,20 @@ async fn refresh_menu(items: Items, running: Arc<AtomicBool>) {
     }
 }
 
+/// 关掉 App Nap。看看平时只在托盘里（主窗口隐藏），macOS 会把它当成“看不见的应用”节流：定时器被合并、推迟，
+/// 后台网络也降级。远程入口靠每 5 秒一个的在线心跳判断这台电脑在不在线（超过 16 秒没收到就算离线），
+/// 心跳一迟到，从远程地址打开就显示“设备离线”，而这台 Mac 上看看明明开着。
+/// 声明一个“用户发起、允许系统空闲睡眠”的活动：不阻止合盖 / 空闲睡眠（睡着了本来就连不上），只是不再被节流。
+#[cfg(target_os = "macos")]
+fn disable_app_nap() {
+    use objc2_foundation::{NSActivityOptions, NSProcessInfo, NSString};
+    let reason = NSString::from_str("Looklook keeps your terminals reachable from your phone and other computers");
+    let activity = NSProcessInfo::processInfo().beginActivityWithOptions_reason(NSActivityOptions::UserInitiatedAllowingIdleSystemSleep, &reason);
+    // 活动在令牌释放时结束；整个进程期间都要，所以不释放
+    std::mem::forget(activity);
+    tracing::info!("已关闭 App Nap");
+}
+
 #[cfg(target_os = "macos")]
 fn mac_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     use tauri::menu::SubmenuBuilder;
@@ -474,7 +491,7 @@ mod autostart {
                      <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
                      <plist version=\"1.0\">\n<dict>\n  <key>Label</key><string>{LABEL}</string>\n  \
                      <key>ProgramArguments</key>\n  <array><string>{}</string><string>run</string><string>--no-browser</string></array>\n  \
-                     <key>RunAtLoad</key><true/>\n</dict>\n</plist>\n",
+                     <key>RunAtLoad</key><true/>\n  <key>ProcessType</key><string>Interactive</string>\n</dict>\n</plist>\n",
                     exe.display()
                 );
                 // 只写文件，下次登录时生效：现在 bootstrap 会立刻再启动一份。

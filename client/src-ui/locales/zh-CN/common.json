@@ -43,7 +43,9 @@
     "close_menu": "关闭菜单",
     "remote": "远程访问中",
     "remote_ms": "{{ms}} ms",
-    "remote_latency_hint": "往返 {{ms}} 毫秒（浏览器 → 中转 → 这台电脑）。超过 150 毫秒打字会感觉慢，可以在设置里换一条远程线路。"
+    "remote_latency_hint": "往返 {{ms}} 毫秒（浏览器 → 中转 → 这台电脑）。超过 150 毫秒打字会感觉慢，可以在设置里换一条远程线路。",
+    "files": "文件",
+    "ssh": "SSH 主机"
   },
   "unreachable": {
     "title": "连不上看看",
@@ -382,7 +384,8 @@
     "source": "源代码",
     "check_update": "检查更新",
     "up_to_date": "已经是最新版本",
-    "beta": "Beta 测试版"
+    "beta": "Beta 测试版",
+    "theme_agent": "AI 助手风格"
   },
   "account": {
     "title": "账户",
@@ -424,7 +427,8 @@
     "collapse": "折叠",
     "expand": "展开",
     "close": "关闭内嵌终端",
-    "resize": "拖动调整大小（也可用方向键）"
+    "resize": "拖动调整大小（也可用方向键）",
+    "minimize": "最小化到底部的切换条"
   },
   "safety": {
     "title": "安全提醒",
@@ -496,7 +500,17 @@
       "heartbeat": "和服务器的连接中断了（长时间没有响应），正在自动重连。",
       "config": "写入远程访问配置失败。请检查磁盘空间和文件权限。",
       "other": "连接服务器时出了点问题，会自动重试。如果一直不行，请展开技术详情发给我们。"
-    }
+    },
+    "pill": {
+      "connecting": "远程连接中",
+      "connected": "远程在线",
+      "failed": "远程断开"
+    },
+    "pill_title": "远程通道",
+    "reconnect": "立即重连",
+    "reconnecting": "正在重新连接远程通道…",
+    "connected_since": "{{when}}连上",
+    "auto_note": "电脑睡醒、换了网络时会自动马上重连，断了也会一直自动重试。"
   },
   "termconn": {
     "connecting": "正在连接终端…",
@@ -835,7 +849,27 @@
     "denied": "看看没有权限读取这个文件夹。",
     "moved": "这个文件夹已经不在了，显示的是它最近的上级。",
     "empty": "这个文件夹是空的。",
-    "link": "快捷方式（符号链接）"
+    "link": "快捷方式（符号链接）",
+    "page_title": "文件",
+    "md_source": "看源码",
+    "md_rendered": "看排版效果",
+    "name": "名称",
+    "new_folder": "新建文件夹",
+    "create": "新建",
+    "rename": "重命名",
+    "rename_title": "重命名“{{name}}”",
+    "delete": "删除",
+    "delete_title": "删除“{{name}}”？",
+    "delete_body": "{{path}} 会被直接删除，不进回收站。",
+    "delete_dir_title": "删除文件夹“{{name}}”？",
+    "delete_dir_body": "{{path}} 和里面的所有内容会被直接删除，不进回收站，无法恢复。",
+    "deleted": "已删除“{{name}}”",
+    "upload": "上传到这个文件夹",
+    "upload_hint": "上传到这个文件夹（也可以把文件拖进列表）",
+    "uploading": "正在上传 {{n}} 个文件 · {{pct}}%",
+    "uploaded": "已上传 {{n}} 个文件",
+    "drop": "松开上传到 {{dir}}",
+    "tab_git": "Git"
   },
   "lan": {
     "hint": "你和这台电脑在同一个网络里。改用局域网直接连接，不绕远程线路，打字更跟手。",
@@ -886,5 +920,141 @@
       "cost": "费用、充值、退款与售后由你与服务商直接约定；因使用第三方服务产生的费用、数据泄露、账号处置或其他损失，看看不承担责任。请同时遵守模型提供方的使用条款及当地法律法规。",
       "agree": "我已阅读并同意以上说明，自行承担使用第三方服务的风险"
     }
+  },
+  "att": {
+    "title": "粘贴的图片与附件",
+    "lead": "粘贴或拖进 AI 终端的截图、“发给 AI”的文件存在这台电脑的临时目录里，不放进项目，到期自动删除。",
+    "keep": "保留时间",
+    "day": "{{count}} 天",
+    "days": "{{count}} 天",
+    "summary": "共 {{n}} 个，{{size}}",
+    "filter": "显示",
+    "only_images": "图片",
+    "all": "全部文件",
+    "empty": "还没有附件",
+    "empty_hint": "在终端里粘贴截图（或拖进图片）后会出现在这里。",
+    "view": "查看",
+    "delete": "删除",
+    "deleted": "已删除",
+    "deleted_term": "已删除的终端",
+    "clear": "清空",
+    "clear_title": "清空全部附件？",
+    "clear_body": "将删除 {{n}} 个文件（{{size}}）。已经发给 AI 的图片，AI 之后就读不到了。",
+    "cleared": "已删除 {{n}} 个文件",
+    "tray": "刚粘贴的图片",
+    "tray_hint": "这次粘贴的图片：点开看大图，悬停可删除",
+    "tray_hide": "收起（不删除文件）"
+  },
+  "dock": {
+    "label": "切换终端",
+    "open": "在本页打开",
+    "minimize": "最小化",
+    "restore": "还原",
+    "front": "切到最前"
+  },
+  "git": {
+    "changes": "改动",
+    "history": "历史",
+    "detached": "分离的提交 {{head}}",
+    "ahead": "有 {{n}} 个提交还没推送",
+    "behind": "远程有 {{n}} 个新提交还没拉取",
+    "fetch": "抓取",
+    "fetch_hint": "看看远程有没有新提交（git fetch，不改动你的文件）",
+    "pull": "拉取",
+    "pull_hint": "拉取远程的新提交（git pull --ff-only，只快进，不自动合并）",
+    "push": "推送",
+    "push_hint": "把本地提交推送到远程（git push）",
+    "done": {
+      "fetch": "已抓取",
+      "pull": "已拉取",
+      "push": "已推送"
+    },
+    "message_ph": "提交说明（提交到 {{branch}}，Ctrl+Enter 提交）",
+    "commit": "提交",
+    "commit_n": "提交 {{n}} 个文件",
+    "committed": "已提交 {{commit}}",
+    "stage": "暂存",
+    "unstage": "取消暂存",
+    "stage_all": "全部暂存",
+    "unstage_all": "全部取消",
+    "stage_tip": "先点文件旁的 + 把要提交的改动暂存，或者“全部暂存”。",
+    "sec": {
+      "conflict": "有冲突",
+      "staged": "已暂存",
+      "changed": "未暂存",
+      "untracked": "新文件"
+    },
+    "st": {
+      "modified": "已修改",
+      "added": "新增",
+      "deleted": "已删除",
+      "renamed": "改名",
+      "copied": "复制",
+      "typechange": "类型变化",
+      "conflict": "冲突",
+      "untracked": "未跟踪"
+    },
+    "clean_title": "没有改动",
+    "clean_body": "工作区和上次提交一样。",
+    "too_many": "改动太多，只列出前 2000 个。",
+    "no_commits": "还没有提交。",
+    "pick_title": "选一个文件或提交",
+    "pick_body": "左边点一下，这里显示具体改了什么。",
+    "back": "返回列表",
+    "binary": "二进制文件，没法逐行对比。",
+    "no_diff": "没有可显示的改动（可能只改了文件权限）。",
+    "truncated": "改动太长，只显示了一部分，完整内容请在终端里用 git diff 查看。",
+    "not_repo_title": "这里不是 Git 仓库",
+    "not_repo_body": "终端当前所在的文件夹不在 Git 仓库里。进入仓库目录（cd）后这里会自动显示；新项目可以在终端里运行：",
+    "retry": "重试"
+  },
+  "ssh": {
+    "title": "SSH 主机",
+    "add": "添加主机",
+    "add_title": "添加 SSH 主机",
+    "edit_title": "修改“{{name}}”",
+    "edit": "修改",
+    "delete": "删除",
+    "delete_title": "删除“{{name}}”？",
+    "delete_body": "只删除看看里保存的这台主机和它的密码，不影响服务器本身，也不删 ~/.ssh 里的私钥。",
+    "name": "名称",
+    "name_hint": "给自己看的名字，AI 助手也用它指定主机。",
+    "name_ph": "例如：生产服务器",
+    "host": "地址",
+    "port": "端口",
+    "user": "用户名",
+    "auth": "登录方式",
+    "auth_agent": "系统密钥",
+    "auth_key": "指定私钥",
+    "auth_password": "密码",
+    "auth_hint": {
+      "agent": "用这台电脑的 ~/.ssh 默认私钥或 ssh-agent，和在终端里直接 ssh 一样，看看不保存任何秘密。",
+      "key": "用指定的私钥文件（看看只记路径，不复制）；私钥有口令的话可以存在看看里。",
+      "password": "密码在这台电脑上加密保存，连接时由看看交给 ssh，不会显示，也不会出现在终端里。"
+    },
+    "key_path": "私钥文件",
+    "key_path_hint": "这台电脑上的路径，可以用 ~ 表示主目录。",
+    "password": "密码",
+    "passphrase": "私钥口令",
+    "optional": "（可选）",
+    "secret_saved": "已加密保存；留空表示不修改。",
+    "secret_hint": "只在这台电脑上加密保存，不上传到看看服务器。",
+    "allow_ai": "允许 AI 助手使用",
+    "allow_ai_hint": "打开后，Claude Code、Codex 等可以通过看看的 MCP 在这台主机上运行命令。看看替它们登录，它们看不到密码或私钥，返回的输出里也会去掉密码、私钥和常见令牌。",
+    "saved": "已保存",
+    "ai_on": "AI 可用",
+    "connect": "连接",
+    "test": "测试连接",
+    "test_ok": "连接正常",
+    "test_failed": "连接失败",
+    "test_timeout": "连接超时（25 秒）",
+    "empty_title": "还没有 SSH 主机",
+    "empty_body": "把常用的服务器存在这里：一键打开 SSH 终端，不用每次输密码；也可以让 AI 助手安全地在上面运行命令。",
+    "no_ssh": "这台电脑上没有找到 ssh 命令。请先安装 OpenSSH 客户端（Windows：设置 → 可选功能 → OpenSSH 客户端）。",
+    "safety_title": "密码怎么保护",
+    "safety_1": "密码和私钥口令用这台电脑上的密钥加密后保存在看看的数据库里，不会上传到看看服务器。",
+    "safety_2": "连接时 ssh 通过 SSH_ASKPASS 向看看要密码：只经过本机的一次性通道，不出现在命令行、环境变量、文件或终端输出里。",
+    "safety_3": "AI 助手只能用标了“允许 AI 使用”的主机，而且要先打开 MCP 接口：",
+    "safety_4": "局限：AI 助手和看看以同一个系统用户运行，能读到这台电脑上你能读的文件（包括 ~/.ssh）。这里防的是密码被顺手带进对话、日志和截图；不要让不信任的程序在这台电脑上运行。"
   }
 }

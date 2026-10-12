@@ -50,8 +50,27 @@ pub fn routes(app: App) -> Router<App> {
         // 只有上传块放宽请求体上限（一块 8 MiB），其他接口仍是默认的 2 MB
         .route("/uploads/{uid}", put(upload_chunk).layer(DefaultBodyLimit::max(transfer::BODY_LIMIT)).delete(cancel_upload))
         .route("/uploads/{uid}/finish", post(finish_upload))
+        .route("/attachments", get(list_attachments).delete(clear_attachments))
+        .route("/instances/{id}/attachments/{name}", get(get_attachment).delete(delete_attachment))
+        .route("/instances/{id}/git", get(git_status))
+        .route("/instances/{id}/git/diff", get(git_diff))
+        .route("/instances/{id}/git/show", get(git_show))
+        .route("/instances/{id}/git/stage", post(git_stage))
+        .route("/instances/{id}/git/commit", post(git_commit))
+        .route("/instances/{id}/git/remote", post(git_remote))
         .route("/instances/{id}/page", post(instance_page))
+        .route("/ssh/hosts", get(ssh_list).post(ssh_create))
+        .route("/ssh/hosts/{id}", put(ssh_update).delete(ssh_delete))
+        .route("/ssh/hosts/{id}/open", post(ssh_open))
+        .route("/ssh/hosts/{id}/test", post(ssh_test))
         .route("/fs/list", get(fs_list))
+        .route("/fs/download", get(fs_download))
+        .route("/fs/preview", get(fs_preview))
+        .route("/fs/mkdir", post(fs_mkdir))
+        .route("/fs/rename", post(fs_rename))
+        .route("/fs/delete", post(fs_delete))
+        .route("/fs/uploads", post(fs_upload))
+        .route("/relay/reconnect", post(relay_reconnect))
         .route("/relays", get(list_relays))
         .route("/relays/preference", put(set_relay))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
@@ -101,7 +120,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -244,6 +263,12 @@ async fn logout(State(app): State<App>, body: Option<Json<LogoutReq>>) -> R<Json
     let force = body.map(|b| b.0.force).unwrap_or(false);
     app.account.logout(force).await?;
     Ok(Json(app.account.status()))
+}
+
+/// 管理台右上角的“立即重连”：重建远程访问通道（不影响本机、局域网打开）。
+async fn relay_reconnect() -> StatusCode {
+    crate::relay::request_restart();
+    StatusCode::ACCEPTED
 }
 
 async fn reconnect(State(app): State<App>) -> Json<Value> {
@@ -543,6 +568,42 @@ async fn end_transfer(State(app): State<App>, Path(id): Path<String>) -> R<Statu
     Ok(StatusCode::NO_CONTENT)
 }
 
+// ---------------- 附件（粘贴的截图、“发给 AI”的文件，docs/FILE_TRANSFER.md §4.4） ----------------
+
+#[derive(Deserialize)]
+struct AttachQ {
+    #[serde(default)]
+    instance: Option<String>,
+}
+
+/// 附件列表（新的在前）、附件根目录和保留天数；`?instance=` 只列一个终端的。
+async fn list_attachments(State(app): State<App>, Query(q): Query<AttachQ>) -> R<Json<Value>> {
+    let paths = app.paths.clone();
+    let inst = q.instance.filter(|s| !s.is_empty());
+    let items = tokio::task::spawn_blocking(move || transfer::list_attachments(&paths, inst.as_deref())).await.unwrap_or_default();
+    Ok(Json(json!({
+        "dir": app.paths.uploads().display().to_string(),
+        "days": Settings::load(&app.store).normalized().attach_days,
+        "items": items,
+    })))
+}
+
+async fn clear_attachments(State(app): State<App>, Query(q): Query<AttachQ>) -> R<Json<Value>> {
+    let paths = app.paths.clone();
+    let inst = q.instance.filter(|s| !s.is_empty());
+    let removed = tokio::task::spawn_blocking(move || transfer::clear_attachments(&paths, inst.as_deref())).await.unwrap_or(0);
+    Ok(Json(json!({ "removed": removed })))
+}
+
+async fn get_attachment(State(app): State<App>, Path((inst, name)): Path<(String, String)>) -> R<Response> {
+    transfer::serve_attachment(&app.paths, &inst, &name).await
+}
+
+async fn delete_attachment(State(app): State<App>, Path((inst, name)): Path<(String, String)>) -> R<StatusCode> {
+    transfer::delete_attachment(&app.paths, &inst, &name)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 // ---------------- 文件夹浏览（新建终端时选工作目录） ----------------
 
 #[derive(Deserialize)]
@@ -711,6 +772,203 @@ async fn instance_fs(State(app): State<App>, Path(id): Path<String>, Query(mut q
 async fn preview(State(app): State<App>, Path(id): Path<String>, Query(q): Query<PathQ>) -> R<Response> {
     app.instances.get(&id).await?;
     transfer::preview(&q.path).await
+}
+
+// ---------------- 终端页的 “Git” 标签（git.rs） ----------------
+
+#[derive(Deserialize)]
+struct GitQ {
+    /// 仓库里的任意目录；空 = 终端当前目录
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    file: String,
+    #[serde(default, deserialize_with = "de_flag")]
+    staged: bool,
+    #[serde(default, deserialize_with = "de_flag")]
+    untracked: bool,
+    #[serde(default)]
+    commit: String,
+}
+
+async fn git_dir(app: &App, id: &str, path: &str) -> R<std::path::PathBuf> {
+    if path.trim().is_empty() {
+        Ok(transfer::files_info(&app.instances, &app.paths, id).await?.cwd.into())
+    } else {
+        app.instances.get(id).await?;
+        Ok(path.trim().into())
+    }
+}
+
+async fn git_status(State(app): State<App>, Path(id): Path<String>, Query(q): Query<GitQ>) -> R<Json<crate::git::Status>> {
+    let dir = git_dir(&app, &id, &q.path).await?;
+    Ok(Json(blocking(move || crate::git::status(&dir)).await?))
+}
+
+async fn git_diff(State(app): State<App>, Path(id): Path<String>, Query(q): Query<GitQ>) -> R<Json<crate::git::Diff>> {
+    let dir = git_dir(&app, &id, &q.path).await?;
+    Ok(Json(blocking(move || crate::git::diff_file(&dir, &q.file, q.staged, q.untracked)).await?))
+}
+
+async fn git_show(State(app): State<App>, Path(id): Path<String>, Query(q): Query<GitQ>) -> R<Json<crate::git::Diff>> {
+    let dir = git_dir(&app, &id, &q.path).await?;
+    Ok(Json(blocking(move || crate::git::show(&dir, &q.commit)).await?))
+}
+
+#[derive(Deserialize)]
+struct GitStageReq {
+    #[serde(default)]
+    path: String,
+    /// 空 = 全部
+    #[serde(default)]
+    files: Vec<String>,
+    /// true 暂存，false 取消暂存
+    on: bool,
+}
+
+async fn git_stage(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitStageReq>) -> R<StatusCode> {
+    let dir = git_dir(&app, &id, &req.path).await?;
+    blocking(move || crate::git::stage(&dir, &req.files, req.on)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct GitCommitReq {
+    #[serde(default)]
+    path: String,
+    message: String,
+}
+
+async fn git_commit(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitCommitReq>) -> R<Json<Value>> {
+    let dir = git_dir(&app, &id, &req.path).await?;
+    let short = blocking(move || crate::git::commit(&dir, &req.message)).await?;
+    Ok(Json(json!({ "commit": short })))
+}
+
+#[derive(Deserialize)]
+struct GitRemoteReq {
+    #[serde(default)]
+    path: String,
+    /// fetch | pull | push
+    action: String,
+}
+
+async fn git_remote(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitRemoteReq>) -> R<Json<Value>> {
+    let dir = git_dir(&app, &id, &req.path).await?;
+    let output = blocking(move || crate::git::remote(&dir, &req.action)).await?;
+    Ok(Json(json!({ "output": output })))
+}
+
+// ---------------- SSH 主机（ssh.rs） ----------------
+
+async fn ssh_list(State(app): State<App>) -> Json<Value> {
+    Json(json!({ "items": crate::ssh::views(&app.store), "ssh": crate::shells::which("ssh").is_some() }))
+}
+
+async fn ssh_create(State(app): State<App>, Json(req): Json<crate::ssh::HostInput>) -> R<impl IntoResponse> {
+    let h = crate::ssh::save(&app.store, &app.paths.home, None, req)?;
+    Ok((StatusCode::CREATED, Json(h)))
+}
+
+async fn ssh_update(State(app): State<App>, Path(id): Path<String>, Json(req): Json<crate::ssh::HostInput>) -> R<Json<crate::ssh::SshHost>> {
+    Ok(Json(crate::ssh::save(&app.store, &app.paths.home, Some(&id), req)?))
+}
+
+async fn ssh_delete(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    crate::ssh::delete(&app.store, &id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 在 shell 里运行 `looklook ssh <id>` 的那一行：程序路径按 shell 的写法加引号（Windows 路径常带空格）。
+fn ssh_launch_line(exe: &str, id: &str, family: crate::shells::Family) -> String {
+    use crate::shells::Family;
+    let plain = !exe.chars().any(|c| c.is_whitespace() || "'\"$`&()|;<>".contains(c));
+    match family {
+        _ if plain => format!("{exe} ssh {id}"),
+        Family::Pwsh => format!("& '{}' ssh {id}", exe.replace('\'', "''")),
+        Family::Cmd => format!("\"{exe}\" ssh {id}"),
+        _ => format!("'{}' ssh {id}", exe.replace('\'', "'\\''")),
+    }
+}
+
+/// 新建一个 SSH 终端并启动：终端里的 shell 运行 `looklook ssh <id>`，ssh 退出后回到 shell（按 ↑ 回车即可重连）。
+async fn ssh_open(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
+    require_allowed(&app)?;
+    let h = crate::ssh::list(&app.store).into_iter().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
+    let exe = crate::updater::exe_path().ok_or_else(|| LocalError::new("SSH_FAILED").with("detail", "exe"))?.display().to_string();
+    let family = crate::shells::resolve("", &Settings::load(&app.store).default_shell)?.family;
+    let input = Input {
+        name: Some(format!("SSH · {}", h.name)),
+        launch: Some("custom".into()),
+        command: Some(ssh_launch_line(&exe, &h.id, family)),
+        workdir: dirs::home_dir().map(|p| p.display().to_string()),
+        ..Default::default()
+    };
+    let v = app.instances.create(input).await?;
+    let v = app.instances.start(&v.row.id).await?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+/// 测试连接：在主机上运行一条无害的命令。结果（含失败原因）放在应答里。
+async fn ssh_test(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    let h = crate::ssh::list(&app.store).into_iter().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
+    let r = crate::ssh::run(app.store.clone(), app.paths.home.clone(), h, "echo looklook-ok; uname -sn 2>/dev/null || ver".into(), std::time::Duration::from_secs(25)).await?;
+    let ok = r.exit_code == Some(0) && r.stdout.contains("looklook-ok");
+    Ok(Json(json!({ "ok": ok, "result": r })))
+}
+
+// ---------------- 管理台“文件”页（不属于某个终端；多台电脑时按 X-LL-Device 发给选中的那台） ----------------
+
+async fn fs_download(Query(q): Query<PathQ>) -> R<Response> {
+    transfer::download(&q.path).await
+}
+
+/// 同 [`preview`]：只给几种位图类型，其余是加了 `sandbox` CSP 的纯文本。
+async fn fs_preview(Query(q): Query<PathQ>) -> R<Response> {
+    transfer::preview(&q.path).await
+}
+
+#[derive(Deserialize)]
+struct FsNameReq {
+    /// mkdir：所在文件夹；rename / delete：要改的文件或文件夹
+    path: String,
+    #[serde(default)]
+    name: String,
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> R<T> + Send + 'static) -> R<T> {
+    tokio::task::spawn_blocking(f).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))?
+}
+
+async fn fs_mkdir(Json(req): Json<FsNameReq>) -> R<Json<Value>> {
+    let path = blocking(move || crate::fsops::mkdir(&req.path, &req.name)).await?;
+    Ok(Json(json!({ "path": path })))
+}
+
+async fn fs_rename(Json(req): Json<FsNameReq>) -> R<Json<Value>> {
+    let path = blocking(move || crate::fsops::rename(&req.path, &req.name)).await?;
+    Ok(Json(json!({ "path": path })))
+}
+
+async fn fs_delete(Json(req): Json<FsNameReq>) -> R<StatusCode> {
+    tracing::info!(path = %req.path, "管理台删除文件");
+    blocking(move || crate::fsops::remove(&req.path)).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct FsUploadReq {
+    dir: String,
+    #[serde(default)]
+    name: String,
+    size: u64,
+}
+
+/// 上传到指定文件夹；之后的分块、完成、取消与终端上传相同（`/api/uploads/{uid}…`）。
+async fn fs_upload(State(app): State<App>, Json(req): Json<FsUploadReq>) -> R<impl IntoResponse> {
+    require_allowed(&app)?;
+    let c = app.transfers.create_in_dir(&req.dir, &req.name, req.size)?;
+    Ok((StatusCode::CREATED, Json(c)))
 }
 
 /// 顶层位置。Windows 用 GetLogicalDrives 的位图列出盘符：不访问磁盘，没插卡的读卡器、断开的网络盘也不会卡住。
@@ -1303,6 +1561,16 @@ async fn update_dismiss(State(app): State<App>, Json(req): Json<DismissReq>) -> 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn ssh_launch_line_quotes_paths_for_each_shell() {
+        use crate::shells::Family;
+        assert_eq!(super::ssh_launch_line("/usr/local/bin/looklook", "ab12", Family::Posix), "/usr/local/bin/looklook ssh ab12");
+        assert_eq!(super::ssh_launch_line("/Users/o/My Apps/looklook", "ab12", Family::Posix), "'/Users/o/My Apps/looklook' ssh ab12");
+        assert_eq!(super::ssh_launch_line("C:\\Program Files\\Looklook\\looklook.exe", "ab12", Family::Pwsh), "& 'C:\\Program Files\\Looklook\\looklook.exe' ssh ab12");
+        assert_eq!(super::ssh_launch_line("C:\\Program Files\\Looklook\\looklook.exe", "ab12", Family::Cmd), "\"C:\\Program Files\\Looklook\\looklook.exe\" ssh ab12");
+    }
+
     use super::*;
     use axum::http::Uri;
 

@@ -4,7 +4,8 @@
 //!   本机的 rz / sz 进程只用来确定目录、文件列表，传完由这里结束它。
 //! - 远程链路单请求有时间与大小限制，上传按块（每块最多 8 MiB）进行，块失败可从已收字节数续传。
 //! - 先写同目录的 `.{name}.looklook-part`，收齐后改名；一小时没有动静的上传连同临时文件一起清掉。
-//! - 附件目录 `{LOOKLOOK_HOME}/uploads/{实例 id}/`（粘贴的截图、“发给 AI”的文件）：超过 7 天的文件定期删除。
+//! - 附件目录 `{LOOKLOOK_HOME}/uploads/{实例 id}/`（粘贴的截图、“发给 AI”的文件）：超过保留天数（设置里的 `attach_days`，
+//!   默认 7 天）的文件定期删除；管理台可以查看、删除、清空（§4.4）。
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -30,8 +31,6 @@ pub const BODY_LIMIT: usize = 9 << 20;
 const MAX_ACTIVE: usize = 8;
 /// 多久没有动静的上传自动清理
 const IDLE: Duration = Duration::from_secs(3600);
-/// 附件目录里的文件保留多久
-const ATTACH_TTL: Duration = Duration::from_secs(7 * 24 * 3600);
 /// 附件目录多久清理一次
 const SWEEP_EVERY: Duration = Duration::from_secs(6 * 3600);
 const PART_SUFFIX: &str = ".looklook-part";
@@ -496,6 +495,17 @@ impl Transfers {
         self.reserve(dir, &name, size)
     }
 
+    /// `POST /api/fs/uploads`（管理台“文件”页）：上传到指定文件夹，重名时自动改名。
+    pub fn create_in_dir(&self, dir: &str, name: &str, size: u64) -> R<Created> {
+        let dir = PathBuf::from(dir.trim());
+        if !dir.is_absolute() {
+            return Err(LocalError::invalid("dir", "absolute"));
+        }
+        let clean = sanitize_name(name);
+        let name = if clean.is_empty() { format!("paste-{}.png", stamp()) } else { clean };
+        self.reserve(dir, &name, size)
+    }
+
     fn reserve(&self, dir: PathBuf, name: &str, size: u64) -> R<Created> {
         if !dir.is_dir() {
             return Err(unwritable(&dir));
@@ -617,15 +627,16 @@ impl Transfers {
         });
     }
 
-    /// 后台：每分钟清理闲置上传；启动时和之后每 6 小时清理附件目录。
-    pub async fn run(self: Arc<Self>) {
+    /// 后台：每分钟清理闲置上传；启动时和之后每 6 小时清理附件目录（保留天数每次从设置里读）。
+    pub async fn run(self: Arc<Self>, store: Arc<crate::store::Store>) {
         let mut last_sweep: Option<Instant> = None;
         loop {
             self.cleanup_idle(IDLE);
             if last_sweep.is_none_or(|t| t.elapsed() >= SWEEP_EVERY) {
                 last_sweep = Some(Instant::now());
                 let root = self.paths.uploads();
-                let removed = tokio::task::spawn_blocking(move || sweep(&root, ATTACH_TTL, SystemTime::now())).await.unwrap_or(0);
+                let ttl = Duration::from_secs(u64::from(crate::settings::Settings::load(&store).normalized().attach_days) * 24 * 3600);
+                let removed = tokio::task::spawn_blocking(move || sweep(&root, ttl, SystemTime::now())).await.unwrap_or(0);
                 if removed > 0 {
                     tracing::info!(removed, "已清理过期的附件");
                 }
@@ -656,6 +667,119 @@ fn sweep(root: &Path, ttl: Duration, now: SystemTime) -> usize {
     }
     let mut removed = 0;
     walk(root, ttl, now, &mut removed);
+    removed
+}
+
+// ---------------- 附件管理（§4.4） ----------------
+
+/// 附件目录里的一个文件
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Attachment {
+    /// 所属终端（附件目录的子目录名）
+    pub instance: String,
+    pub name: String,
+    pub path: String,
+    pub size: u64,
+    /// 修改时间（Unix 秒）；过期按它算
+    pub modified: u64,
+    pub image: bool,
+}
+
+/// 附件文件名、终端 id 只能是一段：不含分隔符、不是 `.` / `..`，也不是正在上传的临时文件。
+fn plain_segment(s: &str) -> bool {
+    !s.is_empty() && s != "." && s != ".." && !s.contains(['/', '\\', '\0']) && !s.ends_with(PART_SUFFIX)
+}
+
+fn is_image(name: &str) -> bool {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    preview_type(&ext).starts_with("image/")
+}
+
+/// 列出附件（新的在前）；`instance` 为 Some 时只列这个终端的。正在上传的临时文件不列。
+pub fn list_attachments(paths: &Paths, instance: Option<&str>) -> Vec<Attachment> {
+    let root = paths.uploads();
+    let dirs: Vec<String> = match instance {
+        Some(id) if plain_segment(id) => vec![id.to_string()],
+        Some(_) => vec![],
+        None => std::fs::read_dir(&root)
+            .map(|rd| rd.filter_map(|e| e.ok()).filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+            .unwrap_or_default(),
+    };
+    let mut out = Vec::new();
+    for id in dirs {
+        let Ok(rd) = std::fs::read_dir(root.join(&id)) else { continue };
+        for e in rd.filter_map(|e| e.ok()) {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let Ok(m) = e.metadata() else { continue };
+            if !m.is_file() || !plain_segment(&name) {
+                continue;
+            }
+            let modified = m.modified().ok().and_then(|t| t.duration_since(SystemTime::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+            out.push(Attachment { instance: id.clone(), image: is_image(&name), path: e.path().display().to_string(), name, size: m.len(), modified });
+        }
+    }
+    out.sort_by(|a, b| b.modified.cmp(&a.modified).then_with(|| b.name.cmp(&a.name)));
+    out
+}
+
+fn attachment_path(paths: &Paths, instance: &str, name: &str) -> R<PathBuf> {
+    if !plain_segment(instance) {
+        return Err(LocalError::invalid("instance", "segment"));
+    }
+    if !plain_segment(name) {
+        return Err(LocalError::invalid("name", "segment"));
+    }
+    Ok(paths.attach_dir(instance).join(name))
+}
+
+/// `GET /api/instances/{instance}/attachments/{name}`（放在终端路径下，远程多设备时按终端转给它所在的电脑）：整个文件，图片按类型内联显示（缩略图、大图预览），其他当下载。
+pub async fn serve_attachment(paths: &Paths, instance: &str, name: &str) -> R<Response> {
+    let p = attachment_path(paths, instance, name)?;
+    let m = match tokio::fs::metadata(&p).await {
+        Ok(m) if m.is_file() => m,
+        Ok(_) => return Err(LocalError::new("NOT_A_FILE").with("path", p.display().to_string())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Err(LocalError::not_found().with("path", p.display().to_string())),
+        Err(e) => return Err(e.into()),
+    };
+    if !is_image(name) {
+        return download(&p.display().to_string()).await;
+    }
+    let f = tokio::fs::File::open(&p).await?;
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    Ok((
+        [
+            (header::CONTENT_TYPE, preview_type(&ext).to_string()),
+            (header::CONTENT_LENGTH, m.len().to_string()),
+            (header::X_CONTENT_TYPE_OPTIONS, "nosniff".into()),
+            (header::CONTENT_SECURITY_POLICY, "sandbox; default-src 'none'".into()),
+            (header::CACHE_CONTROL, "no-store".into()),
+        ],
+        Body::from_stream(tokio_util::io::ReaderStream::with_capacity(f, 64 * 1024)),
+    )
+        .into_response())
+}
+
+/// `DELETE /api/instances/{instance}/attachments/{name}`：删一个附件（已经不在也算成功）。
+pub fn delete_attachment(paths: &Paths, instance: &str, name: &str) -> R<()> {
+    let p = attachment_path(paths, instance, name)?;
+    match std::fs::remove_file(&p) {
+        Ok(()) => {
+            let _ = std::fs::remove_dir(paths.attach_dir(instance)); // 删空了就把目录也删掉
+            Ok(())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// `DELETE /api/attachments[?instance=]`：清空（全部或一个终端的）附件，正在上传的临时文件不动。返回删掉的文件数。
+pub fn clear_attachments(paths: &Paths, instance: Option<&str>) -> usize {
+    let mut removed = 0;
+    for a in list_attachments(paths, instance) {
+        if delete_attachment(paths, &a.instance, &a.name).is_ok() {
+            removed += 1;
+        }
+    }
     removed
 }
 
@@ -903,6 +1027,31 @@ mod tests {
     }
 
     #[test]
+    fn attachments_list_delete_and_clear() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = paths(tmp.path());
+        std::fs::create_dir_all(p.attach_dir("a")).unwrap();
+        std::fs::create_dir_all(p.attach_dir("b")).unwrap();
+        std::fs::write(p.attach_dir("a").join("shot.png"), b"png").unwrap();
+        std::fs::write(p.attach_dir("a").join("notes.txt"), b"t").unwrap();
+        std::fs::write(p.attach_dir("a").join(".big.png.looklook-part"), b"").unwrap();
+        std::fs::write(p.attach_dir("b").join("x.JPG"), b"jpg").unwrap();
+        let all = list_attachments(&p, None);
+        assert_eq!(all.len(), 3, "临时文件不列出：{all:?}");
+        assert!(all.iter().any(|a| a.name == "x.JPG" && a.image && a.instance == "b"));
+        assert!(all.iter().any(|a| a.name == "notes.txt" && !a.image));
+        assert_eq!(list_attachments(&p, Some("a")).len(), 2);
+        assert!(list_attachments(&p, Some("..")).is_empty());
+        assert_eq!(delete_attachment(&p, "a", "../b/x.JPG").unwrap_err().code, "VALIDATION_FAILED");
+        assert_eq!(delete_attachment(&p, "..", "x").unwrap_err().code, "VALIDATION_FAILED");
+        delete_attachment(&p, "b", "x.JPG").unwrap();
+        delete_attachment(&p, "b", "x.JPG").unwrap();
+        assert!(!p.attach_dir("b").exists(), "删空的目录一并删掉");
+        assert_eq!(clear_attachments(&p, Some("a")), 2);
+        assert!(p.attach_dir("a").join(".big.png.looklook-part").exists(), "正在上传的不动");
+    }
+
+    #[test]
     fn sweep_removes_old_files_and_empty_dirs() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().join("uploads");
@@ -912,13 +1061,13 @@ mod tests {
         std::fs::write(root.join("inst2/sub/old.png"), b"x").unwrap();
         // 以“8 天后”为当前时间：现有文件都算过期；以“1 天后”为当前时间：都不过期
         let day = Duration::from_secs(86400);
-        assert_eq!(sweep(&root, ATTACH_TTL, SystemTime::now() + day), 0);
+        assert_eq!(sweep(&root, 7 * day, SystemTime::now() + day), 0);
         assert!(root.join("inst1/old.png").exists());
         std::fs::create_dir_all(root.join("inst3")).unwrap();
         std::fs::write(root.join("inst3/new.png"), b"x").unwrap();
         let f = std::fs::File::options().write(true).open(root.join("inst3/new.png")).unwrap();
         f.set_modified(SystemTime::now() + 7 * day).unwrap();
-        assert_eq!(sweep(&root, ATTACH_TTL, SystemTime::now() + 8 * day), 2);
+        assert_eq!(sweep(&root, 7 * day, SystemTime::now() + 8 * day), 2);
         assert!(!root.join("inst1").exists() && !root.join("inst2").exists());
         assert!(root.join("inst3/new.png").exists());
         assert!(root.is_dir(), "上级目录保留");

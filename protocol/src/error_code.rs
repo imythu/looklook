@@ -70,6 +70,7 @@ error_codes! {
     GatewayOriginRejected = 403,
     RelayCapacityExhausted = 503,
     CertOperationInProgress = 409,
+    BackupInProgress = 409,
     SetupTokenInvalid = 401,
     SetupAlreadyCompleted = 409,
     SetupStepFailed = 400,

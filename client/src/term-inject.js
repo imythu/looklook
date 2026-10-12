@@ -11,6 +11,7 @@
 //    外层在地址的 # 后面带上自己的来源（ll-parent=…），消息只发给、只收自这个来源的父窗口；
 //    能嵌入这里的来源已由本机的 CSP frame-ancestors 限定，所以写错了来源只会收不到消息。
 // 9. ⇧↵ 换行（发 Ctrl+J）；Windows / Linux 上 Ctrl+V 只粘贴、不再把 ^V 发给程序。见 setupKeys。
+// 10. 快速复制：终端里选中文字后旁边出现“复制”小按钮；Windows / Linux 上 Ctrl+Shift+C 复制选中的文字。见 setupCopy。
 (function () {
   'use strict';
   var tries = 0;
@@ -24,8 +25,8 @@
   function fromParent(e) { return e.source === window.parent && e.origin === PARENT && e.data && typeof e.data === 'object'; }
   // 与管理台共用语言设置（同源 localStorage）；英文未翻译时回退中文。
   var TEXT = {
-    'zh-CN': { copied: '已复制', connecting: '正在连接终端…', lost: '连接断开了，正在自动重连…', back: '已重新连接', reload: '立即重连' },
-    'en-US': { copied: 'Copied', connecting: 'Connecting to the terminal…', lost: 'Connection lost. Reconnecting automatically…', back: 'Reconnected', reload: 'Reconnect now' }
+    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', connecting: '正在连接终端…', lost: '连接断开了，正在自动重连…', back: '已重新连接', reload: '立即重连' },
+    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', connecting: 'Connecting to the terminal…', lost: 'Connection lost. Reconnecting automatically…', back: 'Reconnected', reload: 'Reconnect now' }
   };
   function tr(key) {
     var lang = 'zh-CN';
@@ -371,20 +372,118 @@
     el.addEventListener('touchcancel', function () { start = null; scrolling = false; }, { capture: true, passive: true });
   }
 
+  // 快速复制。xterm.js 自己的选择（没开鼠标上报时直接拖选；tmux 等开了鼠标时按住 Shift 拖选）不会自动进剪贴板：
+  // 松开鼠标后在旁边显示“复制”小按钮，点一下复制并提示。tmux 自己的拖选松手即复制（OSC 52，见 setup），不受影响。
+  function copyText(text) {
+    var lines = text.split('\n'); // 去掉末尾的空行（全选时有一大串）
+    while (lines.length > 1 && !lines[lines.length - 1].trim()) lines.pop();
+    text = lines.join('\n');
+    function fallback() {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.cssText = 'position:fixed;top:-1000px;opacity:0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      ta.remove();
+      return ok;
+    }
+    var done = function (ok) { toast(tr(ok ? 'copied' : 'copy_failed')); };
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallback()); });
+    else done(fallback());
+  }
+  function setupCopy(term) {
+    if (typeof term.onSelectionChange !== 'function' || typeof term.getSelection !== 'function') return;
+    var chip = null, at = null, timer = 0;
+    function hide() { clearTimeout(timer); if (chip) { chip.remove(); chip = null; } }
+    function show() {
+      hide();
+      var text = term.getSelection();
+      if (!text || !text.trim() || !at) return;
+      chip = document.createElement('button');
+      chip.type = 'button';
+      chip.textContent = tr('copy');
+      chip.title = tr('copy_hint') + (MAC ? ' (⌘C)' : ' (Ctrl+Shift+C)');
+      var x = Math.min(Math.max(8, at.x + 8), window.innerWidth - 72), y = Math.min(Math.max(8, at.y - 38), window.innerHeight - 40);
+      chip.style.cssText = 'position:fixed;left:' + x + 'px;top:' + y + 'px;z-index:97;padding:5px 12px;border:1px solid #59627a;border-radius:9px;' +
+        'background:#262a36;color:#e3e6ee;font:600 13px/1.4 system-ui,sans-serif;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.45)';
+      // 按下时不让 xterm 拿到事件（否则选择被清掉）
+      chip.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+      chip.addEventListener('click', function (e) {
+        e.preventDefault();
+        copyText(term.getSelection() || text);
+        term.clearSelection();
+        hide();
+        term.focus();
+      });
+      document.body.appendChild(chip);
+    }
+    document.addEventListener('mouseup', function (e) {
+      if (e.button !== 0 || (chip && chip.contains(e.target))) return;
+      at = { x: e.clientX, y: e.clientY };
+      clearTimeout(timer);
+      timer = setTimeout(show, 0); // 等 xterm 处理完这次 mouseup（双击选词、三击选行）
+    }, true);
+    term.onSelectionChange(function () { if (!term.hasSelection || !term.hasSelection()) hide(); });
+    document.addEventListener('keydown', function (e) { if (chip && !(e.ctrlKey && e.shiftKey)) hide(); }, true);
+    window.addEventListener('blur', hide);
+    window.looklookCopySelection = function () {
+      var text = term.getSelection && term.getSelection();
+      if (!text) return false;
+      copyText(text);
+      hide();
+      return true;
+    };
+  }
+
   // 在捕获阶段拦下几个键，不替换 ttyd 自己的按键处理。输入法正在组字时不管。
   // - ⇧↵ 换行：xterm.js 把 Shift+Enter 也当回车（\r）发出去，AI 编程助手就直接提交了。
   //   改发 Ctrl+J（\n）：Claude Code、Codex、OpenCode 都把它当输入框里的换行，普通 shell 里与回车一样。
   // - Ctrl+V（Windows / Linux 的粘贴键）：xterm.js 除了粘贴文字，还会把 ^V 发给程序，Claude Code 收到 ^V
   //   就去读那台电脑的剪贴板找图片，提示“No image found in clipboard”。这里只让浏览器粘贴，不发 ^V；
   //   图片由管理台上传后填路径。macOS 上粘贴是 ⌘V，^V 照常发送（vim 的列选择等）。
+  // - 中文输入法下的标点（Shift+9 → “（”、逗号 → “，”…）：有的输入法 / WebView 报的按键不是 229 而是普通的 “(” 键，
+  //   xterm.js 就自己发出英文 “(” 并取消事件，输入法没机会换成全角。数字和标点键改由浏览器正常输入，
+  //   在随后的 input 事件里把实际上屏的字（输入法给的全角或原样的半角）发给终端；字母、空格仍走 xterm 的处理。
   var MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || '');
   function setupKeys(term) {
+    var punct = null; // 放行给浏览器的标点键：{ key, timer }
+    function sendText(text) {
+      if (typeof term.input === 'function') term.input(text, true);
+      else if (term._core && term._core.coreService) term._core.coreService.triggerDataEvent(text, true);
+    }
+    document.addEventListener('keypress', function (e) {
+      if (punct && e.target === term.textarea) e.stopImmediatePropagation(); // 不让 xterm 在 keypress 里发英文、取消输入
+    }, true);
+    document.addEventListener('input', function (e) {
+      if (!punct || e.target !== term.textarea) return;
+      clearTimeout(punct.timer);
+      punct = null;
+      if (e.inputType !== 'insertText' || !e.data || e.isComposing) return;
+      e.stopImmediatePropagation();
+      sendText(e.data);
+    }, true);
     document.addEventListener('keydown', function (e) {
       if (!term.textarea || e.target !== term.textarea || e.isComposing || e.keyCode === 229) return;
+      if (e.key && e.key.length === 1 && !/[A-Za-z ]/.test(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        e.stopImmediatePropagation(); // 不 preventDefault：输入法照常处理这个键
+        if (punct) clearTimeout(punct.timer);
+        var key = e.key;
+        // 浏览器没有触发 input（不该发生）时按原样补发，免得丢字。
+        punct = { key: key, timer: setTimeout(function () { if (punct && punct.key === key) { punct = null; sendText(key); } }, 50) };
+        return;
+      }
       if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
         e.preventDefault();
         e.stopImmediatePropagation();
         send(term, '\n');
+      } else if (!MAC && e.ctrlKey && e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'c' || e.key === 'C') && window.looklookCopySelection) {
+        // Ctrl+Shift+C：有选中的文字就复制（同常见终端）；没有时照常交给程序
+        if (window.looklookCopySelection()) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+        }
       } else if (!MAC && e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key === 'v' || e.key === 'V')) {
         e.stopImmediatePropagation(); // 不 preventDefault：浏览器照常触发粘贴
       }
@@ -395,6 +494,7 @@
     setupIme(term);
     setupTouchScroll(term);
     setupKeys(term);
+    setupCopy(term);
     // opts.focus === false：按键条发送时不聚焦终端，免得手机键盘被弹出来。
     window.looklookSend = function (data, opts) { send(term, data); if (!opts || opts.focus !== false) term.focus(); };
     // 管理台上传完成后填路径：term.paste 会在程序开启 bracketed paste 时自动包上 ESC[200~ … ESC[201~。

@@ -79,7 +79,13 @@
     "ip_too_wide": "范围太大，不能对整个互联网开放",
     "ip_loopback": "这台电脑自己本来就能打开，不用添加",
     "ip_too_many": "白名单最多 32 项",
-    "code_length": "访问码需要 8 到 64 个字符"
+    "code_length": "访问码需要 8 到 64 个字符",
+    "file_name": "不能为空，不能含 / \\ 等特殊字符，也不能是 . 或 ..",
+    "absolute": "必须是完整路径",
+    "segment": "只能是一个名字",
+    "relative": "必须是仓库里的相对路径",
+    "hash": "不是有效的提交编号",
+    "too_many": "太多了"
   },
   "LAN_SWITCH_OFF": "已关闭“远程打开时可以改走局域网”（设置 → 访问控制）",
   "DEVICE_TIMEOUT": "这台电脑没有及时响应，正在重试",
@@ -109,7 +115,17 @@
     "open_host": "管理台打开地址",
     "allowed_ips": "白名单",
     "code": "访问码",
-    "description": "问题描述"
+    "description": "问题描述",
+    "dir": "文件夹",
+    "file": "文件",
+    "commit": "提交",
+    "message": "提交说明",
+    "action": "操作",
+    "host": "地址",
+    "user": "用户名",
+    "key_path": "私钥文件",
+    "auth": "登录方式",
+    "hosts": "主机"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "会员已到期",
@@ -136,5 +152,16 @@
   "MODEL_KEY_REQUIRED": "请填写 API Key",
   "MODEL_DISCLAIMER_REQUIRED": "请先阅读并同意免责声明",
   "MODEL_URL_UNSUPPORTED": "接口地址不支持：必须是 https:// 开头，路径里只能有字母、数字和 - . _ ~ /",
-  "MODEL_PROVIDER_GONE": "这个服务商已下线或不再支持该客户端，请刷新后重新选择"
+  "MODEL_PROVIDER_GONE": "这个服务商已下线或不再支持该客户端，请刷新后重新选择",
+  "FILE_EXISTS": "已经有同名的文件或文件夹了，换个名字吧。",
+  "GIT_MISSING": "这台电脑上没有找到 git，先安装 Git 再试。",
+  "GIT_NOT_REPO": "这里不是 Git 仓库。",
+  "GIT_TIMEOUT": "git 运行超过 {{seconds}} 秒没有结束，已停止。可以在终端里运行看看。",
+  "GIT_AUTH": "需要登录或输入密码，这里没法交互。请在终端里运行一次 git 完成登录（或配置凭据 / SSH 密钥）后再试。\n{{detail}}",
+  "GIT_FAILED": "git 出错了：\n{{detail}}",
+  "BACKUP_IN_PROGRESS": "另一个备份正在进行，稍后再试",
+  "SSH_NAME_TAKEN": "已经有叫“{{name}}”的主机了，换个名字吧。",
+  "SSH_FAILED": "没能启动 SSH 连接：{{detail}}",
+  "SSH_MISSING": "这台电脑上没有找到 ssh 命令，请先安装 OpenSSH 客户端。",
+  "SSH_HOST_NOT_ALLOWED": "这台主机没有允许 AI 助手使用。"
 }

@@ -804,7 +804,10 @@ impl Instances {
 
 /// ttyd 参数。终端字体、配色在这里通过 `-t` 传给浏览器端的 xterm.js。
 pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[String]) -> Vec<String> {
-    let theme = if s.theme == "light" {
+    let theme = if s.theme == "agent" {
+        // AI 助手命令行风格：暖色的近黑背景、米白文字、陶土橙光标与强调色，ANSI 颜色压低饱和度，长时间看不累
+        r##"{"background":"#1a1915","foreground":"#e8e4dc","cursor":"#d97757","cursorAccent":"#1a1915","selectionBackground":"#4a3f37","selectionForeground":"#faf8f3","black":"#24221e","red":"#e06c5a","green":"#8fbf7a","yellow":"#e3b35c","blue":"#7aa2d6","magenta":"#c48bc9","cyan":"#6fbfb5","white":"#d8d3c8","brightBlack":"#6e6a61","brightRed":"#ef8a76","brightGreen":"#a9d394","brightYellow":"#f0c97e","brightBlue":"#9dbde6","brightMagenta":"#d8a8dc","brightCyan":"#92d6cd","brightWhite":"#faf8f3"}"##
+    } else if s.theme == "light" {
         r##"{"background":"#fbfbfd","foreground":"#1f2330","cursor":"#4f46e5","cursorAccent":"#ffffff","selectionBackground":"#c7d2fe","black":"#1f2330","red":"#d9364f","green":"#12a150","yellow":"#b7791f","blue":"#4f46e5","magenta":"#a23fd1","cyan":"#0891b2","white":"#d4d7e1","brightBlack":"#6b7285","brightRed":"#e5536a","brightGreen":"#1fb866","brightYellow":"#c98f2b","brightBlue":"#6366f1","brightMagenta":"#b95ee0","brightCyan":"#06b6d4","brightWhite":"#ffffff"}"##
     } else {
         r##"{"background":"#11131a","foreground":"#e3e6ee","cursor":"#a5b4fc","cursorAccent":"#11131a","selectionBackground":"#3b3f63","black":"#1b1e27","red":"#f06a7e","green":"#3ccf7c","yellow":"#e0a846","blue":"#818cf8","magenta":"#c084fc","cyan":"#22d3ee","white":"#d6d9e2","brightBlack":"#5c6375","brightRed":"#ff8a9b","brightGreen":"#6ee7a0","brightYellow":"#f5c46a","brightBlue":"#a5b4fc","brightMagenta":"#d8b4fe","brightCyan":"#67e8f9","brightWhite":"#ffffff"}"##

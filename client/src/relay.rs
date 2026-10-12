@@ -3,6 +3,11 @@
 //! 登录后按平台下发的通道参数生成 rathole 客户端配置（仅当前用户可读），`local_addr`
 //! 指向本机网关的“远程入口”（只监听 127.0.0.1，且每个请求都必须带平台签名的网关令牌）。
 //! 参数变化（重新登录、令牌轮换、平台对账）时重启通道；退出登录时关闭。
+//!
+//! 断线重连：rathole 自己会重试（最多每 3 秒一次），但旧连接在睡眠唤醒、换网络后往往已经死了，
+//! 要等心跳超时（35 秒）才发现。这里每 5 秒看一眼：电脑刚睡醒、或者本机原有的 IPv4 地址不见了（换了 Wi-Fi、
+//! 拔了网线），就立刻重建通道；只是多了一个地址（接上 VPN 等）不动，免得打断正在用的终端。
+//! 管理台也可以手动“立即重连”（`POST /api/relay/reconnect`）。
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -45,6 +50,41 @@ static CONNECTED: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub fn connected() -> &'static tokio::sync::Notify {
     &CONNECTED
+}
+
+/// 要求马上重建通道（手动“立即重连”）。
+static RESTART: tokio::sync::Notify = tokio::sync::Notify::const_new();
+
+pub fn request_restart() {
+    RESTART.notify_one();
+}
+
+/// 本机的 IPv4 地址（不含回环）。IPv6 临时地址会定期轮换，不看。
+fn local_ipv4() -> Vec<std::net::Ipv4Addr> {
+    let mut v: Vec<std::net::Ipv4Addr> = local_ip_address::list_afinet_netifas()
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(_, ip)| match ip {
+            std::net::IpAddr::V4(v4) if !v4.is_loopback() && !v4.is_link_local() => Some(v4),
+            _ => None,
+        })
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// 网络变化的判断：原来的地址有一个不见了（连接可能就走的它）才算；只是多了地址不算。
+fn lost_address(before: &[std::net::Ipv4Addr], now: &[std::net::Ipv4Addr]) -> bool {
+    before.iter().any(|ip| !now.contains(ip))
+}
+
+/// 两次检查之间，墙上时间比单调时钟多走了这么多：电脑睡过一觉（单调时钟在睡眠时不走）；
+/// 或者单调时钟本身就隔了很久（进程被挂起、Windows 上单调时钟也计入睡眠时）。
+const WAKE_GAP: Duration = Duration::from_secs(15);
+
+fn woke_up(mono: Duration, wall: Option<Duration>, expected: Duration) -> bool {
+    mono > expected + WAKE_GAP || wall.is_some_and(|w| w > mono + WAKE_GAP)
 }
 
 fn set_status(state: &'static str, reason: Option<&'static str>, detail: Option<String>) {
@@ -193,6 +233,7 @@ impl Running {
 pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf, shutdown: CancellationToken) {
     let mut changed = account.subscribe();
     let mut current: Option<Running> = None;
+    let mut addrs = local_ipv4();
     loop {
         let want = account.session().map(|s| s.relay);
         let fingerprint = want.as_ref().map(|p| serde_json::to_string(p).unwrap_or_default());
@@ -228,10 +269,28 @@ pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf,
                 let _ = std::fs::remove_file(&config_path);
             }
         }
-        tokio::select! {
-            r = changed.changed() => if r.is_err() { break },
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+        let tick = Duration::from_secs(5);
+        let (mono0, wall0) = (std::time::Instant::now(), SystemTime::now());
+        let restart = tokio::select! {
+            r = changed.changed() => { if r.is_err() { break } None }
+            _ = tokio::time::sleep(tick) => {
+                let now = local_ipv4();
+                let lost = lost_address(&addrs, &now);
+                addrs = now;
+                if woke_up(mono0.elapsed(), SystemTime::now().duration_since(wall0).ok(), tick) {
+                    Some("wake")
+                } else if lost {
+                    Some("network")
+                } else {
+                    None
+                }
+            }
+            _ = RESTART.notified() => Some("manual"),
             _ = shutdown.cancelled() => break,
+        };
+        if let (Some(why), Some(r)) = (restart, current.take()) {
+            tracing::info!(reason = why, "重建远程访问通道");
+            r.stop().await;
         }
     }
     if let Some(r) = current.take() {
@@ -304,6 +363,22 @@ fn ping_error(e: &reqwest::Error) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_wake_and_lost_addresses() {
+        let s = Duration::from_secs;
+        assert!(!woke_up(s(5), Some(s(5)), s(5)));
+        assert!(!woke_up(s(6), Some(s(19)), s(5)), "时钟校准等小偏差不算");
+        assert!(woke_up(s(5), Some(s(600)), s(5)), "睡了 10 分钟：墙上时间多走了");
+        assert!(woke_up(s(600), Some(s(600)), s(5)), "单调时钟也计入睡眠的系统");
+        assert!(!woke_up(s(5), None, s(5)), "墙上时间往回调了");
+        let a: std::net::Ipv4Addr = "192.168.1.5".parse().unwrap();
+        let b: std::net::Ipv4Addr = "10.0.0.8".parse().unwrap();
+        assert!(!lost_address(&[a], &[a, b]), "多了一个地址（接上 VPN）不重连");
+        assert!(lost_address(&[a, b], &[b]), "原来的地址没了");
+        assert!(lost_address(&[a], &[]));
+        assert!(!lost_address(&[], &[a]));
+    }
 
     #[test]
     fn classifies_errors() {

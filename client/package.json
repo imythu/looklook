@@ -11,8 +11,10 @@
     "test": "node --test src-ui/shared/xfer.test.mjs"
   },
   "dependencies": {
+    "dompurify": "^3.4.16",
     "i18next": "^25.0.0",
     "lucide-react": "^0.500.0",
+    "marked": "^16.4.2",
     "qrcode-generator": "^2.0.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

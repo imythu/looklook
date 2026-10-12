@@ -27,7 +27,9 @@ mod agents;
 mod clock;
 mod diag;
 mod error;
+mod fsops;
 mod gateway;
+mod git;
 mod hardening;
 mod instances;
 mod listen;
@@ -39,6 +41,7 @@ mod relay;
 mod relay_watch;
 mod settings;
 mod shells;
+mod ssh;
 mod store;
 mod tools;
 mod transfer;
@@ -128,6 +131,14 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// 连接在看看里保存的 SSH 主机（密码由看看提供，不用输入、不会显示）/ Connect to a saved SSH host
+    Ssh {
+        /// 主机名称或 id；不填则列出全部 / Host name or id; lists hosts when omitted
+        host: Option<String>,
+        /// 在主机上运行的命令（放在 -- 之后）/ Command to run on the host (after --)
+        #[arg(last = true)]
+        command: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -160,6 +171,13 @@ fn main() -> Result<()> {
     // 启动时把标准输入输出接回父进程的控制台，命令行子命令才看得见输出；双击/开机启动等
     // 没有父控制台的场景这个调用是无害的空操作。其它平台是空实现。
     hardening::attach_console_if_launched_from_terminal();
+    // ssh 把看看当作 SSH_ASKPASS 调用（`<looklook> "<提示>"`）：去找发起连接的 `looklook ssh` 要密码（src/ssh.rs）
+    if let Ok(env) = std::env::var(ssh::ASKPASS_ENV) {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.len() <= 1 {
+            std::process::exit(ssh::askpass_main(&env, args.first().map(String::as_str).unwrap_or("")));
+        }
+    }
     let _ = updater::exe_path(); // 记下程序路径（更新替换文件后重启要用）
     let cli = Cli::parse();
     let rt = tokio::runtime::Runtime::new()?;
@@ -192,6 +210,19 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Update { check }) => rt.block_on(cli_update(&cli.home, cli_listen, check)),
+        Some(Cmd::Ssh { host, command }) => {
+            let paths = Paths::discover(cli.home)?;
+            let store = Store::open(&paths.db())?;
+            match host {
+                Some(h) => std::process::exit(ssh::connect_cli(&store, &paths.home, &h, &command)?),
+                None => {
+                    for h in ssh::list(&store) {
+                        println!("{:<20} {}@{}:{}  {}{}", h.name, h.user, h.host, h.port, h.auth, if h.allow_ai { "  ai" } else { "" });
+                    }
+                    Ok(())
+                }
+            }
+        }
     }
 }
 
@@ -416,7 +447,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(updater.clone().run()),
         tokio::spawn(metrics.run()),
         tokio::spawn(relay_watch.run(shutdown.clone())),
-        tokio::spawn(transfers.run()),
+        tokio::spawn(transfers.run(store.clone())),
         {
             let account = account.clone();
             tokio::spawn(async move {

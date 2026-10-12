@@ -43,7 +43,9 @@
     "close_menu": "Close menu",
     "remote": "Remote access on",
     "remote_ms": "{{ms}} ms",
-    "remote_latency_hint": "Round trip {{ms}} ms (browser → relay → this computer). Above 150 ms typing feels slow; you can switch the remote route in Settings."
+    "remote_latency_hint": "Round trip {{ms}} ms (browser → relay → this computer). Above 150 ms typing feels slow; you can switch the remote route in Settings.",
+    "files": "Files",
+    "ssh": "SSH hosts"
   },
   "unreachable": {
     "title": "Can't reach Looklook",
@@ -382,7 +384,8 @@
     "source": "Source code",
     "check_update": "Check for updates",
     "up_to_date": "You're up to date",
-    "beta": "Beta"
+    "beta": "Beta",
+    "theme_agent": "Agent"
   },
   "account": {
     "title": "Account",
@@ -424,7 +427,8 @@
     "collapse": "Collapse",
     "expand": "Expand",
     "close": "Close embedded terminal",
-    "resize": "Drag to resize (or use the arrow keys)"
+    "resize": "Drag to resize (or use the arrow keys)",
+    "minimize": "Minimize to the switcher bar"
   },
   "safety": {
     "title": "Security notice",
@@ -496,7 +500,17 @@
       "heartbeat": "The connection to the server dropped (no response for a long time). Reconnecting automatically.",
       "config": "Couldn't write the remote access configuration. Check disk space and file permissions.",
       "other": "Something went wrong connecting to the server; Looklook will retry. If it keeps failing, expand the technical details and send them to us."
-    }
+    },
+    "pill": {
+      "connecting": "Connecting",
+      "connected": "Remote on",
+      "failed": "Remote off"
+    },
+    "pill_title": "Remote channel",
+    "reconnect": "Reconnect now",
+    "reconnecting": "Reconnecting the remote channel…",
+    "connected_since": "Connected {{when}}",
+    "auto_note": "Reconnects right away when this computer wakes up or changes networks, and keeps retrying if the link drops."
   },
   "termconn": {
     "connecting": "Connecting to the terminal…",
@@ -835,7 +849,27 @@
     "denied": "Looklook isn't allowed to read this folder.",
     "moved": "That folder no longer exists; showing the nearest one above it.",
     "empty": "This folder is empty.",
-    "link": "Shortcut (symbolic link)"
+    "link": "Shortcut (symbolic link)",
+    "page_title": "Files",
+    "md_source": "View source",
+    "md_rendered": "View formatted",
+    "name": "Name",
+    "new_folder": "New folder",
+    "create": "Create",
+    "rename": "Rename",
+    "rename_title": "Rename “{{name}}”",
+    "delete": "Delete",
+    "delete_title": "Delete “{{name}}”?",
+    "delete_body": "{{path}} will be deleted permanently — it won’t go to the Trash.",
+    "delete_dir_title": "Delete the folder “{{name}}”?",
+    "delete_dir_body": "{{path}} and everything in it will be deleted permanently — it won’t go to the Trash and can’t be undone.",
+    "deleted": "Deleted “{{name}}”",
+    "upload": "Upload to this folder",
+    "upload_hint": "Upload to this folder (or drop files onto the list)",
+    "uploading": "Uploading {{n}} files · {{pct}}%",
+    "uploaded": "Uploaded {{n}} files",
+    "drop": "Drop to upload to {{dir}}",
+    "tab_git": "Git"
   },
   "lan": {
     "hint": "You're on the same network as this computer. Connect over the local network instead of the remote route for snappier typing.",
@@ -886,5 +920,141 @@
       "cost": "Charges, top-ups, refunds and support are between you and the provider. Looklook is not liable for costs, data leaks, account actions or other losses arising from third-party services. You must also follow the model vendor's terms and local laws.",
       "agree": "I have read and agree to the above, and use third-party services at my own risk"
     }
+  },
+  "att": {
+    "title": "Pasted images & attachments",
+    "lead": "Screenshots pasted or dropped into AI terminals, and files sent to AI, are kept in a temporary folder on this computer — never in your project — and deleted automatically when they expire.",
+    "keep": "Keep for",
+    "day": "{{count}} day",
+    "days": "{{count}} days",
+    "summary": "{{n}} files, {{size}}",
+    "filter": "Show",
+    "only_images": "Images",
+    "all": "All files",
+    "empty": "No attachments yet",
+    "empty_hint": "Screenshots you paste (or images you drop) into a terminal show up here.",
+    "view": "View",
+    "delete": "Delete",
+    "deleted": "Deleted",
+    "deleted_term": "Deleted terminal",
+    "clear": "Clear all",
+    "clear_title": "Delete all attachments?",
+    "clear_body": "This deletes {{n}} files ({{size}}). AI tools you already sent these images to won't be able to read them anymore.",
+    "cleared": "Deleted {{n}} files",
+    "tray": "Images you just pasted",
+    "tray_hint": "Images pasted in this session: click to view, hover to delete",
+    "tray_hide": "Hide (files are kept)"
+  },
+  "dock": {
+    "label": "Switch terminals",
+    "open": "Open here",
+    "minimize": "Minimize",
+    "restore": "Restore",
+    "front": "Bring to front"
+  },
+  "git": {
+    "changes": "Changes",
+    "history": "History",
+    "detached": "Detached at {{head}}",
+    "ahead": "{{n}} commits not pushed yet",
+    "behind": "{{n}} new commits on the remote to pull",
+    "fetch": "Fetch",
+    "fetch_hint": "Check the remote for new commits (git fetch — doesn’t touch your files)",
+    "pull": "Pull",
+    "pull_hint": "Pull new commits from the remote (git pull --ff-only — fast-forward only, never merges)",
+    "push": "Push",
+    "push_hint": "Push your local commits to the remote (git push)",
+    "done": {
+      "fetch": "Fetched",
+      "pull": "Pulled",
+      "push": "Pushed"
+    },
+    "message_ph": "Commit message (to {{branch}}, Ctrl+Enter to commit)",
+    "commit": "Commit",
+    "commit_n": "Commit {{n}} files",
+    "committed": "Committed {{commit}}",
+    "stage": "Stage",
+    "unstage": "Unstage",
+    "stage_all": "Stage all",
+    "unstage_all": "Unstage all",
+    "stage_tip": "Stage what you want to commit with the + next to each file, or Stage all.",
+    "sec": {
+      "conflict": "Conflicts",
+      "staged": "Staged",
+      "changed": "Not staged",
+      "untracked": "New files"
+    },
+    "st": {
+      "modified": "Modified",
+      "added": "Added",
+      "deleted": "Deleted",
+      "renamed": "Renamed",
+      "copied": "Copied",
+      "typechange": "Type changed",
+      "conflict": "Conflict",
+      "untracked": "Untracked"
+    },
+    "clean_title": "No changes",
+    "clean_body": "The working tree matches the last commit.",
+    "too_many": "Too many changes — showing the first 2000.",
+    "no_commits": "No commits yet.",
+    "pick_title": "Pick a file or commit",
+    "pick_body": "Click one on the left to see exactly what changed.",
+    "back": "Back to the list",
+    "binary": "Binary file — can’t compare line by line.",
+    "no_diff": "Nothing to show (maybe only the file mode changed).",
+    "truncated": "This diff is long and was cut off. Run git diff in the terminal to see all of it.",
+    "not_repo_title": "Not a Git repository",
+    "not_repo_body": "The terminal’s current folder isn’t inside a Git repository. cd into one and it shows up here automatically. To start a new one, run this in the terminal:",
+    "retry": "Retry"
+  },
+  "ssh": {
+    "title": "SSH hosts",
+    "add": "Add host",
+    "add_title": "Add an SSH host",
+    "edit_title": "Edit “{{name}}”",
+    "edit": "Edit",
+    "delete": "Delete",
+    "delete_title": "Delete “{{name}}”?",
+    "delete_body": "This only removes the host and its saved password from Looklook. The server and your keys in ~/.ssh are untouched.",
+    "name": "Name",
+    "name_hint": "For you — AI assistants also use it to pick the host.",
+    "name_ph": "e.g. Production",
+    "host": "Host",
+    "port": "Port",
+    "user": "User",
+    "auth": "Sign in with",
+    "auth_agent": "System keys",
+    "auth_key": "Key file",
+    "auth_password": "Password",
+    "auth_hint": {
+      "agent": "Uses this computer’s default keys in ~/.ssh or ssh-agent, exactly like running ssh in a terminal. Looklook stores no secrets.",
+      "key": "Uses the key file you pick (Looklook stores the path, not the key). If the key has a passphrase, Looklook can store it.",
+      "password": "The password is encrypted on this computer and handed to ssh by Looklook when connecting. It’s never shown and never appears in the terminal."
+    },
+    "key_path": "Private key file",
+    "key_path_hint": "A path on this computer; ~ means your home folder.",
+    "password": "Password",
+    "passphrase": "Key passphrase",
+    "optional": "(optional)",
+    "secret_saved": "Saved encrypted. Leave blank to keep it.",
+    "secret_hint": "Encrypted and kept on this computer only — never uploaded to Looklook’s servers.",
+    "allow_ai": "Let AI assistants use this host",
+    "allow_ai_hint": "When on, Claude Code, Codex and others can run commands here through Looklook’s MCP. Looklook signs in for them, so they never see the password or key, and passwords, keys and common tokens are stripped from the output they get.",
+    "saved": "saved",
+    "ai_on": "AI allowed",
+    "connect": "Connect",
+    "test": "Test",
+    "test_ok": "Connected",
+    "test_failed": "Connection failed",
+    "test_timeout": "Timed out (25 s)",
+    "empty_title": "No SSH hosts yet",
+    "empty_body": "Save the servers you use: open an SSH terminal in one click without typing passwords, and optionally let AI assistants run commands there safely.",
+    "no_ssh": "No ssh command found on this computer. Install the OpenSSH client first (Windows: Settings → Optional features → OpenSSH Client).",
+    "safety_title": "How passwords are protected",
+    "safety_1": "Passwords and key passphrases are encrypted with a key on this computer and stored in Looklook’s local database. They’re never uploaded.",
+    "safety_2": "When connecting, ssh asks Looklook for the password through SSH_ASKPASS over a one-time local channel — it never appears in command lines, environment variables, files or terminal output.",
+    "safety_3": "AI assistants can only use hosts marked “Let AI assistants use this host”, and the MCP endpoint must be on:",
+    "safety_4": "Limits: AI assistants run as the same system user as Looklook and can read any file you can (including ~/.ssh). This keeps passwords out of chats, logs and screenshots; don’t run untrusted programs on this computer."
   }
 }

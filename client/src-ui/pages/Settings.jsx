@@ -1,13 +1,15 @@
-// 设置：终端字体与配色、默认文件夹、电脑名称、模型服务商、远程线路、访问控制、语言；关于与检查更新。
+// 设置：终端字体与配色、默认文件夹、电脑名称、附件（粘贴的图片）、模型服务商、远程线路、访问控制、语言；关于与检查更新。
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
 import AccessCard from './Access.jsx';
+import { AttachmentsCard } from '../shared/Attachments.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
+import { termTheme } from '../shared/termTheme.js';
 import { DiagCard } from '../shared/Report.jsx';
 import RelayPicker from '../shared/RelayPicker.jsx';
 import { UpdateCheck } from '../shared/Update.jsx';
@@ -59,14 +61,14 @@ export default function Settings() {
   const save = async (e) => {
     e.preventDefault();
     // 自动更新在“关于”里单独开关、立即保存，以当前状态为准，不用这个表单里打开页面时的旧值
-    const r = await run(() => api.put('/settings', { ...s, font_size: Number(s.font_size), auto_update: status.settings.auto_update }));
+    const r = await run(() => api.put('/settings', { ...s, font_size: Number(s.font_size), auto_update: status.settings.auto_update, attach_days: status.settings.attach_days }));
     if (r) {
       setS(r);
       toast(t('common.saved'));
       reload();
     }
   };
-  const dark = s.theme !== 'light';
+  const th = termTheme(s.theme);
   return (
     <>
       <div className="page-head">
@@ -76,7 +78,7 @@ export default function Settings() {
         <Card title={t('settings.terminal')}>
           <div
             className="font-preview"
-            style={{ '--preview-font': fontFamily(s.font), '--term-bg': dark ? '#11131a' : '#fbfbfd', color: dark ? '#e3e6ee' : '#1f2330', fontSize: `${s.font_size}px` }}
+            style={{ '--preview-font': fontFamily(s.font), '--term-bg': th.bg, '--term-accent': th.accent, color: th.fg, fontSize: `${s.font_size}px` }}
           >
             {t('settings.preview')}
           </div>
@@ -100,6 +102,7 @@ export default function Settings() {
               label={t('settings.theme')}
               onChange={set('theme')}
               options={[
+                ['agent', t('settings.theme_agent')],
                 ['dark', t('settings.theme_dark')],
                 ['light', t('settings.theme_light')],
               ]}
@@ -121,6 +124,7 @@ export default function Settings() {
           </Button>
         </Card>
       </form>
+      <AttachmentsCard />
       <ModelProvidersCard />
       <RelayPicker />
       <AccessCard />

@@ -1,5 +1,5 @@
 // 终端页：整页显示一个终端（同源 iframe 打开 /i/{id}/）。手机上底部有按键条（Esc、Tab、Ctrl/Alt/Shift、方向键、组合键、符号、F1–F12…）。
-import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, FolderOpen, GripHorizontal, Maximize2, Minimize2, PanelBottom, Play, RefreshCw, SquareTerminal, X, Zap } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, FolderOpen, GitBranch, GripHorizontal, Maximize2, Minimize2, Minus, PanelBottom, Play, RefreshCw, SquareTerminal, X, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -12,7 +12,9 @@ import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '..
 import { useRouter } from '../shared/router.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import FileBrowser from './FileBrowser.jsx';
+import GitPanel from './GitPanel.jsx';
 import { useTermFiles } from './TermFiles.jsx';
+import { termTheme } from '../shared/termTheme.js';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -97,8 +99,9 @@ function initialRect() {
  * 悬浮终端：在当前页面上方以可拖动、可缩放的小窗口显示 /i/{id}/，不改变当前标签页地址。
  * 拖动标题栏移动，拖右下角（或按 ↑ ↓ ← → 调整）缩放，支持折叠和全屏。
  * 开着多个时像桌面窗口一样：点哪个（包括点进终端里）哪个就到最上面，`z` 是它在这些小窗里的层级。
+ * `minimized`：最小化到底部的终端切换条（只是隐藏，iframe 不卸载、会话保持连接），`onMinimize` 为空时不显示最小化按钮。
  */
-export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onClose, onStart }) {
+export function EmbeddedTerminal({ id, inst, z = 1, active = true, minimized = false, onMinimize, onRaise, onClose, onStart }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const wrap = useRef(null);
@@ -200,7 +203,7 @@ export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onCl
         top: rect.y,
         width: rect.w,
         zIndex: z,
-        display: 'flex',
+        display: minimized ? 'none' : 'flex',
         flexDirection: 'column',
         borderRadius: 12,
         overflow: 'hidden',
@@ -208,8 +211,9 @@ export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onCl
         boxShadow: active ? '0 16px 48px rgba(0,0,0,.55)' : '0 8px 28px rgba(0,0,0,.35)',
       };
   const iconBtn = 'btn btn-plain btn-icon';
+  const th = termTheme(status.settings.theme);
   return (
-    <section ref={wrap} className="embedded-term" style={{ background: '#11131a', ...shell }} aria-label={inst?.name ?? id} data-embed-id={id} onPointerDownCapture={() => onRaise?.()}>
+    <section ref={wrap} className="embedded-term" style={{ background: th.bg, ...shell }} aria-label={inst?.name ?? id} data-embed-id={id} onPointerDownCapture={() => onRaise?.()}>
       <header
         className="term-bar"
         hidden={mobile.cramped}
@@ -234,6 +238,11 @@ export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onCl
         <button type="button" className={iconBtn} onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
           <ExternalLink size={17} />
         </button>
+        {!full && onMinimize && (
+          <button type="button" className={iconBtn} onClick={onMinimize} aria-label={t('embed.minimize')} title={t('embed.minimize')}>
+            <Minus size={18} />
+          </button>
+        )}
         {!full && (
           <button type="button" className={iconBtn} onClick={() => setCollapsed(!collapsed)} aria-expanded={!collapsed} aria-label={t(collapsed ? 'embed.expand' : 'embed.collapse')} title={t(collapsed ? 'embed.expand' : 'embed.collapse')}>
             {collapsed ? <ChevronDown size={19} /> : <ChevronUp size={19} />}
@@ -258,7 +267,7 @@ export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onCl
             title={inst.name}
             allow="clipboard-read; clipboard-write; fullscreen; local-network-access"
             // 拖动/缩放时 iframe 会吞掉指针事件，期间先让它穿透。
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: '#11131a', pointerEvents: moving ? 'none' : 'auto' }}
+            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: th.bg, pointerEvents: moving ? 'none' : 'auto' }}
             onLoad={() => {
               setLoaded(true);
               // 手机上不自动弹出键盘，点终端才弹（见 KeyBar.jsx 开头的说明）。
@@ -299,12 +308,13 @@ export function EmbeddedTerminal({ id, inst, z = 1, active = true, onRaise, onCl
   );
 }
 
-/** 终端页顶栏的两个标签：终端 / 文件。切到“文件”时终端 iframe 不卸载，会话保持连接。 */
+/** 终端页顶栏的标签：终端 / 文件 / Git。切到别的标签时终端 iframe 不卸载，会话保持连接。 */
 function TermTabs({ tab, onChange }) {
   const { t } = useTranslation();
   const tabs = [
     ['term', SquareTerminal, t('fb.tab_term')],
     ['files', FolderOpen, t('fb.tab_files')],
+    ['git', GitBranch, t('fb.tab_git')],
   ];
   return (
     <div className="term-tabs" role="tablist" aria-label={t('fb.tabs')}>
@@ -377,7 +387,7 @@ export default function TerminalView({ id }) {
     }
   };
   const toggleFull = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.());
-  const light = status.settings.theme === 'light';
+  const th = termTheme(status.settings.theme);
 
   let body;
   if (error) {
@@ -431,7 +441,7 @@ export default function TerminalView({ id }) {
   }
 
   return (
-    <div className="term-page" style={{ '--term-bg': light ? '#fbfbfd' : '#11131a', ...mobile.style }}>
+    <div className="term-page" style={{ '--term-bg': th.bg, ...mobile.style }}>
       <LanFallback />
       {/* 横屏打字时屏幕极矮：先藏起顶栏，键盘收起后回来 */}
       <header className="term-bar" hidden={mobile.cramped}>
@@ -470,6 +480,11 @@ export default function TerminalView({ id }) {
         {running && allowed && tab === 'files' && (
           <div className="term-files-tab">
             <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
+          </div>
+        )}
+        {running && allowed && tab === 'git' && (
+          <div className="term-files-tab">
+            <GitPanel id={id} active={tab === 'git'} />
           </div>
         )}
       </div>

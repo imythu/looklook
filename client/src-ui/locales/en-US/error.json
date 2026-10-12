@@ -79,7 +79,13 @@
     "ip_too_wide": "Range too wide; it can't be opened to the whole internet",
     "ip_loopback": "This computer can already open it itself; no need to add",
     "ip_too_many": "The allowlist holds at most 32 entries",
-    "code_length": "The access code must be 8 to 64 characters"
+    "code_length": "The access code must be 8 to 64 characters",
+    "file_name": "can’t be empty, contain / \\ or other special characters, or be . or ..",
+    "absolute": "must be a full path",
+    "segment": "must be a single name",
+    "relative": "must be a path inside the repository",
+    "hash": "isn’t a valid commit id",
+    "too_many": "too many"
   },
   "LAN_SWITCH_OFF": "Switching to the local network is turned off (Settings → Access)",
   "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
@@ -109,7 +115,17 @@
     "open_host": "Dashboard open address",
     "allowed_ips": "Allowlist",
     "code": "Access code",
-    "description": "Description"
+    "description": "Description",
+    "dir": "Folder",
+    "file": "File",
+    "commit": "Commit",
+    "message": "Commit message",
+    "action": "Action",
+    "host": "Host",
+    "user": "User",
+    "key_path": "Key file",
+    "auth": "Sign-in method",
+    "hosts": "Hosts"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "membership expired",
@@ -136,5 +152,16 @@
   "MODEL_KEY_REQUIRED": "Please enter an API key",
   "MODEL_DISCLAIMER_REQUIRED": "Please read and accept the disclaimer first",
   "MODEL_URL_UNSUPPORTED": "Unsupported endpoint: it must start with https:// and the path may only contain letters, digits and - . _ ~ /",
-  "MODEL_PROVIDER_GONE": "This provider is no longer available for this client. Refresh and choose again."
+  "MODEL_PROVIDER_GONE": "This provider is no longer available for this client. Refresh and choose again.",
+  "FILE_EXISTS": "A file or folder with that name already exists. Pick another name.",
+  "GIT_MISSING": "Git isn’t installed on this computer. Install Git and try again.",
+  "GIT_NOT_REPO": "This folder isn’t a Git repository.",
+  "GIT_TIMEOUT": "git didn’t finish within {{seconds}} seconds and was stopped. Try running it in the terminal.",
+  "GIT_AUTH": "This needs a sign-in or password, which can’t be entered here. Run git once in the terminal to sign in (or set up credentials / an SSH key), then try again.\n{{detail}}",
+  "GIT_FAILED": "git reported an error:\n{{detail}}",
+  "BACKUP_IN_PROGRESS": "Another backup is already running. Try again in a moment.",
+  "SSH_NAME_TAKEN": "There’s already a host named “{{name}}”. Pick another name.",
+  "SSH_FAILED": "Couldn’t start the SSH connection: {{detail}}",
+  "SSH_MISSING": "No ssh command on this computer. Install the OpenSSH client first.",
+  "SSH_HOST_NOT_ALLOWED": "This host isn’t available to AI assistants."
 }

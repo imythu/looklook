@@ -1535,6 +1535,63 @@ function useEmbedded() {
   return [list, setList];
 }
 
+/**
+ * 终端切换条：会话页底部，像任务栏一样列出运行中的终端（和开着的小窗）。
+ * 点一下：没开就在本页打开、开着就提到最上面；已经在最上面再点一下就最小化。
+ * 焦点不在终端里时 Alt+1…9 切到第 N 个。手机上终端直接整页打开，不显示。
+ */
+function TermDock({ items, open, top, minimized, onPick }) {
+  const { t } = useTranslation();
+  const shown = items.filter((i) => i.running || open.includes(i.id));
+  const pickRef = useRef(onPick);
+  pickRef.current = onPick;
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !/^Digit[1-9]$/.test(e.code)) return;
+      if (e.target?.closest?.("input, textarea, select, [contenteditable]")) return;
+      const inst = shownRef.current[Number(e.code.slice(5)) - 1];
+      if (!inst) return;
+      e.preventDefault();
+      pickRef.current(inst.id);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  if (shown.length === 0 || isTouch()) return null;
+  return (
+    <>
+    <div className="dock-spacer" aria-hidden="true" />
+    <nav className="term-dock" aria-label={t("dock.label")}>
+      {shown.map((i, n) => {
+        const Icon = LAUNCH_ICON[i.launch] ?? SquareTerminal;
+        const isOpen = open.includes(i.id);
+        const isMin = minimized.includes(i.id);
+        const isTop = isOpen && !isMin && top === i.id;
+        const state = !isOpen ? "dock.open" : isTop ? "dock.minimize" : isMin ? "dock.restore" : "dock.front";
+        return (
+          <button
+            key={i.id}
+            type="button"
+            className={`dock-item ${isOpen ? "open" : ""} ${isTop ? "top" : ""} ${isMin ? "min" : ""}`}
+            onClick={() => onPick(i.id)}
+            aria-pressed={isTop}
+            title={`${i.name} · ${t(state)}${n < 9 ? ` (Alt+${n + 1})` : ""}`}
+          >
+            <span className="dock-icon">
+              <Icon size={15} aria-hidden="true" />
+              <span className={`dot ${i.running ? "on" : ""}`} aria-hidden="true" />
+            </span>
+            <span className="dock-name">{i.name}</span>
+          </button>
+        );
+      })}
+    </nav>
+    </>
+  );
+}
+
 export default function Terminals() {
   const { t } = useTranslation();
   const { status } = useStatus();
@@ -1555,6 +1612,8 @@ export default function Terminals() {
   // 小窗的前后顺序（最后一个在最上面）。和 embedded 分开存：调整层级不能改变渲染顺序，否则 iframe 会被重新加载。
   const [stack, setStack] = useState(embedded);
   const raise = (id) => setStack((s) => (s[s.length - 1] === id ? s : [...s.filter((x) => x !== id), id]));
+  // 最小化到切换条的小窗（只是隐藏，iframe 不卸载）
+  const [minimized, setMinimized] = useState([]);
   // 点进终端时指针事件被 iframe 吞掉，外面收不到，只能看焦点落在了哪个小窗里。
   // 从一个终端直接点到另一个终端时本页不会再收到 blur，所以开着多个时再定时看一眼。
   useEffect(() => {
@@ -1588,7 +1647,14 @@ export default function Terminals() {
   const openHere = (id) => {
     if (isTouch()) return navigate(`/t/${id}`);
     setEmbedded((l) => (l.includes(id) ? l : [...l, id]));
+    setMinimized((m) => m.filter((x) => x !== id));
     raise(id); // 已经开着的再点“打开”就把它提到最上面
+  };
+  // 切换条：最上面那个再点一下就最小化，其他的打开 / 还原并提到最上面
+  const visibleTop = [...stack].reverse().find((x) => embedded.includes(x) && !minimized.includes(x));
+  const pick = (id) => {
+    if (embedded.includes(id) && !minimized.includes(id) && visibleTop === id) setMinimized((m) => [...m, id]);
+    else openHere(id);
   };
   const create = (preset) => setDialog({ preset });
   const saved = (row) => {
@@ -1628,10 +1694,13 @@ export default function Terminals() {
             inst={items.find((i) => i.id === id)}
             z={layer(id)}
             active={embedded.length < 2 || stack[stack.length - 1] === id}
+            minimized={minimized.includes(id)}
+            onMinimize={() => setMinimized((m) => [...m, id])}
             onRaise={() => raise(id)}
             onClose={() => {
               setEmbedded((l) => l.filter((x) => x !== id));
               setStack((s) => s.filter((x) => x !== id));
+              setMinimized((m) => m.filter((x) => x !== id));
             }}
             onStart={async () => {
               await api.post(`/instances/${id}/start`);
@@ -1640,6 +1709,7 @@ export default function Terminals() {
           />
         ))}
       </div>
+      <TermDock items={items} open={embedded} top={visibleTop} minimized={minimized} onPick={pick} />
       {!data && !error ? (
         <div className="instances">
           <Skeleton height={190} />

@@ -1,7 +1,7 @@
 // 分块上传（docs/FILE_TRANSFER.md §4.2）：每块一个请求，避开远程链路的 30 秒 / 100 MB 单请求限制；
 // 409 UPLOAD_OFFSET 时从服务端记录的位置续传；断网、网关超时等错误自动退避重试，重试用完后可以手动“重试”接着传。
 // 每个终端一个上传列表（uploadStore(id)），面板关掉后上传继续，标题栏图标上显示进度。
-import { ApiError, api, deviceApi, terminalDevice } from './api.js';
+import { ApiError, api, deviceApi, selectedDevice, terminalDevice } from './api.js';
 import { isRetryable, nextChunk, retryDelay } from './xfer.js';
 
 const MAX_RETRIES = 10;
@@ -103,6 +103,19 @@ export const httpTransport = {
     return p;
   },
 };
+
+/** 管理台“文件”页：上传到某台电脑的指定文件夹（task.dest 是文件夹路径），device 为空时发给选中的电脑。 */
+export function dirTransport(device) {
+  return {
+    ...httpTransport,
+    create: async (_id, body) => {
+      const target = device ?? selectedDevice();
+      const res = await deviceApi(target ?? undefined).post('/fs/uploads', { dir: body.dest, name: body.name, size: body.size });
+      if (target && res?.id) uploadDevice.set(res.id, target);
+      return res;
+    },
+  };
+}
 
 /**
  * 传一个文件。task 是可变对象：读取 task.uid / task.offset 以便“重试”时接着传，进度写回 task.sent。
@@ -294,4 +307,11 @@ const stores = new Map();
 export function uploadStore(instanceId) {
   if (!stores.has(instanceId)) stores.set(instanceId, new UploadStore(instanceId));
   return stores.get(instanceId);
+}
+
+/** “文件”页的上传列表：每台电脑一个（device 为空 = 本机 / 选中的电脑）。 */
+export function dirUploadStore(device) {
+  const key = `dir:${device ?? ''}`;
+  if (!stores.has(key)) stores.set(key, new UploadStore(key, dirTransport(device)));
+  return stores.get(key);
 }

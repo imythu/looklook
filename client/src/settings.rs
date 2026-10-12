@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::store::Store;
 
 const KEY: &str = "settings";
+const THEME_REV: u8 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -16,14 +17,20 @@ pub struct Settings {
     /// 终端中文字体：`wenkai`（内置霞鹜文楷等宽）或 `system`（系统黑体）
     pub font: String,
     pub font_size: u8,
-    /// 终端配色：`dark` / `light`
+    /// 终端配色：`agent`（默认，AI 助手命令行风格的暖色深色）/ `dark` / `light`
     pub theme: String,
+    /// 配色设置的版本：0 = 还没有 `agent` 配色时存下的设置（那时默认是 `dark`），读的时候换成新的默认一次；
+    /// 之后用户自己再选 `dark` 也会保留。字段自己的 serde 默认是 0（不是 Settings::default 里的值）。
+    #[serde(default)]
+    pub theme_rev: u8,
     /// 在看看服务端显示的电脑名称；为空时用主机名
     pub device_name: String,
     /// 新建终端默认使用的 shell（写法见 shells.rs）；为空时自动选择
     pub default_shell: String,
     /// 有新版本时在空闲时（没有打开的终端）自动下载安装并重启
     pub auto_update: bool,
+    /// 粘贴的截图、“发给 AI”的文件（附件目录）保留几天，过期自动删除
+    pub attach_days: u16,
 }
 
 impl Default for Settings {
@@ -32,10 +39,12 @@ impl Default for Settings {
             default_workdir: default_workdir(),
             font: "wenkai".into(),
             font_size: 15,
-            theme: "dark".into(),
+            theme: "agent".into(),
+            theme_rev: THEME_REV,
             device_name: String::new(),
             default_shell: String::new(),
             auto_update: true,
+            attach_days: 7,
         }
     }
 }
@@ -46,7 +55,19 @@ fn default_workdir() -> String {
 
 impl Settings {
     pub fn load(store: &Store) -> Self {
-        store.get(KEY).ok().flatten().unwrap_or_default()
+        let s: Self = store.get(KEY).ok().flatten().unwrap_or_default();
+        s.migrated()
+    }
+
+    /// 旧设置里的 `dark` 是当时的默认值：换成现在的默认配色（只换一次，见 `theme_rev`）。
+    fn migrated(mut self) -> Self {
+        if self.theme_rev < THEME_REV {
+            if self.theme == "dark" {
+                self.theme = "agent".into();
+            }
+            self.theme_rev = THEME_REV;
+        }
+        self
     }
 
     pub fn save(&self, store: &Store) -> anyhow::Result<()> {
@@ -57,10 +78,12 @@ impl Settings {
         if !matches!(self.font.as_str(), "wenkai" | "system") {
             self.font = "wenkai".into();
         }
-        if !matches!(self.theme.as_str(), "dark" | "light") {
-            self.theme = "dark".into();
+        if !matches!(self.theme.as_str(), "agent" | "dark" | "light") {
+            self.theme = "agent".into();
         }
+        self.theme_rev = THEME_REV;
         self.font_size = self.font_size.clamp(10, 28);
+        self.attach_days = self.attach_days.clamp(1, 365);
         self.default_workdir = self.default_workdir.trim().to_string();
         if self.default_workdir.is_empty() {
             self.default_workdir = default_workdir();
@@ -190,6 +213,22 @@ fn check_ip(ip: IpAddr) -> Result<OpenHost, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_default_theme_moves_to_agent_once() {
+        // 加 agent 配色之前存下的设置：没有 theme_rev，theme 是当时的默认 dark
+        let old: Settings = serde_json::from_str(r#"{"theme":"dark","font_size":15}"#).unwrap();
+        assert_eq!(old.theme_rev, 0);
+        assert_eq!(old.clone().migrated().theme, "agent");
+        let light: Settings = serde_json::from_str(r#"{"theme":"light"}"#).unwrap();
+        assert_eq!(light.migrated().theme, "light", "自己选的浅色不动");
+        // 之后又自己选回 dark 并保存：保留
+        let chosen = Settings { theme: "dark".into(), ..Settings::default() }.normalized();
+        let back: Settings = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+        assert_eq!(back.migrated().theme, "dark");
+        assert_eq!(Settings::default().theme, "agent");
+        assert_eq!(Settings { theme: "neon".into(), ..Settings::default() }.normalized().theme, "agent");
+    }
 
     #[test]
     fn open_host_accepts() {

@@ -6,7 +6,9 @@
 //! - 只接受**这台机器自己**发来的请求：局域网、白名单和远程入口一律当作不存在（404）。
 //! - 浏览器发来的请求（带 `Origin`）必须是本站，挡住 DNS 重绑定。
 //!
-//! 工具：`list_mappings`、`find_mapping`（只查）、`ensure_mapping`（有就复用并启用，没有就创建）。
+//! 工具：`list_mappings`、`find_mapping`（只查）、`ensure_mapping`（有就复用并启用，没有就创建）；
+//! `list_ssh_hosts`、`ssh_run`：在用户标了“允许 AI 使用”的 SSH 主机上运行命令（ssh.rs）。AI 只给出主机名，
+//! 登录用的密码 / 私钥由看看在本机提供，不经过 AI；返回的输出去掉已存密码、私钥块和常见令牌。
 //! 返回里附带端口探测结果：本机网页只转发到 127.0.0.1，开发服务器只监听 `::1` 时要提醒改监听地址。
 
 use std::time::Duration;
@@ -197,6 +199,28 @@ fn tool_defs() -> Value {
             },
             "annotations": { "readOnlyHint": false, "destructiveHint": false, "idempotentHint": true },
         },
+        {
+            "name": "list_ssh_hosts",
+            "title": "List SSH hosts you may use",
+            "description": "List the SSH servers the user saved in Looklook and allowed AI assistants to use. Only names and user@host:port are returned — never passwords or keys.",
+            "inputSchema": { "type": "object", "properties": {} },
+            "annotations": { "readOnlyHint": true },
+        },
+        {
+            "name": "ssh_run",
+            "title": "Run a command on an SSH host",
+            "description": "Run one non-interactive shell command on a saved SSH host (by name from list_ssh_hosts) and return exit_code, stdout and stderr (each capped at 64 KB). Looklook logs in with the user's stored credentials; you never see or need them. Known secrets, private keys and common tokens are redacted from the output. Commands that wait for input will time out.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "host": { "type": "string", "description": "Host name as shown by list_ssh_hosts" },
+                    "command": { "type": "string", "description": "Shell command to run on the host, e.g. `df -h` or `systemctl status nginx --no-pager`" },
+                    "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 600, "description": "Stop the command after this many seconds (default 60)" }
+                },
+                "required": ["host", "command"]
+            },
+            "annotations": { "readOnlyHint": false, "destructiveHint": true, "openWorldHint": true },
+        },
     ])
 }
 
@@ -223,6 +247,9 @@ fn explain(code: &str) -> &'static str {
         "TUNNEL_LIMIT_REACHED" => "The account already has the maximum number of mappings. Ask the user which one to delete in the Looklook console (Local pages).",
         "TUNNEL_PORT_INVALID" => "The port must be between 1 and 65535.",
         "VALIDATION_FAILED" => "The name is invalid (1-32 characters, no control characters).",
+        "SSH_HOST_NOT_ALLOWED" => "No SSH host with that name is available to AI assistants. Call list_ssh_hosts; the user can allow more hosts in the Looklook console (SSH hosts).",
+        "SSH_MISSING" => "The OpenSSH client (ssh) is not installed on this computer.",
+        "SSH_FAILED" => "Looklook could not start the SSH connection.",
         _ => "The Looklook operation failed.",
     }
 }
@@ -244,6 +271,22 @@ async fn call_tool(app: &App, name: &str, args: &Value) -> Result<Value, ToolErr
             let name = args.get("name").and_then(Value::as_str).map(clean_name).filter(|n| !n.is_empty()).unwrap_or_else(|| format!("localhost:{port}"));
             let (t, created, reenabled) = ensure(app, port, &name).await?;
             Ok(json!({ "port": port, "mapping": view(&t), "created": created, "reused": !created, "re_enabled": reenabled, "local": probe(port).await }))
+        }
+        "list_ssh_hosts" => {
+            let hosts: Vec<Value> = crate::ssh::list(&app.store).into_iter().filter(|h| h.allow_ai).map(|h| json!({ "name": h.name, "target": format!("{}@{}:{}", h.user, h.host, h.port) })).collect();
+            Ok(json!({ "hosts": hosts, "note": "Use ssh_run with a host name. Credentials are supplied by Looklook and are never shown to you; do not ask the user for passwords or keys." }))
+        }
+        "ssh_run" => {
+            let name = args.get("host").and_then(Value::as_str).unwrap_or_default();
+            let command = args.get("command").and_then(Value::as_str).unwrap_or_default().trim().to_string();
+            if command.is_empty() || command.len() > 8000 {
+                return Err(LocalError::invalid("command", "length").into());
+            }
+            let secs = args.get("timeout_seconds").and_then(Value::as_u64).unwrap_or(60).clamp(1, 600);
+            let h = crate::ssh::find(&app.store, name).filter(|h| h.allow_ai).ok_or_else(|| LocalError::new("SSH_HOST_NOT_ALLOWED").with("host", name))?;
+            tracing::info!(host = %h.name, "MCP 在 SSH 主机上运行命令");
+            let r = crate::ssh::run(app.store.clone(), app.paths.home.clone(), h, command, Duration::from_secs(secs)).await?;
+            Ok(serde_json::to_value(r).unwrap_or_default())
         }
         _ => Err(ToolError::Unknown),
     }
