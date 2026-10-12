@@ -288,9 +288,13 @@ pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf,
             _ = RESTART.notified() => Some("manual"),
             _ = shutdown.cancelled() => break,
         };
-        if let (Some(why), Some(r)) = (restart, current.take()) {
-            tracing::info!(reason = why, "重建远程访问通道");
-            r.stop().await;
+        // 只有真要重建时才取走 current：元组里的 `current.take()` 不管 restart 是否为 None 都会执行，
+        // 每 5 秒的检查就会把正常的通道丢掉、下一轮重新启动，接着每次都触发一次立即心跳（被平台 429）。
+        if let Some(why) = restart {
+            if let Some(r) = current.take() {
+                tracing::info!(reason = why, "重建远程访问通道");
+                r.stop().await;
+            }
         }
     }
     if let Some(r) = current.take() {

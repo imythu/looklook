@@ -343,7 +343,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .relay-pop-actions { display: flex; gap: 8px; }
 @media (max-width: 520px) { .relay-pill-label { display: none; } .relay-pill { padding: 0 10px; } }
 @media (prefers-reduced-motion: reduce) { .relay-pill .dot.wait { animation: none; } }
-.banner { display: flex; align-items: flex-start; gap: 10px; padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }
+.banner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }
 .banner .grow { min-width: 0; }
 .banner .btn { min-height: 36px; padding: 0 14px; }
 .banner-warn { background: var(--warn-soft); color: var(--warn); }

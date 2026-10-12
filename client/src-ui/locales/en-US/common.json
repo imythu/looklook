@@ -60,6 +60,8 @@
     "renew": "Renew",
     "reconnect": "Reconnect",
     "unstable": "Can't reach the Looklook server right now; retrying automatically. Reconnect before {{deadline}} to avoid interruption.",
+    "unstable_sync": "Remote access is working, but account status couldn't sync with the Looklook server; retrying automatically. Sync before {{deadline}} to avoid interruption.",
+    "unstable_server": "The Looklook server is having trouble ({{code}}); retrying automatically. Recover before {{deadline}} to avoid interruption.",
     "update": "Version {{version}} is available.",
     "update_required": "This version is too old. Please update to {{version}} soon.",
     "download": "Download"

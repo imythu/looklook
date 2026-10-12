@@ -193,9 +193,17 @@ function GateBanner() {
     );
   }
   if (acc.last_error) {
+    // 心跳失败不一定是网络不通：服务端报错时给出错误码；远程通道仍连着时只是账户状态没同步上，别和右上角“远程在线”打架。
+    const deadline = formatTime(acc.session?.offline_deadline);
+    const text =
+      acc.last_error !== 'NETWORK'
+        ? t('gate.unstable_server', { code: acc.last_error, deadline })
+        : status.relay?.state === 'connected'
+          ? t('gate.unstable_sync', { deadline })
+          : t('gate.unstable', { deadline });
     return (
       <div className="banner banner-warn">
-        <span className="grow">{t('gate.unstable', { deadline: formatTime(acc.session?.offline_deadline) })}</span>
+        <span className="grow">{text}</span>
         <Button variant="ghost" onClick={reconnect}>
           {t('gate.reconnect')}
         </Button>

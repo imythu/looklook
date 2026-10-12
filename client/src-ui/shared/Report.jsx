@@ -115,7 +115,7 @@ function ReportDialog({ open, onClose }) {
   );
 }
 
-const LEVEL = { ERROR: 'badge-danger', WARN: 'badge-warn', UI: 'badge-danger' };
+const LEVEL = { ERROR: 'badge-danger', WARN: 'badge-warn', UI: 'badge-danger', PANIC: 'badge-danger' };
 
 /** 设置页：最近的错误记录 + 报告问题。 */
 export function DiagCard() {
@@ -154,7 +154,7 @@ export function DiagCard() {
           <ul className="diag-list">
             {shown.map((e, i) => (
               <li key={`${e.time}-${i}`}>
-                <span className={`badge ${LEVEL[e.level] ?? ''}`}>{e.level === 'UI' ? t('diag.level_ui') : e.level === 'ERROR' ? t('diag.level_error') : t('diag.level_warn')}</span>
+                <span className={`badge ${LEVEL[e.level] ?? ''}`}>{e.level === 'UI' ? t('diag.level_ui') : e.level === 'ERROR' || e.level === 'PANIC' ? t('diag.level_error') : t('diag.level_warn')}</span>
                 <span className="grow">
                   <span className="diag-msg">
                     {e.message}

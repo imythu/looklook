@@ -60,6 +60,8 @@
     "renew": "去续费",
     "reconnect": "重新连接",
     "unstable": "暂时连不上看看服务器，会自动重试。在 {{deadline}} 之前连上就不影响使用。",
+    "unstable_sync": "远程访问正常，但暂时没能和看看服务器同步账户状态，会自动重试。在 {{deadline}} 之前同步上就不影响使用。",
+    "unstable_server": "看看服务器暂时出了问题（{{code}}），会自动重试。在 {{deadline}} 之前恢复就不影响使用。",
     "update": "发现新版本 {{version}}。",
     "update_required": "当前版本太旧，请尽快更新到 {{version}}。",
     "download": "去下载"

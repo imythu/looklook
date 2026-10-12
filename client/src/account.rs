@@ -730,7 +730,8 @@ impl Account {
             };
             tracing::warn!(code = e.code(), "本机登录已在平台失效");
             self.clear_local(Some(Notice { code: e.code().to_string(), params }));
-        } else {
+        } else if !e.is("RATE_LIMITED") {
+            // 限流说明连得上，只是要晚点再来（心跳循环按 retry_after 重试），不当成“连不上”提示。
             *lock_mut(&self.last_error) = Some(e.code().to_string());
         }
     }

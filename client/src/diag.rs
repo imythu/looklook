@@ -158,6 +158,35 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for ErrorLayer {
     }
 }
 
+/// 程序崩溃（panic）也记进错误记录：系统回调（如 macOS 上 WebKit 的新窗口回调）里的 panic 会直接结束进程，
+/// 运行日志里什么都不留；错误记录是同步写文件的，重启后读回，问题报告里就能看到崩在哪。
+pub fn install_panic_hook() {
+    let default = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let message = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "panic".into());
+        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
+        let thread = std::thread::current().name().unwrap_or("?").to_string();
+        let backtrace = std::backtrace::Backtrace::force_capture().to_string();
+        // 崩溃时可能正持有错误记录的锁，拿不到就不记，免得卡死
+        if LOG.get().is_some_and(|m| m.try_lock().is_ok()) {
+            record(Entry {
+                time: crate::util::now_rfc3339(),
+                level: "PANIC".into(),
+                message: message.chars().take(2000).collect(),
+                fields: format!("at={location} thread={thread}\n{}", backtrace.chars().take(6000).collect::<String>()),
+                target: String::new(),
+                count: 1,
+            });
+        }
+        default(info);
+    }));
+}
+
 /// 管理台页面上的脚本错误（每分钟最多 20 条，防止页面出错时刷屏）。
 pub fn record_ui(message: &str, detail: &str) {
     static WINDOW: Mutex<(i64, u32)> = Mutex::new((0, 0));

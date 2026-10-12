@@ -325,6 +325,7 @@ fn init_tracing(paths: &Paths) {
         let relay_layer = relay::StatusLayer.with_filter(EnvFilter::new("rathole=info"));
         // 错误记录（设置 → 问题与日志）：只要 WARN 以上，第三方库里过于啰嗦的连接错误不要
         diag::init(&paths.home.join("logs"));
+        diag::install_panic_hook();
         let error_layer = diag::ErrorLayer.with_filter(EnvFilter::new("warn,hyper=error,hyper_util=error,rustls=error,tungstenite=error"));
 
         tracing_subscriber::registry().with(file_layer).with(stderr_layer).with(relay_layer).with(error_layer).init();
