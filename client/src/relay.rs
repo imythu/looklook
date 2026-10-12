@@ -8,11 +8,18 @@
 //! 要等心跳超时（35 秒）才发现。这里每 5 秒看一眼：电脑刚睡醒、或者本机原有的 IPv4 地址不见了（换了 Wi-Fi、
 //! 拔了网线），就立刻重建通道；只是多了一个地址（接上 VPN 等）不动，免得打断正在用的终端。
 //! 管理台也可以手动“立即重连”（`POST /api/relay/reconnect`）。
+//!
+//! 数据通道：浏览器的每个请求都要 rathole 新建一条数据通道，中转那边的连接池按顺序配对。控制通道连着、
+//! 数据通道却建不起来时（例如开着 fake-ip 的代理，见 third_party/rathole/README.looklook.md），请求会在中转排队
+//! 到超时，而“已连接”和 presence 的旧连接都还在。两道检查：
+//! - 本次通道里有 [`DATA_LOST_LIMIT`] 条数据通道连不上中转（每条都让中转的连接池永久少一条），就重建通道；
+//! - 看门狗：中转每个周期都会重新请求 presence（要新建一条数据通道），超过 [`stall_limit`] 没收到就重建通道。
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use looklook_protocol::dto::RelayParams;
 use tokio::sync::broadcast;
@@ -57,6 +64,42 @@ static RESTART: tokio::sync::Notify = tokio::sync::Notify::const_new();
 
 pub fn request_restart() {
     RESTART.notify_one();
+}
+
+/// 远程入口的本机地址（rathole 的 `local_addr`）：数据通道连本机失败不算“连不上中转”。
+static LOCAL_ADDR: Mutex<String> = Mutex::new(String::new());
+
+/// 本次通道里连不上中转的数据通道数。
+static DATA_LOST: AtomicU32 = AtomicU32::new(0);
+/// 连不上中转的数据通道达到这么多条就重建通道（中转的备用连接一共 8 条）。
+const DATA_LOST_LIMIT: u32 = 3;
+/// 因数据通道问题自动重建，两次之间至少隔这么久。
+const AUTO_RESTART_GAP: Duration = Duration::from_secs(60);
+
+/// 最近一次收到带周期的 presence 请求：(时间, 周期)。旧中转不带周期，为 None，看门狗不工作。
+static PRESENCE: Mutex<Option<(Instant, Duration)>> = Mutex::new(None);
+
+/// 中转请求了 presence（见 `gateway::presence`）。`cycle`：中转重新请求的周期（秒）。
+pub fn presence_seen(cycle: Option<u64>) {
+    let v = cycle.filter(|&c| c > 0).map(|c| (Instant::now(), Duration::from_secs(c)));
+    *PRESENCE.lock().unwrap_or_else(|e| e.into_inner()) = v;
+}
+
+/// 看门狗的期限：两个周期再加 30 秒（中转打开 presence 最多等 8 秒，失败后每秒重试）。
+fn stall_limit(cycle: Duration) -> Duration {
+    cycle * 2 + Duration::from_secs(30)
+}
+
+/// 通道已经启动了 `started`，最近一次 presence 是 `last`：是不是太久没收到了。
+fn stalled(last: Option<(Instant, Duration)>, started: Instant, now: Instant) -> bool {
+    let Some((at, cycle)) = last else { return false };
+    now.saturating_duration_since(at.max(started)) > stall_limit(cycle)
+}
+
+/// rathole 的日志是不是“一条数据通道连不上中转”：连接（含加密握手）的重试都失败了。
+/// 连本机远程入口失败（`local`）不算，那时数据通道已经被中转用掉了，不会让连接池少一条。
+fn lost_data_channel(msg: &str, local: &str) -> bool {
+    msg.contains("Failed to run the data channel") && msg.contains("Failed to connect to") && (local.is_empty() || !msg.contains(local))
 }
 
 /// 本机的 IPv4 地址（不含回环）。IPv6 临时地址会定期轮换，不看。
@@ -156,6 +199,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for StatusLayer {
         if status().state == "off" {
             return;
         }
+        if *meta.level() <= tracing::Level::WARN && lost_data_channel(&msg, &LOCAL_ADDR.lock().unwrap_or_else(|e| e.into_inner())) {
+            DATA_LOST.fetch_add(1, Ordering::Relaxed);
+        }
         if msg.contains("Control channel established") {
             set_status("connected", None, None);
         } else if *meta.level() <= tracing::Level::WARN && msg.contains("Failed to run the control channel") {
@@ -213,6 +259,7 @@ fn service_key(name: &str) -> String {
 
 struct Running {
     fingerprint: String,
+    started: Instant,
     shutdown: broadcast::Sender<bool>,
     task: tokio::task::JoinHandle<()>,
 }
@@ -234,12 +281,18 @@ pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf,
     let mut changed = account.subscribe();
     let mut current: Option<Running> = None;
     let mut addrs = local_ipv4();
+    let mut last_auto: Option<Instant> = None;
+    *LOCAL_ADDR.lock().unwrap_or_else(|e| e.into_inner()) = local.to_string();
     loop {
         let want = account.session().map(|s| s.relay);
         let fingerprint = want.as_ref().map(|p| serde_json::to_string(p).unwrap_or_default());
         let finished = current.as_ref().is_some_and(|r| r.task.is_finished());
         if finished || current.as_ref().map(|r| &r.fingerprint) != fingerprint.as_ref() {
             if let Some(r) = current.take() {
+                if r.fingerprint.as_str() != fingerprint.as_deref().unwrap_or_default() {
+                    // 换了中转或参数：新中转是否定期请求 presence，等它请求了再说
+                    presence_seen(None);
+                }
                 r.stop().await;
                 tracing::info!("远程访问通道已关闭");
             }
@@ -255,10 +308,11 @@ pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf,
             }
             if let (Some(p), Some(fp)) = (want, fingerprint) {
                 set_status("connecting", None, None);
+                DATA_LOST.store(0, Ordering::Relaxed);
                 match start(&p, local, &config_path) {
                     Ok((shutdown, task)) => {
                         tracing::info!(server = %remote_addr(&p.server_addr), "远程访问通道已启动");
-                        current = Some(Running { fingerprint: fp, shutdown, task });
+                        current = Some(Running { fingerprint: fp, started: Instant::now(), shutdown, task });
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "写入远程访问配置失败");
@@ -282,7 +336,7 @@ pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf,
                 } else if lost {
                     Some("network")
                 } else {
-                    None
+                    data_channel_trouble(current.as_ref(), &mut last_auto)
                 }
             }
             _ = RESTART.notified() => Some("manual"),
@@ -301,6 +355,28 @@ pub async fn run(account: Arc<Account>, local: SocketAddr, config_path: PathBuf,
         r.stop().await;
     }
     set_status("off", None, None);
+}
+
+/// 数据通道出了问题、该重建通道了：返回原因（`data_channel` 连不上中转、`stalled` 收不到 presence）。
+/// 两次之间至少隔 [`AUTO_RESTART_GAP`]，网络一直不通时不至于每 5 秒重建一次。
+fn data_channel_trouble(current: Option<&Running>, last_auto: &mut Option<Instant>) -> Option<&'static str> {
+    let r = current?;
+    if status().state != "connected" || last_auto.is_some_and(|t| t.elapsed() < AUTO_RESTART_GAP) {
+        return None;
+    }
+    let lost = DATA_LOST.load(Ordering::Relaxed);
+    let last = *PRESENCE.lock().unwrap_or_else(|e| e.into_inner());
+    let why = if lost >= DATA_LOST_LIMIT {
+        tracing::warn!(lost, "数据通道连不上中转，重建远程访问通道");
+        "data_channel"
+    } else if stalled(last, r.started, Instant::now()) {
+        tracing::warn!(since = ?last.map(|(at, _)| at.elapsed()), "很久没收到中转的 presence 请求（数据通道可能建不起来），重建远程访问通道");
+        "stalled"
+    } else {
+        return None;
+    };
+    *last_auto = Some(Instant::now());
+    Some(why)
 }
 
 fn start(p: &RelayParams, local: SocketAddr, path: &std::path::Path) -> anyhow::Result<(broadcast::Sender<bool>, tokio::task::JoinHandle<()>)> {
@@ -392,6 +468,31 @@ mod tests {
         assert_eq!(classify("Heartbeat timed out"), "heartbeat");
         assert_eq!(classify("connection timed out"), "timeout");
         assert_eq!(classify("something odd"), "other");
+    }
+
+    #[test]
+    fn counts_only_data_channels_that_cannot_reach_the_relay() {
+        let local = "127.0.0.1:41999";
+        assert!(lost_data_channel("Failed to run the data channel: Failed to connect to 198.18.0.7:2333: timed out after 5s", local));
+        assert!(lost_data_channel(
+            "Failed to run the data channel: Failed to connect to 203.0.113.7:2333: Failed to do noise handshake: early eof",
+            local
+        ));
+        assert!(!lost_data_channel("Failed to run the data channel: Failed to connect to 127.0.0.1:41999: Connection refused", local), "连本机失败不算");
+        assert!(!lost_data_channel("Failed to connect to 198.18.0.7:2333: timed out after 5s. Retry in 100ms", local), "还在重试");
+        assert!(!lost_data_channel("Failed to run the data channel: early eof", local), "备用通道被中转关掉");
+    }
+
+    #[test]
+    fn watchdog_waits_for_a_presence_cycle_aware_relay() {
+        let t0 = Instant::now();
+        let s = Duration::from_secs;
+        let cycle = Some((t0, s(60)));
+        assert!(!stalled(None, t0, t0 + s(3600)), "旧中转不定期请求 presence，不检查");
+        assert!(!stalled(cycle, t0, t0 + s(150)));
+        assert!(stalled(cycle, t0, t0 + s(151)));
+        assert!(!stalled(cycle, t0 + s(100), t0 + s(200)), "通道刚重建，从重建时算起");
+        assert!(!stalled(Some((t0 + s(120), s(60))), t0, t0 + s(200)), "收到了新的 presence");
     }
 
     #[test]

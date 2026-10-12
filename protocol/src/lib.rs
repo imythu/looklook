@@ -22,3 +22,7 @@ pub const PRESENCE_PATH: &str = "/_ll/presence";
 /// 客户端应答 presence 时带上这个响应头（旧客户端没有这个路径，中转据此退回探测端口）。
 pub const PRESENCE_HEADER: &str = "x-looklook-presence";
 pub const PRESENCE_BEAT_SECS: u64 = 5;
+/// 中转在 presence 请求里带上这个请求头（值为秒数）：它每隔这么久主动断开 presence 再重新请求。
+/// 每次请求都要 rathole 新建一条数据通道，所以客户端隔了几个周期还收不到新的 presence 请求，
+/// 就说明数据通道建不起来（控制通道却还连着），应当重建通道。旧中转不带这个头，客户端就不做这项检查。
+pub const PRESENCE_CYCLE_HEADER: &str = "x-looklook-presence-cycle";

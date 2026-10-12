@@ -348,8 +348,11 @@ pub fn relay_app(app: App) -> Router {
 /// 设备在线（中转经通道请求，见 `looklook_protocol::PRESENCE_PATH`）：连上就立即回一个心跳，之后定时回，
 /// 中转收到第一个心跳就把这台电脑标为在线，连接断了、心跳停了就马上标为离线。
 /// 只有中转本机能连到这个端口，内容也只是心跳，不需要令牌。
-async fn presence() -> Response {
+/// 新中转会定期重新请求，并在请求头里说明周期：记下来给通道看门狗（`relay::presence_seen`）。
+async fn presence(headers: HeaderMap) -> Response {
     use futures_util::StreamExt;
+    let cycle = headers.get(looklook_protocol::PRESENCE_CYCLE_HEADER).and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse().ok());
+    crate::relay::presence_seen(cycle);
     let beats = futures_util::stream::unfold(true, |first| async move {
         if !first {
             tokio::time::sleep(std::time::Duration::from_secs(looklook_protocol::PRESENCE_BEAT_SECS)).await;

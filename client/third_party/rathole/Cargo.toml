@@ -1,0 +1,181 @@
+# rathole 0.5.0（crates.io）的本地副本，客户端经 Cargo.toml 的 [patch.crates-io] 使用。
+# 相对上游的改动见 README.looklook.md。
+
+[package]
+edition = "2021"
+name = "rathole"
+version = "0.5.0"
+authors = ["Yujia Qiao <code@rapiz.me>"]
+build = "build.rs"
+include = [
+    "src/**/*",
+    "LICENSE",
+    "README.md",
+    "build.rs",
+]
+description = "A reverse proxy for NAT traversal"
+readme = "README.md"
+license = "Apache-2.0"
+repository = "https://github.com/rapiz1/rathole"
+
+[dependencies.anyhow]
+version = "1.0"
+
+[dependencies.async-http-proxy]
+version = "1.2"
+features = [
+    "runtime-tokio",
+    "basic-auth",
+]
+
+[dependencies.async-socks5]
+version = "0.5"
+
+[dependencies.async-trait]
+version = "0.1"
+
+[dependencies.atty]
+version = "0.2"
+
+[dependencies.backoff]
+version = "0.4"
+features = ["tokio"]
+
+[dependencies.base64]
+version = "0.13"
+optional = true
+
+[dependencies.bincode]
+version = "1"
+
+[dependencies.bytes]
+version = "1"
+features = ["serde"]
+
+[dependencies.clap]
+version = "3.0"
+features = ["derive"]
+
+[dependencies.console-subscriber]
+version = "0.1"
+features = ["parking_lot"]
+optional = true
+
+[dependencies.fdlimit]
+version = "0.2"
+
+[dependencies.futures-core]
+version = "0.3.28"
+optional = true
+
+[dependencies.futures-sink]
+version = "0.3.28"
+optional = true
+
+[dependencies.hex]
+version = "0.4"
+
+[dependencies.lazy_static]
+version = "1.4"
+
+[dependencies.notify]
+version = "5.0.0-pre.13"
+optional = true
+
+[dependencies.rand]
+version = "0.8"
+
+[dependencies.serde]
+version = "1.0"
+features = ["derive"]
+
+[dependencies.sha2]
+version = "0.10"
+
+[dependencies.snowstorm]
+version = "0.4"
+features = ["stream"]
+optional = true
+default-features = false
+
+[dependencies.socket2]
+version = "0.4"
+features = ["all"]
+
+[dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[dependencies.tokio-native-tls]
+version = "0.3"
+optional = true
+
+[dependencies.tokio-tungstenite]
+version = "0.20.1"
+optional = true
+
+[dependencies.tokio-util]
+version = "0.7.9"
+features = ["io"]
+optional = true
+
+[dependencies.toml]
+version = "0.5"
+
+[dependencies.tracing]
+version = "0.1"
+
+[dependencies.tracing-subscriber]
+version = "0.3"
+features = ["env-filter"]
+
+[dependencies.url]
+version = "2.2"
+features = ["serde"]
+
+[build-dependencies.anyhow]
+version = "1.0"
+
+[build-dependencies.vergen]
+version = "7.4.2"
+features = [
+    "build",
+    "git",
+    "cargo",
+]
+default-features = false
+
+[features]
+client = []
+console = [
+    "console-subscriber",
+    "tokio/tracing",
+]
+default = [
+    "server",
+    "client",
+    "tls",
+    "noise",
+    "websocket",
+    "hot-reload",
+]
+embedded = [
+    "server",
+    "client",
+    "hot-reload",
+    "noise",
+]
+hot-reload = ["notify"]
+noise = [
+    "snowstorm",
+    "base64",
+]
+server = []
+tls = ["tokio-native-tls"]
+websocket = [
+    "tokio-tungstenite",
+    "tokio-util",
+    "futures-core",
+    "futures-sink",
+    "tls",
+]
