@@ -1,0 +1,104 @@
+// “更多”菜单：点按钮弹出一列操作。菜单按按钮在屏幕上的位置固定定位（下面放得下就往下，否则往上），
+// 不会被滚动列表、终端标题栏裁掉。
+import { MoreHorizontal } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+
+/**
+ * items：[{ icon, label, onClick, danger, disabled, hint }]，假值会被跳过。
+ * className：按钮的样式（默认幽灵按钮）；icon：按钮图标；onPointerDown：例如手机终端里按住不抢键盘焦点。
+ */
+export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', icon: Icon = MoreHorizontal, label, onPointerDown }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [pos, setPos] = useState(null);
+  const btn = useRef(null);
+  const list = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => !btn.current?.contains(e.target) && !list.current?.contains(e.target) && setOpen(false);
+    const esc = (e) => {
+      if (e.key !== 'Escape') return;
+      setOpen(false);
+      btn.current?.focus();
+    };
+    const away = () => setOpen(false);
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', esc);
+    window.addEventListener('resize', away);
+    window.addEventListener('scroll', away, true);
+    // 点进终端（iframe）时外面收不到 pointerdown，靠失焦关掉
+    window.addEventListener('blur', away);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', esc);
+      window.removeEventListener('resize', away);
+      window.removeEventListener('scroll', away, true);
+      window.removeEventListener('blur', away);
+    };
+  }, [open]);
+  useLayoutEffect(() => {
+    if (!open || !btn.current || !list.current) return;
+    const r = btn.current.getBoundingClientRect();
+    const h = list.current.offsetHeight;
+    const w = list.current.offsetWidth;
+    const below = window.innerHeight - r.bottom - 8 >= h || r.top < h + 8;
+    setPos({
+      top: below ? Math.min(r.bottom + 6, window.innerHeight - h - 8) : Math.max(8, r.top - h - 6),
+      left: Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)),
+    });
+  }, [open]);
+  const shown = items.filter(Boolean);
+  return (
+    <>
+      <button
+        ref={btn}
+        type="button"
+        className={className}
+        aria-label={label ?? t('action.more')}
+        title={label ?? t('action.more')}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onPointerDown={onPointerDown}
+        onClick={(e) => {
+          e.stopPropagation();
+          setPos(null);
+          setOpen(!open);
+        }}
+      >
+        <Icon size={18} aria-hidden="true" />
+      </button>
+      {open && (
+        <ul ref={list} className="menu-pop-list menu-pop-fixed" role="menu" style={pos ?? { visibility: 'hidden', top: 0, left: 0 }}>
+          {shown.map((x) => (
+            <li key={x.label}>
+              <button
+                type="button"
+                role="menuitem"
+                className={x.danger ? 'danger' : ''}
+                disabled={x.disabled}
+                aria-describedby={x.hint ? `${x.label}-hint` : undefined}
+                onPointerDown={onPointerDown}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setOpen(false);
+                  x.onClick();
+                }}
+              >
+                {x.icon && <x.icon size={17} aria-hidden="true" />}
+                <span className="grow">
+                  {x.label}
+                  {x.hint && (
+                    <span className="menu-pop-hint" id={`${x.label}-hint`}>
+                      {x.hint}
+                    </span>
+                  )}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}

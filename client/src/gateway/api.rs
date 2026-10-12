@@ -60,6 +60,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/git/remote", post(git_remote))
         .route("/instances/{id}/page", post(instance_page))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
+        .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/hosts/{id}", put(ssh_update).delete(ssh_delete))
         .route("/ssh/hosts/{id}/open", post(ssh_open))
         .route("/ssh/hosts/{id}/test", post(ssh_test))
@@ -870,8 +871,13 @@ async fn ssh_create(State(app): State<App>, Json(req): Json<crate::ssh::HostInpu
     Ok((StatusCode::CREATED, Json(h)))
 }
 
-async fn ssh_update(State(app): State<App>, Path(id): Path<String>, Json(req): Json<crate::ssh::HostInput>) -> R<Json<crate::ssh::SshHost>> {
+async fn ssh_update(State(app): State<App>, Path(id): Path<String>, Json(req): Json<crate::ssh::HostInput>) -> R<Json<crate::ssh::Saved>> {
     Ok(Json(crate::ssh::save(&app.store, &app.paths.home, Some(&id), req)?))
+}
+
+/// 这台电脑 `~/.ssh` 里的私钥文件（路径），添加主机时快捷选择。
+async fn ssh_keys() -> Json<Value> {
+    Json(json!({ "items": tokio::task::spawn_blocking(crate::ssh::local_keys).await.unwrap_or_default() }))
 }
 
 async fn ssh_delete(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {

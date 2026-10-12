@@ -85,7 +85,12 @@
     "segment": "只能是一个名字",
     "relative": "必须是仓库里的相对路径",
     "hash": "不是有效的提交编号",
-    "too_many": "太多了"
+    "too_many": "太多了",
+    "private_key": "不是 OpenSSH / PEM 格式的私钥（应以 -----BEGIN … PRIVATE KEY----- 开头）",
+    "ppk": "这是 PuTTY 格式（.ppk）的私钥，请先用 PuTTYgen 导出为 OpenSSH 格式",
+    "jump_loop": "跳板机不能绕回这台主机自己",
+    "jump_missing": "选的跳板机已经不在了",
+    "jump_depth": "跳板机嵌套太多层了"
   },
   "LAN_SWITCH_OFF": "已关闭“远程打开时可以改走局域网”（设置 → 访问控制）",
   "DEVICE_TIMEOUT": "这台电脑没有及时响应，正在重试",
@@ -125,7 +130,16 @@
     "user": "用户名",
     "key_path": "私钥文件",
     "auth": "登录方式",
-    "hosts": "主机"
+    "hosts": "主机",
+    "key_text": "私钥",
+    "jump": "跳板机",
+    "jump_name": "跳板机名称",
+    "jump_host": "跳板机地址",
+    "jump_port": "跳板机端口",
+    "jump_user": "跳板机用户名",
+    "jump_auth": "跳板机登录方式",
+    "jump_key_path": "跳板机私钥文件",
+    "jump_key_text": "跳板机私钥"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "会员已到期",
@@ -163,5 +177,6 @@
   "SSH_NAME_TAKEN": "已经有叫“{{name}}”的主机了，换个名字吧。",
   "SSH_FAILED": "没能启动 SSH 连接：{{detail}}",
   "SSH_MISSING": "这台电脑上没有找到 ssh 命令，请先安装 OpenSSH 客户端。",
-  "SSH_HOST_NOT_ALLOWED": "这台主机没有允许 AI 助手使用。"
+  "SSH_HOST_NOT_ALLOWED": "这台主机没有允许 AI 助手使用。",
+  "SSH_JUMP_IN_USE": "还有主机经它连接（{{names}}），先给它们换个跳板机或改成直接连接，再删除。"
 }

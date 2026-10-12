@@ -85,7 +85,12 @@
     "segment": "must be a single name",
     "relative": "must be a path inside the repository",
     "hash": "isn’t a valid commit id",
-    "too_many": "too many"
+    "too_many": "too many",
+    "private_key": "isn’t an OpenSSH / PEM private key (it should start with -----BEGIN … PRIVATE KEY-----)",
+    "ppk": "is a PuTTY (.ppk) key — export it to OpenSSH format in PuTTYgen first",
+    "jump_loop": "can’t lead back to this host",
+    "jump_missing": "no longer exists",
+    "jump_depth": "nests too many jump hosts"
   },
   "LAN_SWITCH_OFF": "Switching to the local network is turned off (Settings → Access)",
   "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
@@ -125,7 +130,16 @@
     "user": "User",
     "key_path": "Key file",
     "auth": "Sign-in method",
-    "hosts": "Hosts"
+    "hosts": "Hosts",
+    "key_text": "Private key",
+    "jump": "Jump host",
+    "jump_name": "Jump host name",
+    "jump_host": "Jump host address",
+    "jump_port": "Jump host port",
+    "jump_user": "Jump host user",
+    "jump_auth": "Jump host sign-in",
+    "jump_key_path": "Jump host key file",
+    "jump_key_text": "Jump host key"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "membership expired",
@@ -163,5 +177,6 @@
   "SSH_NAME_TAKEN": "There’s already a host named “{{name}}”. Pick another name.",
   "SSH_FAILED": "Couldn’t start the SSH connection: {{detail}}",
   "SSH_MISSING": "No ssh command on this computer. Install the OpenSSH client first.",
-  "SSH_HOST_NOT_ALLOWED": "This host isn’t available to AI assistants."
+  "SSH_HOST_NOT_ALLOWED": "This host isn’t available to AI assistants.",
+  "SSH_JUMP_IN_USE": "Other hosts connect through it ({{names}}). Give them another jump host or connect them directly first."
 }

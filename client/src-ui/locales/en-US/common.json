@@ -222,18 +222,19 @@
     "logs_hint": "If the terminal misbehaves, this can help find the cause.",
     "logs_empty": "No logs yet",
     "open_here": "Open here",
-    "open_here_hint": "Open in a draggable floating window over this page",
+    "open_here_hint": "Open in this page’s workspace (switch between cards, list and workspace at the top right)",
     "history_state": "Current state:",
     "history_started": "started {{when}}",
     "history_output": "Recent terminal output",
     "history_output_empty": "(No output yet, or this mode doesn't keep output)",
     "history_service": "Terminal service log",
-    "delete_stop_first": "The terminal is still running; stop it before deleting"
+    "delete_stop_first": "The terminal is still running; stop it before deleting",
+    "open_page_hint": "Open the terminal full screen with the key bar"
   },
   "created": {
     "title": "\"{{name}}\" is ready",
     "body": "Open it now?",
-    "here": "Open on this page",
+    "here": "Open in this page",
     "new_tab": "Open in new tab",
     "later": "Not now"
   },
@@ -424,13 +425,6 @@
     "selected": "Will use:",
     "pick": "Use this folder",
     "done": "Done"
-  },
-  "embed": {
-    "collapse": "Collapse",
-    "expand": "Expand",
-    "close": "Close embedded terminal",
-    "resize": "Drag to resize (or use the arrow keys)",
-    "minimize": "Minimize to the switcher bar"
   },
   "safety": {
     "title": "Security notice",
@@ -947,13 +941,6 @@
     "tray_hint": "Images pasted in this session: click to view, hover to delete",
     "tray_hide": "Hide (files are kept)"
   },
-  "dock": {
-    "label": "Switch terminals",
-    "open": "Open here",
-    "minimize": "Minimize",
-    "restore": "Restore",
-    "front": "Bring to front"
-  },
   "git": {
     "changes": "Changes",
     "history": "History",
@@ -1018,7 +1005,7 @@
     "edit": "Edit",
     "delete": "Delete",
     "delete_title": "Delete “{{name}}”?",
-    "delete_body": "This only removes the host and its saved password from Looklook. The server and your keys in ~/.ssh are untouched.",
+    "delete_body": "This only removes the host and its saved password and uploaded key from Looklook. The server and your keys in ~/.ssh are untouched.",
     "name": "Name",
     "name_hint": "For you — AI assistants also use it to pick the host.",
     "name_ph": "e.g. Production",
@@ -1027,11 +1014,11 @@
     "user": "User",
     "auth": "Sign in with",
     "auth_agent": "System keys",
-    "auth_key": "Key file",
+    "auth_key": "Private key",
     "auth_password": "Password",
     "auth_hint": {
       "agent": "Uses this computer’s default keys in ~/.ssh or ssh-agent, exactly like running ssh in a terminal. Looklook stores no secrets.",
-      "key": "Uses the key file you pick (Looklook stores the path, not the key). If the key has a passphrase, Looklook can store it.",
+      "key": "Sign in with a private key: pick a key file on this computer (Looklook keeps the path only) or upload one from your browser (stored encrypted). A passphrase can be stored too.",
       "password": "The password is encrypted on this computer and handed to ssh by Looklook when connecting. It’s never shown and never appears in the terminal."
     },
     "key_path": "Private key file",
@@ -1054,9 +1041,61 @@
     "empty_body": "Save the servers you use: open an SSH terminal in one click without typing passwords, and optionally let AI assistants run commands there safely.",
     "no_ssh": "No ssh command found on this computer. Install the OpenSSH client first (Windows: Settings → Optional features → OpenSSH Client).",
     "safety_title": "How passwords are protected",
-    "safety_1": "Passwords and key passphrases are encrypted with a key on this computer and stored in Looklook’s local database. They’re never uploaded.",
+    "safety_1": "Passwords, key passphrases and uploaded keys are encrypted with a key on this computer and kept in Looklook’s database — never uploaded to Looklook’s servers.",
     "safety_2": "When connecting, ssh asks Looklook for the password through SSH_ASKPASS over a one-time local channel — it never appears in command lines, environment variables, files or terminal output.",
     "safety_3": "AI assistants can only use hosts marked “Let AI assistants use this host”, and the MCP endpoint must be on:",
-    "safety_4": "Limits: AI assistants run as the same system user as Looklook and can read any file you can (including ~/.ssh). This keeps passwords out of chats, logs and screenshots; don’t run untrusted programs on this computer."
+    "safety_4": "Limits: AI assistants run as the same system user as Looklook and can read any file you can (including ~/.ssh). This keeps passwords out of chats, logs and screenshots; don’t run untrusted programs on this computer.",
+    "key_source": "Where the key comes from",
+    "key_local": "A file on this computer",
+    "key_upload": "Upload a key",
+    "key_found": "Found in ~/.ssh:",
+    "key_file": "Private key",
+    "key_upload_hint": "The key is encrypted and kept in Looklook’s database on this computer — never uploaded to Looklook’s servers. When connecting it’s written to a file only you can read and deleted once ssh has read it. OpenSSH / PEM format only.",
+    "key_choose": "Choose key file",
+    "key_chosen": "Chose {{name}}",
+    "key_pasted": "Key pasted",
+    "key_none": "Nothing chosen yet",
+    "key_paste": "Or paste the key",
+    "key_saved": "Uploaded key is stored encrypted",
+    "key_replace": "Replace",
+    "key_uploaded": "uploaded",
+    "key_read_failed": "Couldn’t read that file (too large or not a text file)",
+    "jump": "Jump host",
+    "jump_hint": "If this host can’t be reached directly, connect to a jump host first (another SSH host) and go on from there.",
+    "jump_none": "Connect directly",
+    "jump_existing": "Use a saved host",
+    "jump_new": "New jump host",
+    "jump_pick": "Choose a jump host",
+    "jump_no_hosts": "There are no other hosts to use as a jump host yet. Choose “New jump host”.",
+    "jump_new_note": "Saving also creates a new SSH host “{{name}}” as the jump host. It shows up in your host list, where you can connect to it, edit it, or use it as the jump host for other hosts.",
+    "jump_new_unnamed": "(unnamed)",
+    "jump_name": "Jump host name",
+    "jump_name_ph": "e.g. Office bastion",
+    "jump_created": "Also created the jump host “{{name}}”; “{{host}}” connects through it",
+    "jump_via": "via {{name}}",
+    "jump_via_hint": "Connects to this jump host first, then on to this host",
+    "save_both": "Save both hosts"
+  },
+  "view": {
+    "label": "How to show sessions",
+    "grid": "Cards",
+    "list": "List",
+    "workspace": "Workspace",
+    "grid_hint": "Cards: one card per session with its buttons in view",
+    "list_hint": "List: one row per session — easier to scan when you have many",
+    "workspace_hint": "Workspace: open terminals as tabs on the left, all sessions listed on the right, like a terminal app",
+    "search": "Search sessions",
+    "no_match": "No matching sessions"
+  },
+  "ws": {
+    "tabs": "Open terminals",
+    "list": "Sessions",
+    "close_tab": "Close the “{{name}}” tab (the terminal keeps running)",
+    "hide_list": "Hide the session list",
+    "show_list": "Show the session list",
+    "empty_title": "No terminal open yet",
+    "empty_body": "Click a session in the list on the right to open it here. Open several and switch between the tabs above (Alt+1…9).",
+    "empty_none": "Create a session first.",
+    "missing_body": "This terminal has been deleted. You can close this tab."
   }
 }

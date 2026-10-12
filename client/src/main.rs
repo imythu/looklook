@@ -139,6 +139,9 @@ enum Cmd {
         #[arg(last = true)]
         command: Vec<String>,
     },
+    /// ssh 的 ProxyCommand：经跳板机连接时由看看自己连上跳板机（内部使用）/ ProxyCommand for jump hosts (internal)
+    #[command(hide = true)]
+    SshProxy { jump: String, host: String, port: u16 },
 }
 
 #[derive(Subcommand)]
@@ -222,6 +225,11 @@ fn main() -> Result<()> {
                     Ok(())
                 }
             }
+        }
+        Some(Cmd::SshProxy { jump, host, port }) => {
+            let paths = Paths::discover(cli.home)?;
+            let store = Store::open(&paths.db())?;
+            std::process::exit(ssh::proxy_cli(&store, &paths.home, &jump, &host, port)?)
         }
     }
 }

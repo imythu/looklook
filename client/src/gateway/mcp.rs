@@ -273,7 +273,9 @@ async fn call_tool(app: &App, name: &str, args: &Value) -> Result<Value, ToolErr
             Ok(json!({ "port": port, "mapping": view(&t), "created": created, "reused": !created, "re_enabled": reenabled, "local": probe(port).await }))
         }
         "list_ssh_hosts" => {
-            let hosts: Vec<Value> = crate::ssh::list(&app.store).into_iter().filter(|h| h.allow_ai).map(|h| json!({ "name": h.name, "target": format!("{}@{}:{}", h.user, h.host, h.port) })).collect();
+            let all = crate::ssh::list(&app.store);
+            let via = |h: &crate::ssh::SshHost| all.iter().find(|j| j.id == h.jump).map(|j| j.name.clone());
+            let hosts: Vec<Value> = all.iter().filter(|h| h.allow_ai).map(|h| json!({ "name": h.name, "target": format!("{}@{}:{}", h.user, h.host, h.port), "via": via(h) })).collect();
             Ok(json!({ "hosts": hosts, "note": "Use ssh_run with a host name. Credentials are supplied by Looklook and are never shown to you; do not ask the user for passwords or keys." }))
         }
         "ssh_run" => {

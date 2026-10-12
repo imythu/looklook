@@ -1,5 +1,9 @@
 // 终端页：整页显示一个终端（同源 iframe 打开 /i/{id}/）。手机上底部有按键条（Esc、Tab、Ctrl/Alt/Shift、方向键、组合键、符号、F1–F12…）。
-import { ArrowLeft, ChevronDown, ChevronUp, ExternalLink, FolderOpen, GitBranch, GripHorizontal, Maximize2, Minimize2, Minus, PanelBottom, Play, RefreshCw, SquareTerminal, X, Zap } from 'lucide-react';
+// 顶栏只放最常用的（返回、名称、传文件、按键条开关），其余收进“更多”，窄屏不会挤成一团互相遮挡；
+// 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
+// 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
+// 会话页“工作台”里的每个终端是一个 TermPane（见 Terminals.jsx）。
+import { ArrowLeft, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, Minimize2, Play, RefreshCw, SquareTerminal, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -9,12 +13,13 @@ import { LanButton, LanFallback, useLanPage } from '../shared/lan.jsx';
 import { termFit, termFocus, termPaste, useLatency, useTermSrc } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
+import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import FileBrowser from './FileBrowser.jsx';
 import GitPanel from './GitPanel.jsx';
 import { useTermFiles } from './TermFiles.jsx';
-import { termTheme } from '../shared/termTheme.js';
+import { termTheme, termVars } from '../shared/termTheme.js';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -43,10 +48,6 @@ function TermConnecting({ onRetry }) {
     </div>
   );
 }
-
-const EMBED_MIN_W = 320;
-const EMBED_MIN_H = 200;
-const fit = termFit;
 
 /**
  * 终端怎么连的：本机直连时显示“直连”；经中转时显示往返时间（远程打开才有），慢的时候标黄，
@@ -84,247 +85,192 @@ function NewlineHint({ inst, touch }) {
     </span>
   );
 }
-const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi));
-let cascade = 0;
 
-/** 悬浮窗初始位置/大小：每开一个错开一点，避免完全重叠。 */
-function initialRect() {
-  const w = Math.min(820, window.innerWidth - 24);
-  const h = Math.min(520, window.innerHeight - 80);
-  const off = (cascade++ % 6) * 28;
-  return { x: clamp(Math.round((window.innerWidth - w) / 2) + off, 0, window.innerWidth - w), y: clamp(64 + off, 0, window.innerHeight - h), w, h };
+/** 窄屏（手机竖屏、窄窗口）：顶栏只留图标，次要操作收进“更多”，标签放到底部。 */
+export function useNarrow(query = '(max-width: 719px)') {
+  const [m, setM] = useState(() => Boolean(window.matchMedia?.(query).matches));
+  useEffect(() => {
+    const mq = window.matchMedia?.(query);
+    if (!mq) return undefined;
+    const on = () => setM(mq.matches);
+    mq.addEventListener('change', on);
+    return () => mq.removeEventListener('change', on);
+  }, [query]);
+  return m;
+}
+
+/** 终端外框的配色变量；整页终端时浏览器的地址栏 / 状态栏颜色（theme-color）也跟着终端顶栏走。 */
+export function useTermChrome(theme, page = false) {
+  useEffect(() => {
+    if (!page) return undefined;
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (!meta) return undefined;
+    const old = meta.content;
+    meta.content = termTheme(theme).bar;
+    return () => {
+      meta.content = old;
+    };
+  }, [theme, page]);
+  return termVars(theme);
+}
+
+const TABS = [
+  ['term', SquareTerminal, 'fb.tab_term'],
+  ['files', FolderOpen, 'fb.tab_files'],
+  ['git', GitBranch, 'fb.tab_git'],
+];
+
+/** 宽屏：顶栏里的分段标签。切到别的标签时终端 iframe 不卸载，会话保持连接。 */
+function TermTabs({ tab, onChange }) {
+  const { t } = useTranslation();
+  return (
+    <div className="term-tabs" role="tablist" aria-label={t('fb.tabs')}>
+      {TABS.map(([key, Icon, label]) => (
+        <button key={key} type="button" role="tab" aria-selected={tab === key} className={`term-tab ${tab === key ? 'on' : ''}`} onClick={() => onChange(key)} title={t(label)}>
+          <Icon size={16} aria-hidden="true" />
+          <span className="term-tab-label">{t(label)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 手机、窄屏：底部标签栏（图标在上、文字在下），拇指够得着，也不和顶栏的按钮抢地方。 */
+function TermTabBar({ tab, onChange }) {
+  const { t } = useTranslation();
+  return (
+    <nav className="term-tabbar" role="tablist" aria-label={t('fb.tabs')}>
+      {TABS.map(([key, Icon, label]) => (
+        <button key={key} type="button" role="tab" aria-selected={tab === key} onPointerDown={keepFocus} onClick={() => onChange(key)}>
+          <Icon size={20} aria-hidden="true" />
+          <span>{t(label)}</span>
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/** 终端没在运行 / 找不到时，终端区域里的提示。 */
+function PaneNotice({ title, body, children }) {
+  return (
+    <div className="pane-notice">
+      <div>
+        {title && <b>{title}</b>}
+        {body && <p>{body}</p>}
+        {children}
+      </div>
+    </div>
+  );
 }
 
 /**
- * 悬浮终端：在当前页面上方以可拖动、可缩放的小窗口显示 /i/{id}/，不改变当前标签页地址。
- * 拖动标题栏移动，拖右下角（或按 ↑ ↓ ← → 调整）缩放，支持折叠和全屏。
- * 开着多个时像桌面窗口一样：点哪个（包括点进终端里）哪个就到最上面，`z` 是它在这些小窗里的层级。
- * `minimized`：最小化到底部的终端切换条（只是隐藏，iframe 不卸载、会话保持连接），`onMinimize` 为空时不显示最小化按钮。
+ * 工作台里的一个终端：上面一条细的工具栏（名称、连接方式、刷新、传文件、全屏、新窗口），下面是终端。
+ * 不是当前标签时只是隐藏（iframe 不卸载、会话保持连接），切回来时让终端重新适配大小并聚焦。
  */
-export function EmbeddedTerminal({ id, inst, z = 1, active = true, minimized = false, onMinimize, onRaise, onClose, onStart }) {
+export function TermPane({ id, inst, active, missing, onStart }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const wrap = useRef(null);
   const frame = useRef(null);
-  const drag = useRef(null);
-  const [rect, setRect] = useState(initialRect);
-  const [collapsed, setCollapsed] = useState(false);
-  const [full, setFull] = useState(false);
-  const [moving, setMoving] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
-  const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const [touch] = useState(isTouch);
+  const [starting, setStarting] = useState(false);
+  const [full, setFull] = useState(false);
   const link = useTermSrc(id, reloadKey);
+  const allowed = status.account.allowed;
+  const running = Boolean(inst?.running && allowed);
+  const files = useTermFiles({ id, inst, frame, enabled: running && active, touch: false, hostOs: status.capabilities.os, keybar: false });
   useEffect(() => {
-    const on = () => {
-      if (!document.fullscreenElement) setFull(false);
-    };
+    if (!active) return undefined;
+    const timer = setTimeout(() => {
+      termFit(frame);
+      termFocus(frame);
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [active, full]);
+  useEffect(() => {
+    const on = () => setFull(document.fullscreenElement === wrap.current);
     document.addEventListener('fullscreenchange', on);
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
-  useEffect(() => {
-    if (!full) return undefined;
-    // 浏览器不支持原生全屏时（如 iPhone）退回页面内全屏，Esc 退出。
-    const esc = (e) => e.key === 'Escape' && !document.fullscreenElement && setFull(false);
-    document.addEventListener('keydown', esc);
-    return () => document.removeEventListener('keydown', esc);
-  }, [full]);
-  // 浏览器窗口变小时把悬浮窗拉回可见范围。
-  useEffect(() => {
-    const on = () =>
-      setRect((r) => {
-        const w = Math.min(r.w, window.innerWidth);
-        const h = Math.min(r.h, window.innerHeight);
-        return { w, h, x: clamp(r.x, 0, window.innerWidth - w), y: clamp(r.y, 0, window.innerHeight - h) };
-      });
-    window.addEventListener('resize', on);
-    return () => window.removeEventListener('resize', on);
-  }, []);
-  // 尺寸变化后让终端重新适配。
-  useEffect(() => {
-    const timer = setTimeout(() => fit(frame), 50);
-    return () => clearTimeout(timer);
-  }, [full, collapsed]);
-  const toggleFull = () => {
-    if (full) {
-      setFull(false);
-      if (document.fullscreenElement) document.exitFullscreen?.().catch(() => {});
-    } else {
-      setFull(true);
-      wrap.current?.requestFullscreen?.().catch(() => {});
-    }
-  };
-  const begin = (mode) => (e) => {
-    if (full || e.button > 0 || e.target.closest?.('button')) return;
-    drag.current = { mode, px: e.clientX, py: e.clientY, r: rect };
-    e.currentTarget.setPointerCapture?.(e.pointerId);
-    setMoving(true);
-  };
-  const onMove = (e) => {
-    const d = drag.current;
-    if (!d) return;
-    const dx = e.clientX - d.px;
-    const dy = e.clientY - d.py;
-    if (d.mode === 'move') {
-      setRect({ ...d.r, x: clamp(d.r.x + dx, -d.r.w + 80, window.innerWidth - 80), y: clamp(d.r.y + dy, 0, window.innerHeight - 40) });
-    } else {
-      setRect({ ...d.r, w: clamp(d.r.w + dx, EMBED_MIN_W, window.innerWidth - d.r.x), h: clamp(d.r.h + dy, EMBED_MIN_H, window.innerHeight - d.r.y) });
-    }
-  };
-  const onUp = () => {
-    if (drag.current?.mode === 'size') fit(frame);
-    drag.current = null;
-    setMoving(false);
-  };
-  const onKey = (e) => {
-    const step = { ArrowUp: [0, -40], ArrowDown: [0, 40], ArrowLeft: [-40, 0], ArrowRight: [40, 0] }[e.key];
-    if (!step) return;
-    e.preventDefault();
-    setRect((r) => ({ ...r, w: clamp(r.w + step[0], EMBED_MIN_W, window.innerWidth - r.x), h: clamp(r.h + step[1], EMBED_MIN_H, window.innerHeight - r.y) }));
-    setTimeout(() => fit(frame), 50);
+  const reload = () => {
+    setLoaded(false);
+    setReloadKey((k) => k + 1);
   };
   const start = async () => {
     setStarting(true);
     try {
       await onStart?.();
+      reload();
     } finally {
       setStarting(false);
     }
   };
-  const running = inst?.running;
-  const mobile = useTouchTerminal(frame, touch && full);
-  const files = useTermFiles({ id, inst, frame, enabled: Boolean(running && status.account.allowed), touch, hostOs: status.capabilities.os, keybar: Boolean(running && touch && full) });
-  const shell = full
-    ? { position: 'fixed', inset: 0, zIndex: 1000, display: 'flex', flexDirection: 'column', ...mobile.style }
-    : {
-        position: 'fixed',
-        left: rect.x,
-        top: rect.y,
-        width: rect.w,
-        zIndex: z,
-        display: minimized ? 'none' : 'flex',
-        flexDirection: 'column',
-        borderRadius: 12,
-        overflow: 'hidden',
-        border: `1px solid ${active ? '#59627a' : '#343a4a'}`,
-        boxShadow: active ? '0 16px 48px rgba(0,0,0,.55)' : '0 8px 28px rgba(0,0,0,.35)',
-      };
+  const toggleFull = () => (document.fullscreenElement ? document.exitFullscreen?.() : wrap.current?.requestFullscreen?.())?.catch?.(() => {});
   const iconBtn = 'btn btn-plain btn-icon';
-  const th = termTheme(status.settings.theme);
-  return (
-    <section ref={wrap} className="embedded-term" style={{ background: th.bg, ...shell }} aria-label={inst?.name ?? id} data-embed-id={id} onPointerDownCapture={() => onRaise?.()}>
-      <header
-        className="term-bar"
-        hidden={mobile.cramped}
-        style={full ? undefined : { paddingTop: 4, minHeight: 44, cursor: moving ? 'grabbing' : 'grab', touchAction: 'none', userSelect: 'none' }}
-        onPointerDown={begin('move')}
-        onPointerMove={onMove}
-        onPointerUp={onUp}
-        onPointerCancel={onUp}
-        onDoubleClick={(e) => !full && !e.target.closest('button') && setCollapsed((c) => !c)}
-      >
-        <span className="term-title">
-          <span className={`dot ${running ? 'on' : ''}`} />
-          <span className="ellipsis">{inst?.name ?? id}</span>
-          {running && <LinkBadge id={id} direct={link.direct} />}
-        </span>
-        {(full || rect.w >= 640) && <NewlineHint inst={inst} touch={touch} />}
-        <button type="button" className={iconBtn} onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
-          <RefreshCw size={17} />
-        </button>
-        {files.button}
-        {running && status.account.allowed && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} autoSwitch={false} />}
-        <button type="button" className={iconBtn} onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
-          <ExternalLink size={17} />
-        </button>
-        {!full && onMinimize && (
-          <button type="button" className={iconBtn} onClick={onMinimize} aria-label={t('embed.minimize')} title={t('embed.minimize')}>
-            <Minus size={18} />
-          </button>
-        )}
-        {!full && (
-          <button type="button" className={iconBtn} onClick={() => setCollapsed(!collapsed)} aria-expanded={!collapsed} aria-label={t(collapsed ? 'embed.expand' : 'embed.collapse')} title={t(collapsed ? 'embed.expand' : 'embed.collapse')}>
-            {collapsed ? <ChevronDown size={19} /> : <ChevronUp size={19} />}
-          </button>
-        )}
-        <button type="button" className={iconBtn} onPointerDown={touch ? keepFocus : undefined} onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
-          {full ? <Minimize2 size={17} /> : <Maximize2 size={17} />}
-        </button>
-        {!full && (
-          <button type="button" className={iconBtn} onClick={onClose} aria-label={t('embed.close')} title={t('embed.close')}>
-            <X size={18} />
-          </button>
-        )}
-      </header>
-      <div style={{ display: collapsed && !full ? 'none' : 'block', position: 'relative', height: full ? undefined : rect.h - 44, flex: full ? 1 : undefined, minHeight: 0 }}>
-        {running && !loaded && <TermConnecting onRetry={() => { setLoaded(false); setReloadKey((k) => k + 1); }} />}
-        {running ? (
-          link.src && <iframe
+  let body;
+  if (missing) {
+    body = <PaneNotice title={t('term.missing_title')} body={t('ws.missing_body')} />;
+  } else if (!inst) {
+    body = <TermConnecting onRetry={reload} />;
+  } else if (!allowed) {
+    body = <PaneNotice title={t('term.locked_title')} body={t(`gate.${status.account.reason}`, { defaultValue: t('gate.other') })} />;
+  } else if (!inst.running) {
+    body = (
+      <PaneNotice title={t('term.stopped_title')} body={t('term.stopped_body')}>
+        <Button icon={Play} busy={starting} onClick={start}>
+          {t('instance.start_open')}
+        </Button>
+      </PaneNotice>
+    );
+  } else {
+    body = (
+      <>
+        {!loaded && <TermConnecting onRetry={reload} />}
+        {link.src && (
+          <iframe
             key={`${reloadKey}:${link.src}`}
             ref={frame}
             src={link.src}
             title={inst.name}
             allow="clipboard-read; clipboard-write; fullscreen; local-network-access"
-            // 拖动/缩放时 iframe 会吞掉指针事件，期间先让它穿透。
-            style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, background: th.bg, pointerEvents: moving ? 'none' : 'auto' }}
             onLoad={() => {
               setLoaded(true);
-              // 手机上不自动弹出键盘，点终端才弹（见 KeyBar.jsx 开头的说明）。
-              if (!touch) termFocus(frame);
+              if (active) termFocus(frame);
             }}
           />
-        ) : (
-          <div style={{ position: 'absolute', inset: 0, display: 'grid', placeItems: 'center', padding: 16, color: '#c5cad6', textAlign: 'center' }}>
-            <div>
-              <p>{t('term.stopped_body')}</p>
-              <Button icon={Play} busy={starting} onClick={start}>
-                {t('instance.start_open')}
-              </Button>
-            </div>
-          </div>
         )}
-        {!full && !collapsed && (
-          <div
-            role="separator"
-            aria-label={t('embed.resize')}
-            tabIndex={0}
-            title={t('embed.resize')}
-            onPointerDown={begin('size')}
-            onPointerMove={onMove}
-            onPointerUp={onUp}
-            onPointerCancel={onUp}
-            onKeyDown={onKey}
-            style={{ position: 'absolute', right: 0, bottom: 0, width: 22, height: 22, display: 'grid', placeItems: 'end', cursor: 'nwse-resize', touchAction: 'none', color: '#8a91a3', zIndex: 2 }}
-          >
-            <GripHorizontal size={14} aria-hidden="true" style={{ transform: 'rotate(-45deg)' }} />
-          </div>
+      </>
+    );
+  }
+  return (
+    <section ref={wrap} className="ws-pane" hidden={!active} aria-label={inst?.name ?? id} data-pane-id={id}>
+      <header className="term-bar ws-pane-bar">
+        <span className="term-title">
+          <span className={`dot ${running ? 'on' : ''}`} />
+          <span className="ellipsis">{inst?.name ?? id}</span>
+          {running && <LinkBadge id={id} direct={link.direct} />}
+        </span>
+        <NewlineHint inst={inst} touch={false} />
+        {running && (
+          <button type="button" className={iconBtn} onClick={reload} aria-label={t('term.reload')} title={t('term.reload')}>
+            <RefreshCw size={16} />
+          </button>
         )}
+        {files.button}
+        {running && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} autoSwitch={false} />}
+        <button type="button" className={iconBtn} onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
+          {full ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+        </button>
+        <button type="button" className={iconBtn} onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
+          <ExternalLink size={16} />
+        </button>
+      </header>
+      <div className="term-frame">
+        {body}
         {files.layer}
       </div>
-      {/* 手机上悬浮小窗太挤，全屏时才显示按键条 */}
-      {running && touch && full && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
     </section>
-  );
-}
-
-/** 终端页顶栏的标签：终端 / 文件 / Git。切到别的标签时终端 iframe 不卸载，会话保持连接。 */
-function TermTabs({ tab, onChange }) {
-  const { t } = useTranslation();
-  const tabs = [
-    ['term', SquareTerminal, t('fb.tab_term')],
-    ['files', FolderOpen, t('fb.tab_files')],
-    ['git', GitBranch, t('fb.tab_git')],
-  ];
-  return (
-    <div className="term-tabs" role="tablist" aria-label={t('fb.tabs')}>
-      {tabs.map(([key, Icon, label]) => (
-        <button key={key} type="button" role="tab" aria-selected={tab === key} className={`term-tab ${tab === key ? 'on' : ''}`} onClick={() => onChange(key)} title={label}>
-          <Icon size={16} aria-hidden="true" />
-          <span className="term-tab-label">{label}</span>
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -336,6 +282,7 @@ export default function TerminalView({ id }) {
   const frame = useRef(null);
   const [reloadKey, setReloadKey] = useState(0);
   const [touch] = useState(isTouch);
+  const narrow = useNarrow();
   const [keys, setKeys] = useKeybarShown();
   const mobile = useTouchTerminal(frame, touch);
   const [full, setFull] = useState(false);
@@ -347,7 +294,13 @@ export default function TerminalView({ id }) {
   const [inst, error, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
   const allowed = status.account.allowed;
   const running = inst?.running;
-  const files = useTermFiles({ id, inst, frame, enabled: Boolean(running && allowed), touch, hostOs: status.capabilities.os, keybar: Boolean(touch && keys && running && allowed) });
+  const live = Boolean(running && allowed);
+  // 底部标签栏：手机和窄屏用；键盘弹起时让给终端
+  const bottomTabs = live && (touch || narrow);
+  const tabbarShown = bottomTabs && !mobile.ime.up;
+  const keybarShown = touch && keys && live && tab === 'term';
+  const files = useTermFiles({ id, inst, frame, enabled: live, touch, hostOs: status.capabilities.os, keybar: keybarShown || tabbarShown });
+  const vars = useTermChrome(status.settings.theme, true);
 
   useEffect(() => {
     const iv = setInterval(reload, 5000);
@@ -364,14 +317,18 @@ export default function TerminalView({ id }) {
     document.addEventListener('fullscreenchange', on);
     return () => document.removeEventListener('fullscreenchange', on);
   }, []);
-  // 终端所在页面尺寸变化（按键条显示/隐藏、从“文件”切回来）时让终端重新适配。
+  // 终端所在页面尺寸变化（按键条、标签栏显示/隐藏、从“文件”切回来）时让终端重新适配。
   useEffect(() => {
     termFit(frame);
     if (tab === 'term' && !touch) termFocus(frame);
-  }, [keys, tab]);
+  }, [keys, tab, tabbarShown]);
   const insertPath = (text) => {
     setTab('term');
     termPaste(frame, text);
+  };
+  const reloadTerm = () => {
+    setLoaded(false);
+    setReloadKey((k) => k + 1);
   };
 
   const start = async () => {
@@ -386,8 +343,8 @@ export default function TerminalView({ id }) {
       setStarting(false);
     }
   };
-  const toggleFull = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.());
-  const th = termTheme(status.settings.theme);
+  const toggleFull = () => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.())?.catch?.(() => {});
+  const newWindow = () => window.open(`/t/${id}`, '_blank', 'noopener');
 
   let body;
   if (error) {
@@ -422,7 +379,7 @@ export default function TerminalView({ id }) {
   } else if (inst) {
     body = (
       <>
-        {!loaded && <TermConnecting onRetry={() => { setLoaded(false); setReloadKey((k) => k + 1); }} />}
+        {!loaded && <TermConnecting onRetry={reloadTerm} />}
         {link.src && (
           <iframe
             key={`${reloadKey}:${link.src}`}
@@ -440,55 +397,70 @@ export default function TerminalView({ id }) {
     );
   }
 
+  // 窄屏时刷新、全屏、新窗口收进“更多”；手机上按住菜单不抢键盘焦点
+  const compact = touch || narrow;
+  const tap = touch ? keepFocus : undefined;
+  const more = [
+    tab === 'term' && live && { icon: RefreshCw, label: t('term.reload'), onClick: reloadTerm },
+    { icon: full ? Minimize2 : Maximize2, label: t(full ? 'term.exit_full' : 'term.full'), onClick: toggleFull },
+    { icon: ExternalLink, label: t('instance.new_window'), onClick: newWindow },
+  ];
   return (
-    <div className="term-page" style={{ '--term-bg': th.bg, ...mobile.style }}>
+    <div className="term-page" data-scheme={termTheme(status.settings.theme).scheme} data-tabbar={tabbarShown ? '' : undefined} style={{ ...vars, ...mobile.style }}>
       <LanFallback />
       {/* 横屏打字时屏幕极矮：先藏起顶栏，键盘收起后回来 */}
       <header className="term-bar" hidden={mobile.cramped}>
-        <button type="button" className="btn btn-plain btn-icon" onClick={() => navigate('/')} aria-label={t('term.back')}>
+        <button type="button" className="btn btn-plain btn-icon" onClick={() => navigate('/')} aria-label={t('term.back')} title={t('term.back')}>
           <ArrowLeft size={20} />
         </button>
         <span className="term-title">
-          <span className={`dot ${running && allowed ? 'on' : ''}`} />
+          <span className={`dot ${live ? 'on' : ''}`} />
           <span className="ellipsis">{inst?.name ?? '…'}</span>
-          {running && allowed && (lanPage ? <span className="link-badge link-direct" title={t('lan.badge_hint')}>{t('lan.badge')}</span> : <LinkBadge id={id} direct={link.direct} />)}
+          {live && (lanPage ? <span className="link-badge link-direct" title={t('lan.badge_hint')}>{t('lan.badge')}</span> : <LinkBadge id={id} direct={link.direct} />)}
         </span>
         {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
-        {running && allowed && <TermTabs tab={tab} onChange={setTab} />}
-        {tab === 'term' && (
-          <button type="button" className="btn btn-plain btn-icon" onClick={() => { setLoaded(false); setReloadKey((k) => k + 1); }} aria-label={t('term.reload')} title={t('term.reload')}>
+        {live && !bottomTabs && <TermTabs tab={tab} onChange={setTab} />}
+        {!compact && tab === 'term' && live && (
+          <button type="button" className="btn btn-plain btn-icon" onClick={reloadTerm} aria-label={t('term.reload')} title={t('term.reload')}>
             <RefreshCw size={18} />
           </button>
         )}
         {files.button}
-        {running && allowed && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} />}
-        {touch && tab === 'term' && (
+        {live && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} />}
+        {touch && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onPointerDown={keepFocus} onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
-            <PanelBottom size={19} />
+            <Keyboard size={19} />
           </button>
         )}
-        <button type="button" className="btn btn-plain btn-icon" onPointerDown={touch ? keepFocus : undefined} onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
-          {full ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
-        </button>
-        <button type="button" className="btn btn-plain btn-icon" onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
-          <ExternalLink size={18} />
-        </button>
+        {compact ? (
+          <PopMenu items={more} className="btn btn-plain btn-icon" onPointerDown={tap} />
+        ) : (
+          <>
+            <button type="button" className="btn btn-plain btn-icon" onClick={toggleFull} aria-label={t(full ? 'term.exit_full' : 'term.full')} title={t(full ? 'term.exit_full' : 'term.full')}>
+              {full ? <Minimize2 size={18} /> : <Maximize2 size={18} />}
+            </button>
+            <button type="button" className="btn btn-plain btn-icon" onClick={newWindow} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
+              <ExternalLink size={18} />
+            </button>
+          </>
+        )}
       </header>
       <div className="term-frame">
         {body}
         {files.layer}
-        {running && allowed && tab === 'files' && (
+        {live && tab === 'files' && (
           <div className="term-files-tab">
             <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
           </div>
         )}
-        {running && allowed && tab === 'git' && (
+        {live && tab === 'git' && (
           <div className="term-files-tab">
             <GitPanel id={id} active={tab === 'git'} />
           </div>
         )}
       </div>
-      {touch && keys && running && allowed && tab === 'term' && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
+      {keybarShown && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
+      {tabbarShown && <TermTabBar tab={tab} onChange={setTab} />}
     </div>
   );
 }

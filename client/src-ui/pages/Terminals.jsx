@@ -16,32 +16,40 @@ import {
   Globe,
   HardDrive,
   Home,
+  LayoutGrid,
+  List,
   Monitor,
   MonitorSmartphone,
-  MoreHorizontal,
+  PanelRightClose,
+  PanelRightOpen,
+  PanelsTopLeft,
   PanelTop,
   Pencil,
   Play,
   Plus,
   QrCode as QrCodeIcon,
   RotateCcw,
+  Search,
   Sparkles,
   Square,
   SquareTerminal,
   Trash2,
   Wifi,
+  X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { SafetyNote, useStatus } from "../App.jsx";
 import { api, ApiError, deviceApi, rememberTerminals, terminalDevice } from "../shared/api.js";
+import PopMenu from "../shared/PopMenu.jsx";
+import { termTheme } from "../shared/termTheme.js";
 import { deviceName, osLabel, RenameDeviceDialog, useDevices } from "../shared/devices.jsx";
 import { urlHost } from "../shared/host.js";
 import { errorText } from "../shared/i18n.js";
 import { Link, useRouter } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
-import { EmbeddedTerminal } from "./TerminalView.jsx";
+import { TermPane, useTermChrome } from "./TerminalView.jsx";
 import { ModelChoiceLine } from "./ModelProviders.jsx";
 import { isTouch } from "../shared/KeyBar.jsx";
 import RelayStatus from "../shared/RelayStatus.jsx";
@@ -57,6 +65,7 @@ import {
   Note,
   QrCode,
   Skeleton,
+  Spinner,
   Switch,
   useAction,
   useConfirm,
@@ -249,58 +258,6 @@ const BADGE = {
   stopped: "",
 };
 
-function PopMenu({ items }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const ref = useRef(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (e) => !ref.current?.contains(e.target) && setOpen(false);
-    document.addEventListener("pointerdown", close);
-    return () => document.removeEventListener("pointerdown", close);
-  }, [open]);
-  return (
-    <span className="menu-pop" ref={ref}>
-      <Button
-        variant="ghost"
-        icon={MoreHorizontal}
-        aria-label={t("action.more")}
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      />
-      {open && (
-        <ul className="menu-pop-list" role="menu">
-          {items.filter(Boolean).map((x) => (
-            <li key={x.label}>
-              <button
-                type="button"
-                role="menuitem"
-                className={x.danger ? "danger" : ""}
-                disabled={x.disabled}
-                aria-describedby={x.hint ? `${x.label}-hint` : undefined}
-                onClick={() => {
-                  setOpen(false);
-                  x.onClick();
-                }}
-              >
-                <x.icon size={17} aria-hidden="true" />
-                <span className="grow">
-                  {x.label}
-                  {x.hint && (
-                    <span className="menu-pop-hint" id={`${x.label}-hint`}>
-                      {x.hint}
-                    </span>
-                  )}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-    </span>
-  );
-}
-
 // 手机/平板打开整页终端 /t/{id}（带按键条）；电脑上新标签页直接打开 /i/{id}/。
 // 新窗口打开管理台的终端页（带文件面板、粘贴、拖放），不再直接打开裸 /i/{id}/。
 const tabUrl = (inst) => `/t/${inst.id}`;
@@ -320,7 +277,11 @@ async function openDsh(inst, t, toast) {
   }
 }
 
-function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
+/**
+ * 一个终端的各种操作（卡片、列表行、工作台侧栏共用）：打开、新窗口、停止、重启、删除……
+ * onOpenHere(id)：在本页打开（电脑上进工作台，手机上整页打开）。
+ */
+function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const confirm = useConfirm();
@@ -329,8 +290,9 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
   const state = stateOf(inst);
   // 终端服务或后台任务还在就算“在运行”，这时不能删除，要先停止。
   const live = inst.running || Boolean(inst.task_alive);
-  const Icon = LAUNCH_ICON[inst.launch] ?? SquareTerminal;
   const persistent = status.capabilities.persistent;
+  const allowed = status.account.allowed;
+  const dsh = inst.launch === "dsh";
   const act = async (fn, okText) => {
     setBusy(true);
     try {
@@ -358,11 +320,10 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
       onChanged();
     }
   };
-  // 在当前页面内嵌打开（不改变标签页地址）。
+  // 在本页打开（不改变标签页地址）。
   const openHere = async () => {
     if (await ensureRunning()) onOpenHere(inst.id);
   };
-  const dsh = inst.launch === "dsh";
   const openPage = async () => {
     setBusy(true);
     await openDsh(inst, t, toast);
@@ -389,8 +350,7 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
       confirm: t("instance.stop_confirm"),
       danger: true,
     });
-    if (ok)
-      act(() => api.post(`/instances/${inst.id}/stop`), t("instance.stopped"));
+    if (ok) act(() => api.post(`/instances/${inst.id}/stop`), t("instance.stopped"));
   };
   const restart = async () => {
     const ok = await confirm({
@@ -399,11 +359,7 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
       confirm: t("instance.restart_confirm"),
       danger: true,
     });
-    if (ok)
-      act(
-        () => api.post(`/instances/${inst.id}/restart`),
-        t("instance.restarted"),
-      );
+    if (ok) act(() => api.post(`/instances/${inst.id}/restart`), t("instance.restarted"));
   };
   const remove = async () => {
     const ok = await confirm({
@@ -414,6 +370,61 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
     });
     if (ok) act(() => api.del(`/instances/${inst.id}`), t("instance.deleted"));
   };
+  // “更多”菜单。full：列表行和侧栏没有单独的按钮，把打开方式、停止也放进来
+  const menu = (full) => [
+    full && dsh && { icon: SquareTerminal, label: t("dsh.output"), onClick: openHere, disabled: busy || !allowed },
+    full && !dsh && { icon: ExternalLink, label: t("instance.new_window"), onClick: openTab, disabled: busy || !allowed },
+    { icon: Pencil, label: t("instance.edit"), onClick: () => onEdit(inst) },
+    inst.running && { icon: RotateCcw, label: t("instance.restart"), onClick: restart },
+    full && live && { icon: Square, label: t("instance.stop"), onClick: stop, disabled: busy },
+    { icon: FileText, label: t("instance.logs"), onClick: () => onLogs(inst) },
+    {
+      icon: Trash2,
+      label: t("action.delete"),
+      onClick: remove,
+      danger: true,
+      disabled: live,
+      hint: live ? t("instance.delete_stop_first") : null,
+    },
+  ];
+  // 点名称 / 整行：DSH 打开它的网页，其他终端在本页打开
+  const primary = dsh ? openPage : openHere;
+  return { busy, state, live, dsh, allowed, openHere, openPage, openTab, stop, menu, primary };
+}
+
+/** 终端的一行说明：启动方式 · 自定义命令 · shell。 */
+function LaunchLine({ inst }) {
+  const { t } = useTranslation();
+  return (
+    <span className="one-line">
+      <span className="nowrap">{t(`launch.${inst.launch}.title`)}</span>
+      {inst.launch === "custom" && <span className="mono ellipsis">· {inst.command}</span>}
+      {inst.shell && (
+        <span className="mono ellipsis" title={t("shell.label")}>
+          · {inst.shell}
+        </span>
+      )}
+    </span>
+  );
+}
+
+function InstanceError({ inst }) {
+  const { t } = useTranslation();
+  if (!inst.error) return null;
+  return (
+    <span style={{ color: "var(--danger)" }}>
+      {t(`instance.error.${inst.error}`, {
+        defaultValue: t("instance.error.other"),
+      })}
+    </span>
+  );
+}
+
+function InstanceCard({ inst, ...handlers }) {
+  const { t } = useTranslation();
+  const a = useInstanceActions(inst, handlers);
+  const { busy, state, live, dsh, allowed } = a;
+  const Icon = LAUNCH_ICON[inst.launch] ?? SquareTerminal;
   return (
     <article className="instance">
       <div className="instance-head">
@@ -428,17 +439,7 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
         </span>
       </div>
       <div className="instance-meta">
-        <span className="one-line">
-          <span className="nowrap">{t(`launch.${inst.launch}.title`)}</span>
-          {inst.launch === "custom" && (
-            <span className="mono ellipsis">· {inst.command}</span>
-          )}
-          {inst.shell && (
-            <span className="mono ellipsis" title={t("shell.label")}>
-              · {inst.shell}
-            </span>
-          )}
-        </span>
+        <LaunchLine inst={inst} />
         <span className="mono ellipsis" title={inst.workdir}>
           {inst.workdir}
         </span>
@@ -449,36 +450,16 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
             })}
           </span>
         )}
-        {inst.error && (
-          <span style={{ color: "var(--danger)" }}>
-            {t(`instance.error.${inst.error}`, {
-              defaultValue: t("instance.error.other"),
-            })}
-          </span>
-        )}
+        <InstanceError inst={inst} />
       </div>
       <div className="instance-actions">
         {dsh ? (
           <>
-            <Button
-              className="grow-btn"
-              icon={ExternalLink}
-              busy={busy}
-              disabled={!status.account.allowed}
-              onClick={openPage}
-              title={t("dsh.open_hint")}
-            >
+            <Button className="grow-btn" icon={ExternalLink} busy={busy} disabled={!allowed} onClick={a.openPage} title={t("dsh.open_hint")}>
               {t("dsh.open")}
             </Button>
             {/* DSH 自己的输出（启动报错、日志）还在终端里 */}
-            <Button
-              variant="secondary"
-              icon={SquareTerminal}
-              disabled={busy || !status.account.allowed}
-              onClick={openHere}
-              aria-label={t("dsh.output")}
-              title={t("dsh.output")}
-            />
+            <Button variant="secondary" icon={SquareTerminal} disabled={busy || !allowed} onClick={a.openHere} aria-label={t("dsh.output")} title={t("dsh.output")} />
           </>
         ) : (
           <>
@@ -486,57 +467,94 @@ function InstanceCard({ inst, onChanged, onEdit, onLogs, onOpenHere }) {
               className="grow-btn"
               icon={inst.running ? PanelTop : Play}
               busy={busy}
-              disabled={!status.account.allowed}
-              onClick={openHere}
-              title={t("instance.open_here_hint")}
+              disabled={!allowed}
+              onClick={a.openHere}
+              title={t(isTouch() ? "instance.open_page_hint" : "instance.open_here_hint")}
             >
               {inst.running ? t("instance.open_here") : t("instance.start_open")}
             </Button>
             <Button
               variant="secondary"
               icon={ExternalLink}
-              disabled={busy || !status.account.allowed}
-              onClick={openTab}
+              disabled={busy || !allowed}
+              onClick={a.openTab}
               aria-label={t("instance.new_window")}
               title={t("instance.new_window")}
             />
           </>
         )}
         {live && (
-          <Button variant="ghost" icon={Square} disabled={busy} onClick={stop}>
+          <Button variant="ghost" icon={Square} disabled={busy} onClick={a.stop}>
             {t("instance.stop")}
           </Button>
         )}
-        <PopMenu
-          items={[
-            {
-              icon: Pencil,
-              label: t("instance.edit"),
-              onClick: () => onEdit(inst),
-            },
-            inst.running && {
-              icon: RotateCcw,
-              label: t("instance.restart"),
-              onClick: restart,
-            },
-            {
-              icon: FileText,
-              label: t("instance.logs"),
-              onClick: () => onLogs(inst),
-            },
-            {
-              icon: Trash2,
-              label: t("action.delete"),
-              onClick: remove,
-              danger: true,
-              disabled: live,
-              hint: live ? t("instance.delete_stop_first") : null,
-            },
-          ]}
-        />
+        <span className="menu-pop">
+          <PopMenu items={a.menu(false)} />
+        </span>
       </div>
     </article>
   );
+}
+
+/**
+ * 列表视图的一行：终端多的时候一屏能看到很多。点整行打开，右边是“更多”。
+ * compact：工作台侧栏里的样子（更窄，只有名称和一行说明）；current：工作台里正在看的那个。
+ */
+function InstanceRow({ inst, compact, current, opened, ...handlers }) {
+  const { t } = useTranslation();
+  const a = useInstanceActions(inst, handlers);
+  const Icon = LAUNCH_ICON[inst.launch] ?? SquareTerminal;
+  const sub = inst.workdir;
+  return (
+    <div className={`irow ${compact ? "irow-compact" : ""} ${current ? "current" : ""} ${opened ? "opened" : ""}`} data-state={a.state}>
+      <button
+        type="button"
+        className="irow-main"
+        disabled={a.busy || !a.allowed}
+        onClick={a.primary}
+        aria-current={current ? "true" : undefined}
+        title={`${inst.name} · ${t(`instance.state.${a.state}`)}${inst.workdir ? `\n${inst.workdir}` : ""}`}
+      >
+        <span className={`irow-icon ${a.state === "running" ? "live" : ""}`}>
+          <Icon size={compact ? 16 : 18} aria-hidden="true" />
+          <span className={`dot ${a.state === "running" ? "on" : a.state === "paused" ? "warn" : ""}`} aria-hidden="true" />
+        </span>
+        <span className="irow-text">
+          <span className="irow-name ellipsis">{inst.name}</span>
+          <span className="irow-sub ellipsis">
+            {compact ? (
+              <span className="mono">{shortPath(sub)}</span>
+            ) : (
+              <>
+                {t(`launch.${inst.launch}.title`)}
+                {sub && <span className="mono"> · {sub}</span>}
+              </>
+            )}
+          </span>
+          {!compact && inst.error && (
+            <span className="irow-sub">
+              <InstanceError inst={inst} />
+            </span>
+          )}
+        </span>
+        {!compact && (
+          <span className="irow-meta">
+            <span className={`badge ${BADGE[a.state]}`}>{t(`instance.state.${a.state}`)}</span>
+            {inst.last_activity_at && a.state === "running" && <span className="small muted nowrap">{relativeTime(t, inst.last_activity_at)}</span>}
+          </span>
+        )}
+      </button>
+      {a.busy && <span className="irow-busy"><Spinner size={15} /></span>}
+      <PopMenu items={a.menu(true)} className="btn btn-plain btn-icon irow-more" />
+    </div>
+  );
+}
+
+/** 侧栏里的路径太长：只留最后两级。 */
+function shortPath(p) {
+  if (!p) return "";
+  const parts = p.split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join("/")}` : p;
 }
 
 const sepOf = (p) =>
@@ -1469,13 +1487,16 @@ function useDeviceGroups(online, key) {
 }
 
 /** 一台电脑的终端：标题（名称、系统、在线状态）+ 卡片；离线的电脑只显示一行“离线”。 */
-function DeviceGroup({ device, group, renderCard }) {
+function DeviceGroup({ device, group, renderCard, match, listClass = "instances" }) {
   const { t } = useTranslation();
   const devices = useDevices();
   const [renaming, setRenaming] = useState(false);
   const [renamed, setRenamed] = useState(null); // 平台下发新名称前先显示刚改的
-  const items = group?.items ?? [];
+  const all = group?.items ?? [];
+  const items = match ? all.filter(match) : all;
   const name = renamed && renamed.from === device.name ? renamed.name : deviceName(t, device);
+  // 搜索时没有匹配的电脑整组不显示
+  if (match && device.online && group && items.length === 0) return null;
   return (
     <section id={`device-${device.id}`} className={`device-group ${device.online ? "" : "device-offline"}`} aria-label={name}>
       <h2 className="device-head">
@@ -1488,7 +1509,7 @@ function DeviceGroup({ device, group, renderCard }) {
         )}
         {device.os && <span className="muted small">{osLabel(device.os)}</span>}
         <span className={`badge ${device.online ? "badge-ok" : ""}`}>{t(device.online ? "devices.online" : "devices.offline")}</span>
-        {device.online && group && (!group.error || items.length > 0) && <span className="muted small">{t("devices.count", { count: items.length })}</span>}
+        {device.online && group && (!group.error || all.length > 0) && <span className="muted small">{t("devices.count", { count: all.length })}</span>}
       </h2>
       {device.online && group?.error && <ErrorNote error={group.error} />}
       {device.online &&
@@ -1497,7 +1518,7 @@ function DeviceGroup({ device, group, renderCard }) {
         ) : items.length === 0 ? (
           <p className="muted small device-empty">{t("devices.no_terminals")}</p>
         ) : (
-          <div className="instances">{items.map(renderCard)}</div>
+          <div className={listClass}>{items.map(renderCard)}</div>
         ))}
       {renaming && (
         <RenameDeviceDialog
@@ -1514,81 +1535,313 @@ function DeviceGroup({ device, group, renderCard }) {
   );
 }
 
-// 打开着的终端小窗记在 sessionStorage：页面被刷新（例如远程会话续期时的自动跳转）后还在。
-const EMBED_KEY = "looklook.embedded";
-function useEmbedded() {
-  const [list, setList] = useState(() => {
-    try {
-      const v = JSON.parse(sessionStorage.getItem(EMBED_KEY) || "[]");
-      return Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-    } catch {
-      return [];
-    }
-  });
+// ---------------- 视图、搜索、工作台 ----------------
+
+const VIEW_KEY = "looklook.view";
+const WS_KEY = "looklook.ws";
+const SCROLL_KEY = "looklook.scroll";
+const QUERY_KEY = "looklook.query";
+// 工作台最多同时开着几个终端标签（每个都连着终端，太多会拖慢页面）
+const WS_MAX_TABS = 8;
+
+function readJson(storage, key, fallback) {
+  try {
+    const v = JSON.parse(storage.getItem(key) ?? "null");
+    return v ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+function writeJson(storage, key, value) {
+  try {
+    storage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* 无痕模式等：只是刷新后不恢复 */
+  }
+}
+
+/** 能不能用工作台：电脑上、窗口够宽。手机上终端直接整页打开。 */
+function useWorkspaceOk() {
+  const [ok, setOk] = useState(() => !isTouch() && window.innerWidth >= 900);
   useEffect(() => {
-    try {
-      sessionStorage.setItem(EMBED_KEY, JSON.stringify(list));
-    } catch {
-      /* 无痕模式等：只是刷新后不恢复 */
+    const on = () => setOk(!isTouch() && window.innerWidth >= 900);
+    window.addEventListener("resize", on);
+    return () => window.removeEventListener("resize", on);
+  }, []);
+  return ok;
+}
+
+/** 当前视图：卡片 / 列表 / 工作台，记在本机浏览器里。手机默认列表。 */
+function useView(wsOk) {
+  const [view, setView] = useState(() => {
+    const v = readJson(localStorage, VIEW_KEY, null);
+    return ["grid", "list", "workspace"].includes(v) ? v : isTouch() ? "list" : "grid";
+  });
+  const pick = (v) => {
+    setView(v);
+    writeJson(localStorage, VIEW_KEY, v);
+  };
+  // 窗口变窄时工作台退回列表（不改记住的选择，变宽后回来）
+  return [view === "workspace" && !wsOk ? "list" : view, pick];
+}
+
+/** 工作台开着的终端标签和当前标签，记在本机浏览器里：刷新、下次打开都还在。 */
+function useWorkspaceTabs() {
+  const [ws, setWs] = useState(() => {
+    const v = readJson(localStorage, WS_KEY, {});
+    const tabs = Array.isArray(v.tabs) ? v.tabs.filter((x) => typeof x === "string").slice(0, WS_MAX_TABS) : [];
+    return { tabs, active: tabs.includes(v.active) ? v.active : (tabs[0] ?? null), side: v.side !== false };
+  });
+  useEffect(() => writeJson(localStorage, WS_KEY, ws), [ws]);
+  const open = (id) =>
+    setWs((w) => {
+      if (w.tabs.includes(id)) return { ...w, active: id };
+      // 满了就关掉最早打开、又不是当前的那个
+      let tabs = [...w.tabs, id];
+      while (tabs.length > WS_MAX_TABS) tabs = tabs.filter((x, i) => i !== tabs.findIndex((y) => y !== w.active));
+      return { ...w, tabs, active: id };
+    });
+  const close = (id) =>
+    setWs((w) => {
+      const i = w.tabs.indexOf(id);
+      const tabs = w.tabs.filter((x) => x !== id);
+      const active = w.active === id ? (tabs[Math.min(i, tabs.length - 1)] ?? null) : w.active;
+      return { ...w, tabs, active };
+    });
+  const move = (id, to) =>
+    setWs((w) => {
+      const tabs = w.tabs.filter((x) => x !== id);
+      tabs.splice(to, 0, id);
+      return { ...w, tabs };
+    });
+  const toggleSide = () => setWs((w) => ({ ...w, side: !w.side }));
+  return { ...ws, open, close, move, toggleSide };
+}
+
+/** 卡片 / 列表视图的滚动位置：刷新（例如远程会话续期时的自动跳转）后回到原处。 */
+function useScrollMemory(ready, enabled) {
+  const restored = useRef(false);
+  useEffect(() => {
+    if (!enabled) return undefined;
+    if (ready && !restored.current) {
+      restored.current = true;
+      const y = Number(readJson(sessionStorage, SCROLL_KEY, 0));
+      if (y > 0) requestAnimationFrame(() => window.scrollTo(0, y));
     }
-  }, [list]);
-  return [list, setList];
+    let frame = 0;
+    const on = () => {
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => writeJson(sessionStorage, SCROLL_KEY, Math.round(window.scrollY)));
+    };
+    window.addEventListener("scroll", on, { passive: true });
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", on);
+    };
+  }, [ready, enabled]);
+}
+
+/** 搜索：名称、文件夹、启动方式、命令、shell 都算。 */
+function matcher(q, t) {
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return null;
+  return (i) => {
+    const hay = [i.name, i.workdir, i.command, i.shell, i.launch, t(`launch.${i.launch}.title`)].filter(Boolean).join(" ").toLowerCase();
+    return words.every((w) => hay.includes(w));
+  };
+}
+
+function ViewSwitch({ view, onChange, wsOk }) {
+  const { t } = useTranslation();
+  const opts = [
+    ["grid", LayoutGrid],
+    ["list", List],
+    wsOk && ["workspace", PanelsTopLeft],
+  ].filter(Boolean);
+  return (
+    <div className="seg view-switch" role="group" aria-label={t("view.label")}>
+      {opts.map(([v, Icon]) => (
+        <button key={v} type="button" aria-pressed={view === v} onClick={() => onChange(v)} title={t(`view.${v}_hint`)}>
+          <Icon size={16} aria-hidden="true" />
+          <span className="view-label">{t(`view.${v}`)}</span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function SearchBox({ value, onChange, count, autoFocus }) {
+  const { t } = useTranslation();
+  return (
+    <label className="search-box">
+      <Search size={16} aria-hidden="true" />
+      <input
+        type="search"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => e.key === "Escape" && onChange("")}
+        placeholder={t("view.search")}
+        aria-label={t("view.search")}
+        autoFocus={autoFocus}
+        spellCheck={false}
+      />
+      {value && count != null && <span className="search-count">{count}</span>}
+    </label>
+  );
+}
+
+/** 让元素正好填满窗口剩下的高度（上面的横幅、提示有多高都行）。 */
+function useFillHeight(ref) {
+  const [h, setH] = useState(null);
+  useLayoutEffect(() => {
+    const on = () => {
+      const el = ref.current;
+      if (!el) return;
+      const top = el.getBoundingClientRect().top + window.scrollY;
+      setH(Math.max(360, window.innerHeight - top - 12));
+    };
+    on();
+    const ro = new ResizeObserver(on);
+    ro.observe(document.body);
+    window.addEventListener("resize", on);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener("resize", on);
+    };
+  }, []);
+  return h;
 }
 
 /**
- * 终端切换条：会话页底部，像任务栏一样列出运行中的终端（和开着的小窗）。
- * 点一下：没开就在本页打开、开着就提到最上面；已经在最上面再点一下就最小化。
- * 焦点不在终端里时 Alt+1…9 切到第 N 个。手机上终端直接整页打开，不显示。
+ * 工作台：像终端软件一样，左边是开着的终端（顶上一排标签），右边是全部会话的列表（可收起、可搜索，多台电脑时按电脑分组）。
+ * 点列表里的会话就在左边打开 / 切过去；开着的标签记在浏览器里，刷新后还在。Alt+1…9 切到第 N 个标签。
  */
-function TermDock({ items, open, top, minimized, onPick }) {
+function Workspace({ ws, items, groups, multi, loading, query, setQuery, match, renderRow, onNew, onStart }) {
   const { t } = useTranslation();
-  const shown = items.filter((i) => i.running || open.includes(i.id));
-  const pickRef = useRef(onPick);
-  pickRef.current = onPick;
-  const shownRef = useRef(shown);
-  shownRef.current = shown;
+  const { status } = useStatus();
+  const devices = useDevices();
+  const ref = useRef(null);
+  const height = useFillHeight(ref);
+  const vars = useTermChrome(status.settings.theme);
+  const byId = (id) => items.find((i) => i.id === id);
+  const tabsRef = useRef(ws);
+  tabsRef.current = ws;
+  const [drag, setDrag] = useState(null);
   useEffect(() => {
     const onKey = (e) => {
       if (!e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || !/^Digit[1-9]$/.test(e.code)) return;
       if (e.target?.closest?.("input, textarea, select, [contenteditable]")) return;
-      const inst = shownRef.current[Number(e.code.slice(5)) - 1];
-      if (!inst) return;
+      const id = tabsRef.current.tabs[Number(e.code.slice(5)) - 1];
+      if (!id) return;
       e.preventDefault();
-      pickRef.current(inst.id);
+      tabsRef.current.open(id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, []);
-  if (shown.length === 0 || isTouch()) return null;
+  // 终端存在吗：拿到了它所在电脑的列表、里面却没有，就是被删了（电脑离线、还没加载时不算）
+  const missing = (id) => {
+    if (loading || byId(id)) return false;
+    if (!multi) return true;
+    const dev = terminalDevice(id);
+    return Boolean(dev && groups?.[dev] && !groups[dev].error);
+  };
+  const shown = match ? items.filter(match) : items;
   return (
-    <>
-    <div className="dock-spacer" aria-hidden="true" />
-    <nav className="term-dock" aria-label={t("dock.label")}>
-      {shown.map((i, n) => {
-        const Icon = LAUNCH_ICON[i.launch] ?? SquareTerminal;
-        const isOpen = open.includes(i.id);
-        const isMin = minimized.includes(i.id);
-        const isTop = isOpen && !isMin && top === i.id;
-        const state = !isOpen ? "dock.open" : isTop ? "dock.minimize" : isMin ? "dock.restore" : "dock.front";
-        return (
-          <button
-            key={i.id}
-            type="button"
-            className={`dock-item ${isOpen ? "open" : ""} ${isTop ? "top" : ""} ${isMin ? "min" : ""}`}
-            onClick={() => onPick(i.id)}
-            aria-pressed={isTop}
-            title={`${i.name} · ${t(state)}${n < 9 ? ` (Alt+${n + 1})` : ""}`}
-          >
-            <span className="dock-icon">
-              <Icon size={15} aria-hidden="true" />
-              <span className={`dot ${i.running ? "on" : ""}`} aria-hidden="true" />
-            </span>
-            <span className="dock-name">{i.name}</span>
+    <div className={`ws ${ws.side ? "" : "ws-no-side"}`} ref={ref} style={height ? { height } : undefined}>
+      <div className="ws-main" style={vars} data-scheme={termTheme(status.settings.theme).scheme}>
+        <div className="ws-tabs" role="tablist" aria-label={t("ws.tabs")}>
+          {ws.tabs.map((id, n) => {
+            const inst = byId(id);
+            const Icon = LAUNCH_ICON[inst?.launch] ?? SquareTerminal;
+            const on = ws.active === id;
+            return (
+              <div
+                key={id}
+                className={`ws-tab ${on ? "on" : ""} ${drag === id ? "dragging" : ""}`}
+                draggable
+                onDragStart={(e) => {
+                  setDrag(id);
+                  e.dataTransfer.effectAllowed = "move";
+                }}
+                onDragEnd={() => setDrag(null)}
+                onDragOver={(e) => drag && e.preventDefault()}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  if (drag && drag !== id) ws.move(drag, n);
+                  setDrag(null);
+                }}
+                onAuxClick={(e) => e.button === 1 && ws.close(id)}
+              >
+                <button type="button" role="tab" aria-selected={on} className="ws-tab-main" onClick={() => ws.open(id)} title={`${inst?.name ?? id}${n < 9 ? ` (Alt+${n + 1})` : ""}`}>
+                  <Icon size={14} aria-hidden="true" />
+                  <span className="ellipsis">{inst?.name ?? "…"}</span>
+                  <span className={`dot ${inst?.running ? "on" : ""}`} aria-hidden="true" />
+                </button>
+                <button type="button" className="ws-tab-x" onClick={() => ws.close(id)} aria-label={t("ws.close_tab", { name: inst?.name ?? id })} title={t("ws.close_tab", { name: inst?.name ?? id })}>
+                  <X size={14} />
+                </button>
+              </div>
+            );
+          })}
+          <button type="button" className="ws-tab-add" onClick={onNew} aria-label={t("terminals.new")} title={t("terminals.new")} disabled={!status.account.allowed}>
+            <Plus size={16} />
           </button>
-        );
-      })}
-    </nav>
-    </>
+          <span className="grow" />
+          <button type="button" className="ws-tab-add" onClick={ws.toggleSide} aria-pressed={ws.side} aria-label={t(ws.side ? "ws.hide_list" : "ws.show_list")} title={t(ws.side ? "ws.hide_list" : "ws.show_list")}>
+            {ws.side ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
+          </button>
+        </div>
+        <div className="ws-panes">
+          {ws.tabs.map((id) => (
+            <TermPane key={id} id={id} inst={byId(id)} missing={missing(id)} active={ws.active === id} onStart={() => onStart(id)} />
+          ))}
+          {ws.tabs.length === 0 && (
+            <div className="pane-notice">
+              <div>
+                <PanelsTopLeft size={28} aria-hidden="true" />
+                <b>{t("ws.empty_title")}</b>
+                <p>{t(items.length ? "ws.empty_body" : "ws.empty_none")}</p>
+                {!ws.side && items.length > 0 && (
+                  <Button variant="secondary" icon={PanelRightOpen} onClick={ws.toggleSide}>
+                    {t("ws.show_list")}
+                  </Button>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      {ws.side && (
+        <aside className="ws-side" aria-label={t("ws.list")}>
+          <SearchBox value={query} onChange={setQuery} count={match ? shown.length : null} />
+          <div className="ws-list">
+            {loading ? (
+              <Skeleton height={160} />
+            ) : multi ? (
+              devices.items.map((d) => {
+                const g = groups?.[d.id];
+                const list = (g?.items ?? []).filter((i) => !match || match(i));
+                if (match && list.length === 0) return null;
+                return (
+                  <section key={d.id} className="ws-group" aria-label={deviceName(t, d)}>
+                    <h3>
+                      <Monitor size={13} aria-hidden="true" />
+                      <span className="ellipsis">{deviceName(t, d)}</span>
+                      {!d.online && <span className="badge">{t("devices.offline")}</span>}
+                    </h3>
+                    {d.online && (g?.error ? <ErrorNote error={g.error} /> : list.map(renderRow))}
+                  </section>
+                );
+              })
+            ) : (
+              shown.map(renderRow)
+            )}
+            {!loading && match && shown.length === 0 && <p className="muted small ws-none">{t("view.no_match")}</p>}
+          </div>
+        </aside>
+      )}
+    </div>
   );
 }
 
@@ -1608,32 +1861,15 @@ export default function Terminals() {
   const allowed = status.account.allowed;
   const [dialog, setDialog] = useState(null);
   const [logs, setLogs] = useState(null);
-  const [embedded, setEmbedded] = useEmbedded();
-  // 小窗的前后顺序（最后一个在最上面）。和 embedded 分开存：调整层级不能改变渲染顺序，否则 iframe 会被重新加载。
-  const [stack, setStack] = useState(embedded);
-  const raise = (id) => setStack((s) => (s[s.length - 1] === id ? s : [...s.filter((x) => x !== id), id]));
-  // 最小化到切换条的小窗（只是隐藏，iframe 不卸载）
-  const [minimized, setMinimized] = useState([]);
-  // 点进终端时指针事件被 iframe 吞掉，外面收不到，只能看焦点落在了哪个小窗里。
-  // 从一个终端直接点到另一个终端时本页不会再收到 blur，所以开着多个时再定时看一眼。
-  useEffect(() => {
-    if (embedded.length < 2) return undefined;
-    const check = () => {
-      const id = document.activeElement?.closest?.(".embedded-term")?.dataset.embedId;
-      if (id) setStack((s) => (s[s.length - 1] === id ? s : [...s.filter((x) => x !== id), id]));
-    };
-    const onBlur = () => setTimeout(check, 0);
-    window.addEventListener("blur", onBlur);
-    const timer = setInterval(check, 300);
-    return () => {
-      window.removeEventListener("blur", onBlur);
-      clearInterval(timer);
-    };
-  }, [embedded.length]);
-  const layer = (id) => {
-    const i = stack.indexOf(id);
-    return i < 0 ? stack.length + 1 : i + 1;
+  const wsOk = useWorkspaceOk();
+  const [view, setView] = useView(wsOk);
+  const ws = useWorkspaceTabs();
+  const [query, setQueryState] = useState(() => readJson(sessionStorage, QUERY_KEY, ""));
+  const setQuery = (q) => {
+    setQueryState(q);
+    writeJson(sessionStorage, QUERY_KEY, q);
   };
+  const match = matcher(query, t);
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
   useEffect(() => {
@@ -1641,76 +1877,83 @@ export default function Terminals() {
     return () => clearInterval(id);
   }, []);
   const items = data?.items ?? [];
+  const shown = match ? items.filter(match) : items;
+  useScrollMemory(Boolean(data), view !== "workspace");
   const [created, setCreated] = useState(null);
   const { navigate } = useRouter();
-  // 手机上的悬浮小窗太挤、也没有按键条，直接进整页终端。
+  const toast = useToast();
+  // 电脑上在工作台里打开；手机上（或窗口太窄）直接整页打开，有按键条。
   const openHere = (id) => {
-    if (isTouch()) return navigate(`/t/${id}`);
-    setEmbedded((l) => (l.includes(id) ? l : [...l, id]));
-    setMinimized((m) => m.filter((x) => x !== id));
-    raise(id); // 已经开着的再点“打开”就把它提到最上面
-  };
-  // 切换条：最上面那个再点一下就最小化，其他的打开 / 还原并提到最上面
-  const visibleTop = [...stack].reverse().find((x) => embedded.includes(x) && !minimized.includes(x));
-  const pick = (id) => {
-    if (embedded.includes(id) && !minimized.includes(id) && visibleTop === id) setMinimized((m) => [...m, id]);
-    else openHere(id);
+    if (!wsOk) return navigate(`/t/${id}`);
+    ws.open(id);
+    if (view !== "workspace") {
+      setView("workspace");
+      window.scrollTo(0, 0);
+    }
   };
   const create = (preset) => setDialog({ preset });
   const saved = (row) => {
     reload();
     if (row) setCreated(row);
   };
-  const renderCard = (i) => (
-    <InstanceCard
-      key={i.id}
-      inst={i}
-      onChanged={reload}
-      onEdit={(inst) => setDialog({ initial: inst })}
-      onLogs={setLogs}
-      onOpenHere={openHere}
-    />
-  );
+  const handlers = {
+    onChanged: reload,
+    onEdit: (inst) => setDialog({ initial: inst }),
+    onLogs: setLogs,
+    onOpenHere: openHere,
+  };
+  const renderCard = (i) => <InstanceCard key={i.id} inst={i} {...handlers} />;
+  const renderRow = (i) => <InstanceRow key={i.id} inst={i} {...handlers} />;
+  const renderSideRow = (i) => <InstanceRow key={i.id} inst={i} compact current={ws.active === i.id} opened={ws.tabs.includes(i.id)} {...handlers} />;
+  const workspace = view === "workspace";
+  const loading = !data && !error;
+  const searchable = items.length > 0 && !workspace;
   return (
     <>
-      <div className="page-head">
-        <h1>{t('terminals.title')}</h1>
-        {items.length > 0 && (
-          <Button icon={Plus} disabled={!allowed} onClick={() => create('shell')}>
-            {t('terminals.new')}
-          </Button>
-        )}
+      <div className={`page-head ${workspace ? "page-head-ws" : ""}`}>
+        <h1>
+          {t("terminals.title")}
+          {items.length > 0 && <span className="title-count">{items.length}</span>}
+        </h1>
+        <span className="inline page-tools">
+          {items.length > 0 && <ViewSwitch view={view} onChange={setView} wsOk={wsOk} />}
+          {items.length > 0 && (
+            <Button icon={Plus} disabled={!allowed} onClick={() => create("shell")}>
+              <span className="hide-narrow">{t("terminals.new")}</span>
+            </Button>
+          )}
+        </span>
       </div>
-      {/* 终端列表是主角：远程打开卡片与安全提醒放在列表后面，提醒折叠成一行 */}
       {!multi && <BackendNote />}
       <ErrorNote error={error} />
-      {/* 打开着的终端小窗放在列表外面：列表刷新、单台/多台切换、短暂拿不到列表时都不会重新挂载 */}
-      {/* 小窗各自的层级只在这一层里比较，整体仍在页面内容之上、弹窗提示之下 */}
-      <div className="embed-layer">
-        {embedded.map((id) => (
-          <EmbeddedTerminal
-            key={id}
-            id={id}
-            inst={items.find((i) => i.id === id)}
-            z={layer(id)}
-            active={embedded.length < 2 || stack[stack.length - 1] === id}
-            minimized={minimized.includes(id)}
-            onMinimize={() => setMinimized((m) => [...m, id])}
-            onRaise={() => raise(id)}
-            onClose={() => {
-              setEmbedded((l) => l.filter((x) => x !== id));
-              setStack((s) => s.filter((x) => x !== id));
-              setMinimized((m) => m.filter((x) => x !== id));
-            }}
-            onStart={async () => {
+      {searchable && items.length > 3 && (
+        <div className="list-tools">
+          <SearchBox value={query} onChange={setQuery} count={match ? shown.length : null} />
+        </div>
+      )}
+      {workspace && items.length > 0 ? (
+        <Workspace
+          ws={ws}
+          items={items}
+          groups={data?.groups}
+          multi={multi}
+          loading={loading}
+          query={query}
+          setQuery={setQuery}
+          match={match}
+          renderRow={renderSideRow}
+          onNew={() => create("shell")}
+          onStart={async (id) => {
+            try {
               await api.post(`/instances/${id}/start`);
+            } catch (e) {
+              toast(errorText(t, e), "error");
+            } finally {
               reload();
-            }}
-          />
-        ))}
-      </div>
-      <TermDock items={items} open={embedded} top={visibleTop} minimized={minimized} onPick={pick} />
-      {!data && !error ? (
+            }
+          }}
+        />
+      ) : loading ? (
         <div className="instances">
           <Skeleton height={190} />
           <Skeleton height={190} />
@@ -1757,25 +2000,37 @@ export default function Terminals() {
       ) : multi ? (
         <>
           {devices.items.map((d) => (
-            <DeviceGroup key={d.id} device={d} group={data?.groups?.[d.id]} renderCard={renderCard} />
+            <DeviceGroup
+              key={d.id}
+              device={d}
+              group={data?.groups?.[d.id]}
+              renderCard={view === "list" ? renderRow : renderCard}
+              listClass={view === "list" ? "irows" : "instances"}
+              match={match}
+            />
           ))}
+          {match && shown.length === 0 && <p className="muted">{t("view.no_match")}</p>}
         </>
+      ) : shown.length === 0 ? (
+        <p className="muted">{t("view.no_match")}</p>
+      ) : view === "list" ? (
+        <div className="irows">{shown.map(renderRow)}</div>
       ) : (
-        <>
-          <div className="instances">
-            {items.map(renderCard)}
-          </div>
-        </>
+        <div className="instances">{shown.map(renderCard)}</div>
       )}
       {/* 多台电脑都还没有终端时，仍列出离线的电脑，免得以为它们的终端不见了 */}
       {multi && data && items.length === 0 &&
         devices.items.filter((d) => !d.online).map((d) => <DeviceGroup key={d.id} device={d} renderCard={renderCard} />)}
-      <RemoteCard />
-      <SafetyNote />
-      <p className="muted small">
-        {t("terminals.pages_tip")} <Link to="/pages">{t("nav.pages")}</Link>
-      </p>
-      <Promotions />
+      {!workspace && (
+        <>
+          <RemoteCard />
+          <SafetyNote />
+          <p className="muted small">
+            {t("terminals.pages_tip")} <Link to="/pages">{t("nav.pages")}</Link>
+          </p>
+          <Promotions />
+        </>
+      )}
       <InstanceDialog
         open={Boolean(dialog)}
         initial={dialog?.initial}
