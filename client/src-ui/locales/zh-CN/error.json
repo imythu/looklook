@@ -88,6 +88,9 @@
     "too_many": "太多了",
     "private_key": "不是 OpenSSH / PEM 格式的私钥（应以 -----BEGIN … PRIVATE KEY----- 开头）",
     "ppk": "这是 PuTTY 格式（.ppk）的私钥，请先用 PuTTYgen 导出为 OpenSSH 格式",
+    "missing": "不存在",
+    "denied": "没有权限读取",
+    "jump_required": "“跳板机代登”需要先选择跳板机",
     "jump_loop": "跳板机不能绕回这台主机自己",
     "jump_missing": "选的跳板机已经不在了",
     "jump_depth": "跳板机嵌套太多层了"

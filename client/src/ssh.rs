@@ -6,6 +6,8 @@
 //!   不复制；从浏览器上传的私钥同样加密存进数据库（`ssh_key:{id}`），连接时写成 0600 的临时文件交给 ssh，用完即删；
 //! - 跳板机就是另一台保存的主机（`jump` 记它的 id，可以层层嵌套）。ssh 的 ProxyCommand 是 `looklook ssh-proxy <跳板机> %h %p`：
 //!   每一跳由看看自己按那台主机的登录方式连接（`ssh -W`），各自的密码、私钥互不相混；
+//!   登录方式选“跳板机代登”（`jump`）时不走 ProxyCommand：先登录跳板机，在跳板机上运行 `ssh` 连这台，
+//!   用的是跳板机上已经配置好的密钥（跳板机的 `~/.ssh`、ssh-agent），看看不为这台保存任何秘密；
 //! - 连接用系统自带的 `ssh`。需要密码时，ssh 通过 `SSH_ASKPASS` 回头找启动它的 `looklook ssh` 进程要：
 //!   环境变量里只有一个本机端口和一次性的随机口令，密码不出现在命令行参数、环境变量、文件或终端输出里；
 //! - MCP（gateway/mcp.rs）只能用标了“允许 AI 使用”的主机，输出里出现的已存密码、私钥块、常见令牌都换成 `[redacted]`。
@@ -50,7 +52,8 @@ pub struct SshHost {
     pub host: String,
     pub port: u16,
     pub user: String,
-    /// `agent`：ssh 默认的密钥 / ssh-agent；`key`：指定私钥文件（口令可选，存为秘密）；`password`：密码（存为秘密）
+    /// `agent`：ssh 默认的密钥 / ssh-agent；`key`：指定私钥文件（口令可选，存为秘密）；`password`：密码（存为秘密）；
+    /// `jump`：跳板机代登——先登录跳板机，再在跳板机上运行 `ssh` 连到这台，用的是跳板机上配置好的密钥（必须有跳板机）
     pub auth: String,
     #[serde(default)]
     pub key_path: String,
@@ -240,6 +243,246 @@ pub fn local_keys() -> Vec<String> {
     out
 }
 
+// ---------------- 私钥概况（脱敏） ----------------
+
+/// 私钥 / 公钥脱敏后的样子：界面上让用户确认选对了钥匙，但看不到能拿去用的内容。
+/// 正文只留开头 8 个和结尾 4 个字符，中间的用 `hidden` 个字符数代替。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Masked {
+    /// 首行：`-----BEGIN … PRIVATE KEY-----`，公钥是算法名
+    pub head: String,
+    pub start: String,
+    pub end: String,
+    pub hidden: usize,
+    /// 末行：`-----END … PRIVATE KEY-----`，公钥是注释
+    pub foot: String,
+}
+
+/// 一把钥匙的概况。
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct KeyInfo {
+    /// 这台电脑上的文件路径（`~/` 开头的保持原样）；上传 / 粘贴的、ssh-agent 里的为空
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    /// `openssh` / `pem` / `pkcs8` / `agent`
+    pub format: String,
+    /// `ssh-ed25519`、`ssh-rsa`、`ecdsa-sha2-nistp256` …；读不出来时为空
+    pub algo: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bits: Option<u32>,
+    /// `SHA256:…`，和 `ssh-keygen -l` 一致；PEM 私钥旁边没有 .pub 时读不出来
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub comment: String,
+    /// 有口令保护
+    pub encrypted: bool,
+    pub masked: Masked,
+}
+
+/// “系统密钥”登录时 ssh 会试的钥匙：ssh-agent 里的，以及 `~/.ssh` 里的默认私钥。
+#[derive(Debug, Serialize)]
+pub struct SystemKeys {
+    /// None = 连不上 ssh-agent（没运行或没装 ssh-add）
+    pub agent: Option<Vec<KeyInfo>>,
+    pub files: Vec<KeyInfo>,
+}
+
+/// ssh 默认会试的私钥文件（`ssh_config` 的 IdentityFile 默认值，按 ssh 的顺序）
+const DEFAULT_IDENTITIES: [&str; 6] = ["id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk", "id_dsa"];
+
+fn mask(head: &str, body: &str, foot: &str) -> Masked {
+    let chars: Vec<char> = body.chars().collect();
+    let (s, e) = if chars.len() > 24 { (8, 4) } else { (0, 0) };
+    Masked {
+        head: head.to_string(),
+        start: chars[..s].iter().collect(),
+        end: chars[chars.len() - e..].iter().collect(),
+        hidden: chars.len() - s - e,
+        foot: foot.to_string(),
+    }
+}
+
+/// SSH 线格式里的一段 `uint32 长度 + 内容`
+fn take_str<'a>(b: &mut &'a [u8]) -> Option<&'a [u8]> {
+    let n = u32::from_be_bytes(b.get(..4)?.try_into().ok()?) as usize;
+    let s = b.get(4..4 + n)?;
+    *b = &b[4 + n..];
+    Some(s)
+}
+
+/// 公钥 blob 的算法、位数（RSA 按模数算，其他按算法名）和 SHA256 指纹。
+fn blob_info(blob: &[u8]) -> Option<(String, Option<u32>, String)> {
+    use sha2::Digest;
+    let mut b = blob;
+    let algo = String::from_utf8(take_str(&mut b)?.to_vec()).ok()?;
+    let bits = match algo.as_str() {
+        "ssh-rsa" => {
+            take_str(&mut b)?;
+            let n = take_str(&mut b)?;
+            let n = &n[n.iter().position(|&x| x != 0).unwrap_or(n.len())..];
+            n.first().map(|&x| (n.len() as u32 - 1) * 8 + (8 - x.leading_zeros()))
+        }
+        a if a.contains("nistp256") => Some(256),
+        a if a.contains("nistp384") => Some(384),
+        a if a.contains("nistp521") => Some(521),
+        _ => None,
+    };
+    let fp = format!("SHA256:{}", base64::engine::general_purpose::STANDARD_NO_PAD.encode(sha2::Sha256::digest(blob)));
+    Some((algo, bits, fp))
+}
+
+/// 一行公钥（`算法 base64 注释`，authorized_keys / .pub / `ssh-add -L` 的格式）。
+fn pub_info(line: &str) -> Option<KeyInfo> {
+    let mut parts = line.trim().splitn(3, char::is_whitespace);
+    let (algo, b64) = (parts.next()?, parts.next()?);
+    let comment = parts.next().unwrap_or("").trim().to_string();
+    let blob = base64::engine::general_purpose::STANDARD.decode(b64).ok()?;
+    let (algo2, bits, fp) = blob_info(&blob)?;
+    (algo2 == algo).then(|| KeyInfo {
+        path: String::new(),
+        format: "agent".into(),
+        algo: algo2,
+        bits,
+        fingerprint: Some(fp),
+        masked: mask(algo, b64, &comment),
+        comment,
+        encrypted: false,
+    })
+}
+
+/// 私钥内容的概况。OpenSSH 格式的公钥部分不加密，即使有口令也能读出算法和指纹；PEM 只看得出算法。
+pub fn key_info(text: &str) -> Result<KeyInfo, LocalError> {
+    let t = normalize_key("key_text", text)?;
+    let lines: Vec<&str> = t.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+    let head = lines[0];
+    let foot = lines.iter().rev().find(|l| l.starts_with("-----END ")).copied().unwrap_or("");
+    // PEM 加密私钥的 `Proc-Type:`、`DEK-Info:` 头不算正文
+    let body: String = lines[1..].iter().take_while(|l| !l.starts_with("-----END ")).filter(|l| !l.contains(':')).copied().collect();
+    let label = head.trim_start_matches("-----BEGIN ").trim_end_matches('-').trim();
+    let mut info = KeyInfo {
+        path: String::new(),
+        format: "pem".into(),
+        algo: String::new(),
+        bits: None,
+        fingerprint: None,
+        comment: String::new(),
+        encrypted: t.contains("Proc-Type: 4,ENCRYPTED"),
+        masked: mask(head, &body, foot),
+    };
+    match label {
+        "OPENSSH PRIVATE KEY" => {
+            info.format = "openssh".into();
+            let raw = base64::engine::general_purpose::STANDARD.decode(&body).map_err(|_| LocalError::invalid("key_text", "private_key"))?;
+            let parsed = (|| {
+                let mut b = raw.strip_prefix(b"openssh-key-v1\0")?;
+                let cipher = take_str(&mut b)?;
+                take_str(&mut b)?; // kdf
+                take_str(&mut b)?; // kdf 参数
+                b = b.get(4..)?; // 钥匙个数
+                Some((cipher != b"none", blob_info(take_str(&mut b)?)?))
+            })();
+            let (encrypted, (algo, bits, fp)) = parsed.ok_or_else(|| LocalError::invalid("key_text", "private_key"))?;
+            info.encrypted = encrypted;
+            info.algo = algo;
+            info.bits = bits;
+            info.fingerprint = Some(fp);
+        }
+        "RSA PRIVATE KEY" => info.algo = "ssh-rsa".into(),
+        "EC PRIVATE KEY" => info.algo = "ecdsa".into(),
+        "DSA PRIVATE KEY" => info.algo = "ssh-dss".into(),
+        "ENCRYPTED PRIVATE KEY" => {
+            info.format = "pkcs8".into();
+            info.encrypted = true;
+        }
+        _ => info.format = "pkcs8".into(),
+    }
+    Ok(info)
+}
+
+/// 这台电脑上的私钥文件的概况：旁边有 `.pub` 的话，用它补上注释和（PEM 私钥的）指纹。
+pub fn key_info_at(path: &str) -> Result<KeyInfo, LocalError> {
+    let p = path.trim();
+    if p.is_empty() {
+        return Err(LocalError::invalid("key_path", "required"));
+    }
+    let full = PathBuf::from(expand_home(p));
+    if !full.is_absolute() {
+        return Err(LocalError::invalid("key_path", "absolute"));
+    }
+    let meta = std::fs::metadata(&full).map_err(|e| match e.kind() {
+        std::io::ErrorKind::PermissionDenied => LocalError::invalid("key_path", "denied"),
+        _ => LocalError::invalid("key_path", "missing"),
+    })?;
+    if !meta.is_file() || meta.len() > KEY_MAX as u64 {
+        return Err(LocalError::invalid("key_path", "private_key"));
+    }
+    let bytes = std::fs::read(&full).map_err(|_| LocalError::invalid("key_path", "denied"))?;
+    let text = String::from_utf8(bytes).map_err(|_| LocalError::invalid("key_path", "private_key"))?;
+    let mut info = key_info(&text).map_err(|mut e| {
+        e.params.insert("field".into(), "key_path".into());
+        e
+    })?;
+    info.path = p.to_string();
+    let mut pub_path = full.into_os_string();
+    pub_path.push(".pub");
+    if let Some(pk) = std::fs::read_to_string(pub_path).ok().and_then(|s| pub_info(s.lines().next().unwrap_or(""))) {
+        if info.fingerprint.is_none() || info.fingerprint == pk.fingerprint {
+            info.comment = pk.comment;
+            info.fingerprint = pk.fingerprint;
+            info.algo = pk.algo;
+            info.bits = pk.bits;
+        }
+    }
+    Ok(info)
+}
+
+/// 已保存主机上传的私钥的概况（编辑主机时显示）。
+pub fn stored_key_info(store: &Store, home: &Path, id: &str) -> Result<KeyInfo, LocalError> {
+    let text = stored_key(store, home, id)?.ok_or_else(LocalError::not_found)?;
+    key_info(&text)
+}
+
+/// 跑一个很快就结束的命令，最多等 `limit`；超时就杀掉。返回退出码和标准输出。
+fn run_quick(cmd: &mut Command, limit: Duration) -> Option<(i32, String)> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+    // 输出放到线程里读，免得管道写满卡住子进程
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut out = String::new();
+        stdout.read_to_string(&mut out).map(|_| out)
+    });
+    let deadline = Instant::now() + limit;
+    let code = loop {
+        match child.try_wait().ok()? {
+            Some(st) => break st.code().unwrap_or(-1),
+            None if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
+    };
+    Some((code, reader.join().ok()?.ok()?))
+}
+
+/// “系统密钥”登录时 ssh 会用到的钥匙（阻塞调用）。`ssh-add -L` 退出码 1 = agent 里没有钥匙，2 = 连不上 agent。
+pub fn system_keys() -> SystemKeys {
+    let agent = crate::shells::which("ssh-add").and_then(|bin| match run_quick(Command::new(bin).arg("-L"), Duration::from_secs(3)) {
+        Some((0, out)) => Some(out.lines().filter_map(pub_info).collect()),
+        Some((1, _)) => Some(Vec::new()),
+        _ => None,
+    });
+    let files = DEFAULT_IDENTITIES.iter().filter_map(|n| key_info_at(&format!("~/.ssh/{n}")).ok()).collect();
+    SystemKeys { agent, files }
+}
+
 fn validate(i: &HostInput) -> Result<(), LocalError> {
     let name = i.name.trim();
     if name.is_empty() || name.chars().count() > 40 || name.chars().any(char::is_control) {
@@ -258,7 +501,7 @@ fn validate(i: &HostInput) -> Result<(), LocalError> {
         return Err(LocalError::invalid("port", "port"));
     }
     match i.auth.as_str() {
-        "agent" | "password" => {}
+        "agent" | "password" | "jump" => {}
         "key" if i.key_stored => {
             if let Some(k) = i.key_text.as_deref().filter(|k| !k.trim().is_empty()) {
                 normalize_key("key_text", k)?;
@@ -335,6 +578,9 @@ fn save_one(store: &Store, home: &Path, id: Option<&str>, i: HostInput) -> Resul
     }
     let jump = i.jump.trim().to_string();
     check_jump(&hosts, id, &jump)?;
+    if i.auth == "jump" && jump.is_empty() {
+        return Err(LocalError::invalid("auth", "jump_required"));
+    }
     let key_stored = i.auth == "key" && i.key_stored;
     let key_text = match i.key_text.as_deref().filter(|k| !k.trim().is_empty()) {
         Some(k) if key_stored => Some(normalize_key("key_text", k)?),
@@ -370,11 +616,12 @@ fn save_one(store: &Store, home: &Path, id: Option<&str>, i: HostInput) -> Resul
         }
     }
     let skey = format!("{SECRET_PREFIX}{}", host.id);
-    if i.auth == "agent" || i.clear_secret {
+    let no_secret = matches!(i.auth.as_str(), "agent" | "jump");
+    if no_secret || i.clear_secret {
         store.remove(&skey)?;
     }
     if let Some(s) = i.secret.as_deref().filter(|s| !s.is_empty()) {
-        if i.auth != "agent" {
+        if !no_secret {
             store.set(&skey, &encrypt(home, s)?)?;
         }
     }
@@ -421,6 +668,8 @@ pub struct Route {
     pub proxy: Option<String>,
     /// 作为别的主机的跳板：`-W 主机:端口`，把连接转给下一跳
     pub forward: Option<String>,
+    /// 带着远程命令也要分配终端（`-t`）：跳板机代登时，交互式连接要在跳板机上再跑一个交互的 ssh
+    pub tty: bool,
 }
 
 /// ssh 的参数（不含远程命令）。
@@ -441,6 +690,8 @@ pub fn ssh_args(h: &SshHost, batch: bool, route: &Route) -> Vec<String> {
         a.extend(["-W".into(), f.clone(), "-o".into(), "ConnectTimeout=15".into()]);
     } else if batch {
         a.extend(["-T".into(), "-o".into(), "ConnectTimeout=15".into(), "-o".into(), "NumberOfPasswordPrompts=1".into()]);
+    } else if route.tty {
+        a.push("-t".into());
     }
     a.push("-l".into());
     a.push(h.user.clone());
@@ -603,8 +854,41 @@ pub fn prepare(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch
     prepare_hop(store, home, h, remote, batch, None)
 }
 
+/// 跳板机代登时在跳板机上运行的命令：`ssh … -l 用户 -- 主机 [远程命令…]`，每个参数都按 POSIX shell 加引号
+/// （跳板机上的登录 shell 会再解析一遍；远程命令各参数原样传到 ssh，由它照常拼接）。
+fn hop_command(h: &SshHost, remote: &[String], batch: bool, forward: Option<&str>) -> String {
+    let mut a: Vec<String> = vec!["ssh".into(), "-p".into(), h.port.to_string(), "-o".into(), "StrictHostKeyChecking=accept-new".into(), "-o".into(), "ServerAliveInterval=30".into()];
+    if let Some(f) = forward {
+        a.extend(["-W".into(), f.to_string(), "-o".into(), "ConnectTimeout=15".into(), "-o".into(), "BatchMode=yes".into()]);
+    } else if batch {
+        // 跳板机上没有人能回答提问：要密码就直接失败
+        a.extend(["-T".into(), "-o".into(), "ConnectTimeout=15".into(), "-o".into(), "BatchMode=yes".into()]);
+    } else {
+        a.push("-t".into());
+    }
+    a.extend(["-l".into(), h.user.clone(), "--".into(), h.host.clone()]);
+    a.extend(remote.iter().cloned());
+    let quote = |s: &String| if !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || "-_./=:@,%+".contains(c)) { s.clone() } else { format!("'{}'", s.replace('\'', "'\\''")) };
+    a.iter().map(quote).collect::<Vec<_>>().join(" ")
+}
+
 fn prepare_hop(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch: bool, forward: Option<String>) -> Result<Prepared> {
     let depth: u32 = std::env::var(JUMP_DEPTH_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    prepare_at(store, home, h, remote, batch, forward, false, depth)
+}
+
+/// tty：带着远程命令也要 `-t`（跳板机代登的交互连接）；depth：已经套了几层跳板机。
+#[allow(clippy::too_many_arguments)]
+fn prepare_at(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch: bool, forward: Option<String>, tty: bool, depth: u32) -> Result<Prepared> {
+    if h.auth == "jump" {
+        // 跳板机代登：连接跳板机本身（按它自己的登录方式和跳板机），远程命令是在跳板机上 ssh 到这台
+        if depth >= JUMP_DEPTH_MAX {
+            bail!("跳板机嵌套太多层了（最多 {JUMP_DEPTH_MAX} 层）");
+        }
+        let jump = list(store).into_iter().find(|j| j.id == h.jump).with_context(|| format!("“{}”的跳板机已被删除，请在看看里重新选择", h.name))?;
+        let inner = hop_command(h, remote, batch, forward.as_deref());
+        return prepare_at(store, home, &jump, &[inner], batch, None, forward.is_none(), depth + 1);
+    }
     let mut cmd = Command::new(ssh_bin());
     let key = if h.auth == "key" && h.key_stored { Some(TempKey::write(store, home, &h.id)?) } else { None };
     let proxy = if h.jump.is_empty() {
@@ -619,10 +903,10 @@ fn prepare_hop(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch
         cmd.env("LOOKLOOK_HOME", home).env(JUMP_DEPTH_ENV, (depth + 1).to_string());
         Some(proxy_command(&exe, &jump.id))
     };
-    let route = Route { key_file: key.as_ref().map(|k| k.path.display().to_string()), proxy, forward };
+    let route = Route { key_file: key.as_ref().map(|k| k.path.display().to_string()), proxy, forward, tty };
     cmd.args(ssh_args(h, batch, &route));
     cmd.args(remote);
-    let secret = if h.auth == "agent" { None } else { secret(store, home, &h.id)? };
+    let secret = if matches!(h.auth.as_str(), "agent" | "jump") { None } else { secret(store, home, &h.id)? };
     let askpass = match &secret {
         Some(s) => {
             let a = Askpass::start(s.clone())?;
@@ -930,6 +1214,80 @@ mod tests {
         let proxy = args.iter().find(|a| a.starts_with("ProxyCommand=")).unwrap();
         assert!(proxy.ends_with(&format!(" ssh-proxy {} %h %p", bastion.id)), "{proxy}");
         assert_eq!(&args[args.len() - 2..], &["--".to_string(), "example.com".to_string()]);
+    }
+
+    #[test]
+    fn jump_auth_runs_ssh_on_the_jump_host_and_stores_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::memory().unwrap();
+        let mut j = input("bastion");
+        j.auth = "agent".into();
+        j.secret = None;
+        let bastion = save(&store, tmp.path(), None, j).unwrap().host;
+        // 跳板机代登必须有跳板机
+        let mut i = input("inner");
+        i.auth = "jump".into();
+        assert_eq!(save(&store, tmp.path(), None, i.clone()).unwrap_err().params["rule"], "jump_required");
+        i.jump = bastion.id.clone();
+        i.user = "ad$min".into();
+        i.host = "10.0.0.5".into();
+        i.port = 2222;
+        let h = save(&store, tmp.path(), None, i).unwrap().host;
+        assert!(!views(&store).iter().any(|v| v.host.id == h.id && v.has_secret), "不为这台保存密码");
+        let args = |p: Prepared| p.cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect::<Vec<_>>();
+        // 交互：连跳板机（-t），远程命令是在跳板机上 ssh 到这台
+        let a = args(prepare(&store, tmp.path(), &h, &[], false).unwrap());
+        assert!(a.contains(&"-t".to_string()) && !a.iter().any(|x| x.starts_with("ProxyCommand=")), "{a:?}");
+        let n = a.len();
+        assert_eq!(&a[n - 3..n - 1], &["--".to_string(), "example.com".to_string()]);
+        assert_eq!(a[n - 1], "ssh -p 2222 -o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -t -l 'ad$min' -- 10.0.0.5");
+        // MCP / 测试连接：不分配终端，跳板机上的 ssh 不许提问；远程命令各参数加引号原样传过去
+        let a = args(prepare(&store, tmp.path(), &h, &["echo hi; uname".into()], true).unwrap());
+        assert!(a.contains(&"-T".to_string()) && !a.contains(&"-t".to_string()));
+        assert!(a.last().unwrap().ends_with("-T -o ConnectTimeout=15 -o BatchMode=yes -l 'ad$min' -- 10.0.0.5 'echo hi; uname'"), "{a:?}");
+        // 它再给别的主机当跳板机：跳板机上 ssh -W
+        let a = args(prepare_hop(&store, tmp.path(), &h, &[], false, Some("db:5432".into())).unwrap());
+        assert!(!a.contains(&"-t".to_string()) && a.last().unwrap().contains(" -W db:5432 "), "{a:?}");
+    }
+
+    #[test]
+    fn key_info_masks_body_and_matches_ssh_keygen_fingerprint() {
+        let dir = tempfile::tempdir().unwrap();
+        for (algo, pass, want) in [("ed25519", "", "ssh-ed25519"), ("rsa", "pw-123456", "ssh-rsa"), ("ecdsa", "", "ecdsa-sha2-nistp256")] {
+            let path = dir.path().join(format!("id_{algo}"));
+            let Ok(st) = Command::new("ssh-keygen").args(["-q", "-t", algo, "-N", pass, "-C", "me@box", "-f"]).arg(&path).status() else { return };
+            assert!(st.success());
+            let fp = String::from_utf8(Command::new("ssh-keygen").arg("-lf").arg(&path).output().unwrap().stdout).unwrap();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let i = key_info_at(path.to_str().unwrap()).unwrap();
+            assert_eq!((i.format.as_str(), i.algo.as_str(), i.encrypted, i.comment.as_str()), ("openssh", want, !pass.is_empty(), "me@box"));
+            assert!(fp.contains(i.fingerprint.as_deref().unwrap()), "{fp} / {:?}", i.fingerprint);
+            if algo == "rsa" {
+                assert_eq!(i.bits, Some(3072));
+            }
+            let m = &i.masked;
+            assert_eq!((m.start.len(), m.end.len()), (8, 4));
+            assert!(m.head.starts_with("-----BEGIN OPENSSH") && m.foot.starts_with("-----END OPENSSH"));
+            let body: String = text.lines().filter(|l| !l.starts_with("-----")).collect();
+            assert_eq!(m.hidden + 12, body.len());
+            // 粘贴的内容同样能读，只是没有 .pub 补注释
+            assert_eq!(key_info(&text).unwrap().fingerprint, i.fingerprint);
+        }
+        assert_eq!(key_info_at(dir.path().join("nope").to_str().unwrap()).unwrap_err().params["rule"], "missing");
+        assert_eq!(key_info("hello").unwrap_err().params["rule"], "private_key");
+    }
+
+    #[test]
+    fn pem_keys_take_fingerprint_from_pub_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("legacy");
+        let Ok(st) = Command::new("ssh-keygen").args(["-q", "-t", "rsa", "-b", "2048", "-m", "PEM", "-N", "", "-C", "old", "-f"]).arg(&path).status() else { return };
+        assert!(st.success());
+        let i = key_info_at(path.to_str().unwrap()).unwrap();
+        assert_eq!((i.format.as_str(), i.algo.as_str(), i.bits, i.comment.as_str()), ("pem", "ssh-rsa", Some(2048), "old"));
+        assert!(i.fingerprint.unwrap().starts_with("SHA256:"));
+        std::fs::remove_file(dir.path().join("legacy.pub")).unwrap();
+        assert!(key_info_at(path.to_str().unwrap()).unwrap().fingerprint.is_none());
     }
 
     #[test]

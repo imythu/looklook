@@ -61,6 +61,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/page", post(instance_page))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
+        .route("/ssh/keys/info", post(ssh_key_info))
+        .route("/ssh/keys/system", get(ssh_system_keys))
         .route("/ssh/hosts/{id}", put(ssh_update).delete(ssh_delete))
         .route("/ssh/hosts/{id}/open", post(ssh_open))
         .route("/ssh/hosts/{id}/test", post(ssh_test))
@@ -878,6 +880,37 @@ async fn ssh_update(State(app): State<App>, Path(id): Path<String>, Json(req): J
 /// 这台电脑 `~/.ssh` 里的私钥文件（路径），添加主机时快捷选择。
 async fn ssh_keys() -> Json<Value> {
     Json(json!({ "items": tokio::task::spawn_blocking(crate::ssh::local_keys).await.unwrap_or_default() }))
+}
+
+#[derive(serde::Deserialize)]
+struct KeyInfoReq {
+    /// 这台电脑上的私钥文件
+    #[serde(default)]
+    path: Option<String>,
+    /// 浏览器里选的 / 粘贴的私钥内容
+    #[serde(default)]
+    text: Option<String>,
+    /// 已保存主机上传的私钥
+    #[serde(default)]
+    host: Option<String>,
+}
+
+/// `POST /api/ssh/keys/info`：私钥的脱敏概况（算法、指纹、首尾几个字符），让用户确认选对了钥匙。
+async fn ssh_key_info(State(app): State<App>, Json(req): Json<KeyInfoReq>) -> R<Json<crate::ssh::KeyInfo>> {
+    let info = tokio::task::spawn_blocking(move || match (req.path, req.text, req.host) {
+        (_, Some(text), _) => crate::ssh::key_info(&text),
+        (_, _, Some(id)) => crate::ssh::stored_key_info(&app.store, &app.paths.home, &id),
+        (Some(path), _, _) => crate::ssh::key_info_at(&path),
+        _ => Err(LocalError::invalid("key_path", "required")),
+    })
+    .await
+    .map_err(|e| LocalError::from(anyhow::anyhow!(e)))??;
+    Ok(Json(info))
+}
+
+/// `GET /api/ssh/keys/system`：“系统密钥”登录时 ssh 会用的钥匙（ssh-agent 里的和 `~/.ssh` 的默认私钥），脱敏显示。
+async fn ssh_system_keys() -> Json<crate::ssh::SystemKeys> {
+    Json(tokio::task::spawn_blocking(crate::ssh::system_keys).await.unwrap_or(crate::ssh::SystemKeys { agent: None, files: Vec::new() }))
 }
 
 async fn ssh_delete(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {

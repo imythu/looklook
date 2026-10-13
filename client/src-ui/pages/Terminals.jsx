@@ -606,8 +606,12 @@ function DeniedNote({ data, onRetry }) {
   );
 }
 
-/** 文件夹选择弹窗：点文件夹进入，“选择此文件夹”确定当前位置。Windows 上最顶层是“此电脑”（各个盘符）。 */
-function FolderPicker({ open, initial, onClose, onPick, client = api }) {
+/**
+ * 文件夹选择弹窗：点文件夹进入，“选择此文件夹”确定当前位置。Windows 上最顶层是“此电脑”（各个盘符）。
+ * files：改成选文件（如 SSH 私钥）：文件也列出来，点一下选中、双击直接确定；initial 是文件路径时从它所在的文件夹开始。
+ * title / pickLabel：替换默认的标题和确定按钮文字。
+ */
+export function FolderPicker({ open, initial, onClose, onPick, client = api, files = false, title, pickLabel }) {
   const { t } = useTranslation();
   const [cur, setCur] = useState("");
   const [typed, setTyped] = useState("");
@@ -617,13 +621,14 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
   const [hidden, setHidden] = useState(false);
   const [newName, setNewName] = useState("");
   const [loading, setLoading] = useState(false);
+  const [sel, setSel] = useState("");
   const seq = useRef(0);
   const load = async (path) => {
     const n = ++seq.current;
     setLoading(true);
     try {
       const r = await client.get(
-        `/fs/list?path=${encodeURIComponent(path)}&hidden=${hidden ? 1 : 0}`,
+        `/fs/list?path=${encodeURIComponent(path)}&hidden=${hidden ? 1 : 0}${files ? "&files=1" : ""}`,
       );
       if (n !== seq.current) return;
       setData(r);
@@ -636,8 +641,12 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
   };
   useEffect(() => {
     if (!open) return;
-    setCur(initial ?? "");
-    setTyped(initial ?? "");
+    // 选文件时从文件所在的文件夹开始，并预先选中它
+    const start = files && initial ? initial.replace(/[\\/][^\\/]*$/, "") || initial : initial ?? "";
+    setCur(start);
+    setTyped(start);
+    setSel(files ? initial ?? "" : "");
+    setHidden(files);
     setDrives(false);
     setNewName("");
     setData(null);
@@ -649,6 +658,7 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
   const win = data?.os === "windows";
   const go = (path) => {
     setDrives(false);
+    if (files) setSel("");
     setCur(path);
     setTyped(path);
   };
@@ -657,7 +667,7 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
     setTyped("");
   };
   // 不存在的路径：显示的是最近的已有上级，“选择”仍然选用户要的那个（启动时自动创建）。
-  const target = drives ? null : data && !data.exists ? cur : data?.path;
+  const target = files ? sel || null : drives ? null : data && !data.exists ? cur : data?.path;
   const up = () => {
     if (drives) return;
     if (data?.parent) go(data.parent);
@@ -672,8 +682,14 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
   const entries = drives
     ? (data?.roots ?? []).map((r) => ({ name: r, path: r, drive: true }))
     : (data?.entries ?? []).map((e) => ({ ...e, path: joinPath(data.path, e.name) }));
+  const pick = (path) => {
+    // 选文件时主目录下的写成 ~/…，和手填的一样短
+    const home = data?.home;
+    onPick(files && home && path.startsWith(home + sepOf(path)) ? `~${path.slice(home.length)}` : path);
+    onClose();
+  };
   return (
-    <Modal open={open} onClose={onClose} title={t("fs.title")} wide className="picker">
+    <Modal open={open} onClose={onClose} title={title ?? t("fs.title")} wide className="picker">
       <div className="picker-bar">
         <Button
           variant="ghost"
@@ -745,7 +761,7 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
             (data.denied ? (
               <DeniedNote data={data} onRetry={() => load(cur)} />
             ) : (
-              !data.exists && (
+              !data.exists && !files && (
                 <Note>
                   <span className="mono">{cur}</span> · {t("fs.will_create")}
                 </Note>
@@ -753,24 +769,37 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
             ))}
           <ul className={`picker-list ${loading ? "loading" : ""}`}>
             {entries.length === 0 && !data.denied && (
-              <li className="muted small picker-empty">{t("fs.empty")}</li>
+              <li className="muted small picker-empty">{t(files ? "fs.empty_files" : "fs.empty")}</li>
             )}
             {entries.map((e) => {
-              const Icon = e.drive ? HardDrive : Folder;
+              const file = files && !e.drive && !e.is_dir;
+              const Icon = e.drive ? HardDrive : file ? FileText : Folder;
               return (
                 <li key={e.path}>
-                  <button type="button" onClick={() => go(e.path)}>
-                    <Icon size={18} aria-hidden="true" />
-                    <span className="mono ellipsis grow">
-                      {e.drive ? e.name.replace(/\\$/, "") : e.name}
-                    </span>
-                    <ChevronRight size={16} className="muted" aria-hidden="true" />
-                  </button>
+                  {file ? (
+                    <button
+                      type="button"
+                      aria-pressed={sel === e.path}
+                      onClick={() => setSel(e.path)}
+                      onDoubleClick={() => pick(e.path)}
+                    >
+                      <Icon size={18} aria-hidden="true" />
+                      <span className="mono ellipsis grow">{e.name}</span>
+                    </button>
+                  ) : (
+                    <button type="button" onClick={() => go(e.path)}>
+                      <Icon size={18} aria-hidden="true" />
+                      <span className="mono ellipsis grow">
+                        {e.drive ? e.name.replace(/\\$/, "") : e.name}
+                      </span>
+                      <ChevronRight size={16} className="muted" aria-hidden="true" />
+                    </button>
+                  )}
                 </li>
               );
             })}
           </ul>
-          {!drives && !data.denied && (
+          {!drives && !data.denied && !files && (
             <div className="row" style={{ gap: 8, marginTop: 10 }}>
               <input
                 value={newName}
@@ -802,7 +831,7 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
               checked={hidden}
               onChange={(e) => setHidden(e.target.checked)}
             />
-            {t("fs.show_hidden")}
+            {t(files ? "fs.show_hidden_files" : "fs.show_hidden")}
           </label>
         </>
       )}
@@ -817,12 +846,9 @@ function FolderPicker({ open, initial, onClose, onPick, client = api }) {
         <Button
           icon={Check}
           disabled={!target}
-          onClick={() => {
-            onPick(target);
-            onClose();
-          }}
+          onClick={() => pick(target)}
         >
-          {t("fs.pick")}
+          {pickLabel ?? t("fs.pick")}
         </Button>
       </div>
     </Modal>

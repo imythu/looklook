@@ -88,6 +88,9 @@
     "too_many": "too many",
     "private_key": "isn’t an OpenSSH / PEM private key (it should start with -----BEGIN … PRIVATE KEY-----)",
     "ppk": "is a PuTTY (.ppk) key — export it to OpenSSH format in PuTTYgen first",
+    "missing": "doesn’t exist",
+    "denied": "can’t be read (permission denied)",
+    "jump_required": "— “Via jump host” needs a jump host",
     "jump_loop": "can’t lead back to this host",
     "jump_missing": "no longer exists",
     "jump_depth": "nests too many jump hosts"
