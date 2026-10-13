@@ -1,13 +1,13 @@
 // 本机网页：把电脑上正在运行的网页（例如 localhost:5173）放到自己的专属地址下，在外面也能打开。
 // 每个账户最多 10 个；只有本人登录后才能打开。数据登记在看看服务端。
-import { ExternalLink, Globe, Plus, Trash2 } from 'lucide-react';
+import { Bot, ExternalLink, Globe, Plus, Trash2 } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
-import McpCard from './PagesMcp.jsx';
 import { errorText } from '../shared/i18n.js';
+import { Link } from '../shared/router.jsx';
 import { Button, Card, CopyButton, Empty, ErrorNote, Field, Note, Skeleton, Switch, useAction, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 
 function AddForm({ count, max, onAdded }) {
@@ -135,7 +135,9 @@ export default function Pages() {
               )}
             </Card>
             {status.account.allowed && <AddForm count={items.length} max={data.max} onAdded={reload} />}
-            {status.access === 'local' && <McpCard />}
+            <Note kind="info" icon={Bot}>
+              {t('pages.mcp_moved')} <Link to="/ai">{t('nav.ai')}</Link>
+            </Note>
           </>
         )
       )}

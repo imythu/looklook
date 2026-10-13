@@ -1,8 +1,9 @@
 // SSH 主机：保存常用的服务器，一键打开 SSH 终端；密码 / 私钥口令只在这台电脑上加密保存，连接时由看看交给 ssh，
 // 不显示、不进终端输出。私钥可以用这台电脑上的文件（输入路径或在弹窗里点选），也可以从浏览器上传（同样加密保存）；
 // 选好后显示脱敏的概况（算法、指纹、首尾几个字符），“系统密钥”也列出 ssh 会试的钥匙。可以经跳板机（另一台保存的主机）连接，
-// 添加主机时也能顺手新建跳板机；目标机的密钥配在跳板机上的，登录方式选“跳板机代登”，这台不用填任何密码 / 私钥。标了“允许 AI 使用”的主机，AI 助手可以经 MCP（本机网页 → AI 助手）运行命令，同样拿不到密码。
-import { Bot, FolderOpen, KeyRound, LockKeyhole, Pencil, Play, Plus, PlugZap, Server, ShieldCheck, Trash2, Upload, Waypoints } from 'lucide-react';
+// 添加主机时也能顺手新建跳板机；目标机的密钥配在跳板机上的，登录方式选“跳板机代登”，这台不用填任何密码 / 私钥。标了“允许 AI 使用”的主机，AI 助手可以经 MCP（“AI 助手”页）运行命令，同样拿不到密码。
+// 测试连接用 `ssh -v`：添加 / 修改时保存前就能测（新主机保存后也自动测一次），失败时说清卡在哪一步、为什么、怎么办，附完整日志。
+import { Bot, CheckCircle2, FolderOpen, KeyRound, LockKeyhole, Pencil, Play, Plus, PlugZap, Server, ShieldCheck, Trash2, Upload, Waypoints } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -10,7 +11,7 @@ import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { Link, useRouter } from '../shared/router.jsx';
-import { Button, Card, Empty, ErrorNote, Field, FoldNote, Modal, Note, PasswordInput, Skeleton, Switch, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
+import { Button, Card, CopyButton, Empty, ErrorNote, Field, FoldNote, Modal, Note, PasswordInput, Skeleton, Switch, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { Seg } from './Settings.jsx';
 import { FolderPicker } from './Terminals.jsx';
 
@@ -312,6 +313,62 @@ function AuthFields({ f, set, secret, setSecret, keyText, setKeyText, saved, key
   );
 }
 
+const STAGES = ['connect', 'handshake', 'auth', 'command'];
+/** 这些原因在 Windows 服务器上另有一条提示 */
+const WIN_HINT = { auth_password: 'password', auth_key: 'key', auth_agent: 'key', no_keys: 'key', remote_cmd: 'shell', remote_output: 'shell' };
+
+/** 测试连接的结果：成功时说连上了什么；失败时标出卡在哪一步，说明原因和办法，附完整日志。 */
+export function TestResult({ result: r, error }) {
+  const { t } = useTranslation();
+  if (error) {
+    return (
+      <div className="ssh-test bad" role="alert">
+        <b>{t('ssh.test_failed')}</b>
+        <p>{errorText(t, error)}</p>
+      </div>
+    );
+  }
+  if (r.ok) {
+    const parts = [r.server, r.method && t('ssh.test_method', { method: r.method }), r.via && t('ssh.jump_via', { name: r.via })].filter(Boolean);
+    return (
+      <div className="ssh-test ok" role="status">
+        <CheckCircle2 size={16} aria-hidden="true" />
+        <b>{t('ssh.test_ok')}</b>
+        {parts.length > 0 && <span className="small">{parts.join(' · ')}</span>}
+      </div>
+    );
+  }
+  const failed = STAGES.indexOf(r.stage);
+  const vars = { target: r.target, via: r.via ?? '', server: r.server ?? '', code: r.exit_code ?? '-', n: r.tried_keys };
+  const win = r.windows && WIN_HINT[r.reason];
+  return (
+    <div className="ssh-test bad" role="alert">
+      {failed >= 0 && (
+        <ol className="ssh-steps" aria-label={t('ssh.test_steps')}>
+          {STAGES.map((s, i) => (
+            <li key={s} className={i < failed ? 'done' : i === failed ? 'fail' : ''}>
+              {t(`ssh.stage.${s}`)}
+            </li>
+          ))}
+        </ol>
+      )}
+      <b className="ssh-test-title">{t(`ssh.diag.${r.reason}.title`, vars)}</b>
+      <p>{t(`ssh.diag.${r.reason}.hint`, vars)}</p>
+      {r.via && ['closed', 'timeout', 'refused', 'unknown'].includes(r.reason) && <p>{t('ssh.diag_via', vars)}</p>}
+      {win && <p>{t(`ssh.diag_win.${win}`)}</p>}
+      {r.methods?.length > 0 && <p className="small">{t('ssh.test_methods', { list: r.methods.join(', ') })}</p>}
+      {r.message && <pre>{r.message}</pre>}
+      {r.log && (
+        <details className="ssh-test-log">
+          <summary>{t('ssh.test_log')}</summary>
+          <pre>{r.log}</pre>
+          <CopyButton text={r.log} />
+        </details>
+      )}
+    </div>
+  );
+}
+
 function HostDialog({ initial, hosts, onClose, onSaved }) {
   const { t } = useTranslation();
   const toast = useToast();
@@ -331,35 +388,62 @@ function HostDialog({ initial, hosts, onClose, onSaved }) {
   const [jKeyText, setJKeyText] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+  // 保存前的测试：结果对应的是哪一版表单（改了就不算测过）
+  const [testing, setTesting] = useState(false);
+  const [test, setTest] = useState(null);
+  const formRef = useRef(null);
   const [keys] = useLoad(() => api.get('/ssh/keys').catch(() => ({ items: [] })));
   const set = (k) => (v) => setF((x) => ({ ...x, [k]: v }));
   const setJump = (k) => (v) => setJ((x) => ({ ...x, [k]: v }));
   // 能当跳板机的：除了自己，以及会绕回自己的
   const candidates = hosts.filter((h) => h.id !== initial?.id && !reaches(hosts, h.id, initial?.id));
   const jumpId = jumpMode === 'existing' ? (candidates.some((h) => h.id === f.jump) ? f.jump : '') : '';
-  const submit = async (e) => {
-    e.preventDefault();
+  const body = {
+    ...f,
+    port: Number(f.port) || 22,
+    secret: secret || undefined,
+    key_text: f.auth === 'key' && f.key_stored && keyText ? keyText : undefined,
+    jump: jumpId,
+    jump_new:
+      jumpMode === 'new'
+        ? { ...j, port: Number(j.port) || 22, secret: jSecret || undefined, key_text: j.auth === 'key' && j.key_stored && jKeyText ? jKeyText : undefined }
+        : undefined,
+  };
+  const bodyKey = JSON.stringify(body);
+  const testedOk = Boolean(test?.result?.ok && test.key === bodyKey);
+  /** 表单本身的检查（必填、端口范围）和跳板机有没有选 */
+  const check = () => {
+    if (!formRef.current?.reportValidity()) return false;
     if (jumpMode === 'existing' && !jumpId) {
       setError({ code: 'VALIDATION_FAILED', params: { field: 'jump', rule: 'required' } });
-      return;
+      return false;
     }
+    return true;
+  };
+  const runTest = async () => {
+    if (!check()) return;
+    setTesting(true);
+    setError(null);
+    setTest(null);
+    try {
+      setTest({ key: bodyKey, result: await api.post('/ssh/test', { id: initial?.id, host: body }) });
+    } catch (err) {
+      // 表单填错（字段校验）显示在表单下面；其他错误算测试失败
+      if (err?.code === 'VALIDATION_FAILED' || err?.code === 'SSH_NAME_TAKEN') setError(err);
+      else setTest({ key: bodyKey, error: err });
+    } finally {
+      setTesting(false);
+    }
+  };
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!check()) return;
     setBusy(true);
     setError(null);
     try {
-      const body = {
-        ...f,
-        port: Number(f.port) || 22,
-        secret: secret || undefined,
-        key_text: f.auth === 'key' && f.key_stored && keyText ? keyText : undefined,
-        jump: jumpId,
-        jump_new:
-          jumpMode === 'new'
-            ? { ...j, port: Number(j.port) || 22, secret: jSecret || undefined, key_text: j.auth === 'key' && j.key_stored && jKeyText ? jKeyText : undefined }
-            : undefined,
-      };
       const r = editing ? await api.put(`/ssh/hosts/${initial.id}`, body) : await api.post('/ssh/hosts', body);
       if (r.created_jump) toast(t('ssh.jump_created', { name: r.created_jump.name, host: r.name }));
-      onSaved(r);
+      onSaved(r, { tested: testedOk });
     } catch (err) {
       setError(err);
     } finally {
@@ -369,7 +453,7 @@ function HostDialog({ initial, hosts, onClose, onSaved }) {
   const jumpName = j.name.trim() || t('ssh.jump_new_unnamed');
   return (
     <Modal open onClose={onClose} title={editing ? t('ssh.edit_title', { name: initial.name }) : t('ssh.add_title')} wide>
-      <form onSubmit={submit}>
+      <form onSubmit={submit} ref={formRef}>
         <Field label={t('ssh.name')} hint={t('ssh.name_hint')}>
           <input value={f.name} onChange={(e) => set('name')(e.target.value)} maxLength={40} required placeholder={t('ssh.name_ph')} autoFocus />
         </Field>
@@ -458,11 +542,20 @@ function HostDialog({ initial, hosts, onClose, onSaved }) {
           <Switch checked={f.allow_ai} onChange={set('allow_ai')} label={t('ssh.allow_ai')} />
         </div>
         <ErrorNote error={error} />
+        {test && (
+          <div className={test.key === bodyKey ? '' : 'ssh-test-stale'}>
+            {test.key !== bodyKey && <p className="small muted">{t('ssh.test_stale')}</p>}
+            <TestResult result={test.result} error={test.error} />
+          </div>
+        )}
         <div className="modal-actions">
+          <Button variant="secondary" icon={PlugZap} busy={testing} disabled={busy} onClick={runTest} className="ssh-dialog-test">
+            {t('ssh.test')}
+          </Button>
           <Button type="button" variant="ghost" onClick={onClose}>
             {t('action.cancel')}
           </Button>
-          <Button type="submit" busy={busy}>
+          <Button type="submit" busy={busy} disabled={testing}>
             {jumpMode === 'new' ? t('ssh.save_both') : t('action.save')}
           </Button>
         </div>
@@ -471,7 +564,7 @@ function HostDialog({ initial, hosts, onClose, onSaved }) {
   );
 }
 
-function HostCard({ h, hosts, onEdit, onChanged }) {
+function HostCard({ h, hosts, ai, autoTest, onEdit, onChanged }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const { navigate } = useRouter();
@@ -494,11 +587,32 @@ function HostCard({ h, hosts, onEdit, onChanged }) {
     setBusy('test');
     setTest(null);
     try {
-      setTest(await api.post(`/ssh/hosts/${h.id}/test`));
+      setTest({ result: await api.post(`/ssh/hosts/${h.id}/test`) });
     } catch (e) {
-      setTest({ ok: false, error: e });
+      setTest({ error: e });
     } finally {
       setBusy(null);
+    }
+  };
+  // 刚添加、保存前没测过的主机：自动测一次
+  const autoRan = useRef(false);
+  useEffect(() => {
+    if (autoTest && !autoRan.current) {
+      autoRan.current = true;
+      doTest();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoTest]);
+  const [aiBusy, setAiBusy] = useState(false);
+  const toggleAi = async (allow) => {
+    setAiBusy(true);
+    try {
+      await api.put(`/ssh/hosts/${h.id}/ai`, { allow });
+      onChanged();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setAiBusy(false);
     }
   };
   const remove = async () => {
@@ -544,21 +658,20 @@ function HostCard({ h, hosts, onEdit, onChanged }) {
             <Waypoints size={12} aria-hidden="true" /> {t('ssh.jump_via', { name: hosts.find((x) => x.id === h.jump)?.name ?? '?' })}
           </span>
         )}
-        {h.allow_ai && (
-          <span className="badge badge-ok" title={t('ssh.allow_ai_hint')}>
-            <Bot size={12} aria-hidden="true" /> {t('ssh.ai_on')}
-          </span>
-        )}
       </div>
-      {test && (
-        <div className={`ssh-test ${test.ok ? 'ok' : 'bad'}`}>
-          {test.ok ? (
-            <>{t('ssh.test_ok')} <span className="mono">{test.result?.stdout?.split('\n')[1] ?? ''}</span></>
-          ) : (
-            <pre>{test.error ? errorText(t, test.error) : test.result?.timed_out ? t('ssh.test_timeout') : (test.result?.stderr || test.result?.stdout || '').trim().split('\n').slice(-4).join('\n') || t('ssh.test_failed')}</pre>
+      <div className="ssh-ai-quick">
+        <Bot size={16} aria-hidden="true" />
+        <span className="grow">
+          {t('ssh.allow_ai')}
+          {h.allow_ai && ai && (!ai.mcp || !ai.ssh) && (
+            <Link to="/ai" className="small warn-text ssh-ai-off">
+              {t(!ai.mcp ? 'ssh.ai_mcp_off' : 'ssh.ai_ssh_off')}
+            </Link>
           )}
-        </div>
-      )}
+        </span>
+        <Switch checked={h.allow_ai} disabled={aiBusy} onChange={toggleAi} label={`${t('ssh.allow_ai')} · ${h.name}`} />
+      </div>
+      {test && <TestResult result={test.result} error={test.error} />}
       <div className="ssh-actions">
         <Button icon={Play} busy={busy === 'open'} disabled={!status.account.allowed || Boolean(busy)} onClick={open}>
           {t('ssh.connect')}
@@ -575,6 +688,8 @@ export default function SshHosts() {
   const { t } = useTranslation();
   const [data, error, reload] = useLoad(() => api.get('/ssh/hosts'));
   const [dialog, setDialog] = useState(null);
+  // 刚添加、保存前没测通的主机：卡片出来后自动测试
+  const [autoTest, setAutoTest] = useState(null);
   const items = data?.items ?? [];
   return (
     <>
@@ -605,7 +720,7 @@ export default function SshHosts() {
       ) : (
         <div className="instances">
           {items.map((h) => (
-            <HostCard key={h.id} h={h} hosts={items} onEdit={setDialog} onChanged={reload} />
+            <HostCard key={h.id} h={h} hosts={items} ai={data.ai} autoTest={autoTest === h.id} onEdit={setDialog} onChanged={reload} />
           ))}
         </div>
       )}
@@ -614,7 +729,7 @@ export default function SshHosts() {
           <li>{t('ssh.safety_1')}</li>
           <li>{t('ssh.safety_2')}</li>
           <li>
-            {t('ssh.safety_3')} <Link to="/pages">{t('nav.pages')}</Link>
+            {t('ssh.safety_3')} <Link to="/ai">{t('nav.ai')}</Link>
           </li>
           <li>{t('ssh.safety_4')}</li>
         </ul>
@@ -624,7 +739,8 @@ export default function SshHosts() {
           initial={dialog.id ? dialog : null}
           hosts={items}
           onClose={() => setDialog(null)}
-          onSaved={() => {
+          onSaved={(r, { tested }) => {
+            if (!dialog.id && !tested) setAutoTest(r.id);
             setDialog(null);
             reload();
           }}

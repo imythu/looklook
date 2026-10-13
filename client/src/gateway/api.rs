@@ -66,6 +66,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/ssh/hosts/{id}", put(ssh_update).delete(ssh_delete))
         .route("/ssh/hosts/{id}/open", post(ssh_open))
         .route("/ssh/hosts/{id}/test", post(ssh_test))
+        .route("/ssh/hosts/{id}/ai", put(ssh_allow_ai))
+        .route("/ssh/test", post(ssh_test_draft))
         .route("/fs/list", get(fs_list))
         .route("/fs/download", get(fs_download))
         .route("/fs/preview", get(fs_preview))
@@ -865,7 +867,9 @@ async fn git_remote(State(app): State<App>, Path(id): Path<String>, Json(req): J
 // ---------------- SSH 主机（ssh.rs） ----------------
 
 async fn ssh_list(State(app): State<App>) -> Json<Value> {
-    Json(json!({ "items": crate::ssh::views(&app.store), "ssh": crate::shells::which("ssh").is_some() }))
+    let mcp = super::mcp::McpConfig::load(&app.store);
+    // AI 助手能不能真用上“允许 AI 使用”的主机：MCP 接口要打开，SSH 工具也没被关掉
+    Json(json!({ "items": crate::ssh::views(&app.store), "ssh": crate::shells::which("ssh").is_some(), "ai": { "mcp": mcp.enabled, "ssh": !mcp.ssh_disabled } }))
 }
 
 async fn ssh_create(State(app): State<App>, Json(req): Json<crate::ssh::HostInput>) -> R<impl IntoResponse> {
@@ -948,12 +952,33 @@ async fn ssh_open(State(app): State<App>, Path(id): Path<String>) -> R<impl Into
     Ok((StatusCode::CREATED, Json(v)))
 }
 
-/// 测试连接：在主机上运行一条无害的命令。结果（含失败原因）放在应答里。
-async fn ssh_test(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+/// 测试连接：在主机上运行一条无害的命令。结果（含卡在哪一步、失败原因和完整日志）放在应答里。
+async fn ssh_test(State(app): State<App>, Path(id): Path<String>) -> R<Json<crate::ssh::TestReport>> {
     let h = crate::ssh::list(&app.store).into_iter().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
-    let r = crate::ssh::run(app.store.clone(), app.paths.home.clone(), h, "echo looklook-ok; uname -sn 2>/dev/null || ver".into(), std::time::Duration::from_secs(25)).await?;
-    let ok = r.exit_code == Some(0) && r.stdout.contains("looklook-ok");
-    Ok(Json(json!({ "ok": ok, "result": r })))
+    Ok(Json(crate::ssh::test(app.store.clone(), app.paths.home.clone(), h).await?))
+}
+
+#[derive(Deserialize)]
+struct SshDraftReq {
+    /// 修改已有主机时它的 id（留空的密码、已上传的私钥沿用它的）
+    #[serde(default)]
+    id: Option<String>,
+    host: crate::ssh::HostInput,
+}
+
+/// 添加 / 修改主机时，保存之前先测试表单里填的。
+async fn ssh_test_draft(State(app): State<App>, Json(req): Json<SshDraftReq>) -> R<Json<crate::ssh::TestReport>> {
+    let id = req.id.filter(|s| !s.is_empty());
+    Ok(Json(crate::ssh::test_draft(&app.store, &app.paths.home, id, req.host).await?))
+}
+
+#[derive(Deserialize)]
+struct AllowAiReq {
+    allow: bool,
+}
+
+async fn ssh_allow_ai(State(app): State<App>, Path(id): Path<String>, Json(req): Json<AllowAiReq>) -> R<Json<crate::ssh::HostView>> {
+    Ok(Json(crate::ssh::set_allow_ai(&app.store, &id, req.allow)?))
 }
 
 // ---------------- 管理台“文件”页（不属于某个终端；多台电脑时按 X-LL-Device 发给选中的那台） ----------------
@@ -1241,7 +1266,7 @@ async fn mcp_view(app: &App) -> Value {
     let c = super::mcp::McpConfig::load(&app.store);
     let url = super::mcp::endpoint(app);
     let agents = crate::agents::status(app.instances.shell(), &url, &c.token).await;
-    json!({ "enabled": c.enabled, "token": c.token, "url": url, "agents": agents })
+    json!({ "enabled": c.enabled, "ssh": !c.ssh_disabled, "token": c.token, "url": url, "agents": agents, "tools": super::mcp::tool_names() })
 }
 
 /// 和访问控制一样，只能直接在这台机器（或允许的局域网）上查看和修改：令牌只在本机有用，装配置也是改本机文件。
@@ -1254,6 +1279,8 @@ async fn get_mcp(State(app): State<App>, Extension(access): Extension<Access>) -
 #[serde(default)]
 struct McpReq {
     enabled: Option<bool>,
+    /// 让 AI 助手使用 SSH 主机（`list_ssh_hosts`、`ssh_run`）
+    ssh: Option<bool>,
     /// 换一个新令牌；已经装好的助手配置一并更新
     rotate: bool,
 }
@@ -1264,6 +1291,9 @@ async fn put_mcp(State(app): State<App>, Extension(access): Extension<Access>, J
     let old = c.token.clone();
     if let Some(v) = req.enabled {
         c.enabled = v;
+    }
+    if let Some(v) = req.ssh {
+        c.ssh_disabled = !v;
     }
     if req.rotate || (c.enabled && c.token.is_empty()) {
         c.token = super::mcp::generate_token();

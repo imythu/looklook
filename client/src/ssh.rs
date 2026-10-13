@@ -854,6 +854,12 @@ pub fn prepare(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch
     prepare_hop(store, home, h, remote, batch, None)
 }
 
+/// 同 [`prepare`]，`verbose` 时给 ssh 加 `-v`（测试连接用：从调试输出里看出卡在哪一步）。
+fn prepare_verbose(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch: bool, verbose: bool) -> Result<Prepared> {
+    let depth: u32 = std::env::var(JUMP_DEPTH_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
+    prepare_at(store, home, h, remote, batch, None, false, depth, verbose)
+}
+
 /// 跳板机代登时在跳板机上运行的命令：`ssh … -l 用户 -- 主机 [远程命令…]`，每个参数都按 POSIX shell 加引号
 /// （跳板机上的登录 shell 会再解析一遍；远程命令各参数原样传到 ssh，由它照常拼接）。
 fn hop_command(h: &SshHost, remote: &[String], batch: bool, forward: Option<&str>) -> String {
@@ -874,12 +880,12 @@ fn hop_command(h: &SshHost, remote: &[String], batch: bool, forward: Option<&str
 
 fn prepare_hop(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch: bool, forward: Option<String>) -> Result<Prepared> {
     let depth: u32 = std::env::var(JUMP_DEPTH_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    prepare_at(store, home, h, remote, batch, forward, false, depth)
+    prepare_at(store, home, h, remote, batch, forward, false, depth, false)
 }
 
-/// tty：带着远程命令也要 `-t`（跳板机代登的交互连接）；depth：已经套了几层跳板机。
+/// tty：带着远程命令也要 `-t`（跳板机代登的交互连接）；depth：已经套了几层跳板机；verbose：`ssh -v`。
 #[allow(clippy::too_many_arguments)]
-fn prepare_at(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch: bool, forward: Option<String>, tty: bool, depth: u32) -> Result<Prepared> {
+fn prepare_at(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch: bool, forward: Option<String>, tty: bool, depth: u32, verbose: bool) -> Result<Prepared> {
     if h.auth == "jump" {
         // 跳板机代登：连接跳板机本身（按它自己的登录方式和跳板机），远程命令是在跳板机上 ssh 到这台
         if depth >= JUMP_DEPTH_MAX {
@@ -887,9 +893,12 @@ fn prepare_at(store: &Store, home: &Path, h: &SshHost, remote: &[String], batch:
         }
         let jump = list(store).into_iter().find(|j| j.id == h.jump).with_context(|| format!("“{}”的跳板机已被删除，请在看看里重新选择", h.name))?;
         let inner = hop_command(h, remote, batch, forward.as_deref());
-        return prepare_at(store, home, &jump, &[inner], batch, None, forward.is_none(), depth + 1);
+        return prepare_at(store, home, &jump, &[inner], batch, None, forward.is_none(), depth + 1, verbose);
     }
     let mut cmd = Command::new(ssh_bin());
+    if verbose {
+        cmd.arg("-v");
+    }
     let key = if h.auth == "key" && h.key_stored { Some(TempKey::write(store, home, &h.id)?) } else { None };
     let proxy = if h.jump.is_empty() {
         None
@@ -1034,10 +1043,14 @@ pub struct RunResult {
     pub timed_out: bool,
 }
 
-/// 不交互地在主机上运行一条命令（MCP、界面上的“测试连接”），超时就结束。输出去掉秘密。
+/// 不交互地在主机上运行一条命令（MCP），超时就结束。输出去掉秘密。
 pub async fn run(store: Arc<Store>, home: PathBuf, h: SshHost, command: String, timeout: Duration) -> Result<RunResult, LocalError> {
+    run_with(store, home, h, command, timeout, false).await
+}
+
+async fn run_with(store: Arc<Store>, home: PathBuf, h: SshHost, command: String, timeout: Duration, verbose: bool) -> Result<RunResult, LocalError> {
     tokio::task::spawn_blocking(move || -> Result<RunResult, LocalError> {
-        let mut p = prepare(&store, &home, &h, &[command], true).map_err(|e| LocalError::new("SSH_FAILED").with("detail", format!("{e:#}")))?;
+        let mut p = prepare_verbose(&store, &home, &h, &[command], true, verbose).map_err(|e| LocalError::new("SSH_FAILED").with("detail", format!("{e:#}")))?;
         p.cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)]
         {
@@ -1091,6 +1104,248 @@ pub async fn run(store: Arc<Store>, home: PathBuf, h: SshHost, command: String, 
     })
     .await
     .map_err(|e| LocalError::from(anyhow::anyhow!(e)))?
+}
+
+// ---------------- 测试连接 ----------------
+
+/// 测试连接时在主机上运行的命令：sh、Windows 的 cmd 和 PowerShell 都认识，退出码都是 0。
+pub const TEST_COMMAND: &str = "echo looklook-ok";
+/// 测试连接最多等多久
+pub const TEST_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// 测试连接的结果：成功时说清连上了什么；失败时说清卡在哪一步、为什么、怎么办（界面按 `reason` 显示说明）。
+#[derive(Debug, Serialize)]
+pub struct TestReport {
+    pub ok: bool,
+    /// `ok` / `dns` / `refused` / `timeout` / `unreachable` / `closed` / `hostkey_changed` / `algo` /
+    /// `auth_method` / `auth_password` / `auth_key` / `auth_agent` / `no_keys` / `jump_inner` / `key_missing` / `key_perms` /
+    /// `key_format` / `passphrase` / `askpass` / `auth_timeout` / `sftp_only` / `remote_cmd` / `remote_output` / `command_timeout` / `unknown`
+    pub reason: &'static str,
+    /// 卡在哪一步：`connect`（建立 TCP 连接）/ `handshake`（SSH 握手）/ `auth`（登录）/ `command`（运行命令）/ `done`
+    pub stage: &'static str,
+    /// `user@host:port`
+    pub target: String,
+    /// 经过的跳板机名字
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    /// 这台主机的登录方式（`agent` / `key` / `password` / `jump`）
+    pub auth: String,
+    /// 服务器的 SSH 软件版本，如 `OpenSSH_9.6p1 Ubuntu-3ubuntu13.5`、`OpenSSH_for_Windows_9.5`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub server: Option<String>,
+    /// Windows 上的 OpenSSH 服务器
+    pub windows: bool,
+    /// 成功登录用的方式（`password`、`publickey` …）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method: Option<String>,
+    /// 服务器允许的登录方式
+    pub methods: Vec<String>,
+    /// ssh 试过的私钥个数
+    pub tried_keys: usize,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    /// ssh 的出错信息（去掉调试输出，最后几行）
+    pub message: String,
+    /// 完整的输出（`ssh -v` 的调试信息 + 命令输出），已去掉秘密
+    pub log: String,
+}
+
+fn is_debug(line: &str) -> bool {
+    line.starts_with("debug1:") || line.starts_with("debug2:") || line.starts_with("debug3:")
+}
+
+/// `ssh -v` 的第一行是本机 ssh 的版本（`OpenSSH_9.6p1 …, OpenSSL 3.0.13 …`），以及首次连接时的“已加入 known_hosts”提示：都不是错误
+fn is_noise(line: &str) -> bool {
+    let l = line.trim();
+    l.is_empty() || is_debug(l) || (l.starts_with("OpenSSH_") && (l.contains("SSL") || l.contains("LibreSSL"))) || l.starts_with("Warning: Permanently added")
+}
+
+/// 从 `ssh -v` 的输出判断连接卡在哪一步、为什么。
+pub fn diagnose(h: &SshHost, via: Option<String>, r: &RunResult) -> TestReport {
+    let err = r.stderr.as_str();
+    let low = err.to_ascii_lowercase();
+    let after = |pat: &str| err.lines().rev().find_map(|l| l.split_once(pat).map(|(_, v)| v.trim().to_string()));
+    let server = after("remote software version ").filter(|v| !v.is_empty());
+    let windows = server.as_deref().is_some_and(|v| v.to_ascii_lowercase().contains("windows"));
+    // `Authenticated to host ([1.2.3.4]:22) using "password".`
+    let method = after("Authenticated to ").and_then(|v| v.split_once("using ").map(|(_, m)| m.trim_matches(|c: char| c == '"' || c == '.' || c.is_whitespace()).to_string()));
+    let authed = method.is_some() || low.contains("authenticated to ");
+    let mut methods: Vec<String> = after("Authentications that can continue:")
+        .or_else(|| after("Permission denied (").map(|v| v.trim_end_matches([')', '.']).to_string()))
+        .map(|v| v.split(',').map(|m| m.trim().to_string()).filter(|m| !m.is_empty()).collect())
+        .unwrap_or_default();
+    methods.dedup();
+    // `Trying private key:` 对不存在的默认私钥也会打印；不存在的在前面记成 `identity file <路径> type -1`
+    let missing: Vec<&str> = err.lines().filter_map(|l| l.strip_prefix("debug1: identity file ")?.strip_suffix(" type -1")).collect();
+    let tried_keys = err
+        .lines()
+        .filter(|l| l.contains("Offering public key:") || l.split_once("Trying private key: ").is_some_and(|(_, p)| !missing.contains(&p.trim())))
+        .count();
+    let established = low.contains("connection established") || server.is_some();
+    let has = |pats: &[&str]| pats.iter().any(|p| low.contains(p));
+    let ok = r.exit_code == Some(0) && r.stdout.contains("looklook-ok");
+    let reason: &'static str = if ok {
+        "ok"
+    } else if r.timed_out {
+        if authed {
+            "command_timeout"
+        } else if established {
+            "auth_timeout"
+        } else {
+            "timeout"
+        }
+    } else if has(&["could not resolve hostname", "name or service not known", "nodename nor servname", "no such host is known", "temporary failure in name resolution"]) {
+        "dns"
+    } else if has(&["connection refused"]) {
+        "refused"
+    } else if has(&["no route to host", "network is unreachable", "host is unreachable"]) {
+        "unreachable"
+    } else if has(&["connection timed out", "operation timed out"]) && !established {
+        "timeout"
+    } else if has(&["remote host identification has changed", "host key verification failed", "host key for", "offending"]) {
+        "hostkey_changed"
+    } else if has(&["no matching host key type", "no matching key exchange", "no matching cipher", "no matching mac"]) {
+        "algo"
+    } else if has(&["unprotected private key file", "bad permissions"]) || (low.contains("load key") && low.contains("permission denied")) {
+        "key_perms"
+    } else if has(&["incorrect passphrase", "bad passphrase"]) {
+        "passphrase"
+    } else if has(&["no such identity", "not accessible: no such file"]) || (low.contains("load key") && low.contains("no such file")) {
+        "key_missing"
+    } else if low.contains("load key") && has(&["invalid format", "error in libcrypto"]) {
+        "key_format"
+    } else if has(&["ssh_askpass:", "can't open /dev/tty", "read_passphrase"]) {
+        "askpass"
+    } else if has(&["permission denied ("]) || (low.contains("permission denied") && !authed) {
+        // 外层已经登录了（只有跳板机代登会这样）：是跳板机上的 ssh 登录不了目标机
+        if authed && h.auth == "jump" {
+            "jump_inner"
+        } else {
+            let want: &[&str] = match h.auth.as_str() {
+                "password" => &["password", "keyboard-interactive"],
+                _ => &["publickey"],
+            };
+            if !methods.is_empty() && !methods.iter().any(|m| want.contains(&m.as_str())) {
+                "auth_method"
+            } else {
+                match h.auth.as_str() {
+                    "password" => "auth_password",
+                    "key" => "auth_key",
+                    _ if tried_keys == 0 => "no_keys",
+                    _ => "auth_agent",
+                }
+            }
+        }
+    } else if authed && has(&["allows sftp connections only"]) {
+        "sftp_only"
+    } else if authed && r.exit_code == Some(0) {
+        "remote_output"
+    } else if authed {
+        "remote_cmd"
+    } else if has(&["connection closed", "kex_exchange_identification", "connection reset", "ssh_exchange_identification", "broken pipe"]) {
+        "closed"
+    } else {
+        "unknown"
+    };
+    let stage = match reason {
+        "ok" => "done",
+        "dns" | "refused" | "unreachable" | "timeout" => "connect",
+        "closed" | "hostkey_changed" | "algo" => {
+            if established {
+                "handshake"
+            } else {
+                "connect"
+            }
+        }
+        "remote_cmd" | "remote_output" | "command_timeout" | "sftp_only" => "command",
+        "unknown" if authed => "command",
+        "unknown" if !established => "connect",
+        _ => "auth",
+    };
+    let message: Vec<&str> = err.lines().map(str::trim_end).filter(|l| !is_noise(l)).collect();
+    let message = message[message.len().saturating_sub(6)..].join("\n");
+    let mut log = r.stderr.trim_end().to_string();
+    if !r.stdout.trim().is_empty() {
+        log.push_str("\n\n# stdout\n");
+        log.push_str(r.stdout.trim_end());
+    }
+    TestReport {
+        ok,
+        reason,
+        stage,
+        target: format!("{}@{}:{}", h.user, h.host, h.port),
+        via,
+        auth: h.auth.clone(),
+        server,
+        windows,
+        method,
+        methods,
+        tried_keys,
+        exit_code: r.exit_code,
+        timed_out: r.timed_out,
+        message,
+        log,
+    }
+}
+
+/// 测试一台已保存的主机：用 `ssh -v` 运行 [`TEST_COMMAND`]，从输出里判断结果。
+pub async fn test(store: Arc<Store>, home: PathBuf, h: SshHost) -> Result<TestReport, LocalError> {
+    let via = list(&store).into_iter().find(|j| j.id == h.jump).map(|j| j.name);
+    let r = run_with(store, home, h.clone(), TEST_COMMAND.into(), TEST_TIMEOUT, true).await?;
+    Ok(diagnose(&h, via, &r))
+}
+
+/// 测试还没保存的表单（添加 / 修改主机时）：在临时的数据目录（`{home}/ssh/drafts/<随机>`）里照常保存一份再测，
+/// 测完删掉。临时目录里有现有主机和它们的密码 / 私钥（密文，加上同一把 `secret.key`），所以“留空 = 不修改”的密码、
+/// 已有的跳板机、顺带新建的跳板机都和正式保存后一样；经跳板机时 `looklook ssh-proxy` 也是从这个目录读。
+pub async fn test_draft(store: &Store, home: &Path, id: Option<String>, input: HostInput) -> Result<TestReport, LocalError> {
+    let drafts = home.join("ssh").join("drafts");
+    // 上次被强行结束留下的
+    if let Ok(rd) = std::fs::read_dir(&drafts) {
+        for e in rd.flatten() {
+            if e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|d| d > Duration::from_secs(600)) {
+                let _ = std::fs::remove_dir_all(e.path());
+            }
+        }
+    }
+    let dir = drafts.join(crate::util::random_id(12));
+    let result = draft_run(store, home, &dir, id, input).await;
+    let _ = std::fs::remove_dir_all(&dir);
+    result
+}
+
+async fn draft_run(store: &Store, home: &Path, dir: &Path, id: Option<String>, input: HostInput) -> Result<TestReport, LocalError> {
+    // 先确保正式的 secret.key 存在，再拷一份
+    cipher(home)?;
+    std::fs::create_dir_all(dir.join("ssh")).map_err(anyhow::Error::from)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
+    }
+    crate::util::write_private(&key_file(dir), &std::fs::read(key_file(home)).map_err(anyhow::Error::from)?)?;
+    let draft = Store::open(&dir.join("looklook.db"))?;
+    let hosts = list(store);
+    for h in &hosts {
+        for prefix in [SECRET_PREFIX, KEY_PREFIX] {
+            if let Some(v) = store.get::<String>(&format!("{prefix}{}", h.id))? {
+                draft.set(&format!("{prefix}{}", h.id), &v)?;
+            }
+        }
+    }
+    draft.set(HOSTS_KEY, &hosts)?;
+    let saved = save(&draft, dir, id.as_deref(), input)?;
+    test(Arc::new(draft), dir.to_path_buf(), saved.host).await
+}
+
+/// 主机卡片、AI 助手页上的快捷开关：只改“允许 AI 使用”。
+pub fn set_allow_ai(store: &Store, id: &str, allow: bool) -> Result<HostView, LocalError> {
+    let mut hosts = list(store);
+    let h = hosts.iter_mut().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
+    h.allow_ai = allow;
+    let h = h.clone();
+    store.set(HOSTS_KEY, &hosts)?;
+    Ok(HostView { has_secret: has_secret(store, &h.id), has_key: has_key(store, &h.id), host: h })
 }
 
 #[cfg(test)]
@@ -1340,6 +1595,73 @@ mod tests {
         assert_eq!(r.exit_code, Some(255));
         assert!(!r.timed_out && started.elapsed() < Duration::from_secs(15));
         assert!(r.stderr.to_ascii_lowercase().contains("refused"), "{}", r.stderr);
+    }
+
+    fn result(code: Option<i32>, stdout: &str, stderr: &str) -> RunResult {
+        RunResult { host: "h".into(), exit_code: code, stdout: stdout.into(), stderr: stderr.into(), truncated: false, timed_out: false }
+    }
+
+    #[test]
+    fn diagnose_names_the_failing_step() {
+        let mut h = SshHost { id: "a".into(), name: "win".into(), host: "cd.example.cn".into(), port: 22, user: "Administrator".into(), auth: "password".into(), key_path: String::new(), key_stored: false, jump: String::new(), allow_ai: false };
+        let pre = "OpenSSH_9.6p1 Ubuntu-3ubuntu13.5, OpenSSL 3.0.13 30 Jan 2024\ndebug1: Connecting to cd.example.cn [198.18.0.114] port 22.\ndebug1: Connection established.\ndebug1: Remote protocol version 2.0, remote software version OpenSSH_for_Windows_9.5\n";
+        // 登录成功：说清连上的是什么
+        let ok = diagnose(&h, None, &result(Some(0), "looklook-ok\r\n", &format!("{pre}debug1: Authenticated to cd.example.cn ([198.18.0.114]:22) using \"password\".\n")));
+        assert!(ok.ok && ok.windows && ok.stage == "done", "{ok:?}");
+        assert_eq!((ok.server.as_deref(), ok.method.as_deref()), (Some("OpenSSH_for_Windows_9.5"), Some("password")));
+        // 密码不对
+        let denied = format!("{pre}debug1: Authentications that can continue: publickey,password,keyboard-interactive\nAdministrator@cd.example.cn: Permission denied (publickey,password,keyboard-interactive).\n");
+        let r = diagnose(&h, None, &result(Some(255), "", &denied));
+        assert_eq!((r.reason, r.stage), ("auth_password", "auth"));
+        assert_eq!(r.methods, ["publickey", "password", "keyboard-interactive"]);
+        assert_eq!(r.message, "Administrator@cd.example.cn: Permission denied (publickey,password,keyboard-interactive).", "调试输出和版本行不算出错信息");
+        // 服务器不收密码
+        let r = diagnose(&h, None, &result(Some(255), "", &format!("{pre}u@h: Permission denied (publickey).\n")));
+        assert_eq!(r.reason, "auth_method");
+        // 系统密钥：一把钥匙都没有
+        h.auth = "agent".into();
+        assert_eq!(diagnose(&h, None, &result(Some(255), "", &denied)).reason, "no_keys");
+        let tried = denied.replace("debug1: Authentications", "debug1: Offering public key: /home/u/.ssh/id_ed25519 ED25519 SHA256:x\ndebug1: Authentications");
+        let r = diagnose(&h, None, &result(Some(255), "", &tried));
+        assert_eq!((r.reason, r.tried_keys), ("auth_agent", 1));
+        // 网络层
+        for (err, want, stage) in [
+            ("ssh: Could not resolve hostname nope.invalid: Name or service not known\n", "dns", "connect"),
+            ("ssh: connect to host 10.0.0.1 port 22: Connection refused\n", "refused", "connect"),
+            ("ssh: connect to host 10.0.0.1 port 22: Connection timed out\n", "timeout", "connect"),
+            ("debug1: Connection established.\nkex_exchange_identification: Connection closed by remote host\n", "closed", "handshake"),
+            ("@@@ WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED! @@@\nHost key verification failed.\n", "hostkey_changed", "connect"),
+            ("Load key \"/k\": incorrect passphrase supplied to decrypt private key\n", "passphrase", "auth"),
+        ] {
+            let r = diagnose(&h, None, &result(Some(255), "", err));
+            assert_eq!((r.reason, r.stage), (want, stage), "{err}");
+        }
+        // 登录了，但远程 shell 跑不了测试命令（比如只允许 sftp）
+        let r = diagnose(&h, None, &result(Some(1), "", &format!("{pre}debug1: Authenticated to h ([1.2.3.4]:22) using \"publickey\".\nThis service allows sftp connections only.\n")));
+        assert_eq!((r.reason, r.stage), ("sftp_only", "command"));
+        let mut t = result(None, "", pre);
+        t.timed_out = true;
+        assert_eq!(diagnose(&h, None, &t).reason, "auth_timeout");
+    }
+
+    #[tokio::test]
+    async fn draft_test_does_not_save_anything() {
+        if crate::shells::which("ssh").is_none() {
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let store = Store::memory().unwrap();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut i = input("draft");
+        i.host = "127.0.0.1".into();
+        i.port = port;
+        let r = test_draft(&store, tmp.path(), None, i.clone()).await.unwrap();
+        assert_eq!((r.ok, r.reason, r.stage), (false, "refused", "connect"), "{r:?}");
+        assert!(list(&store).is_empty(), "测试不保存");
+        assert_eq!(std::fs::read_dir(tmp.path().join("ssh/drafts")).unwrap().count(), 0, "临时目录删掉了");
+        // 表单填错照常报字段错误
+        i.host = "-oProxyCommand=sh".into();
+        assert_eq!(test_draft(&store, tmp.path(), None, i).await.unwrap_err().params["field"], "host");
     }
 
     #[test]

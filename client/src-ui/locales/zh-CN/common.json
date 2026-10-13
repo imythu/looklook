@@ -45,7 +45,8 @@
     "remote_ms": "{{ms}} ms",
     "remote_latency_hint": "往返 {{ms}} 毫秒（浏览器 → 中转 → 这台电脑）。超过 150 毫秒打字会感觉慢，可以在设置里换一条远程线路。",
     "files": "文件",
-    "ssh": "SSH 主机"
+    "ssh": "SSH 主机",
+    "ai": "AI 助手"
   },
   "unreachable": {
     "title": "连不上看看",
@@ -323,9 +324,9 @@
     "delete_body": "删除后，这个地址就打不开了。电脑上的网页本身不受影响。",
     "privacy": "这些地址只有你本人登录看看后才能打开，不会公开给其他人。",
     "mcp": {
-      "title": "让 AI 助手自动添加网页",
-      "enable": "允许 AI 助手添加网页",
-      "intro": "打开后，这台电脑上的 Codex、Claude Code、OpenCode、DSH 在开发时可以自己查看和添加本机网页：发现开发中的网站（比如 localhost:5173）就给出外面能打开的地址。AI 助手用单独的令牌连接，只能从这台电脑上连接，不能删除网页。",
+      "title": "MCP 接口",
+      "enable": "打开 MCP 接口",
+      "intro": "打开后，这台电脑上的 Codex、Claude Code、OpenCode、DSH 可以通过看看的 MCP 接口使用下面列出的工具：查看、添加本机网页，以及在你允许的 SSH 主机上运行命令。AI 助手用单独的令牌连接，只能从这台电脑上连接，不能删除网页，也拿不到 SSH 密码或私钥。",
       "skill": "AI 助手发现网页时",
       "skill_auto": "直接添加",
       "skill_ask": "先问我",
@@ -357,7 +358,8 @@
       "rotate_title": "换一个新令牌？",
       "rotate_body": "旧令牌马上失效。上面已经装好的 AI 助手会自动换成新令牌；手动配置的工具需要重新填写。",
       "rotated": "已换新令牌"
-    }
+    },
+    "mcp_moved": "想让 AI 助手自己查看、添加网页？在“AI 助手”页打开 MCP 接口："
   },
   "settings": {
     "title": "设置",
@@ -1035,21 +1037,19 @@
     "secret_saved": "已加密保存；留空表示不修改。",
     "secret_hint": "只在这台电脑上加密保存，不上传到看看服务器。",
     "allow_ai": "允许 AI 助手使用",
-    "allow_ai_hint": "打开后，Claude Code、Codex 等可以通过看看的 MCP 在这台主机上运行命令。看看替它们登录，它们看不到密码或私钥，返回的输出里也会去掉密码、私钥和常见令牌。",
+    "allow_ai_hint": "打开后，Claude Code、Codex 等可以通过看看的 MCP 接口在这台主机上运行命令。看看替它们登录，它们看不到密码或私钥，返回的输出里也会去掉密码、私钥和常见令牌。所有 AI 工具在“AI 助手”页统一查看和开关。",
     "saved": "已保存",
-    "ai_on": "AI 可用",
     "connect": "连接",
     "test": "测试连接",
     "test_ok": "连接正常",
     "test_failed": "连接失败",
-    "test_timeout": "连接超时（25 秒）",
     "empty_title": "还没有 SSH 主机",
     "empty_body": "把常用的服务器存在这里：一键打开 SSH 终端，不用每次输密码；也可以让 AI 助手安全地在上面运行命令。",
     "no_ssh": "这台电脑上没有找到 ssh 命令。请先安装 OpenSSH 客户端（Windows：设置 → 可选功能 → OpenSSH 客户端）。",
     "safety_title": "密码怎么保护",
     "safety_1": "密码、私钥口令和上传的私钥用这台电脑上的密钥加密后保存在看看的数据库里，不会上传到看看服务器。",
     "safety_2": "连接时 ssh 通过 SSH_ASKPASS 向看看要密码：只经过本机的一次性通道，不出现在命令行、环境变量、文件或终端输出里。",
-    "safety_3": "AI 助手只能用标了“允许 AI 使用”的主机，而且要先打开 MCP 接口：",
+    "safety_3": "AI 助手只能用打开了“允许 AI 助手使用”的主机，而且要先打开 MCP 接口：",
     "safety_4": "局限：AI 助手和看看以同一个系统用户运行，能读到这台电脑上你能读的文件（包括 ~/.ssh）。这里防的是密码被顺手带进对话、日志和截图；不要让不信任的程序在这台电脑上运行。",
     "key_source": "私钥从哪来",
     "key_local": "这台电脑上的文件",
@@ -1097,7 +1097,124 @@
     "jump_created": "已同时新建跳板机“{{name}}”，“{{host}}”经它连接",
     "jump_via": "经 {{name}}",
     "jump_via_hint": "先连上这台跳板机，再由它转到这台主机",
-    "save_both": "保存两台主机"
+    "save_both": "保存两台主机",
+    "ai_mcp_off": "MCP 接口未打开",
+    "ai_ssh_off": "SSH 工具已关闭",
+    "test_method": "{{method}} 登录",
+    "test_steps": "连接步骤",
+    "test_stale": "表单改过了，下面是改之前的测试结果。",
+    "test_methods": "服务器允许的登录方式：{{list}}",
+    "test_log": "完整日志（ssh -v）",
+    "stage": {
+      "connect": "建立连接",
+      "handshake": "SSH 握手",
+      "auth": "登录",
+      "command": "运行命令"
+    },
+    "diag_via": "这台主机经跳板机“{{via}}”连接：也可能是跳板机本身连不上，或跳板机到这台主机的网络不通。可以先测试跳板机。",
+    "diag_win": {
+      "password": "这是 Windows 服务器：用户名要填 Windows 账户名（用 Microsoft 账户登录的电脑可能要填邮箱，域账户填 域\\用户名）；密码是 Windows 登录密码，不是 PIN。",
+      "key": "这是 Windows 服务器：如果账户属于管理员组（Administrators），公钥要放在 C:\\ProgramData\\ssh\\administrators_authorized_keys（只允许 SYSTEM 和 Administrators 访问），而不是用户目录下的 .ssh\\authorized_keys。",
+      "shell": "这是 Windows 服务器：默认 shell 是 cmd 或 PowerShell，不是 bash，Linux 命令在上面跑不了。"
+    },
+    "diag": {
+      "unknown": {
+        "title": "连接失败",
+        "hint": "没认出具体原因，请看下面的出错信息和完整日志。"
+      },
+      "dns": {
+        "title": "找不到这个地址",
+        "hint": "这台电脑解析不了主机名：检查地址有没有拼错，或者这个域名只能在某个内网 / VPN 里解析。"
+      },
+      "refused": {
+        "title": "连接被拒绝",
+        "hint": "{{target}} 的这个端口上没有程序在监听：检查端口对不对、sshd 有没有运行（Windows：服务里的 OpenSSH SSH Server）、防火墙是否直接拒绝了。"
+      },
+      "timeout": {
+        "title": "连不上：没有响应",
+        "hint": "连接 {{target}} 一直没有回应：常见原因是防火墙 / 安全组没放行这个端口、地址不对，或者需要先连 VPN / 经跳板机。"
+      },
+      "unreachable": {
+        "title": "网络不通",
+        "hint": "到 {{target}} 没有可用的路由：这台电脑和那台主机不在同一个网络里，可能要先连 VPN，或者经跳板机连接。"
+      },
+      "closed": {
+        "title": "服务器断开了连接",
+        "hint": "TCP 连上了，但还没开始登录就被断开：这个端口可能不是 SSH 服务，或者你的 IP 被服务器拦了（fail2ban、白名单、连接数限制）。"
+      },
+      "hostkey_changed": {
+        "title": "服务器的身份变了",
+        "hint": "{{target}} 的主机密钥和 ~/.ssh/known_hosts 里记的不一样：可能是服务器重装过、IP 换给了别的机器，也可能是连接被人劫持。确认是正常变更后，运行 ssh-keygen -R 主机地址 删掉旧记录再连。"
+      },
+      "algo": {
+        "title": "加密算法谈不拢",
+        "hint": "这台电脑的 ssh 和服务器没有共同支持的算法（常见于很老的服务器或设备）。需要升级服务器的 OpenSSH，或在 ~/.ssh/config 里为它放开旧算法。"
+      },
+      "auth_method": {
+        "title": "服务器不允许这种登录方式",
+        "hint": "服务器不接受你选的登录方式，看下面列出的服务器允许的方式，改一下登录方式（比如服务器只允许 publickey 时要用私钥）。"
+      },
+      "auth_password": {
+        "title": "密码不对，或者不允许这个用户用密码登录",
+        "hint": "服务器拒绝了 {{target}} 的密码：检查用户名和密码；有的服务器禁止 root 用密码登录（PermitRootLogin），或者只给部分用户开了密码登录。"
+      },
+      "auth_key": {
+        "title": "服务器不接受这把私钥",
+        "hint": "私钥对应的公钥没有加到服务器上这个用户的 ~/.ssh/authorized_keys，或者用户名不对。"
+      },
+      "auth_agent": {
+        "title": "系统密钥都被拒绝了",
+        "hint": "ssh 试了这台电脑上的 {{n}} 把钥匙，服务器都不接受：把其中一把的公钥加到服务器的 authorized_keys，或者改用指定私钥 / 密码登录。"
+      },
+      "no_keys": {
+        "title": "这台电脑上没有可用的钥匙",
+        "hint": "选的是“系统密钥”，但 ssh-agent 和 ~/.ssh 里都没有私钥可试。改用私钥（上传或选文件）或密码登录。"
+      },
+      "jump_inner": {
+        "title": "跳板机登录不了目标主机",
+        "hint": "已经连上跳板机“{{via}}”，但在跳板机上 ssh 到 {{target}} 被拒绝：跳板机上这个用户的密钥没有加到目标主机，或者需要密码（跳板机代登不能输密码）。"
+      },
+      "key_missing": {
+        "title": "找不到私钥文件",
+        "hint": "私钥文件不存在或读不了，检查路径。"
+      },
+      "key_perms": {
+        "title": "私钥文件的权限不对",
+        "hint": "私钥文件只能由你自己读写，ssh 才肯用：运行 chmod 600 私钥文件（Windows 上去掉其他用户对它的访问权限）。"
+      },
+      "key_format": {
+        "title": "私钥格式认不出来",
+        "hint": "这个私钥文件 ssh 读不了：可能是 PuTTY 的 .ppk（要先用 PuTTYgen 导出为 OpenSSH 格式）或文件已损坏。"
+      },
+      "passphrase": {
+        "title": "私钥口令不对",
+        "hint": "私钥有口令保护，存的口令解不开它：修改主机，重新填私钥口令。"
+      },
+      "askpass": {
+        "title": "没能把密码交给 ssh",
+        "hint": "这台电脑的 ssh 没有向看看要密码（可能是 OpenSSH 版本太旧，不支持 SSH_ASKPASS_REQUIRE）。升级 OpenSSH 客户端，或改用私钥登录。"
+      },
+      "auth_timeout": {
+        "title": "登录时卡住了",
+        "hint": "连上了服务器，但登录一直没有完成：服务器可能要求额外的验证（两步验证、验证码），或在等待输入。这类主机暂时只能在 SSH 终端里手动登录。"
+      },
+      "sftp_only": {
+        "title": "这个账户只能用 SFTP",
+        "hint": "登录成功了，但服务器只允许这个账户传文件（ForceCommand internal-sftp），不能运行命令。"
+      },
+      "remote_cmd": {
+        "title": "登录成功，但命令运行失败",
+        "hint": "已经登录 {{target}}，但远程 shell 运行测试命令失败（退出码 {{code}}）：可能是账户的 shell 被设成了 nologin，或者服务器限制了能运行的命令。"
+      },
+      "remote_output": {
+        "title": "登录成功，但输出不对",
+        "hint": "已经登录 {{target}}，命令也正常结束了，但没看到预期的输出：可能是服务器配置了 ForceCommand，或者登录脚本吞掉了输出。"
+      },
+      "command_timeout": {
+        "title": "登录成功，但命令没有结束",
+        "hint": "已经登录，但测试命令 25 秒还没结束：可能是登录脚本（.bashrc 等）在等待输入。"
+      }
+    }
   },
   "view": {
     "label": "会话的显示方式",
@@ -1120,5 +1237,30 @@
     "empty_body": "在右边的列表里点一个会话，它会在这里打开；可以同时开好几个，在上面的标签之间切换（Alt+1…9）。",
     "empty_none": "先新建一个会话。",
     "missing_body": "这个终端已经被删除了，关掉这个标签即可。"
+  },
+  "ai": {
+    "title": "AI 助手",
+    "intro": "Claude Code、Codex 等 AI 助手通过 MCP 接口使用看看：这里装好接口，并看清、控制它们能做什么。",
+    "local_only": "MCP 接口的令牌和安装只能在这台电脑上直接打开管理台时查看、修改。下面的主机开关远程也能改。",
+    "tools_title": "AI 助手能用的工具",
+    "tools_intro": "MCP 接口已打开，AI 助手能用下面开着的工具。",
+    "tools_off": "MCP 接口没有打开，AI 助手现在什么工具都用不了。打开后才会用到下面这些。",
+    "group_pages": "本机网页",
+    "group_ssh": "SSH 主机",
+    "on": "可用",
+    "off": "未启用",
+    "ssh_switch": "允许 AI 助手使用 SSH 主机",
+    "ssh_on_hint": "AI 助手只能用下面打开了开关的主机。看看替它登录，它看不到密码或私钥，输出里的密码、私钥和常见令牌也会去掉。",
+    "ssh_off_hint": "已关闭：AI 助手看不到 SSH 工具，也不能在任何主机上运行命令（下面每台主机的开关保留，重新打开后照旧）。",
+    "ssh_switch_local": "这个总开关只能在这台电脑上直接打开管理台时修改。",
+    "no_hosts": "还没有保存 SSH 主机。去添加：",
+    "hosts_count": "{{total}} 台主机中，{{n}} 台允许 AI 使用",
+    "tool": {
+      "list_mappings": "列出已添加的本机网页和访问地址",
+      "find_mapping": "查某个端口有没有添加过（只查不改）",
+      "ensure_mapping": "给本机端口添加网页地址；已有的直接复用",
+      "list_ssh_hosts": "列出允许 AI 使用的 SSH 主机（只有名字和地址，没有密码）",
+      "ssh_run": "在允许的主机上运行一条命令，返回输出（去掉秘密）"
+    }
   }
 }

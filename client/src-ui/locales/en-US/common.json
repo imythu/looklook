@@ -45,7 +45,8 @@
     "remote_ms": "{{ms}} ms",
     "remote_latency_hint": "Round trip {{ms}} ms (browser → relay → this computer). Above 150 ms typing feels slow; you can switch the remote route in Settings.",
     "files": "Files",
-    "ssh": "SSH hosts"
+    "ssh": "SSH hosts",
+    "ai": "AI assistants"
   },
   "unreachable": {
     "title": "Can't reach Looklook",
@@ -323,9 +324,9 @@
     "delete_body": "After deleting, this address stops working. The page on your computer is not affected.",
     "privacy": "These addresses can only be opened by you after signing in to Looklook; they are not public.",
     "mcp": {
-      "title": "Let AI assistants add pages",
-      "enable": "Allow AI assistants to add pages",
-      "intro": "When on, Codex, Claude Code, OpenCode and DSH on this computer can look up and add local pages while you develop: when they notice a site in progress (such as localhost:5173) they give you an address you can open from anywhere. They connect with a separate token, only from this computer, and cannot delete pages.",
+      "title": "MCP interface",
+      "enable": "Turn on the MCP interface",
+      "intro": "When on, Codex, Claude Code, OpenCode and DSH on this computer can use the tools listed below through Looklook's MCP interface: look up and add local pages, and run commands on the SSH hosts you allow. They connect with a separate token, only from this computer; they cannot delete pages and never see SSH passwords or keys.",
       "skill": "When an AI assistant finds a web page",
       "skill_auto": "Add it",
       "skill_ask": "Ask me first",
@@ -357,7 +358,8 @@
       "rotate_title": "Switch to a new token?",
       "rotate_body": "The old token stops working immediately. AI assistants installed above switch to the new token automatically; tools set up by hand need the new one.",
       "rotated": "Switched to a new token"
-    }
+    },
+    "mcp_moved": "Want AI assistants to look up and add pages themselves? Turn on the MCP interface on the AI assistants page:"
   },
   "settings": {
     "title": "Settings",
@@ -1035,21 +1037,19 @@
     "secret_saved": "Saved encrypted. Leave blank to keep it.",
     "secret_hint": "Encrypted and kept on this computer only — never uploaded to Looklook’s servers.",
     "allow_ai": "Let AI assistants use this host",
-    "allow_ai_hint": "When on, Claude Code, Codex and others can run commands here through Looklook’s MCP. Looklook signs in for them, so they never see the password or key, and passwords, keys and common tokens are stripped from the output they get.",
+    "allow_ai_hint": "When on, Claude Code, Codex and others can run commands on this host through Looklook's MCP interface. Looklook signs in for them; they never see the password or key, and passwords, keys and common tokens are removed from the output. See and switch all AI tools on the AI assistants page.",
     "saved": "saved",
-    "ai_on": "AI allowed",
     "connect": "Connect",
     "test": "Test",
     "test_ok": "Connected",
     "test_failed": "Connection failed",
-    "test_timeout": "Timed out (25 s)",
     "empty_title": "No SSH hosts yet",
     "empty_body": "Save the servers you use: open an SSH terminal in one click without typing passwords, and optionally let AI assistants run commands there safely.",
     "no_ssh": "No ssh command found on this computer. Install the OpenSSH client first (Windows: Settings → Optional features → OpenSSH Client).",
     "safety_title": "How passwords are protected",
     "safety_1": "Passwords, key passphrases and uploaded keys are encrypted with a key on this computer and kept in Looklook’s database — never uploaded to Looklook’s servers.",
     "safety_2": "When connecting, ssh asks Looklook for the password through SSH_ASKPASS over a one-time local channel — it never appears in command lines, environment variables, files or terminal output.",
-    "safety_3": "AI assistants can only use hosts marked “Let AI assistants use this host”, and the MCP endpoint must be on:",
+    "safety_3": "AI assistants can only use hosts with \"Let AI assistants use\" on, and only once the MCP interface is on:",
     "safety_4": "Limits: AI assistants run as the same system user as Looklook and can read any file you can (including ~/.ssh). This keeps passwords out of chats, logs and screenshots; don’t run untrusted programs on this computer.",
     "key_source": "Where the key comes from",
     "key_local": "A file on this computer",
@@ -1097,7 +1097,124 @@
     "jump_created": "Also created the jump host “{{name}}”; “{{host}}” connects through it",
     "jump_via": "via {{name}}",
     "jump_via_hint": "Connects to this jump host first, then on to this host",
-    "save_both": "Save both hosts"
+    "save_both": "Save both hosts",
+    "ai_mcp_off": "MCP interface is off",
+    "ai_ssh_off": "SSH tools are off",
+    "test_method": "signed in with {{method}}",
+    "test_steps": "Connection steps",
+    "test_stale": "The form has changed; this result is from before the change.",
+    "test_methods": "The server accepts: {{list}}",
+    "test_log": "Full log (ssh -v)",
+    "stage": {
+      "connect": "Connect",
+      "handshake": "SSH handshake",
+      "auth": "Sign in",
+      "command": "Run command"
+    },
+    "diag_via": "This host is reached through the jump host \"{{via}}\": the jump host itself may be unreachable, or it may not be able to reach this host. Try testing the jump host first.",
+    "diag_win": {
+      "password": "This is a Windows server: use the Windows account name (a PC signed in with a Microsoft account may need the email address; a domain account needs DOMAIN\\user). The password is the Windows sign-in password, not the PIN.",
+      "key": "This is a Windows server: if the account is in the Administrators group, the public key must go in C:\\ProgramData\\ssh\\administrators_authorized_keys (accessible only to SYSTEM and Administrators), not in .ssh\\authorized_keys in the user folder.",
+      "shell": "This is a Windows server: the default shell is cmd or PowerShell, not bash, so Linux commands won't run there."
+    },
+    "diag": {
+      "unknown": {
+        "title": "Connection failed",
+        "hint": "The exact cause wasn't recognized. See the error message and full log below."
+      },
+      "dns": {
+        "title": "Address not found",
+        "hint": "This computer can't resolve the host name. Check the spelling, or whether the name only resolves inside a private network or VPN."
+      },
+      "refused": {
+        "title": "Connection refused",
+        "hint": "Nothing is listening on this port of {{target}}. Check the port, whether sshd is running (Windows: the OpenSSH SSH Server service), and whether a firewall rejects it."
+      },
+      "timeout": {
+        "title": "No response",
+        "hint": "{{target}} never answered. Usually a firewall or security group blocks the port, the address is wrong, or you need a VPN or jump host first."
+      },
+      "unreachable": {
+        "title": "Network unreachable",
+        "hint": "There is no route to {{target}}. The host is on a different network; you may need a VPN or a jump host."
+      },
+      "closed": {
+        "title": "The server closed the connection",
+        "hint": "The TCP connection opened but was closed before sign-in. The port may not be SSH, or the server blocks your IP (fail2ban, allow lists, connection limits)."
+      },
+      "hostkey_changed": {
+        "title": "The server's identity changed",
+        "hint": "The host key of {{target}} differs from the one in ~/.ssh/known_hosts. The server may have been reinstalled or its IP reassigned, or the connection may be intercepted. Once you've confirmed the change is expected, run ssh-keygen -R <host> to remove the old entry."
+      },
+      "algo": {
+        "title": "No common algorithms",
+        "hint": "This computer's ssh and the server share no supported algorithm (common with very old servers or devices). Upgrade the server's OpenSSH or allow legacy algorithms for it in ~/.ssh/config."
+      },
+      "auth_method": {
+        "title": "The server doesn't allow this sign-in method",
+        "hint": "The server doesn't accept the method you chose. See the methods it accepts below and switch (e.g. use a private key if it only accepts publickey)."
+      },
+      "auth_password": {
+        "title": "Wrong password, or password sign-in not allowed for this user",
+        "hint": "The server rejected the password for {{target}}. Check the user name and password; some servers forbid password sign-in for root (PermitRootLogin) or only allow it for some users."
+      },
+      "auth_key": {
+        "title": "The server doesn't accept this key",
+        "hint": "The matching public key isn't in ~/.ssh/authorized_keys for this user on the server, or the user name is wrong."
+      },
+      "auth_agent": {
+        "title": "All system keys were rejected",
+        "hint": "ssh tried {{n}} key(s) from this computer and the server accepted none. Add one of their public keys to the server's authorized_keys, or switch to a specific key or a password."
+      },
+      "no_keys": {
+        "title": "No keys on this computer",
+        "hint": "\"System keys\" is selected, but neither ssh-agent nor ~/.ssh has a key to try. Use a private key (upload or pick a file) or a password."
+      },
+      "jump_inner": {
+        "title": "The jump host can't sign in to the target",
+        "hint": "Connected to the jump host \"{{via}}\", but ssh from there to {{target}} was rejected. The jump host user's key isn't on the target, or a password is required (sign-in via jump host can't enter passwords)."
+      },
+      "key_missing": {
+        "title": "Key file not found",
+        "hint": "The key file doesn't exist or can't be read. Check the path."
+      },
+      "key_perms": {
+        "title": "Key file permissions are wrong",
+        "hint": "ssh only uses a key file that only you can read: run chmod 600 on it (on Windows, remove other users' access to it)."
+      },
+      "key_format": {
+        "title": "Key format not recognized",
+        "hint": "ssh can't read this key file. It may be a PuTTY .ppk (export it as OpenSSH from PuTTYgen first) or damaged."
+      },
+      "passphrase": {
+        "title": "Wrong key passphrase",
+        "hint": "The key is passphrase-protected and the saved passphrase doesn't unlock it. Edit the host and enter the passphrase again."
+      },
+      "askpass": {
+        "title": "Couldn't hand the password to ssh",
+        "hint": "This computer's ssh didn't ask Looklook for the password (OpenSSH may be too old to support SSH_ASKPASS_REQUIRE). Upgrade the OpenSSH client or use a private key."
+      },
+      "auth_timeout": {
+        "title": "Sign-in got stuck",
+        "hint": "Connected, but sign-in never finished. The server may require extra verification (two-factor, a code) or be waiting for input. For now, sign in to such hosts by hand in an SSH terminal."
+      },
+      "sftp_only": {
+        "title": "This account is SFTP-only",
+        "hint": "Signed in, but the server only lets this account transfer files (ForceCommand internal-sftp); it can't run commands."
+      },
+      "remote_cmd": {
+        "title": "Signed in, but the command failed",
+        "hint": "Signed in to {{target}}, but the remote shell failed to run the test command (exit code {{code}}). The account's shell may be nologin, or the server restricts commands."
+      },
+      "remote_output": {
+        "title": "Signed in, but the output was unexpected",
+        "hint": "Signed in to {{target}} and the command finished, but the expected output didn't appear. The server may use ForceCommand, or a login script swallows output."
+      },
+      "command_timeout": {
+        "title": "Signed in, but the command never finished",
+        "hint": "Signed in, but the test command hadn't finished after 25 seconds. A login script (.bashrc etc.) may be waiting for input."
+      }
+    }
   },
   "view": {
     "label": "How to show sessions",
@@ -1120,5 +1237,30 @@
     "empty_body": "Click a session in the list on the right to open it here. Open several and switch between the tabs above (Alt+1…9).",
     "empty_none": "Create a session first.",
     "missing_body": "This terminal has been deleted. You can close this tab."
+  },
+  "ai": {
+    "title": "AI assistants",
+    "intro": "AI assistants such as Claude Code and Codex use Looklook through its MCP interface. Set the interface up here and see and control what they can do.",
+    "local_only": "The MCP token and installation can only be viewed and changed when the console is opened directly on this computer. The host switches below also work remotely.",
+    "tools_title": "Tools AI assistants can use",
+    "tools_intro": "The MCP interface is on; AI assistants can use the tools that are on below.",
+    "tools_off": "The MCP interface is off, so AI assistants can't use any tools right now. The tools below apply once it is on.",
+    "group_pages": "Local pages",
+    "group_ssh": "SSH hosts",
+    "on": "Available",
+    "off": "Off",
+    "ssh_switch": "Let AI assistants use SSH hosts",
+    "ssh_on_hint": "AI assistants can only use the hosts switched on below. Looklook signs in for them; they never see passwords or keys, and passwords, keys and common tokens are removed from the output.",
+    "ssh_off_hint": "Off: AI assistants don't see the SSH tools and can't run commands on any host. The per-host switches below are kept for when you turn this back on.",
+    "ssh_switch_local": "This master switch can only be changed when the console is opened directly on this computer.",
+    "no_hosts": "No SSH hosts saved yet. Add one:",
+    "hosts_count": "{{n}} of {{total}} hosts allowed for AI",
+    "tool": {
+      "list_mappings": "List the local pages already added and their addresses",
+      "find_mapping": "Check whether a port already has a page (read-only)",
+      "ensure_mapping": "Add an address for a local port, reusing an existing one",
+      "list_ssh_hosts": "List the SSH hosts allowed for AI (names and addresses only, no passwords)",
+      "ssh_run": "Run one command on an allowed host and return the output (secrets removed)"
+    }
   }
 }

@@ -1096,10 +1096,38 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .ssh-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: auto; }
 .ssh-card-tools { display: inline-flex; flex: none; margin: -6px -8px 0 0; align-self: flex-start; }
 .ssh-card-tools .btn-icon { width: 34px; min-height: 34px; color: var(--muted); }
-.ssh-test { padding: 8px 10px; border-radius: 10px; font-size: 13px; }
-.ssh-test.ok { background: var(--ok-soft); color: var(--ok); }
-.ssh-test.bad { background: var(--danger-soft); color: var(--danger); }
-.ssh-test pre { margin: 0; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ssh-test { padding: 10px 12px; border-radius: 10px; font-size: 13px; }
+.ssh-test.ok { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; background: var(--ok-soft); color: var(--ok); }
+.ssh-test.bad { display: grid; gap: 6px; background: var(--danger-soft); color: var(--text); }
+.ssh-test p { margin: 0; line-height: 1.55; }
+.ssh-test-title { color: var(--danger); font-size: 14px; }
+.ssh-test pre { margin: 0; padding: 6px 8px; border-radius: 8px; background: var(--panel); font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.ssh-steps { display: flex; flex-wrap: wrap; gap: 4px 6px; margin: 0 0 2px; padding: 0; list-style: none; font-size: 12px; color: var(--muted); }
+.ssh-steps li { display: inline-flex; align-items: center; gap: 6px; }
+.ssh-steps li + li::before { content: "›"; color: var(--muted); }
+.ssh-steps li.done { color: var(--ok); }
+.ssh-steps li.done::after { content: "✓"; }
+.ssh-steps li.fail { color: var(--danger); font-weight: 600; }
+.ssh-steps li.fail::after { content: "✕"; }
+.ssh-test-log summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+.ssh-test-log[open] summary { margin-bottom: 6px; }
+.ssh-test-log pre { max-height: 260px; overflow: auto; margin-bottom: 6px; }
+.ssh-test-stale { opacity: .65; }
+.ssh-test-stale > p { margin: 0 0 4px; }
+.ssh-dialog-test { margin-right: auto; }
+.ssh-ai-quick { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 10px; background: var(--panel-2); font-size: 14px; }
+.ssh-ai-quick > svg { flex: none; color: var(--muted); }
+.ssh-ai-off { margin-left: 8px; }
+
+/* ---------- AI 助手页：工具清单、主机开关 ---------- */
+.ai-group { display: grid; gap: 8px; padding: 12px 0; border-top: 1px solid var(--line); }
+.ai-group-head { display: flex; align-items: center; gap: 8px; }
+.ai-group p { margin: 0; }
+.ai-tools { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.ai-tools li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.ai-tools li.off, .ai-hosts li.off { opacity: .5; }
+.ai-tools code { padding: 1px 6px; border-radius: 6px; background: var(--panel-2); }
+.ai-hosts li > span { display: flex; flex-direction: column; }
 .ssh-safety { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
 
 /* ---------- 会话页：视图切换、搜索、列表视图 ---------- */

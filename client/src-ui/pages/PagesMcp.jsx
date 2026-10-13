@@ -1,4 +1,5 @@
-// 本机网页 → AI 助手：打开 MCP 接口后，Codex / Claude Code / OpenCode / DSH 在开发时可以自己查看、添加本机网页。
+// AI 助手页的 MCP 接口：打开后，Codex / Claude Code / OpenCode / DSH 可以自己查看、添加本机网页，
+// 在允许 AI 使用的 SSH 主机上运行命令（工具清单和开关见 Ai.jsx）。
 // 令牌和配置都只在这台机器上；只有直接在本机（或允许的局域网）打开管理台时显示。
 import { Bot, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -38,7 +39,8 @@ function AgentRow({ a, skill, enabled, busy, onInstall, onRemove }) {
   );
 }
 
-export default function McpCard() {
+/** onChange：开关、安装等改动之后（AI 助手页据此刷新工具清单） */
+export default function McpCard({ onChange }) {
   const { t } = useTranslation();
   const toast = useToast();
   const confirm = useConfirm();
@@ -57,6 +59,7 @@ export default function McpCard() {
     setBusy(true);
     try {
       setView(await fn());
+      onChange?.();
       if (done) toast(done);
     } catch (e) {
       toast(errorText(t, e), 'error');

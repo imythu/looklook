@@ -41,6 +41,8 @@ pub struct McpConfig {
     pub enabled: bool,
     /// 只存在本机数据库；关闭时保留，重新打开继续用（已装好的配置不用重装）
     pub token: String,
+    /// 关掉 SSH 工具（`list_ssh_hosts`、`ssh_run`）：不出现在工具列表里，调用也拒绝。默认开着，但只能用标了“允许 AI 使用”的主机
+    pub ssh_disabled: bool,
 }
 
 impl McpConfig {
@@ -143,7 +145,7 @@ async fn dispatch(app: &App, msg: Value) -> Option<Value> {
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": tool_defs() }),
+        "tools/list" => json!({ "tools": tool_defs(!McpConfig::load(&app.store).ssh_disabled) }),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -166,9 +168,37 @@ fn tool_result(v: Value, is_error: bool) -> Value {
 const INSTRUCTIONS: &str = "Looklook publishes web pages running on this computer (e.g. a dev server on localhost:5173) at the user's private Looklook address, \
 so they can open them from a phone or another computer. Only the signed-in owner can open these addresses. \
 Use find_mapping to check whether a port already has an address, ensure_mapping to create one or reuse the existing one, list_mappings to see all. \
-Each port has at most one mapping; the account has a small limit (usually 10). Looklook forwards to 127.0.0.1 only.";
+Each port has at most one mapping; the account has a small limit (usually 10). Looklook forwards to 127.0.0.1 only. \
+If list_ssh_hosts and ssh_run are available, you may also run commands on SSH servers the user saved in Looklook and allowed for AI; \
+Looklook logs in for you, so never ask for passwords or keys. Some hosts run Windows (cmd or PowerShell), not a POSIX shell.";
 
-fn tool_defs() -> Value {
+/// SSH 工具的名字（总开关关掉时从工具列表里拿掉）
+const SSH_TOOLS: [&str; 2] = ["list_ssh_hosts", "ssh_run"];
+
+/// 给管理台“AI 助手”页列出的工具：名字和分组（`pages` / `ssh`），说明由界面翻译。
+pub fn tool_names() -> Value {
+    let all = tool_defs(true);
+    let items = all.as_array().map(Vec::as_slice).unwrap_or_default();
+    Value::Array(
+        items
+            .iter()
+            .filter_map(|t| t["name"].as_str())
+            .map(|n| json!({ "name": n, "group": if SSH_TOOLS.contains(&n) { "ssh" } else { "pages" } }))
+            .collect(),
+    )
+}
+
+fn tool_defs(ssh: bool) -> Value {
+    let mut defs = all_tool_defs();
+    if !ssh {
+        if let Some(a) = defs.as_array_mut() {
+            a.retain(|t| !t["name"].as_str().is_some_and(|n| SSH_TOOLS.contains(&n)));
+        }
+    }
+    defs
+}
+
+fn all_tool_defs() -> Value {
     let port = json!({ "type": "integer", "minimum": 1, "maximum": 65535, "description": "Local TCP port of the HTTP server, e.g. 5173 for http://localhost:5173" });
     json!([
         {
@@ -247,6 +277,7 @@ fn explain(code: &str) -> &'static str {
         "TUNNEL_LIMIT_REACHED" => "The account already has the maximum number of mappings. Ask the user which one to delete in the Looklook console (Local pages).",
         "TUNNEL_PORT_INVALID" => "The port must be between 1 and 65535.",
         "VALIDATION_FAILED" => "The name is invalid (1-32 characters, no control characters).",
+        "SSH_AI_DISABLED" => "The user has turned off SSH access for AI assistants in the Looklook console (AI assistants page). Do not retry; tell the user if they need it.",
         "SSH_HOST_NOT_ALLOWED" => "No SSH host with that name is available to AI assistants. Call list_ssh_hosts; the user can allow more hosts in the Looklook console (SSH hosts).",
         "SSH_MISSING" => "The OpenSSH client (ssh) is not installed on this computer.",
         "SSH_FAILED" => "Looklook could not start the SSH connection.",
@@ -272,6 +303,7 @@ async fn call_tool(app: &App, name: &str, args: &Value) -> Result<Value, ToolErr
             let (t, created, reenabled) = ensure(app, port, &name).await?;
             Ok(json!({ "port": port, "mapping": view(&t), "created": created, "reused": !created, "re_enabled": reenabled, "local": probe(port).await }))
         }
+        n if SSH_TOOLS.contains(&n) && McpConfig::load(&app.store).ssh_disabled => Err(LocalError::new("SSH_AI_DISABLED").into()),
         "list_ssh_hosts" => {
             let all = crate::ssh::list(&app.store);
             let via = |h: &crate::ssh::SshHost| all.iter().find(|j| j.id == h.jump).map(|j| j.name.clone());
@@ -389,11 +421,23 @@ mod tests {
         let t = generate_token();
         assert!(t.starts_with("llmcp_") && t.len() == 38);
         assert_ne!(t, generate_token());
-        let c = McpConfig { enabled: true, token: t.clone() };
+        let c = McpConfig { enabled: true, token: t.clone(), ..Default::default() };
         assert!(c.token_matches(&t));
         assert!(!c.token_matches("llmcp_x"));
-        assert!(!McpConfig { enabled: false, token: t.clone() }.token_matches(&t));
-        assert!(!McpConfig { enabled: true, token: String::new() }.token_matches(""));
+        assert!(!McpConfig { enabled: false, token: t.clone(), ..Default::default() }.token_matches(&t));
+        assert!(!McpConfig { enabled: true, token: String::new(), ..Default::default() }.token_matches(""));
+    }
+
+    #[test]
+    fn ssh_switch_hides_ssh_tools() {
+        let names = |v: Value| v.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert!(names(tool_defs(true)).contains(&"ssh_run".to_string()));
+        let off = names(tool_defs(false));
+        assert!(!off.iter().any(|n| SSH_TOOLS.contains(&n.as_str())) && off.contains(&"ensure_mapping".to_string()));
+        assert_eq!(tool_names().as_array().unwrap().iter().filter(|t| t["group"] == "ssh").count(), 2);
+        // 旧版本存的配置没有这个字段：SSH 工具照旧可用
+        let old: McpConfig = serde_json::from_str(r#"{"enabled":true,"token":"x"}"#).unwrap();
+        assert!(!old.ssh_disabled);
     }
 
     #[test]
