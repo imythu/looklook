@@ -1,12 +1,13 @@
 // 看看客户端管理台。未登录时只显示登录页；登录后左侧菜单（手机为抽屉）：终端、文件、SSH 主机、本机网页、系统、设置、账户。
 // 终端页 /t/{id} 占满整个窗口。界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, LogOut, Menu, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
+import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, History as HistoryIcon, LogOut, Menu, Monitor, MonitorSmartphone, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Account from './pages/Account.jsx';
 import AiPage from './pages/Ai.jsx';
 import Files from './pages/Files.jsx';
+import History from './pages/History.jsx';
 import Login from './pages/Login.jsx';
 import Pages from './pages/Pages.jsx';
 import Settings from './pages/Settings.jsx';
@@ -70,6 +71,7 @@ export function SafetyNote({ full = false }) {
 
 const NAV = [
   { to: '/', icon: SquareTerminal, key: 'nav.terminals' },
+  { to: '/history', icon: HistoryIcon, key: 'nav.history' },
   { to: '/files', icon: FolderOpen, key: 'nav.files' },
   { to: '/ssh', icon: Server, key: 'nav.ssh' },
   { to: '/pages', icon: Globe, key: 'nav.pages' },
@@ -79,7 +81,7 @@ const NAV = [
   { to: '/account', icon: UserRound, key: 'nav.account' },
 ];
 // 按电脑的页面：多台电脑时顶栏显示电脑切换（终端页合并显示所有电脑，账户页不分电脑）
-const DEVICE_PAGES = ['/files', '/ssh', '/pages', '/ai', '/system', '/settings'];
+const DEVICE_PAGES = ['/history', '/files', '/ssh', '/pages', '/ai', '/system', '/settings'];
 const TERM = /^\/t\/([a-z2-7]{8})$/;
 const isKnown = (p) => NAV.some((x) => x.to === p) || TERM.test(p);
 
@@ -146,6 +148,41 @@ function useRemoteLatency(enabled) {
     };
   }, [enabled]);
   return ms;
+}
+
+/** 桌面应用（Tauri）注入的信息：本机管理台地址。浏览器里打开时没有。 */
+const DESKTOP = typeof window !== 'undefined' ? window.__LOOKLOOK_DESKTOP__ ?? null : null;
+
+/**
+ * 桌面应用里切换“本机 / 多台电脑”：本机是这台电脑自己的管理台；多台电脑在同一个窗口里打开专属地址，
+ * 和手机上一样能看到、切换所有登录的电脑。浏览器里打开时不显示（网页本身就是其中一种）。
+ */
+function DesktopMode() {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  if (!DESKTOP?.console) return null;
+  const remote = status.access === 'remote';
+  const home = status.account.session?.user_host_url;
+  const go = (url) => url && window.location.assign(url);
+  const relayOk = status.relay?.state === 'connected';
+  return (
+    <div className="seg desktop-mode" role="group" aria-label={t('desktop_mode.label')}>
+      <button type="button" aria-pressed={!remote} onClick={() => remote && go(DESKTOP.console)} title={t('desktop_mode.local_hint')}>
+        <Monitor size={15} aria-hidden="true" />
+        <span className="hide-narrow">{t('desktop_mode.local')}</span>
+      </button>
+      <button
+        type="button"
+        aria-pressed={remote}
+        disabled={!remote && (!home || !relayOk)}
+        onClick={() => !remote && go(home)}
+        title={!remote && !relayOk ? t('desktop_mode.multi_offline') : t('desktop_mode.multi_hint')}
+      >
+        <MonitorSmartphone size={15} aria-hidden="true" />
+        <span className="hide-narrow">{t('desktop_mode.multi')}</span>
+      </button>
+    </div>
+  );
 }
 
 const SLOW_MS = 150;
@@ -269,7 +306,7 @@ function SideNav({ open, onClose }) {
             <Bug size={19} aria-hidden="true" />
             {t('report.title')}
           </button>
-          <a className="side-link" href={webUrl(status, '/home')} target="_blank" rel="noopener noreferrer">
+          <a className="side-link" href={webUrl(status, '/')} target="_blank" rel="noopener noreferrer">
             <ExternalLink size={19} aria-hidden="true" />
             {t('nav.web')}
           </a>
@@ -306,6 +343,7 @@ function ConsoleLayout({ path, stale, children }) {
           </Link>
         </span>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
+          <DesktopMode />
           {devices.multi && <DeviceSwitcher perDevice={switcher} helpUrl={webUrl(status, '/docs/faq')} />}
           {status.access === 'remote' && <RemoteBadge narrow={devices.multi} />}
           {status.access !== 'remote' && !lanPage && <RelayPill />}
@@ -453,7 +491,7 @@ function Shell() {
     // 换了登录（退出后重新登录）时重置终端页。远程打开时状态来自选中的那台电脑，选中的电脑一变 device_id 就变，
     // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
     const login = remote ? 'remote' : status.account.session?.device_id;
-    const page = { '/': <Terminals key={login} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
+    const page = { '/': <Terminals key={login} />, '/history': <History />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
     body = (
       <ConsoleLayout path={path} stale={devices.multi && statusDevice !== devices.selected}>
         {page}

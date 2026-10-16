@@ -46,7 +46,144 @@
     "remote_latency_hint": "Round trip {{ms}} ms (browser → relay → this computer). Above 150 ms typing feels slow; you can switch the remote route in Settings.",
     "files": "Files",
     "ssh": "SSH hosts",
-    "ai": "AI assistants"
+    "ai": "AI tools & access",
+    "history": "Conversations"
+  },
+  "composer": {
+    "label": "Composer",
+    "toggle": "Composer (write first, then send it to the terminal in one go)",
+    "placeholder": "Write here, then send it to the terminal. Ctrl+Enter sends",
+    "placeholder_touch": "Write here, then send it to the terminal. Your keyboard's voice key works too",
+    "submit": "Press Enter after sending",
+    "submit_hint": "Press Enter once after sending so the AI assistant starts right away; turn off to only fill it in and press Enter yourself",
+    "send": "Send",
+    "send_hint": "Send to the terminal in one go (Ctrl+Enter)",
+    "close": "Close composer",
+    "voice": "Voice input",
+    "voice_hint": "Voice input (browser speech recognition; if it doesn't work, use your keyboard's voice key)",
+    "voice_stop": "Stop voice input",
+    "voice_denied": "No microphone permission. Allow it in the browser, or use your keyboard's voice key.",
+    "voice_failed": "The browser's speech recognition couldn't connect (Chrome needs Google's service). Use your keyboard's voice key instead."
+  },
+  "history": {
+    "title": "Conversations",
+    "tool": "Tool",
+    "intro": "Browse past conversations from Codex, DSH and Claude Code on this computer (read-only, nothing is changed). Only the selected tool's conversations are listed. Continue in a terminal, or move one to another tool.",
+    "list": "Conversation list",
+    "pick_title": "Pick a conversation",
+    "pick_body": "Choose one on the left to read it here. Tool calls are collapsed; open one to see its arguments and result.",
+    "back": "Back to the list",
+    "count": "{{n}} items",
+    "skipped": "This conversation is long; only the latest part is shown ({{n}} earlier items).",
+    "user": "You",
+    "assistant": "Assistant",
+    "tool_error": "Error",
+    "tool_no_result": "No result",
+    "arguments": "Arguments",
+    "result": "Result",
+    "empty_output": "(no output)",
+    "clipped": "Too long; only the beginning is shown.",
+    "resume": "Continue in a terminal",
+    "resume_hint": "Open a new Codex terminal that continues this conversation (codex resume)",
+    "migrate": "Move to {{tool}}",
+    "migrate_hint": "Copy it into {{tool}} and continue there (the original is unchanged)",
+    "migrated_dsh": "Moved to DSH; open it from DSH's session list",
+    "migrate_any": "Move to another tool",
+    "migrate_any_hint": "Pick a target tool and move this conversation there",
+    "dsh_no_tui": "Continuing in a terminal needs the DSH command-line version (the desktop app's bundled one has no terminal interface). Install it from New session → DSH (terminal), or open this conversation in the DSH desktop app."
+  },
+  "convo": {
+    "button": "Move conversation",
+    "button_hint": "Move a conversation to another AI tool (Codex, DSH, Claude Code) and keep chatting",
+    "title": "Move a conversation",
+    "from": "From",
+    "intro": "Pick a conversation and move it to another AI tool to continue there. Moving copies it; the original is never changed.",
+    "search": "Search titles and folders",
+    "sessions": "Conversations",
+    "empty": "No {{tool}} conversations on this computer yet.",
+    "no_match": "No matching conversations.",
+    "preview": "{{n}} messages and tool records will carry over; you can continue in {{tool}}.",
+    "dropped": "Not carried over:",
+    "sep": ", ",
+    "synthesized": "{{n}} tool calls had no result in the original and are marked as \"no result recorded\".",
+    "cwd": "Working folder",
+    "cwd_hint": "The new conversation continues in this folder; defaults to the original's.",
+    "submit": "Move to {{tool}}",
+    "opened": "Moved; continuing in {{tool}}",
+    "done_dsh": "Moved to DSH",
+    "done_dsh_hint": "It's in the DSH web session list. Reload DSH's page if it's running; restart DSH if the conversation doesn't show up.",
+    "resume_cmd": "Continue in a terminal",
+    "kind": {
+      "reasoning": "reasoning",
+      "instructions": "system / developer prompts",
+      "injected_context": "context injected by the tool",
+      "image": "images",
+      "file": "attachments",
+      "compaction_summary": "compaction summaries",
+      "tool_output_media": "images in tool output",
+      "other_content": "other content",
+      "duplicate_tool_call": "duplicate tool calls",
+      "orphan_tool_result": "tool results without a call",
+      "agent_message": "sub-agent messages",
+      "other": "other ({{kind}})"
+    },
+    "to": "Move to",
+    "registered": "added by you",
+    "target": {
+      "ok": "Supported",
+      "source": "Source",
+      "missing": "Folder missing",
+      "soon": "Coming soon"
+    },
+    "register": "Add another AI tool",
+    "unregister": "Remove {{name}}",
+    "unregister_body": "It is only removed from this list; no conversations in that folder are deleted.",
+    "unregister_confirm": "Remove",
+    "preview_n": "{{n}} messages and tool records will be moved.",
+    "pick_target": "Pick a target tool",
+    "done_title": "Moved to {{tool}}",
+    "done_hint": "{{n}} entries moved. Open it in that tool to continue.",
+    "again": "Move another",
+    "reg": {
+      "title": "Add an AI tool",
+      "intro": "Once added, its conversations show up as migration sources and targets. You can add several folders for the same tool, e.g. personal and work accounts. Tools that are not supported yet can be added now and start working once supported.",
+      "kind": "Tool",
+      "name": "Display name",
+      "name_hint": "Defaults to the tool name",
+      "name_ph": "e.g. {{tool}} (work)",
+      "home": "Data folder",
+      "home_hint": "Where the tool keeps its conversations, e.g. ~/.codex, ~/.dsh, ~/.claude",
+      "bin": "Program path (optional)",
+      "bin_hint": "Leave empty to use the one on PATH",
+      "check": "Check",
+      "sessions": "{{n}} conversations in this folder",
+      "dir_ok": "Folder is usable",
+      "program": "Program found: {{path}}",
+      "no_program": "Program not found (you can still add it)",
+      "export": "Move its conversations out",
+      "import": "Move others in",
+      "yes": "Supported",
+      "soon": "Coming soon",
+      "submit": "Add",
+      "saved": "Added {{name}}",
+      "err": {
+        "home_absolute": "Enter the full folder path.",
+        "home_not_dir": "This folder does not exist.",
+        "home_duplicate": "This folder is already listed.",
+        "name_too_long": "Name is limited to 40 characters.",
+        "bin_not_file": "The program path is not a file.",
+        "harness_too_many": "Too many tools added; remove some first.",
+        "other": "Something is wrong with the input."
+      }
+    }
+  },
+  "desktop_mode": {
+    "label": "This computer / All computers",
+    "local": "This computer",
+    "local_hint": "Manage only this computer",
+    "multi": "All computers",
+    "multi_hint": "Open your personal address in this window to see and switch between all your signed-in computers (sign in to Looklook the first time)",
+    "multi_offline": "Remote connection isn't up yet, so you can't switch to all computers right now"
   },
   "unreachable": {
     "title": "Can't reach Looklook",
@@ -181,6 +318,10 @@
     "custom": {
       "title": "Custom command",
       "desc": "Run a command you write on start"
+    },
+    "dsh_tui": {
+      "title": "DSH (terminal)",
+      "desc": "DeepSeek Harness in a terminal"
     }
   },
   "instance": {
@@ -194,6 +335,9 @@
     "start_open": "Start and open",
     "stop": "Stop",
     "edit": "Edit",
+    "duplicate": "Duplicate terminal",
+    "duplicate_name": "{{name}} copy",
+    "duplicated": "Duplicated as \"{{name}}\"",
     "restart": "Restart",
     "new_window": "Open in new window",
     "logs": "View logs",
@@ -279,7 +423,17 @@
     "job_ok": "{{tool}} is installed",
     "job_failed": "Installing {{tool}} failed",
     "job_failed_hint": "Check the error above; for network problems, try another download source.",
-    "retry": "Retry"
+    "retry": "Retry",
+    "locate_open": "Already installed {{tool}}? Point to it manually",
+    "locate_label": "Where {{tool}} is",
+    "locate_hint": "Enter the program file (e.g. {{exe}}.exe / {{exe}}.cmd) or the folder it is in, or click Browse to pick the folder.",
+    "locate_save": "Save and check again",
+    "locate_not_found": "Could not find the {{tool}} program ({{exe}}) there. Pick the folder that contains it, or enter the full path of the program file.",
+    "locate_using": "{{tool}} uses the location you set:",
+    "locate_change": "Change",
+    "locate_auto": "Go back to automatic detection",
+    "dsh_no_tui": "This DSH has no terminal interface",
+    "dsh_no_tui_hint": "The DSH found is the command line bundled with the desktop app ({{path}}), which only has the web interface. Install the DSH command-line version (one click below) to use it in a terminal, or point to where it is installed."
   },
   "term": {
     "back": "Back",
@@ -322,7 +476,28 @@
     "enabled": "Enabled",
     "delete_title": "Delete \"{{name}}\"?",
     "delete_body": "After deleting, this address stops working. The page on your computer is not affected.",
-    "privacy": "These addresses can only be opened by you after signing in to Looklook; they are not public.",
+    "privacy": "These addresses can only be opened by you after signing in to Looklook; they are not public. If you share one temporarily with a specific account, that account can open it until the share expires.",
+    "share": {
+      "button": "Share temporarily",
+      "title": "Share “{{name}}” temporarily",
+      "warn_title": "Security warning: sharing hands this service on your computer to someone else",
+      "warn_body": "Once they sign in to their own Looklook account, they can open and use this page (localhost:{{port}} on this computer) just like you, including everything the page can do: submit forms, call APIs, read and change data. Only share with people you trust; don't share pages that are signed in, admin panels, file managers or anything that can run commands; revoke as soon as you're done.",
+      "current": "Currently shared with",
+      "until": "Expires {{until}} ({{left}})",
+      "revoke": "Revoke",
+      "revoked": "Stopped sharing with {{username}}; pages they have open stop working too",
+      "full": "A page can be shared with at most {{max}} people at a time. Revoke one first.",
+      "username": "Their Looklook username",
+      "username_hint": "They need a Looklook account. Only that account can open the page after signing in; everyone else still can't.",
+      "hours": "Valid for",
+      "hours_1": "1 hour",
+      "hours_24": "1 day",
+      "hours_72": "3 days",
+      "hours_168": "7 days (maximum)",
+      "ack": "I understand: they can use everything this page does until it expires.",
+      "submit": "Share",
+      "done": "Shared with {{username}} until {{until}}. Send them the address below; they open it after signing in to their own Looklook account:"
+    },
     "mcp": {
       "title": "MCP interface",
       "enable": "Turn on the MCP interface",
@@ -359,7 +534,7 @@
       "rotate_body": "The old token stops working immediately. AI assistants installed above switch to the new token automatically; tools set up by hand need the new one.",
       "rotated": "Switched to a new token"
     },
-    "mcp_moved": "Want AI assistants to look up and add pages themselves? Turn on the MCP interface on the AI assistants page:"
+    "mcp_moved": "Want AI assistants to look up and add pages themselves? Turn on the MCP interface on the AI tools & access page:"
   },
   "settings": {
     "title": "Settings",
@@ -871,7 +1046,8 @@
     "uploading": "Uploading {{n}} files · {{pct}}%",
     "uploaded": "Uploaded {{n}} files",
     "drop": "Drop to upload to {{dir}}",
-    "tab_git": "Git"
+    "tab_git": "Changes",
+    "tab_chat": "Chat"
   },
   "lan": {
     "hint": "You're on the same network as this computer. Connect over the local network instead of the remote route for snappier typing.",
@@ -1236,10 +1412,24 @@
     "empty_title": "No terminal open yet",
     "empty_body": "Click a session in the list on the right to open it here. Open several and switch between the tabs above (Alt+1…9).",
     "empty_none": "Create a session first.",
-    "missing_body": "This terminal has been deleted. You can close this tab."
+    "missing_body": "This terminal has been deleted. You can close this tab.",
+    "group_label": "Group the session list",
+    "by_project": "By project",
+    "by_project_hint": "Terminals in the same folder are grouped together; click + on a project to start a new one there",
+    "by_device": "By computer",
+    "by_none": "All",
+    "new_project": "New project",
+    "new_project_hint": "Pick a folder and start a terminal or AI session in one click",
+    "new_in_project": "New in “{{name}}”",
+    "quick_title": "New project",
+    "quick_title_in": "New in “{{name}}”",
+    "quick_folder_hint": "The terminal starts in this folder; it is created if it doesn't exist.",
+    "quick_launch": "Click one to create and open it",
+    "quick_install": "Not installed yet, click to install",
+    "quick_more": "More options…"
   },
   "ai": {
-    "title": "AI assistants",
+    "title": "AI tools & access",
     "intro": "AI assistants such as Claude Code and Codex use Looklook through its MCP interface. Set the interface up here and see and control what they can do.",
     "local_only": "The MCP token and installation can only be viewed and changed when the console is opened directly on this computer. The host switches below also work remotely.",
     "tools_title": "Tools AI assistants can use",
@@ -1262,5 +1452,93 @@
       "list_ssh_hosts": "List the SSH hosts allowed for AI (names and addresses only, no passwords)",
       "ssh_run": "Run one command on an allowed host and return the output (secrets removed)"
     }
+  },
+  "chat": {
+    "loading": "Loading the conversation…",
+    "unsupported": "This terminal is not running Codex, Claude Code or DSH (terminal), so there is no conversation to show.",
+    "open_terminal": "Open the terminal",
+    "no_convo": "No conversation found for this terminal yet. It shows up here after your first message.",
+    "stopped": "The terminal is not running.",
+    "skipped": "{{n}} earlier entries are not shown",
+    "steps": "AI did {{n}} things",
+    "steps_done": "{{done}}/{{n}} done",
+    "files_more": "{{names}} and {{n}} files in total",
+    "action": {
+      "read": "Looked at files",
+      "search": "Searched in files",
+      "git_read": "Looked at the version history",
+      "check": "Ran checks or a build",
+      "edit": "Edited {{files}}",
+      "write": "Created, copied or moved files",
+      "delete": "Deleted {{files}}",
+      "install": "Installed or updated software",
+      "network": "Downloaded or synced from the internet",
+      "upload": "Uploaded to a remote (e.g. pushed code)",
+      "system": "Changed system settings or stopped a program",
+      "web": "Searched the web",
+      "image": "Looked at an image",
+      "input": "Typed into a running program",
+      "run": "Ran a program",
+      "tool": "Used the tool {{tool}}"
+    },
+    "ask": {
+      "exec": "AI wants to do something and needs your OK",
+      "patch": "AI wants to edit files and needs your OK",
+      "permissions": "AI wants more permissions and needs your OK",
+      "other": "AI is waiting for your choice"
+    },
+    "what": {
+      "read": "Read file contents.",
+      "search": "Search in files.",
+      "git_read": "Look at the version history.",
+      "check": "Run the project's own checks or build to see if anything is broken.",
+      "edit": "Edit files.",
+      "write": "Create, copy or move files.",
+      "delete": "Delete files.",
+      "install": "Install or update software.",
+      "network": "Download or sync from the internet.",
+      "upload": "Upload to a remote (e.g. push code).",
+      "system": "Change system settings or stop programs.",
+      "run": "Run a program."
+    },
+    "risk": {
+      "high": "High risk"
+    },
+    "risk_long": {
+      "low": "Low risk: only reads, changes nothing",
+      "medium": "Changes files or the environment",
+      "high": "High risk: may delete things or affect other places, check carefully",
+      "unknown": "Not sure what this does, check the command below"
+    },
+    "reason": "Reason: {{reason}}",
+    "command": "Command:",
+    "allow": "Allow",
+    "deny": "Don't allow",
+    "allow_session": "Allow similar ones in this conversation",
+    "see_terminal": "See it in the terminal",
+    "choice_title": "AI is waiting for your choice",
+    "stale": "The prompt in the terminal has changed; refreshed.",
+    "state": {
+      "working": "AI is working…",
+      "unknown": "The AI assistant in this terminal is not at its chat screen (it may have exited or be doing first-time setup). Check the terminal."
+    },
+    "placeholder": "Keep talking to AI… (same conversation as the terminal)",
+    "chip": {
+      "continue": "Continue",
+      "continue_text": "Continue",
+      "simpler": "Explain more simply",
+      "simpler_text": "Please explain what you just did in simpler words",
+      "status": "What are you doing?",
+      "status_text": "Briefly tell me what you are doing now and what steps are left",
+      "pause": "Pause",
+      "pause_hint": "Same as pressing Esc in the terminal to stop the AI"
+    },
+    "step_stopped": "Not done (you declined or stopped it): {{text}}"
+  },
+  "activity": {
+    "approval": "Needs your OK",
+    "choice": "Needs a choice",
+    "working": "Working",
+    "idle": "Idle"
   }
 }

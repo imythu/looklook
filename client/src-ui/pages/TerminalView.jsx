@@ -3,7 +3,7 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页“工作台”里的每个终端是一个 TermPane（见 Terminals.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, Zap } from 'lucide-react';
+import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessageSquareText, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,11 +15,35 @@ import { errorText } from '../shared/i18n.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
+import Composer from '../shared/Composer.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
+import ChatView from './ChatView.jsx';
 import FileBrowser from './FileBrowser.jsx';
 import GitPanel from './GitPanel.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 import { termTheme, termVars } from '../shared/termTheme.js';
+
+const COMPOSER_KEY = 'looklook.composer';
+
+/** 输入框开着没有：记在这个浏览器里（手机上默认关，需要时点顶栏的按钮）。 */
+function useComposerShown() {
+  const [on, setOn] = useState(() => {
+    try {
+      return localStorage.getItem(COMPOSER_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const set = (v) => {
+    setOn(v);
+    try {
+      localStorage.setItem(COMPOSER_KEY, v ? '1' : '0');
+    } catch {
+      /* 无痕模式：只是不记住 */
+    }
+  };
+  return [on, set];
+}
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -73,7 +97,7 @@ function LinkBadge({ id, direct }) {
 }
 const SLOW_MS = 150;
 // AI 编程助手的输入框：⇧↵ 换行（term-inject.js 把它改成 Ctrl+J）。电脑上在顶栏空位里小字提示，手机上看按键条。
-const NEWLINE_LAUNCHES = ['codex', 'claude', 'opencode'];
+const NEWLINE_LAUNCHES = ['codex', 'claude', 'opencode', 'dsh_tui'];
 function NewlineHint({ inst, touch }) {
   const { t } = useTranslation();
   if (touch || !inst?.running || !NEWLINE_LAUNCHES.includes(inst.launch)) return null;
@@ -114,18 +138,57 @@ export function useTermChrome(theme, page = false) {
   return termVars(theme);
 }
 
+// 终端 / 对话 / 改动（和手机上一样的三种看法），再加文件。“对话”给 Codex、Claude Code、DSH 终端版（见 ChatView.jsx）。
 const TABS = [
   ['term', SquareTerminal, 'fb.tab_term'],
-  ['files', FolderOpen, 'fb.tab_files'],
+  ['chat', MessagesSquare, 'fb.tab_chat'],
   ['git', GitBranch, 'fb.tab_git'],
+  ['files', FolderOpen, 'fb.tab_files'],
 ];
+const VIEW_KEY = 'looklook.view';
+
+export const CHAT_LAUNCHES = ['codex', 'claude', 'dsh_tui'];
+
+function tabsFor(inst) {
+  return TABS.filter(([key]) => key !== 'chat' || CHAT_LAUNCHES.includes(inst?.launch));
+}
+
+/**
+ * 当前看法。Codex 终端打开时用上次在“终端 / 对话”里选的那个（按浏览器记）；换别的标签不改这个记录。
+ */
+export function useTermTab(inst) {
+  const [tab, setTabState] = useState('term');
+  const decided = useRef(false);
+  useEffect(() => {
+    if (decided.current || !inst) return;
+    decided.current = true;
+    let saved = null;
+    try {
+      saved = localStorage.getItem(VIEW_KEY);
+    } catch {
+      /* 无痕模式 */
+    }
+    if (saved === 'chat' && CHAT_LAUNCHES.includes(inst.launch)) setTabState('chat');
+  }, [inst]);
+  const setTab = (v) => {
+    setTabState(v);
+    if (v === 'term' || v === 'chat') {
+      try {
+        localStorage.setItem(VIEW_KEY, v);
+      } catch {
+        /* 无痕模式：只是不记住 */
+      }
+    }
+  };
+  return [tab, setTab];
+}
 
 /** 宽屏：顶栏里的分段标签。切到别的标签时终端 iframe 不卸载，会话保持连接。 */
-function TermTabs({ tab, onChange }) {
+export function TermTabs({ tab, onChange, inst }) {
   const { t } = useTranslation();
   return (
     <div className="term-tabs" role="tablist" aria-label={t('fb.tabs')}>
-      {TABS.map(([key, Icon, label]) => (
+      {tabsFor(inst).map(([key, Icon, label]) => (
         <button key={key} type="button" role="tab" aria-selected={tab === key} className={`term-tab ${tab === key ? 'on' : ''}`} onClick={() => onChange(key)} title={t(label)}>
           <Icon size={16} aria-hidden="true" />
           <span className="term-tab-label">{t(label)}</span>
@@ -136,11 +199,11 @@ function TermTabs({ tab, onChange }) {
 }
 
 /** 手机、窄屏：底部标签栏（图标在上、文字在下），拇指够得着，也不和顶栏的按钮抢地方。 */
-function TermTabBar({ tab, onChange }) {
+function TermTabBar({ tab, onChange, inst }) {
   const { t } = useTranslation();
   return (
     <nav className="term-tabbar" role="tablist" aria-label={t('fb.tabs')}>
-      {TABS.map(([key, Icon, label]) => (
+      {tabsFor(inst).map(([key, Icon, label]) => (
         <button key={key} type="button" role="tab" aria-selected={tab === key} onPointerDown={keepFocus} onClick={() => onChange(key)}>
           <Icon size={20} aria-hidden="true" />
           <span>{t(label)}</span>
@@ -178,6 +241,8 @@ export function TermPane({ id, inst, active, missing, onStart }) {
   const [starting, setStarting] = useState(false);
   const [full, setFull] = useState(false);
   const [max, setMax] = useState(false);
+  const [composer, setComposer] = useComposerShown();
+  const [tab, setTab] = useTermTab(inst);
   const link = useTermSrc(id, reloadKey);
   const allowed = status.account.allowed;
   const running = Boolean(inst?.running && allowed);
@@ -189,7 +254,7 @@ export function TermPane({ id, inst, active, missing, onStart }) {
       termFocus(frame);
     }, 30);
     return () => clearTimeout(timer);
-  }, [active, full, max]);
+  }, [active, full, max, composer, tab]);
   useEffect(() => {
     const on = () => setFull(document.fullscreenElement === wrap.current);
     document.addEventListener('fullscreenchange', on);
@@ -254,10 +319,16 @@ export function TermPane({ id, inst, active, missing, onStart }) {
           <span className="ellipsis">{inst?.name ?? id}</span>
           {running && <LinkBadge id={id} direct={link.direct} />}
         </span>
-        <NewlineHint inst={inst} touch={false} />
+        {running && <TermTabs tab={tab} onChange={setTab} inst={inst} />}
+        {tab === 'term' && <NewlineHint inst={inst} touch={false} />}
         {running && (
           <button type="button" className={iconBtn} onClick={reload} aria-label={t('term.reload')} title={t('term.reload')}>
             <RefreshCw size={16} />
+          </button>
+        )}
+        {running && tab === 'term' && (
+          <button type="button" className={iconBtn} onClick={() => setComposer(!composer)} aria-pressed={composer} aria-label={t('composer.toggle')} title={t('composer.toggle')}>
+            <MessageSquareText size={16} />
           </button>
         )}
         {files.button}
@@ -277,7 +348,19 @@ export function TermPane({ id, inst, active, missing, onStart }) {
       <div className="term-frame">
         {body}
         {files.layer}
+        {running && active && tab === 'chat' && <ChatView id={id} inst={inst} frame={frame} active={active} touch={false} onTerminal={() => setTab('term')} />}
+        {running && tab === 'git' && (
+          <div className="term-files-tab">
+            <GitPanel id={id} active={active && tab === 'git'} />
+          </div>
+        )}
+        {running && tab === 'files' && (
+          <div className="term-files-tab">
+            <FileBrowser id={id} active={active && tab === 'files'} onInsert={(text) => { setTab('term'); termPaste(frame, text); }} />
+          </div>
+        )}
       </div>
+      {running && composer && active && tab === 'term' && <Composer frame={frame} id={id} touch={false} onClose={() => setComposer(false)} />}
     </section>
   );
 }
@@ -292,14 +375,15 @@ export default function TerminalView({ id }) {
   const [touch] = useState(isTouch);
   const narrow = useNarrow();
   const [keys, setKeys] = useKeybarShown();
+  const [composer, setComposer] = useComposerShown();
   const mobile = useTouchTerminal(frame, touch);
   const [full, setFull] = useState(false);
   const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const link = useTermSrc(id, reloadKey);
-  const [tab, setTab] = useState('term');
   const lanPage = useLanPage();
   const [inst, error, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
+  const [tab, setTab] = useTermTab(inst);
   const allowed = status.account.allowed;
   const running = inst?.running;
   const live = Boolean(running && allowed);
@@ -329,7 +413,7 @@ export default function TerminalView({ id }) {
   useEffect(() => {
     termFit(frame);
     if (tab === 'term' && !touch) termFocus(frame);
-  }, [keys, tab, tabbarShown]);
+  }, [keys, tab, tabbarShown, composer]);
   const insertPath = (text) => {
     setTab('term');
     termPaste(frame, text);
@@ -427,7 +511,7 @@ export default function TerminalView({ id }) {
           {live && (lanPage ? <span className="link-badge link-direct" title={t('lan.badge_hint')}>{t('lan.badge')}</span> : <LinkBadge id={id} direct={link.direct} />)}
         </span>
         {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
-        {live && !bottomTabs && <TermTabs tab={tab} onChange={setTab} />}
+        {live && !bottomTabs && <TermTabs tab={tab} onChange={setTab} inst={inst} />}
         {!compact && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onClick={reloadTerm} aria-label={t('term.reload')} title={t('term.reload')}>
             <RefreshCw size={18} />
@@ -435,6 +519,11 @@ export default function TerminalView({ id }) {
         )}
         {files.button}
         {live && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} />}
+        {tab === 'term' && live && (
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => setComposer(!composer)} aria-pressed={composer} aria-label={t('composer.toggle')} title={t('composer.toggle')}>
+            <MessageSquareText size={19} />
+          </button>
+        )}
         {touch && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onPointerDown={keepFocus} onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
             <Keyboard size={19} />
@@ -461,14 +550,16 @@ export default function TerminalView({ id }) {
             <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
           </div>
         )}
+        {live && tab === 'chat' && <ChatView id={id} inst={inst} frame={frame} active touch={touch} onTerminal={() => setTab('term')} />}
         {live && tab === 'git' && (
           <div className="term-files-tab">
             <GitPanel id={id} active={tab === 'git'} />
           </div>
         )}
       </div>
+      {live && tab === 'term' && composer && <Composer frame={frame} id={id} touch={touch} onClose={() => setComposer(false)} />}
       {keybarShown && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
-      {tabbarShown && <TermTabBar tab={tab} onChange={setTab} />}
+      {tabbarShown && <TermTabBar tab={tab} onChange={setTab} inst={inst} />}
     </div>
   );
 }

@@ -43,6 +43,9 @@
   "TUNNEL_PORT_INVALID": "数字需要在 1 到 65535 之间",
   "TUNNEL_PORT_DUPLICATE": "这个数字已经添加过了",
   "TUNNEL_DISABLED": "这个本机网页已停用",
+  "SHARE_USER_NOT_FOUND": "找不到用户名为 {{username}} 的看看账户，请让对方确认自己的用户名。",
+  "SHARE_SELF": "不能分享给自己：你自己登录后本来就能打开。",
+  "SHARE_LIMIT_REACHED": "这个网页最多同时分享给 {{max}} 个人。",
   "GATEWAY_ORIGIN_REJECTED": "请求来源不正确",
   "RELAY_CAPACITY_EXHAUSTED": "服务繁忙，请稍后再试",
   "rule": {
@@ -182,5 +185,8 @@
   "SSH_MISSING": "这台电脑上没有找到 ssh 命令，请先安装 OpenSSH 客户端。",
   "SSH_HOST_NOT_ALLOWED": "这台主机没有允许 AI 助手使用。",
   "SSH_JUMP_IN_USE": "还有主机经它连接（{{names}}），先给它们换个跳板机或改成直接连接，再删除。",
-  "SSH_AI_DISABLED": "AI 助手使用 SSH 主机的总开关已关闭（在“AI 助手”页打开）。"
+  "SSH_AI_DISABLED": "AI 助手使用 SSH 主机的总开关已关闭（在“AI 助手”页打开）。",
+  "CONVO_FAILED": "迁移失败：{{detail}}",
+  "STALE_PROMPT": "终端里的提示已经变了，请再看一下",
+  "HARNESS_UNSUPPORTED": "这个工具暂时还不支持（{{harness}}）"
 }

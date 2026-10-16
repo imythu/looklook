@@ -9,7 +9,7 @@ use std::time::{Duration, Instant};
 
 use ed25519_dalek::SigningKey;
 use looklook_protocol::dto::{
-    AccountSummary, AuthorizePollRequest, AuthorizeStartRequest, AuthorizeStartResponse, CreateTunnel, DeviceInfo, HeartbeatRequest,
+    AccountSummary, AuthorizePollRequest, AuthorizeStartRequest, AuthorizeStartResponse, CreatePageShare, CreateTunnel, DeviceInfo, HeartbeatRequest, PageShare, PageShareList,
     HeartbeatResponse, LoginResponse, RelayChoices, RelayParams, RenameDevice,
     RotateConfirmRequest, RotateRequest, RotateResponse, SetRelayPreference, TerminalReport, Tunnel, TunnelList, UpdateHint, UpdateTunnel,
 };
@@ -891,6 +891,25 @@ impl Account {
             .platform()
             .call_empty("DELETE", &format!("/tunnels/{}", path_seg(id)), Signer { device: &s.device_id, key_id: &s.key_id, key: &key }, None::<&()>)
             .await;
+        if let Err(e) = &r {
+            self.on_error(e);
+        }
+        r
+    }
+
+    /// 本机网页的临时分享（只给指定的看看账户，到期自动失效）。
+    pub async fn page_shares(&self, id: &str) -> PResult<PageShareList> {
+        self.signed("GET", &format!("/tunnels/{}/shares", path_seg(id)), None::<&()>).await
+    }
+
+    pub async fn create_page_share(&self, id: &str, req: &CreatePageShare) -> PResult<PageShare> {
+        self.signed("POST", &format!("/tunnels/{}/shares", path_seg(id)), Some(req)).await
+    }
+
+    pub async fn delete_page_share(&self, id: &str, share: &str) -> PResult<()> {
+        let (s, key) = self.creds().ok_or_else(|| api("NOT_LOGGED_IN"))?;
+        let path = format!("/tunnels/{}/shares/{}", path_seg(id), path_seg(share));
+        let r = self.platform().call_empty("DELETE", &path, Signer { device: &s.device_id, key_id: &s.key_id, key: &key }, None::<&()>).await;
         if let Err(e) = &r {
             self.on_error(e);
         }

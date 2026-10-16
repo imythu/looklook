@@ -253,6 +253,30 @@ pub struct TunnelList {
     pub max: i64,
 }
 
+/// 本机网页的临时分享：在有效期内允许指定的看看账户打开这个网页。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageShare {
+    pub id: String,
+    /// 被分享的账户（用户名）。
+    pub username: String,
+    pub created_at: String,
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PageShareList {
+    pub items: Vec<PageShare>,
+    /// 每个网页同时有效的分享上限。
+    pub max: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreatePageShare {
+    pub username: String,
+    /// 有效期（小时），1–168。
+    pub hours: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CreateTunnel {
     pub name: String,

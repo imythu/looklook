@@ -130,6 +130,11 @@ pub async fn forward(client: &HttpClient, mut req: Request, port: u16, opts: Opt
     }
 
     let (mut parts, body) = resp.into_parts();
+    // ttyd 的口令由网关代填，浏览器用不着也不知道。终端服务刚重启、口令刚换时上游会回 401：
+    // 不能把它（连同 WWW-Authenticate）交给浏览器，否则会弹出登录框；当成暂时连不上，页面自己会重连。
+    if opts.terminal && parts.status == StatusCode::UNAUTHORIZED {
+        return assets::message_page(StatusCode::SERVICE_UNAVAILABLE, "upstream_down");
+    }
     strip_hop_by_hop(&mut parts.headers);
     if let Some((from, to)) = &opts.rewrite_location {
         rewrite_location(&mut parts.headers, from, to);

@@ -251,6 +251,10 @@ async fn terminal(State(app): State<App>, req: Request) -> Response {
     if proxy::is_websocket(req.headers()) && !origin_matches(req.headers(), &access) {
         return (StatusCode::FORBIDDEN, "origin").into_response();
     }
+    // Windows：ttyd 只接入会话，连上之前先确保会话在（见 Instances::command_for）
+    if proxy::is_websocket(req.headers()) {
+        app.instances.ensure_attachable(&id).await;
+    }
     let index = req.method() == Method::GET && req.uri().path() == format!("/i/{id}/");
     let opts = proxy::Opts { auth: Some(auth), host: None, inject_fonts: index, rewrite_location: None, terminal: true };
     let mut r = proxy::forward(&app.http, req, port, opts).await;

@@ -25,8 +25,10 @@
 mod account;
 mod agents;
 mod clock;
+mod convo;
 mod diag;
 mod error;
+mod explain;
 mod fsops;
 mod gateway;
 mod git;
@@ -39,6 +41,7 @@ mod paths;
 mod platform;
 mod relay;
 mod relay_watch;
+mod screen;
 mod settings;
 mod shells;
 mod ssh;
@@ -131,6 +134,11 @@ enum Cmd {
         #[arg(long)]
         check: bool,
     },
+    /// 把一个 AI 助手里的对话迁移到另一个里接着聊 / Move a conversation between AI coding tools
+    Convo {
+        #[command(subcommand)]
+        action: ConvoCmd,
+    },
     /// 连接在看看里保存的 SSH 主机（密码由看看提供，不用输入、不会显示）/ Connect to a saved SSH host
     Ssh {
         /// 主机名称或 id；不填则列出全部 / Host name or id; lists hosts when omitted
@@ -142,6 +150,28 @@ enum Cmd {
     /// ssh 的 ProxyCommand：经跳板机连接时由看看自己连上跳板机（内部使用）/ ProxyCommand for jump hosts (internal)
     #[command(hide = true)]
     SshProxy { jump: String, host: String, port: u16 },
+}
+
+#[derive(Subcommand)]
+enum ConvoCmd {
+    /// 列出会话（最近的在前）/ List sessions, newest first
+    List {
+        harness: convo::Harness,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// 迁移一个会话 / Migrate one session
+    Migrate {
+        from: convo::Harness,
+        id: String,
+        to: convo::Harness,
+        /// 新会话的工作目录（默认沿用原会话的）/ Working directory for the new session
+        #[arg(long)]
+        cwd: Option<String>,
+        /// 只显示会迁移什么，不写入 / Show what would be migrated without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -226,10 +256,34 @@ fn main() -> Result<()> {
                 }
             }
         }
+        Some(Cmd::Convo { action }) => rt.block_on(cli_convo(action)),
         Some(Cmd::SshProxy { jump, host, port }) => {
             let paths = Paths::discover(cli.home)?;
             let store = Store::open(&paths.db())?;
             std::process::exit(ssh::proxy_cli(&store, &paths.home, &jump, &host, port)?)
+        }
+    }
+}
+
+/// `looklook convo`：列出 / 迁移对话（直接读写各工具的文件，不需要客户端在运行）。
+async fn cli_convo(action: ConvoCmd) -> Result<()> {
+    match action {
+        ConvoCmd::List { harness, limit } => {
+            for s in convo::list(harness)?.into_iter().take(limit) {
+                let when = time::OffsetDateTime::from_unix_timestamp(s.updated_ms / 1000).map(|t| t.date().to_string()).unwrap_or_default();
+                println!("{}  {}  {}  {}", s.id, when, s.title.as_deref().unwrap_or("-"), s.cwd.as_deref().unwrap_or("-"));
+            }
+            Ok(())
+        }
+        ConvoCmd::Migrate { from, id, to, cwd, dry_run } => {
+            if dry_run {
+                let c = convo::read(from, &id)?;
+                println!("{}", serde_json::to_string_pretty(&json!({"title": c.title, "cwd": c.cwd, "items": c.items.len(), "manifest": c.manifest}))?);
+                return Ok(());
+            }
+            let m = convo::migrate(from, &id, to, cwd, None).await?;
+            println!("{}", serde_json::to_string_pretty(&m)?);
+            Ok(())
         }
     }
 }

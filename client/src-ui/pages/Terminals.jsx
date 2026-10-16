@@ -1,5 +1,6 @@
 // 首页：我的终端。每个终端是一个可以长期运行的工作区（例如让 Claude Code 在里面干活），关掉网页也不会停。
 import {
+  ArrowLeftRight,
   ArrowUp,
   Bot,
   Braces,
@@ -7,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Command,
+  CopyPlus,
   ExternalLink,
   FileText,
   Fish,
@@ -37,7 +39,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { SafetyNote, useStatus } from "../App.jsx";
@@ -49,6 +51,7 @@ import { urlHost } from "../shared/host.js";
 import { errorText } from "../shared/i18n.js";
 import { Link, useRouter } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
+import ConvoDialog from "./Convo.jsx";
 import { TermPane, useTermChrome } from "./TerminalView.jsx";
 import { ModelChoiceLine } from "./ModelProviders.jsx";
 import { isTouch } from "../shared/KeyBar.jsx";
@@ -79,11 +82,14 @@ export const LAUNCH_ICON = {
   claude: Sparkles,
   opencode: Braces,
   dsh: Fish,
+  dsh_tui: Fish,
   custom: Command,
 };
-const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
+const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "dsh_tui", "custom"];
 // 能一键安装的 AI 工具（没装时提示安装）；能以全部权限启动的
 const AI_TOOLS = ["codex", "claude", "opencode", "dsh"];
+// 启动类型用的是哪个程序：DSH 终端版（dsh tui）用的也是 dsh
+const toolOf = (launch) => (launch === "dsh_tui" ? "dsh" : launch);
 const FULL_ACCESS = ["codex", "claude", "opencode"];
 
 function RemoteCard() {
@@ -246,6 +252,52 @@ function BackendNote() {
   );
 }
 
+// 正在运行的 Codex 终端在干什么（客户端读终端屏幕认出来的，见 src/screen.rs）：列表上显示“等你同意”等标签，
+// 有终端在等你时页面标题前面加上数量。
+const ActivityCtx = createContext({});
+const ACTIVITY_BADGE = { approval: "badge-warn", choice: "badge-warn", working: "badge-ok", idle: "" };
+
+function useActivity(enabled) {
+  const [items, setItems] = useState({});
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let alive = true;
+    let timer;
+    const load = async () => {
+      if (!document.hidden) {
+        try {
+          const r = await api.get("/instances/activity");
+          if (alive) setItems(r.items ?? {});
+        } catch {
+          /* 旧版本客户端没有这个接口：不显示 */
+        }
+      }
+      if (alive) timer = setTimeout(load, 4000);
+    };
+    load();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [enabled]);
+  const waiting = Object.values(items).filter((a) => a.state === "approval" || a.state === "choice").length;
+  useEffect(() => {
+    const base = document.title.replace(/^(d+) /, "");
+    document.title = waiting ? `(${waiting}) ${base}` : base;
+    return () => {
+      document.title = document.title.replace(/^(d+) /, "");
+    };
+  }, [waiting]);
+  return items;
+}
+
+function ActivityBadge({ id }) {
+  const { t } = useTranslation();
+  const a = useContext(ActivityCtx)[id];
+  if (!a || !(a.state in ACTIVITY_BADGE)) return null;
+  return <span className={`badge act-badge ${ACTIVITY_BADGE[a.state] ?? ""}`}>{t(`activity.${a.state}`)}</span>;
+}
+
 function stateOf(i) {
   if (i.running) return i.task_alive === false ? "ready" : "running";
   return i.task_alive ? "paused" : "stopped";
@@ -370,11 +422,40 @@ function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
     });
     if (ok) act(() => api.del(`/instances/${inst.id}`), t("instance.deleted"));
   };
+  // 复制终端：同一台电脑上照原样（启动方式、文件夹、shell、权限）新建一个并启动，然后在本页打开。
+  // 不复制开机自动运行，免得重启后一下子多跑一份；DSH 一台电脑只有一个，不能复制。
+  const duplicate = async () => {
+    const dev = terminalDevice(inst.id);
+    const client = deviceApi(dev);
+    setBusy(true);
+    try {
+      const r = await client.post("/instances", {
+        name: t("instance.duplicate_name", { name: inst.name }).slice(0, 40),
+        workdir: inst.workdir,
+        launch: inst.launch,
+        command: inst.launch === "custom" ? inst.command : "",
+        shell: inst.shell ?? "",
+        auto_start: false,
+        full_access: inst.full_access,
+        root_confirmed: inst.root_confirmed,
+        start: true,
+      });
+      if (dev && r.id) rememberTerminals(dev, [r]);
+      toast(t("instance.duplicated", { name: r.name }));
+      onOpenHere(r.id);
+    } catch (e) {
+      toast(errorText(t, e), "error");
+    } finally {
+      setBusy(false);
+      onChanged();
+    }
+  };
   // “更多”菜单。full：列表行和侧栏没有单独的按钮，把打开方式、停止也放进来
   const menu = (full) => [
     full && dsh && { icon: SquareTerminal, label: t("dsh.output"), onClick: openHere, disabled: busy || !allowed },
     full && !dsh && { icon: ExternalLink, label: t("instance.new_window"), onClick: openTab, disabled: busy || !allowed },
     { icon: Pencil, label: t("instance.edit"), onClick: () => onEdit(inst) },
+    !dsh && { icon: CopyPlus, label: t("instance.duplicate"), onClick: duplicate, disabled: busy || !allowed },
     inst.running && { icon: RotateCcw, label: t("instance.restart"), onClick: restart },
     full && live && { icon: Square, label: t("instance.stop"), onClick: stop, disabled: busy },
     { icon: FileText, label: t("instance.logs"), onClick: () => onLogs(inst) },
@@ -389,7 +470,7 @@ function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
   ];
   // 点名称 / 整行：DSH 打开它的网页，其他终端在本页打开
   const primary = dsh ? openPage : openHere;
-  return { busy, state, live, dsh, allowed, openHere, openPage, openTab, stop, menu, primary };
+  return { busy, state, live, dsh, allowed, openHere, openPage, openTab, stop, duplicate, menu, primary };
 }
 
 /** 终端的一行说明：启动方式 · 自定义命令 · shell。 */
@@ -436,6 +517,7 @@ function InstanceCard({ inst, ...handlers }) {
           <span className={`badge ${BADGE[state]}`}>
             {t(`instance.state.${state}`)}
           </span>
+          <ActivityBadge id={inst.id} />
         </span>
       </div>
       <div className="instance-meta">
@@ -520,7 +602,10 @@ function InstanceRow({ inst, compact, current, opened, ...handlers }) {
           <span className={`dot ${a.state === "running" ? "on" : a.state === "paused" ? "warn" : ""}`} aria-hidden="true" />
         </span>
         <span className="irow-text">
-          <span className="irow-name ellipsis">{inst.name}</span>
+          <span className="irow-name ellipsis">
+            {inst.name}
+            {compact && <ActivityBadge id={inst.id} />}
+          </span>
           <span className="irow-sub ellipsis">
             {compact ? (
               <span className="mono">{shortPath(sub)}</span>
@@ -539,6 +624,7 @@ function InstanceRow({ inst, compact, current, opened, ...handlers }) {
         </span>
         {!compact && (
           <span className="irow-meta">
+            <ActivityBadge id={inst.id} />
             <span className={`badge ${BADGE[a.state]}`}>{t(`instance.state.${a.state}`)}</span>
             {inst.last_activity_at && a.state === "running" && <span className="small muted nowrap">{relativeTime(t, inst.last_activity_at)}</span>}
           </span>
@@ -985,6 +1071,79 @@ export function ShellPicker({ value, onChange, data, inherit }) {
 
 /** 新建 / 编辑终端。 */
 /** 后台安装的进度：最后几十行输出，自动滚到底；结束后给出结果。 */
+/**
+ * 找不到 AI 工具时（或想换一个）：手动指定程序文件或它所在的文件夹。保存前客户端先确认找得到程序；
+ * 保存后重新检测，新开的终端也会把那个文件夹加进 PATH。
+ */
+function ToolLocate({ tool, client, configured, onChanged }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [path, setPath] = useState(configured ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(null);
+  useEffect(() => setPath(configured ?? ""), [tool, configured]);
+  const name = t(`launch.${tool}.title`);
+  const save = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await client.put(`/tools/${tool}/path`, { path: path.trim() });
+      onChanged?.(r);
+      setOpen(false);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clear = async () => {
+    setBusy(true);
+    try {
+      onChanged?.(await client.del(`/tools/${tool}/path`));
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (configured && !open) {
+    return (
+      <p className="small muted tool-locate-note">
+        {t("tools.locate_using", { tool: name })} <span className="mono">{configured}</span>{" "}
+        <button type="button" className="link-btn" onClick={() => setOpen(true)}>{t("tools.locate_change")}</button>{" "}
+        <button type="button" className="link-btn" disabled={busy} onClick={clear}>{t("tools.locate_auto")}</button>
+      </p>
+    );
+  }
+  if (!open) {
+    return (
+      <button type="button" className="link-btn tool-locate-open" onClick={() => setOpen(true)}>
+        {t("tools.locate_open", { tool: name })}
+      </button>
+    );
+  }
+  return (
+    <div className="tool-locate">
+      <FolderField
+        value={path}
+        onChange={setPath}
+        label={t("tools.locate_label", { tool: name })}
+        hint={t("tools.locate_hint", { tool: name, exe: tool })}
+        client={client}
+      />
+      {error && (
+        <p className="small" style={{ color: "var(--danger)", margin: "0 0 8px" }}>
+          {error.params?.rule === "not_found" ? t("tools.locate_not_found", { tool: name, exe: tool }) : errorText(t, error)}
+        </p>
+      )}
+      <div className="row" style={{ gap: 8 }}>
+        <Button busy={busy} disabled={!path.trim()} onClick={save}>{t("tools.locate_save")}</Button>
+        <Button variant="ghost" onClick={() => setOpen(false)}>{t("action.cancel")}</Button>
+      </div>
+    </div>
+  );
+}
+
 function InstallProgress({ job, tool, onRetry, busy }) {
   const { t } = useTranslation();
   const ref = useRef(null);
@@ -1014,7 +1173,7 @@ function InstallProgress({ job, tool, onRetry, busy }) {
   );
 }
 
-export function InstanceDialog({ open, onClose, initial, preset, device: wantDevice, onSaved }) {
+export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWorkdir, device: wantDevice, onSaved }) {
   const { t } = useTranslation();
   const { status: selectedStatus } = useStatus();
   const devices = useDevices();
@@ -1058,8 +1217,8 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
     setCommand(initial?.command ?? "");
     setShell(initial?.shell ?? "");
     setName(initial?.name ?? "");
-    setWorkdir(initial?.workdir ?? status.settings.default_workdir);
-    workdirTouched.current = false;
+    setWorkdir(initial?.workdir ?? (wantWorkdir || status.settings.default_workdir));
+    workdirTouched.current = Boolean(wantWorkdir);
     setAutoStart(initial?.auto_start ?? false);
     setFullAccess(initial?.full_access ?? false);
     setRootOk(initial?.root_confirmed ?? false);
@@ -1080,8 +1239,11 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
     ? LAUNCHES.filter((l) => (l === "dsh") === (initial.launch === "dsh"))
     : LAUNCHES;
   const needRoot = canFull && fullAccess && isRoot && !rootOk;
+  const tool = toolOf(launch);
+  // DSH 终端版要带 tui 的 DSH：桌面版自带的命令行没有，当作“还没装”处理（可以装命令行版或指定别的位置）
+  const noTui = launch === "dsh_tui" && Boolean(tools?.tools?.dsh) && tools?.dsh_tui === false;
   const missing =
-    tools && AI_TOOLS.includes(launch) && !tools.tools[launch];
+    tools && AI_TOOLS.includes(tool) && (!tools.tools[tool] || noTui);
   const submit = async (e) => {
     e.preventDefault();
     if (needRoot) return;
@@ -1110,11 +1272,11 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
   const [job, setJob] = useState(null);
   useEffect(() => setJob(null), [open, launch, dev]);
   useEffect(() => {
-    if (!open || !AI_TOOLS.includes(launch)) return undefined;
+    if (!open || !AI_TOOLS.includes(tool)) return undefined;
     let alive = true;
     let timer = null;
     const poll = async () => {
-      const j = await client.get(`/tools/install/${launch}`).catch(() => null);
+      const j = await client.get(`/tools/install/${tool}`).catch(() => null);
       if (!alive) return;
       setJob(j);
       if (j?.state === "running") timer = setTimeout(poll, 1000);
@@ -1127,7 +1289,7 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
     };
   }, [open, launch, dev, job?.started_at]);
   const install = async () => {
-    const r = await run(() => client.post("/tools/install", { tool: launch, mirror }));
+    const r = await run(() => client.post("/tools/install", { tool, mirror }));
     if (r) setJob(r);
   };
   return (
@@ -1171,11 +1333,13 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
             );
           })}
         </div>
-        {job?.tool === launch && (missing || job.state === "ok") ? (
+        {job?.tool === tool && (missing || job.state === "ok") ? (
           <InstallProgress job={job} tool={t(`launch.${launch}.title`)} onRetry={install} busy={busy} />
         ) : missing && (
           <Note kind="warn">
-            <b>{t("tools.missing", { tool: t(`launch.${launch}.title`) })}</b>
+            <b>{noTui ? t("tools.dsh_no_tui") : t("tools.missing", { tool: t(`launch.${launch}.title`) })}</b>
+            {noTui && <p className="small" style={{ margin: "4px 0" }}>{t("tools.dsh_no_tui_hint", { path: tools.tools.dsh })}</p>}
+            <ToolLocate tool={tool} client={client} configured={tools.configured?.[tool]} onChanged={() => reloadTools()} />
             {tools.tools.npm ? (
               <>
                 <p style={{ margin: "4px 0 8px" }}>{t("tools.install_hint")}</p>
@@ -1217,6 +1381,9 @@ export function InstanceDialog({ open, onClose, initial, preset, device: wantDev
               </p>
             )}
           </Note>
+        )}
+        {!missing && tools?.configured?.[tool] && AI_TOOLS.includes(tool) && (
+          <ToolLocate tool={tool} client={client} configured={tools.configured[tool]} onChanged={() => reloadTools()} />
         )}
         {launch === "custom" && (
           <Field label={t("form.command")} hint={t("form.command_hint")}>
@@ -1616,7 +1783,7 @@ function useWorkspaceTabs() {
   const [ws, setWs] = useState(() => {
     const v = readJson(localStorage, WS_KEY, {});
     const tabs = Array.isArray(v.tabs) ? v.tabs.filter((x) => typeof x === "string").slice(0, WS_MAX_TABS) : [];
-    return { tabs, active: tabs.includes(v.active) ? v.active : (tabs[0] ?? null), side: v.side !== false };
+    return { tabs, active: tabs.includes(v.active) ? v.active : (tabs[0] ?? null), side: v.side !== false, project: v.project !== false };
   });
   useEffect(() => writeJson(localStorage, WS_KEY, ws), [ws]);
   const open = (id) =>
@@ -1641,7 +1808,8 @@ function useWorkspaceTabs() {
       return { ...w, tabs };
     });
   const toggleSide = () => setWs((w) => ({ ...w, side: !w.side }));
-  return { ...ws, open, close, move, toggleSide };
+  const setProject = (project) => setWs((w) => ({ ...w, project }));
+  return { ...ws, open, close, move, toggleSide, setProject };
 }
 
 /** 卡片 / 列表视图的滚动位置：刷新（例如远程会话续期时的自动跳转）后回到原处。 */
@@ -1738,11 +1906,119 @@ function useFillHeight(ref) {
   return h;
 }
 
+/** 路径的最后一级（项目名）。 */
+function baseName(p) {
+  const parts = (p ?? "").split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? p ?? "";
+}
+
+/** 按项目（同一台电脑上的同一个文件夹）分组，最近用过的项目排前面。 */
+function projectGroups(items, multi) {
+  const map = new Map();
+  for (const i of items) {
+    const device = multi ? terminalDevice(i.id) : null;
+    const key = `${device ?? ""}\n${i.workdir}`;
+    if (!map.has(key)) map.set(key, { key, device, workdir: i.workdir, items: [] });
+    map.get(key).items.push(i);
+  }
+  const last = (g) => Math.max(0, ...g.items.map((i) => Date.parse(i.last_activity_at || i.started_at || "") || 0));
+  return [...map.values()].sort((a, b) => last(b) - last(a) || a.workdir.localeCompare(b.workdir));
+}
+
+// 快速新建能选的启动方式（DSH 一台电脑只有一个、自定义命令要填命令，走完整的新建对话框）
+const QUICK_LAUNCHES = ["shell", "claude", "codex", "opencode"];
+
+/**
+ * 像 ChatGPT 的项目那样快速新建：选好文件夹（在某个项目里点 + 时已经填好），点一下启动方式就建好、启动并打开。
+ * 没装的 AI 工具、要改 shell 或权限时转到完整的新建对话框（文件夹带过去）。
+ */
+function QuickCreateDialog({ open, device: wantDevice, workdir: wantWorkdir, onClose, onMore, onCreated }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const devices = useDevices();
+  const dev = devices.multi ? (wantDevice ?? devices.selected) : null;
+  const client = deviceApi(dev);
+  const [workdir, setWorkdir] = useState("");
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const [tools] = useLoad(() => (open ? client.get("/tools").catch(() => null) : Promise.resolve(null)), [open, dev]);
+  useEffect(() => {
+    if (!open) return;
+    setWorkdir(wantWorkdir || status.settings.default_workdir || "");
+    setBusy(null);
+    setError(null);
+  }, [open]);
+  const missing = (l) => AI_TOOLS.includes(toolOf(l)) && tools && (!tools.tools[toolOf(l)] || (l === "dsh_tui" && tools.dsh_tui === false));
+  const go = async (launch) => {
+    if (missing(launch)) {
+      onMore({ preset: launch, device: dev, workdir });
+      return;
+    }
+    setBusy(launch);
+    setError(null);
+    try {
+      const r = await client.post("/instances", {
+        name: `${t(`launch.${launch}.title`)} · ${baseName(workdir)}`.slice(0, 40),
+        workdir,
+        launch,
+        command: "",
+        shell: "",
+        auto_start: false,
+        full_access: false,
+        root_confirmed: false,
+        start: true,
+      });
+      if (dev && r.id) rememberTerminals(dev, [r]);
+      onClose();
+      onCreated(r);
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  const title = wantWorkdir ? t("ws.quick_title_in", { name: baseName(wantWorkdir) }) : t("ws.quick_title");
+  return (
+    <Modal open={open} onClose={onClose} title={title}>
+      {devices.multi && (
+        <p className="muted small" style={{ margin: "0 0 8px" }}>
+          <Monitor size={13} aria-hidden="true" /> {deviceName(t, devices.byId(dev))}
+        </p>
+      )}
+      <FolderField value={workdir} onChange={setWorkdir} client={client} hint={t("ws.quick_folder_hint")} />
+      <p className="field-label" style={{ margin: "0 0 8px" }}>
+        {t("ws.quick_launch")}
+      </p>
+      <div className="launch-grid" role="group" aria-label={t("ws.quick_launch")}>
+        {QUICK_LAUNCHES.map((l) => {
+          const Icon = LAUNCH_ICON[l];
+          return (
+            <button key={l} type="button" className="launch" disabled={Boolean(busy) || !workdir.trim()} aria-busy={busy === l} onClick={() => go(l)}>
+              {busy === l ? <Spinner size={20} /> : <Icon size={20} aria-hidden="true" />}
+              <b>{t(`launch.${l}.title`)}</b>
+              <span className="small muted">{missing(l) ? t("ws.quick_install") : t(`launch.${l}.desc`)}</span>
+            </button>
+          );
+        })}
+      </div>
+      <ErrorNote error={error} />
+      <div className="modal-actions">
+        <Button variant="ghost" onClick={() => onMore({ preset: "shell", device: dev, workdir })}>
+          {t("ws.quick_more")}
+        </Button>
+        <Button variant="ghost" onClick={onClose}>
+          {t("action.cancel")}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
 /**
  * 工作台：像终端软件一样，左边是开着的终端（顶上一排标签），右边是全部会话的列表（可收起、可搜索，多台电脑时按电脑分组）。
  * 点列表里的会话就在左边打开 / 切过去；开着的标签记在浏览器里，刷新后还在。Alt+1…9 切到第 N 个标签。
  */
-function Workspace({ ws, items, groups, multi, loading, query, setQuery, match, renderRow, onNew, onStart }) {
+function Workspace({ ws, items, groups, multi, loading, query, setQuery, match, renderRow, onNew, onQuick, onStart }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const devices = useDevices();
@@ -1841,9 +2117,51 @@ function Workspace({ ws, items, groups, multi, loading, query, setQuery, match, 
       {ws.side && (
         <aside className="ws-side" aria-label={t("ws.list")}>
           <SearchBox value={query} onChange={setQuery} count={match ? shown.length : null} />
+          <div className="ws-side-tools">
+            <div className="seg" role="group" aria-label={t("ws.group_label")}>
+              <button type="button" aria-pressed={ws.project} onClick={() => ws.setProject(true)} title={t("ws.by_project_hint")}>
+                <Folder size={14} aria-hidden="true" />
+                {t("ws.by_project")}
+              </button>
+              <button type="button" aria-pressed={!ws.project} onClick={() => ws.setProject(false)}>
+                <List size={14} aria-hidden="true" />
+                {t(multi ? "ws.by_device" : "ws.by_none")}
+              </button>
+            </div>
+            <span className="grow" />
+            <button type="button" className="btn btn-plain ws-new-project" onClick={() => onQuick({})} disabled={!status.account.allowed} title={t("ws.new_project_hint")}>
+              <FolderPlus size={15} aria-hidden="true" />
+              {t("ws.new_project")}
+            </button>
+          </div>
           <div className="ws-list">
             {loading ? (
               <Skeleton height={160} />
+            ) : ws.project ? (
+              projectGroups(shown, multi).map((g) => {
+                const name = baseName(g.workdir);
+                return (
+                  <section key={g.key} className="ws-group ws-project" aria-label={name}>
+                    <h3 title={g.workdir}>
+                      <Folder size={13} aria-hidden="true" />
+                      <span className="ellipsis">{name}</span>
+                      {multi && g.device && <span className="ws-project-dev ellipsis">{deviceName(t, devices.byId(g.device))}</span>}
+                      <span className="grow" />
+                      <button
+                        type="button"
+                        className="btn btn-plain btn-icon ws-project-add"
+                        onClick={() => onQuick({ device: g.device, workdir: g.workdir })}
+                        disabled={!status.account.allowed}
+                        aria-label={t("ws.new_in_project", { name })}
+                        title={t("ws.new_in_project", { name })}
+                      >
+                        <Plus size={14} />
+                      </button>
+                    </h3>
+                    {g.items.map(renderRow)}
+                  </section>
+                );
+              })
             ) : multi ? (
               devices.items.map((d) => {
                 const g = groups?.[d.id];
@@ -1885,7 +2203,10 @@ export default function Terminals() {
   const error = multi ? null : singleError;
   const reload = () => (multi ? reloadGroups() : reloadSingle());
   const allowed = status.account.allowed;
+  const activity = useActivity(allowed);
   const [dialog, setDialog] = useState(null);
+  const [quick, setQuick] = useState(null);
+  const [convo, setConvo] = useState(false);
   const [logs, setLogs] = useState(null);
   const wsOk = useWorkspaceOk();
   const [view, setView] = useView(wsOk);
@@ -1935,7 +2256,7 @@ export default function Terminals() {
   const loading = !data && !error;
   const searchable = items.length > 0 && !workspace;
   return (
-    <>
+    <ActivityCtx.Provider value={activity}>
       <div className={`page-head ${workspace ? "page-head-ws" : ""}`}>
         <h1>
           {t("terminals.title")}
@@ -1943,8 +2264,11 @@ export default function Terminals() {
         </h1>
         <span className="inline page-tools">
           {items.length > 0 && <ViewSwitch view={view} onChange={setView} wsOk={wsOk} />}
+          <Button variant="secondary" icon={ArrowLeftRight} disabled={!allowed} onClick={() => setConvo(true)} title={t("convo.button_hint")} aria-label={t("convo.button")}>
+            <span className="hide-narrow">{t("convo.button")}</span>
+          </Button>
           {items.length > 0 && (
-            <Button icon={Plus} disabled={!allowed} onClick={() => create("shell")}>
+            <Button icon={Plus} disabled={!allowed} onClick={() => create("shell")} aria-label={t("terminals.new")}>
               <span className="hide-narrow">{t("terminals.new")}</span>
             </Button>
           )}
@@ -1969,6 +2293,7 @@ export default function Terminals() {
           match={match}
           renderRow={renderSideRow}
           onNew={() => create("shell")}
+          onQuick={setQuick}
           onStart={async (id) => {
             try {
               await api.post(`/instances/${id}/start`);
@@ -2061,8 +2386,32 @@ export default function Terminals() {
         open={Boolean(dialog)}
         initial={dialog?.initial}
         preset={dialog?.preset}
+        workdir={dialog?.workdir}
+        device={dialog?.device ?? undefined}
         onClose={() => setDialog(null)}
         onSaved={saved}
+      />
+      <ConvoDialog
+        open={convo}
+        onClose={() => setConvo(false)}
+        onOpened={(inst) => {
+          reload();
+          openHere(inst.id);
+        }}
+      />
+      <QuickCreateDialog
+        open={Boolean(quick)}
+        device={quick?.device}
+        workdir={quick?.workdir}
+        onClose={() => setQuick(null)}
+        onMore={(d) => {
+          setQuick(null);
+          setDialog(d);
+        }}
+        onCreated={(r) => {
+          reload();
+          openHere(r.id);
+        }}
       />
       <CreatedDialog
         inst={created}
@@ -2070,6 +2419,6 @@ export default function Terminals() {
         onOpenHere={openHere}
       />
       <LogsDialog inst={logs} onClose={() => setLogs(null)} />
-    </>
+    </ActivityCtx.Provider>
   );
 }

@@ -5,9 +5,9 @@ use axum::extract::{DefaultBodyLimit, Path, Query, Request, State};
 use axum::http::{Method, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, patch, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
-use looklook_protocol::dto::{CreateTunnel, UpdateTunnel};
+use looklook_protocol::dto::{CreatePageShare, CreateTunnel, UpdateTunnel};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -40,6 +40,9 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/stop", post(stop_instance))
         .route("/instances/{id}/restart", post(restart_instance))
         .route("/instances/{id}/logs", get(instance_logs))
+        .route("/instances/activity", get(instances_activity))
+        .route("/instances/{id}/chat", get(instance_chat))
+        .route("/instances/{id}/approve", post(instance_approve))
         .route("/instances/{id}/files", get(instance_files))
         .route("/instances/{id}/uploads", post(create_upload))
         .route("/instances/{id}/download", get(download))
@@ -59,6 +62,13 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/git/commit", post(git_commit))
         .route("/instances/{id}/git/remote", post(git_remote))
         .route("/instances/{id}/page", post(instance_page))
+        .route("/convo/harnesses", get(convo_harnesses).post(convo_register))
+        .route("/convo/harnesses/check", post(convo_check))
+        .route("/convo/harnesses/{id}", delete(convo_unregister))
+        .route("/convo/sessions", get(convo_sessions))
+        .route("/convo/preview", post(convo_preview))
+        .route("/convo/read", get(convo_read))
+        .route("/convo/migrate", post(convo_migrate))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/keys/info", post(ssh_key_info))
@@ -80,6 +90,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/relays/preference", put(set_relay))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
+        .route("/tunnels/{id}/shares", get(list_page_shares).post(create_page_share))
+        .route("/tunnels/{id}/shares/{share}", delete(delete_page_share))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/device/name", put(put_device_name))
         .route("/direct", post(direct))
@@ -93,6 +105,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tools", get(get_tools))
         .route("/tools/install", post(install_tool))
         .route("/tools/install/{tool}", get(install_job))
+        .route("/tools/{tool}/path", put(set_tool_path).delete(clear_tool_path))
         .route("/diag", get(diag_list))
         .route("/diag/clear", post(diag_clear))
         .route("/diag/ui-error", post(diag_ui_error))
@@ -125,7 +138,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers" | "convo") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -935,6 +948,296 @@ fn ssh_launch_line(exe: &str, id: &str, family: crate::shells::Family) -> String
 }
 
 /// 新建一个 SSH 终端并启动：终端里的 shell 运行 `looklook ssh <id>`，ssh 退出后回到 shell（按 ↑ 回车即可重连）。
+// ---------------- 会话页的“对话”看法（src/screen.rs、src/explain.rs、src/convo/live.rs） ----------------
+
+/// 终端类型 → 对话看法读哪个工具的会话记录（不支持的返回 None）。
+fn chat_kind(launch: &str) -> Option<crate::convo::Harness> {
+    match launch {
+        "codex" => Some(crate::convo::Harness::Codex),
+        "claude" => Some(crate::convo::Harness::Claude),
+        "dsh_tui" => Some(crate::convo::Harness::Dsh),
+        _ => None,
+    }
+}
+
+/// 终端对应的会话文件。记在 kv `instance_convo.{id}`（终端启动时间 + 路径），终端重启后重新找。
+async fn chat_path(app: &App, v: &crate::instances::View, kind: crate::convo::Harness) -> Option<std::path::PathBuf> {
+    let id = &v.row.id;
+    let key = format!("instance_convo.{id}");
+    let started = v.started_at.clone().unwrap_or_default();
+    if let Ok(Some((s, p))) = app.store.get::<(String, std::path::PathBuf)>(&key) {
+        if s == started && p.is_file() {
+            return Some(p);
+        }
+    }
+    let resume: Option<String> = app.store.get(&format!("instance_resume.{id}")).ok().flatten();
+    let cwd = v.row.workdir.clone();
+    let started_ms = crate::util::parse_time_ms(&started).unwrap_or(0);
+    let home = kind.default_home();
+    let found = tokio::task::spawn_blocking(move || match resume {
+        Some(r) => crate::convo::live::find(kind, &home, &r),
+        None => crate::convo::live::discover(kind, &home, &cwd, started_ms),
+    })
+    .await
+    .ok()
+    .flatten()?;
+    let _ = app.store.set(&key, &(started, found.clone()));
+    Some(found)
+}
+
+#[derive(Deserialize)]
+struct ChatQuery {
+    /// 网页已经有的条数（总序号）；只回从这里往前一点开始的条目
+    #[serde(default)]
+    after: Option<usize>,
+}
+
+/// 一个 Codex 终端的“对话”看法：屏幕状态（在干活 / 等你同意 / 空闲…）、等你同意的事（带说明和风险），
+/// 以及会话记录里的消息和步骤。不是 Codex 的终端返回 `supported: false`。
+async fn instance_chat(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ChatQuery>) -> R<Json<Value>> {
+    let v = app.instances.get(&id).await?;
+    let Some(kind) = chat_kind(&v.row.launch) else {
+        return Ok(Json(json!({ "supported": false })));
+    };
+    let screen = if v.running { app.instances.recent_output(&id).await.map(|s| crate::screen::parse(&s)) } else { None };
+    let prompt = screen.as_ref().and_then(|s| s.prompt.clone()).map(|p| {
+        let mut j = serde_json::to_value(&p).unwrap_or(Value::Null);
+        let (action, risk) = match (&p.command, p.kind) {
+            (Some(c), _) => crate::explain::command(c),
+            (None, "patch") => ("edit", crate::explain::Risk::Medium),
+            (None, "permissions") => ("system", crate::explain::Risk::High),
+            _ => ("run", crate::explain::Risk::Unknown),
+        };
+        j["action"] = json!(action);
+        j["risk"] = json!(risk);
+        j
+    });
+    let mut convo = Value::Null;
+    let (mut entries, mut total, mut base, mut from) = (Vec::new(), 0, 0, 0);
+    if let Some(path) = chat_path(&app, &v, kind).await {
+        let home = kind.default_home();
+        if let Ok(Ok(c)) = tokio::task::spawn_blocking(move || crate::convo::live::conversation(kind, &home, &path)).await {
+            let (all, t) = crate::convo::live::entries(&c);
+            total = t;
+            base = t - all.len();
+            // 最后几条的状态会变（命令跑完），所以从网页已有的位置往前多给 10 条
+            from = q.after.map_or(base, |a| a.saturating_sub(10).clamp(base, t));
+            entries = all.into_iter().skip(from - base).collect();
+            convo = json!({ "id": c.id, "title": c.title, "model": c.model, "cwd": c.cwd });
+        }
+    }
+    Ok(Json(json!({
+        "supported": true,
+        "running": v.running,
+        "state": screen.as_ref().map(|s| s.state),
+        "prompt": prompt,
+        "convo": convo,
+        "entries": entries,
+        "total": total,
+        "base": base,
+        "from": from,
+    })))
+}
+
+#[derive(Deserialize)]
+struct ApproveReq {
+    /// `once` 同意一次、`session` 这次对话里都同意、`deny` 不同意、`option` 选第 n 项
+    choice: String,
+    #[serde(default)]
+    n: Option<u32>,
+    /// 网页上看到的那个提示的指纹：屏幕上已经换成别的提示时不按键（`STALE_PROMPT`）
+    fingerprint: String,
+}
+
+async fn instance_approve(State(app): State<App>, Path(id): Path<String>, Json(req): Json<ApproveReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    let out = app.instances.recent_output(&id).await.ok_or_else(|| LocalError::new("STALE_PROMPT"))?;
+    let prompt = crate::screen::parse(&out).prompt.filter(|p| p.fingerprint == req.fingerprint).ok_or_else(|| LocalError::new("STALE_PROMPT"))?;
+    let keys = crate::screen::keys_for(&prompt, &req.choice, req.n).ok_or_else(|| LocalError::invalid("choice", "unavailable"))?;
+    app.instances.send_keys(&id, &keys).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 正在运行的 Codex 终端各自在干什么（会话列表上的状态标签）。
+async fn instances_activity(State(app): State<App>) -> R<Json<Value>> {
+    let mut out = serde_json::Map::new();
+    for v in app.instances.list().await? {
+        if !v.running || chat_kind(&v.row.launch).is_none() {
+            continue;
+        }
+        if let Some(s) = app.instances.recent_output(&v.row.id).await {
+            let p = crate::screen::parse(&s);
+            out.insert(v.row.id.clone(), json!({ "state": p.state, "kind": p.prompt.map(|p| p.kind) }));
+        }
+    }
+    Ok(Json(json!({ "items": out })))
+}
+
+// ---------------- 对话迁移（src/convo） ----------------
+
+fn convo_err(e: anyhow::Error) -> LocalError {
+    if let Some(u) = e.downcast_ref::<crate::convo::Unsupported>() {
+        return LocalError::new("HARNESS_UNSUPPORTED").with("harness", u.kind.name()).with("what", &u.what);
+    }
+    LocalError::new("CONVO_FAILED").with("detail", format!("{e:#}"))
+}
+
+/// 来源 id（`codex`、`dsh`、登记的 `reg-…`）→ 来源。
+fn convo_source(app: &App, id: &str) -> R<crate::convo::Source> {
+    crate::convo::registry::find(&app.store, id).ok_or_else(|| LocalError::new("NOT_FOUND").with("harness", id))
+}
+
+/// 可以迁移的来源 / 目标：每种工具的默认目录，加上登记的目录；各自能不能读写、目录在不在。
+async fn convo_harnesses(State(app): State<App>) -> R<Json<Value>> {
+    Ok(Json(json!({ "items": crate::convo::registry::all(&app.store) })))
+}
+
+/// 登记前检查：目录对不对、找不找得到程序、里面有几段对话（能读的工具才数）。不保存。
+async fn convo_check(State(app): State<App>, Json(n): Json<crate::convo::registry::NewSource>) -> R<Json<Value>> {
+    let kind = n.kind;
+    let bin = n.bin.clone().map(|b| b.trim().to_string()).filter(|b| !b.is_empty());
+    let src = crate::convo::registry::validate(&app.store, n);
+    let program = match bin {
+        Some(b) => Some(b),
+        None => {
+            let d = tools::detect_for(app.instances.shell(), &app.store).await;
+            match kind {
+                crate::convo::Harness::Codex => d.codex,
+                crate::convo::Harness::Dsh => d.dsh,
+                crate::convo::Harness::Claude => d.claude,
+                crate::convo::Harness::OpenCode => d.opencode,
+            }
+        }
+    };
+    let (error, sessions) = match src {
+        Err((field, rule)) => (Some(json!({"field": field, "rule": rule})), None),
+        Ok(s) if s.kind.can_export() => (None, tokio::task::spawn_blocking(move || crate::convo::list_in(&s).ok().map(|v| v.len())).await.ok().flatten()),
+        Ok(_) => (None, None),
+    };
+    Ok(Json(json!({ "error": error, "program": program, "sessions": sessions, "can_export": kind.can_export(), "can_import": kind.can_import() })))
+}
+
+async fn convo_register(State(app): State<App>, Json(n): Json<crate::convo::registry::NewSource>) -> R<impl IntoResponse> {
+    let src = crate::convo::registry::validate(&app.store, n).map_err(|(field, rule)| LocalError::invalid(field, rule))?;
+    let saved = crate::convo::registry::add(&app.store, src).map_err(|e| LocalError::new("INTERNAL").with("detail", e.to_string()))?;
+    let src = saved.ok_or_else(|| LocalError::invalid("harness", "too_many"))?;
+    Ok((StatusCode::CREATED, Json(json!({ "item": src }))))
+}
+
+async fn convo_unregister(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    match crate::convo::registry::remove(&app.store, &id) {
+        Ok(true) => Ok(StatusCode::NO_CONTENT),
+        Ok(false) => Err(LocalError::not_found()),
+        Err(e) => Err(LocalError::new("INTERNAL").with("detail", e.to_string())),
+    }
+}
+
+#[derive(Deserialize)]
+struct ConvoListQuery {
+    from: String,
+}
+
+async fn convo_sessions(State(app): State<App>, Query(q): Query<ConvoListQuery>) -> R<Json<Value>> {
+    let src = convo_source(&app, &q.from)?;
+    let items = tokio::task::spawn_blocking(move || crate::convo::list_in(&src)).await.map_err(|e| convo_err(e.into()))?.map_err(convo_err)?;
+    Ok(Json(json!({ "items": items.into_iter().take(300).collect::<Vec<_>>() })))
+}
+
+#[derive(Deserialize)]
+struct ConvoReq {
+    from: String,
+    id: String,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    cwd: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ConvoReadQuery {
+    from: String,
+    id: String,
+}
+
+/// 只读的对话记录（对话记录页）：最近 `CONVO_READ_MAX` 条；单条工具调用的参数 / 结果最多
+/// `CONVO_TOOL_MAX` 个字符（长会话的工具输出可能有几 MB，页面上默认也是折叠的）。
+const CONVO_READ_MAX: usize = 1500;
+const CONVO_TOOL_MAX: usize = 4000;
+
+fn clip(s: &str) -> (String, bool) {
+    match s.char_indices().nth(CONVO_TOOL_MAX) {
+        Some((i, _)) => (s[..i].to_string(), true),
+        None => (s.to_string(), false),
+    }
+}
+
+async fn convo_read(State(app): State<App>, Query(q): Query<ConvoReadQuery>) -> R<Json<Value>> {
+    use crate::convo::Item;
+    let src = convo_source(&app, &q.from)?;
+    let c = tokio::task::spawn_blocking(move || crate::convo::read_in(&src, &q.id)).await.map_err(|e| convo_err(e.into()))?.map_err(convo_err)?;
+    let total = c.items.len();
+    let skip = total.saturating_sub(CONVO_READ_MAX);
+    let items: Vec<Value> = c
+        .items
+        .iter()
+        .skip(skip)
+        .map(|i| match i {
+            Item::User { text, time_ms } => json!({"kind": "user", "text": text, "time_ms": time_ms}),
+            Item::Assistant { text, time_ms } => json!({"kind": "assistant", "text": text, "time_ms": time_ms}),
+            Item::ToolCall { id, name, arguments, time_ms } => {
+                let (a, cut) = clip(arguments);
+                json!({"kind": "tool_call", "id": id, "name": name, "arguments": a, "clipped": cut, "time_ms": time_ms})
+            }
+            Item::ToolResult { call_id, output, is_error, time_ms } => {
+                let (o, cut) = clip(output);
+                json!({"kind": "tool_result", "call_id": call_id, "output": o, "is_error": is_error, "clipped": cut, "time_ms": time_ms})
+            }
+        })
+        .collect();
+    Ok(Json(json!({ "id": c.id, "title": c.title, "cwd": c.cwd, "model": c.model, "total": total, "skipped": skip, "items": items })))
+}
+
+/// 迁移前看一眼：标题、工作目录、能带过去多少条、哪些不会带过去。
+async fn convo_preview(State(app): State<App>, Json(req): Json<ConvoReq>) -> R<Json<Value>> {
+    let src = convo_source(&app, &req.from)?;
+    let c = tokio::task::spawn_blocking(move || crate::convo::read_in(&src, &req.id)).await.map_err(|e| convo_err(e.into()))?.map_err(convo_err)?;
+    Ok(Json(json!({ "title": c.title, "cwd": c.cwd, "items": c.items.len(), "manifest": c.manifest })))
+}
+
+/// 迁移（`from` / `to` 是来源 id）。到默认目录的 Codex 时顺便新建并启动一个接着这个会话聊的
+/// Codex 终端（`codex resume <id>`）；DSH 是网页界面，新会话出现在它的会话列表里；登记的其他
+/// Codex 目录只给出接着聊的命令（终端不带那个目录的 `CODEX_HOME`）。
+async fn convo_migrate(State(app): State<App>, Json(req): Json<ConvoReq>) -> R<impl IntoResponse> {
+    require_allowed(&app)?;
+    let to_id = req.to.ok_or_else(|| LocalError::invalid("to", "required"))?;
+    if to_id == req.from {
+        return Err(LocalError::invalid("to", "same"));
+    }
+    let from = convo_source(&app, &req.from)?;
+    let to = convo_source(&app, &to_id)?;
+    let codex = to.kind == crate::convo::Harness::Codex;
+    let hint = if codex && to.bin.is_none() { tools::detect_for(app.instances.shell(), &app.store).await.codex } else { None };
+    let m = crate::convo::migrate_between(&from, &req.id, &to, req.cwd, hint.as_deref()).await.map_err(convo_err)?;
+    // 到默认目录的 Codex / Claude Code：开一个接着这个会话聊的终端（登记的其他目录只给命令，终端不带那个目录的环境变量）
+    // DSH 用终端版（dsh tui --resume）；它的网页界面也能在会话列表里看到这段对话
+    let launch = match to.kind {
+        crate::convo::Harness::Codex => Some(("codex", "Codex")),
+        crate::convo::Harness::Claude => Some(("claude", "Claude Code")),
+        crate::convo::Harness::Dsh => Some(("dsh_tui", "DSH")),
+        _ => None,
+    };
+    let instance = if let Some((launch, tool)) = launch.filter(|_| to.id == to.kind.name()) {
+        let title = crate::convo::read(to.kind, &m.id).ok().and_then(|c| c.title);
+        let name: String = format!("↪ {}", title.as_deref().unwrap_or(tool)).chars().take(40).collect();
+        let input = Input { name: Some(name), launch: Some(launch.into()), workdir: m.cwd.clone(), resume: Some(m.id.clone()), ..Default::default() };
+        let v = app.instances.create(input).await?;
+        Some(app.instances.start(&v.row.id).await?)
+    } else {
+        None
+    };
+    Ok((StatusCode::CREATED, Json(json!({ "migrated": m, "instance": instance }))))
+}
+
 async fn ssh_open(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
     let h = crate::ssh::list(&app.store).into_iter().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
@@ -1126,6 +1429,22 @@ async fn update_tunnel(State(app): State<App>, Path(id): Path<String>, Json(req)
 
 async fn delete_tunnel(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
     app.account.delete_tunnel(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// 本机网页的临时分享：转给平台（平台只允许分享这台设备自己的网页）。
+async fn list_page_shares(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    let list = app.account.page_shares(&id).await?;
+    Ok(Json(serde_json::to_value(list).unwrap_or_default()))
+}
+
+async fn create_page_share(State(app): State<App>, Path(id): Path<String>, Json(req): Json<CreatePageShare>) -> R<impl IntoResponse> {
+    require_allowed(&app)?;
+    Ok((StatusCode::CREATED, Json(app.account.create_page_share(&id, &req).await?)))
+}
+
+async fn delete_page_share(State(app): State<App>, Path((id, share)): Path<(String, String)>) -> R<StatusCode> {
+    app.account.delete_page_share(&id, &share).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1353,7 +1672,31 @@ async fn get_shells(State(app): State<App>) -> Json<Value> {
 // ---------------- AI 工具 ----------------
 
 async fn get_tools(State(app): State<App>) -> Json<Value> {
-    Json(json!({ "tools": tools::detect(app.instances.shell()).await }))
+    let d = tools::detect_for(app.instances.shell(), &app.store).await;
+    // DSH 终端版要带 tui 的 DSH（桌面版自带的没有）
+    let dsh_tui = match &d.dsh {
+        Some(p) => Some(tools::dsh_has_tui(p).await),
+        None => None,
+    };
+    Json(json!({ "tools": d, "configured": tools::configured(&app.store), "dsh_tui": dsh_tui }))
+}
+
+#[derive(Deserialize)]
+struct ToolPathReq {
+    path: String,
+}
+
+/// 手动指定 AI 工具的位置（程序文件或所在文件夹）。找得到程序才保存；返回新的检测结果。
+async fn set_tool_path(State(app): State<App>, Path(tool): Path<String>, Json(req): Json<ToolPathReq>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    let program = tools::set_path(&app.store, &tool, &req.path).map_err(|(field, rule)| LocalError::invalid(field, rule))?;
+    Ok(Json(json!({ "program": program, "tools": tools::detect_for(app.instances.shell(), &app.store).await, "configured": tools::configured(&app.store) })))
+}
+
+async fn clear_tool_path(State(app): State<App>, Path(tool): Path<String>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    tools::clear_path(&app.store, &tool);
+    Ok(Json(json!({ "tools": tools::detect_for(app.instances.shell(), &app.store).await, "configured": tools::configured(&app.store) })))
 }
 
 #[derive(Deserialize)]
