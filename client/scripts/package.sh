@@ -60,6 +60,8 @@ licenses() { # licenses <目录> <平台>
     tar xzf .cache/downloads/ncurses-6.5.tar.gz -O ncurses-6.5/COPYING >"$d/ncurses-LICENSE.txt"
   fi
   local rathole
+  # 构建缓存没命中时（比如 macOS 打包直接用现成的二进制）注册表里还没有源码，先下载依赖
+  cargo fetch --locked -q
   rathole=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name 'rathole-0.5.*' | head -1)
   [[ -n $rathole ]] && cp "$rathole/LICENSE" "$d/rathole-LICENSE.txt"
   cp .cache/downloads/trzsz-1.2.0-LICENSE "$d/trzsz-LICENSE.txt"
