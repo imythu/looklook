@@ -362,6 +362,7 @@
     "restarted": "Restarted",
     "delete_title": "Delete \"{{name}}\"?",
     "delete_body": "This deletes the terminal and its logs. Files in the folder are not deleted.",
+    "delete_body_running": "The terminal is still running. It will be stopped first: every program in it (including background ones) will be ended and unsaved work will be lost. Files in the folder are not deleted.",
     "deleted": "Deleted",
     "logs_title": "Logs of \"{{name}}\"",
     "logs_hint": "If the terminal misbehaves, this can help find the cause.",
@@ -373,7 +374,6 @@
     "history_output": "Recent terminal output",
     "history_output_empty": "(No output yet, or this mode doesn't keep output)",
     "history_service": "Terminal service log",
-    "delete_stop_first": "The terminal is still running; stop it before deleting",
     "open_page_hint": "Open the terminal full screen with the key bar"
   },
   "created": {
@@ -1540,5 +1540,19 @@
     "choice": "Needs a choice",
     "working": "Working",
     "idle": "Idle"
+  },
+  "select": {
+    "toggle": "Select text",
+    "title": "Select text",
+    "hint": "Long-press or drag to select, then copy",
+    "copy_selection": "Copy selection",
+    "copy_all": "Copy all",
+    "copied": "Copied",
+    "copy_failed": "The browser blocked copying",
+    "nothing": "Select some text below first",
+    "reload": "Reload",
+    "close": "Back to the terminal",
+    "loading": "Loading…",
+    "empty": "The terminal has no text yet"
   }
 }

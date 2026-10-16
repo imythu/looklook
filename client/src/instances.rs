@@ -351,7 +351,9 @@ impl Instances {
             updated_at: now,
         };
         if row.name.trim().is_empty() {
-            row.name = default_name(&row.launch, self.store.instances()?.len() + 1);
+            let rows = self.store.instances()?;
+            let taken: HashSet<&str> = rows.iter().map(|r| r.name.as_str()).collect();
+            row.name = default_name(&row.launch, &row.workdir, &taken);
         }
         self.validate(&mut row)?;
         if row.launch == "dsh" && self.dsh()?.is_some() {
@@ -419,12 +421,10 @@ impl Instances {
         self.get(id).await
     }
 
-    /// 删除已停止的终端。还在运行（终端服务或后台任务仍在）时拒绝：先停止，免得误删正在干活的任务。
+    /// 删除终端：还在运行时先停止（结束里面启动的所有程序，见 [`Instances::stop`]），不留下没人管的进程。
+    /// 界面上删除前会提示正在运行的程序会被结束。
     pub async fn delete(&self, id: &str) -> Result<(), LocalError> {
-        let v = self.get(id).await?;
-        if v.running || v.task_alive == Some(true) {
-            return Err(LocalError::new("INSTANCE_RUNNING"));
-        }
+        self.get(id).await?;
         self.stop(id).await?;
         let _g = self.op.lock().await;
         self.store.delete_instance(id)?;
@@ -473,15 +473,56 @@ impl Instances {
     }
 
     /// 停止：结束 ttyd，并结束 tmux 会话（其中的任务会被关闭，界面上需要二次确认）。
+    /// 会话里启动的所有程序（包括忽略 SIGHUP 的、放到后台的）一并结束，见 proctree.rs。
     pub async fn stop(&self, id: &str) -> Result<(), LocalError> {
         let _g = self.op.lock().await;
         self.store.set_want_running(id, false)?;
+        let doomed = self.task_processes(id).await;
+        crate::proctree::signal(&doomed);
         self.kill_ttyd(id).await;
         if let Backend::Tmux(_) = self.backend {
             let _ = self.tmux(&["kill-session", "-t", &exact(&Self::session_name(id))]).await;
         }
         let _ = std::fs::remove_file(self.paths.instance_pid(id));
+        if !doomed.is_empty() {
+            let forced = crate::proctree::reap(doomed).await;
+            if forced > 0 {
+                tracing::info!(id, forced, "强制结束了不响应退出信号的程序");
+            }
+        }
         Ok(())
+    }
+
+    /// 终端里运行着的程序：tmux 模式是会话里各面板的进程及其子孙（Linux 上加上带着会话标记、已脱离父子关系的），
+    /// 直接运行时是 ttyd 的子孙（不含 ttyd 本身，它由 kill_ttyd 结束）。
+    async fn task_processes(&self, id: &str) -> crate::proctree::Doomed {
+        match self.backend {
+            Backend::Tmux(_) => {
+                let target = format!("{}:", exact(&Self::session_name(id)));
+                let pids = match self.tmux(&["list-panes", "-s", "-t", &target, "-F", "#{pane_pid}"]).await {
+                    Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout).lines().filter_map(|l| l.trim().parse().ok()).collect(),
+                    _ => vec![],
+                };
+                if pids.is_empty() {
+                    return Default::default();
+                }
+                // `#{pid}`：tmux 服务进程号；`#{session_id}`：形如 `$5`
+                let marker = match self.tmux(&["display-message", "-p", "-t", &target, "#{pid} #{session_id}"]).await {
+                    Ok(out) if out.status.success() => parse_marker(&String::from_utf8_lossy(&out.stdout)),
+                    _ => None,
+                };
+                crate::proctree::collect(&pids, marker)
+            }
+            Backend::Direct => {
+                let Some(ttyd) = lock(&self.procs).get(id).and_then(|p| p.child.id()) else { return Default::default() };
+                let mut d = crate::proctree::collect(&[ttyd], None);
+                // Windows 上没有进程表，靠 `taskkill /T` 从 ttyd 往下结束整棵树
+                if cfg!(unix) {
+                    d.exclude(ttyd);
+                }
+                d
+            }
+        }
     }
 
     pub async fn restart(&self, id: &str) -> Result<View, LocalError> {
@@ -762,6 +803,11 @@ impl Instances {
         Ok(())
     }
 
+    /// “选择文字”看法用：最近约 3000 行输出（折行已接回原来的长行）。非 tmux 后端或会话不在时返回 None。
+    pub async fn text(&self, id: &str) -> Option<String> {
+        self.capture(id, "-3000").await
+    }
+
     /// 终端的全部输出（含整个回滚缓冲区）。
     pub async fn full_output(&self, id: &str) -> Option<String> {
         self.capture(id, "-").await
@@ -986,15 +1032,49 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
     }
 }
 
-fn default_name(launch: &str, n: usize) -> String {
-    match launch {
-        "codex" => format!("Codex {n}"),
-        "claude" => format!("Claude Code {n}"),
-        "opencode" => format!("OpenCode {n}"),
-        "dsh" => "DSH".into(),
-        "dsh_tui" => format!("DSH {n}"),
-        _ => format!("终端 {n}"),
+/// 没填名字时的默认名：带上文件夹名，一眼看出是哪个项目——`my-app · Claude Code`，普通终端就是 `my-app`；
+/// 重名时加序号（`my-app · Claude Code 2`）。文件夹是主目录或根目录（名字说明不了什么）时用工具名加序号。
+fn default_name(launch: &str, workdir: &str, taken: &HashSet<&str>) -> String {
+    let tool = match launch {
+        "codex" => Some("Codex"),
+        "claude" => Some("Claude Code"),
+        "opencode" => Some("OpenCode"),
+        "dsh" => return "DSH".into(),
+        "dsh_tui" => Some("DSH"),
+        _ => None,
+    };
+    let base = match (folder_name(workdir), tool) {
+        (Some(dir), Some(tool)) => format!("{dir} · {tool}"),
+        (Some(dir), None) => dir,
+        (None, tool) => {
+            let tool = tool.unwrap_or("终端");
+            return (1..).map(|n| format!("{tool} {n}")).find(|n| !taken.contains(n.as_str())).unwrap_or_default();
+        }
+    };
+    // 名字最长 40 个字符：太长的文件夹名截短，留出序号的位置
+    let base: String = if base.chars().count() > 36 {
+        match tool {
+            Some(tool) => format!("{}… · {tool}", folder_name(workdir).unwrap_or_default().chars().take(35 - tool.chars().count() - 3).collect::<String>()),
+            None => format!("{}…", base.chars().take(35).collect::<String>()),
+        }
+    } else {
+        base
+    };
+    if !taken.contains(base.as_str()) {
+        return base;
     }
+    (2..).map(|n| format!("{base} {n}")).find(|n| !taken.contains(n.as_str())).unwrap_or(base)
+}
+
+/// 工作目录最后一级的名字；主目录、根目录（含 `C:\`）、空的返回 None。
+fn folder_name(workdir: &str) -> Option<String> {
+    let full = expand_home(workdir.trim());
+    let trimmed = full.trim_end_matches(['/', '\\']);
+    if trimmed.is_empty() || dirs::home_dir().is_some_and(|h| Path::new(trimmed) == h) {
+        return None;
+    }
+    let name = trimmed.rsplit(['/', '\\']).next()?.trim();
+    (!name.is_empty() && !name.ends_with(':') && name != "~").then(|| name.to_string())
 }
 
 fn expand_home(p: &str) -> String {
@@ -1066,6 +1146,14 @@ fn parse_pane(out: &str) -> Option<Pane> {
     let cwd = it.next().unwrap_or("").to_string();
     let command = it.next().unwrap_or("").trim().to_string();
     Some(Pane { pid, cwd, command })
+}
+
+/// `display-message -p "#{pid} #{session_id}"` 的输出 → (tmux 服务进程号, 会话号)。
+fn parse_marker(s: &str) -> Option<(u32, u32)> {
+    let mut it = s.split_whitespace();
+    let server = it.next()?.parse().ok()?;
+    let session = it.next()?.strip_prefix('$')?.parse().ok()?;
+    Some((server, session))
 }
 
 /// tmux 的 `-t` 精确匹配会话名（不然 `a1` 会匹配 `a10`）；psmux 不认 `=` 前缀，用原名。
@@ -1155,6 +1243,13 @@ fn process_name(pid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn tmux_session_marker() {
+        assert_eq!(parse_marker("4321 $7\n"), Some((4321, 7)));
+        assert_eq!(parse_marker("4321 7"), None);
+        assert_eq!(parse_marker(""), None);
+    }
 
     #[test]
     fn configured_program_replaces_tool_name() {
@@ -1313,8 +1408,19 @@ mod tests {
 
     #[test]
     fn names_and_paths() {
-        assert_eq!(default_name("claude", 2), "Claude Code 2");
-        assert_eq!(default_name("shell", 1), "终端 1");
+        let none = HashSet::new();
+        assert_eq!(default_name("claude", "/srv/my-app", &none), "my-app · Claude Code");
+        assert_eq!(default_name("shell", "/srv/my-app/", &none), "my-app");
+        assert_eq!(default_name("codex", r"D:\code\web", &none), "web · Codex");
+        assert_eq!(default_name("dsh", "/srv/my-app", &none), "DSH");
+        let taken = HashSet::from(["my-app · Claude Code", "my-app · Claude Code 2", "Claude Code 1"]);
+        assert_eq!(default_name("claude", "/srv/my-app", &taken), "my-app · Claude Code 3");
+        // 主目录、根目录：用工具名加序号
+        assert_eq!(default_name("claude", "~", &taken), "Claude Code 2");
+        assert_eq!(default_name("shell", "/", &none), "终端 1");
+        assert_eq!(default_name("shell", r"C:\", &none), "终端 1");
+        let long = default_name("claude", &format!("/srv/{}", "x".repeat(60)), &none);
+        assert!(long.chars().count() <= 36 && long.ends_with("… · Claude Code"), "{long}");
         assert!(Instances::is_reserved_port(41500));
         assert!(!Instances::is_reserved_port(5173));
         if let Some(h) = dirs::home_dir() {

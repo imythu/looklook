@@ -12,6 +12,9 @@
 //    能嵌入这里的来源已由本机的 CSP frame-ancestors 限定，所以写错了来源只会收不到消息。
 // 9. ⇧↵ 换行（发 Ctrl+J）；Windows / Linux 上 Ctrl+V 只粘贴、不再把 ^V 发给程序。见 setupKeys。
 // 10. 快速复制：终端里选中文字后旁边出现“复制”小按钮；Windows / Linux 上 Ctrl+Shift+C 复制选中的文字。见 setupCopy。
+// 11. 切到别的窗口再回来时重新适配、整屏重画，免得只画了一部分。见 refitOnReturn。
+// 12. 选择文字：手机上长按终端时通知管理台打开“选择文字”（用浏览器自己的选择，见 src-ui/shared/TextSelect.jsx）；
+//     提供 window.looklookText() 读出终端缓冲区的文字（没有 tmux 时用）。tmux 里拖选后浏览器不让直接写剪贴板时给一个“复制”按钮。
 (function () {
   'use strict';
   var tries = 0;
@@ -25,8 +28,8 @@
   function fromParent(e) { return e.source === window.parent && e.origin === PARENT && e.data && typeof e.data === 'object'; }
   // 与管理台共用语言设置（同源 localStorage）；英文未翻译时回退中文。
   var TEXT = {
-    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', connecting: '正在连接终端…', lost: '连接断开了，正在自动重连…', back: '已重新连接', reload: '立即重连' },
-    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', connecting: 'Connecting to the terminal…', lost: 'Connection lost. Reconnecting automatically…', back: 'Reconnected', reload: 'Reconnect now' }
+    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', copy_offer: '复制选中的文字', connecting: '正在连接终端…', lost: '连接断开了，正在自动重连…', back: '已重新连接', reload: '立即重连' },
+    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', copy_offer: 'Copy the selected text', connecting: 'Connecting to the terminal…', lost: 'Connection lost. Reconnecting automatically…', back: 'Reconnected', reload: 'Reconnect now' }
   };
   function tr(key) {
     var lang = 'zh-CN';
@@ -233,9 +236,25 @@
       term.options.fontFamily = f + ' ';
       term.options.fontFamily = f;
       if (typeof term.fit === 'function') term.fit();
+      term.refresh(0, term.rows - 1);
     } catch (e) {
       /* 终端还没准备好，忽略 */
     }
+  }
+
+  // 切到别的窗口（或手机切到别的应用）再回来：浏览器在后台时会暂停终端的绘制，窗口尺寸也可能在这期间变过，
+  // 回来后屏幕只画了一部分（例如 AI 编程助手底部的输入框不见了），要刷新或切到别的终端再切回来才恢复。
+  // 回到前台 / 窗口重新拿到焦点时重新测量、适配并整屏重画；布局稳定需要一点时间，过一会儿再来一次。
+  function refitOnReturn(term) {
+    var timers = [];
+    function later() {
+      timers.forEach(clearTimeout);
+      timers = [60, 400].map(function (ms) { return setTimeout(function () { refit(term); }, ms); });
+    }
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') later(); });
+    window.addEventListener('pageshow', later);
+    window.addEventListener('focus', later);
+    window.addEventListener('resize', function () { setTimeout(function () { try { term.refresh(0, term.rows - 1); } catch (e) { /* 忽略 */ } }, 120); });
   }
 
   function decodeBase64Utf8(b64) {
@@ -258,7 +277,7 @@
 
   // 手机键盘：外层挂在 iframe 元素上的 looklookIme = { change(focused), up() → 键盘是否弹着 }。
   var touch = Boolean(window.matchMedia && window.matchMedia('(hover: none) and (pointer: coarse)').matches);
-  var lastGesture = 0;
+  var lastGesture = 0, longPressAt = 0;
   function imeBox() {
     try { return window.frameElement && window.frameElement.looklookIme; } catch (e) { return null; }
   }
@@ -293,7 +312,7 @@
     document.addEventListener('pointerup', function (e) {
       var d = tap;
       tap = null;
-      if (!d || Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 12 || Date.now() - d.t > 600) return;
+      if (!d || Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 12 || Date.now() - d.t > 600 || Date.now() - longPressAt < 1000) return;
       if (!e.target || !e.target.closest || !e.target.closest('.xterm')) return;
       var box = imeBox();
       if (document.activeElement === ta && box && !box.up()) window.looklookIme(true);
@@ -310,32 +329,67 @@
     var screen = el.querySelector('.xterm-screen') || el;
     // 不让浏览器自己处理竖向拖动（拖动整个页面）；双指缩放照常。
     el.style.touchAction = 'pinch-zoom';
-    var start = null, scrolling = false, lastY = 0, lastT = 0, vel = 0, acc = 0, x = 0, y = 0, fling = 0;
+    var start = null, scrolling = false, lastY = 0, lastT = 0, vel = 0, acc = 0, x = 0, y = 0, fling = 0, hold = 0;
+    // 长按（不动 0.5 秒）：嵌在管理台里时打开“选择文字”。xterm.js 在手机上选不了字。
+    function cancelHold() { clearTimeout(hold); hold = 0; }
     function rowHeight() { return Math.max(8, screen.clientHeight / (term.rows || 24)); }
     // 开了鼠标上报时每个滚轮事件只上报一次（tmux 一次滚 5 行），攒够约 2.5 行的滑动距离再发一次，滚动速度跟手。
     function mouseMode() { return Boolean(term.modes && term.modes.mouseTrackingMode && term.modes.mouseTrackingMode !== 'none'); }
+    function wheel(delta) {
+      screen.dispatchEvent(new WheelEvent('wheel', { deltaY: delta, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true }));
+    }
+    // 开了鼠标上报时滚动在电脑那头（tmux）做，每一下都要经网络往返，tmux 每收到一下还要整屏重画一次发回来。
+    // 一口气发出去的话，快速滑动会排起几十屏重画，经中转慢慢传回来，越滑越落后，松手后还在滚。
+    // 所以同一时间只让一批在路上：等终端收到输出（上一批的重画）再把这期间攒下的一次性发出去，
+    // 同一时刻发出的几下 tmux 一次读到，只重画一屏。延迟就是一次往返，不会越积越多。
+    var inflight = false, ackTimer = 0;
+    function pump() {
+      if (inflight) return;
+      var step = rowHeight() * 2.5;
+      var n = Math.trunc(acc / step);
+      if (!n) return;
+      acc -= n * step;
+      inflight = true;
+      for (var i = 0; i < Math.abs(n); i++) wheel(n > 0 ? step : -step);
+      ackTimer = setTimeout(ack, 400); // 到顶 / 到底时 tmux 不输出，不能一直等
+    }
+    function ack() {
+      if (!inflight) return;
+      inflight = false;
+      clearTimeout(ackTimer);
+      pump();
+    }
+    var onOutput = term.onWriteParsed || term.onRender;
+    if (typeof onOutput === 'function') onOutput.call(term, ack);
     function scrollBy(d) {
       acc += d;
-      var step = mouseMode() ? rowHeight() * 2.5 : 1;
-      while (Math.abs(acc) >= step) {
-        var delta = acc > 0 ? step : -step;
-        if (step === 1) delta = acc;
-        acc -= delta;
-        screen.dispatchEvent(new WheelEvent('wheel', { deltaY: delta, deltaMode: 0, clientX: x, clientY: y, bubbles: true, cancelable: true }));
-      }
+      if (mouseMode()) { pump(); return; }
+      // 本地回滚区：立即滚动
+      if (acc) { wheel(acc); acc = 0; }
     }
     el.addEventListener('touchstart', function (e) {
       cancelAnimationFrame(fling);
+      acc = 0; // 手指按下就停：还没发出去的不再发
       if (e.touches.length !== 1) { start = null; return; }
       var t = e.touches[0];
       start = { x: t.clientX, y: t.clientY };
       scrolling = false;
+      cancelHold();
+      if (window.parent !== window) {
+        hold = setTimeout(function () {
+          hold = 0;
+          longPressAt = Date.now();
+          try { navigator.vibrate && navigator.vibrate(10); } catch (err) { /* 不支持振动 */ }
+          toParent({ type: 'looklook:select' });
+        }, 500);
+      }
     }, { capture: true, passive: true });
     el.addEventListener('touchmove', function (e) {
-      if (!start || e.touches.length !== 1) { start = null; return; }
+      if (!start || e.touches.length !== 1) { start = null; cancelHold(); return; }
       var t = e.touches[0];
       if (!scrolling) {
         var dx = t.clientX - start.x, dy = t.clientY - start.y;
+        if (Math.abs(dx) + Math.abs(dy) > 10) cancelHold();
         if (Math.abs(dy) < 10 || Math.abs(dy) < Math.abs(dx)) return;
         scrolling = true;
         lastY = t.clientY; lastT = e.timeStamp; vel = 0; acc = 0;
@@ -351,6 +405,7 @@
       if (d) scrollBy(d);
     }, { capture: true, passive: false });
     function end(e) {
+      cancelHold();
       if (!start) return;
       var was = scrolling;
       start = null; scrolling = false;
@@ -369,7 +424,7 @@
       })(prev + 16);
     }
     el.addEventListener('touchend', end, { capture: true, passive: true });
-    el.addEventListener('touchcancel', function () { start = null; scrolling = false; }, { capture: true, passive: true });
+    el.addEventListener('touchcancel', function () { cancelHold(); start = null; scrolling = false; }, { capture: true, passive: true });
   }
 
   // 快速复制。xterm.js 自己的选择（没开鼠标上报时直接拖选；tmux 等开了鼠标时按住 Shift 拖选）不会自动进剪贴板：
@@ -393,6 +448,37 @@
     if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallback()); });
     else done(fallback());
   }
+  // tmux 里拖选松手后靠 OSC 52 写剪贴板；Safari、Firefox 等要求“用户刚点过”才让写，这时给一个按钮，点一下再复制。
+  var offer = null;
+  function offerCopy(text) {
+    if (offer) offer.remove();
+    var b = offer = document.createElement('button');
+    b.type = 'button';
+    b.textContent = tr('copy_offer');
+    b.style.cssText = 'position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:99;padding:7px 16px;border:1px solid #59627a;border-radius:999px;' +
+      'background:#262a36;color:#e3e6ee;font:600 13px/1.4 system-ui,sans-serif;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.45)';
+    b.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+    b.addEventListener('click', function () { copyText(text); b.remove(); if (offer === b) offer = null; });
+    document.body.appendChild(b);
+    setTimeout(function () { b.remove(); if (offer === b) offer = null; }, 8000);
+  }
+
+  // 终端缓冲区里的文字（回滚区 + 屏幕），折行接回原来的长行，去掉末尾的空行。
+  function bufferText(term) {
+    var b = term.buffer && term.buffer.active;
+    if (!b) return '';
+    var out = [];
+    for (var i = 0; i < b.length; i++) {
+      var l = b.getLine(i);
+      if (!l) continue;
+      var s = l.translateToString(true);
+      if (l.isWrapped && out.length) out[out.length - 1] += s;
+      else out.push(s);
+    }
+    while (out.length && !out[out.length - 1].trim()) out.pop();
+    return out.join('\n');
+  }
+
   function setupCopy(term) {
     if (typeof term.onSelectionChange !== 'function' || typeof term.getSelection !== 'function') return;
     var chip = null, at = null, timer = 0;
@@ -491,6 +577,9 @@
   }
 
   function setup(term) {
+    // 管理台在终端还没准备好时（iframe 刚加载完）就要求过聚焦：页面有焦点就把它交给终端（手机上不主动弹键盘）
+    if (!touch && document.hasFocus()) term.focus();
+    refitOnReturn(term);
     setupIme(term);
     setupTouchScroll(term);
     setupKeys(term);
@@ -498,6 +587,7 @@
     // opts.focus === false：按键条发送时不聚焦终端，免得手机键盘被弹出来。
     window.looklookSend = function (data, opts) { send(term, data); if (!opts || opts.focus !== false) term.focus(); };
     // 管理台上传完成后填路径：term.paste 会在程序开启 bracketed paste 时自动包上 ESC[200~ … ESC[201~。
+    window.looklookText = function () { return bufferText(term); };
     window.looklookPaste = function (text, opts) {
       fromKeybar = true; // 不套用按键条的修饰键
       try { term.paste(text); } finally { fromKeybar = false; }
@@ -513,7 +603,9 @@
         try {
           var text = decodeBase64Utf8(payload);
           if (navigator.clipboard && navigator.clipboard.writeText) {
-            navigator.clipboard.writeText(text).then(function () { toast(tr('copied')); }, function () {});
+            navigator.clipboard.writeText(text).then(function () { toast(tr('copied')); }, function () { offerCopy(text); });
+          } else {
+            offerCopy(text);
           }
         } catch (e) {
           /* 内容不合法，忽略 */
@@ -536,6 +628,7 @@
       if (d.type === 'looklook:paste' && typeof d.data === 'string') window.looklookPaste(d.data, opts);
       if (d.type === 'looklook:focus') term.focus();
       if (d.type === 'looklook:fit') refit(term);
+      if (d.type === 'looklook:text') toParent({ type: 'looklook:text', text: bufferText(term) });
     });
   }
 

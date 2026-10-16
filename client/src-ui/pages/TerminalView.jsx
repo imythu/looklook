@@ -3,19 +3,20 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页“工作台”里的每个终端是一个 TermPane（见 Terminals.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessageSquareText, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, Zap } from 'lucide-react';
+import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessageSquareText, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, Zap } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api, terminalDevice } from '../shared/api.js';
 import { LanButton, LanFallback, useLanPage } from '../shared/lan.jsx';
-import { termFit, termFocus, termPaste, useLatency, useTermSrc } from '../shared/direct.js';
+import { termFit, termFocus, termPaste, useLatency, useRefitOnReturn, useTermSrc } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import Composer from '../shared/Composer.jsx';
+import TextSelect, { useTextSelect } from '../shared/TextSelect.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import ChatView from './ChatView.jsx';
 import FileBrowser from './FileBrowser.jsx';
@@ -247,6 +248,8 @@ export function TermPane({ id, inst, active, missing, onStart }) {
   const allowed = status.account.allowed;
   const running = Boolean(inst?.running && allowed);
   const files = useTermFiles({ id, inst, frame, enabled: running && active, touch: false, hostOs: status.capabilities.os, keybar: false });
+  useRefitOnReturn(frame, running && active);
+  const [selecting, setSelecting] = useTextSelect(frame, running && active && tab === 'term');
   useEffect(() => {
     if (!active) return undefined;
     const timer = setTimeout(() => {
@@ -331,6 +334,11 @@ export function TermPane({ id, inst, active, missing, onStart }) {
             <MessageSquareText size={16} />
           </button>
         )}
+        {running && tab === 'term' && (
+          <button type="button" className={iconBtn} onClick={() => setSelecting(!selecting)} aria-pressed={selecting} aria-label={t('select.toggle')} title={t('select.toggle')}>
+            <TextSelectIcon size={16} />
+          </button>
+        )}
         {files.button}
         {running && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} autoSwitch={false} />}
         {!full && (
@@ -348,6 +356,7 @@ export function TermPane({ id, inst, active, missing, onStart }) {
       <div className="term-frame">
         {body}
         {files.layer}
+        {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); termFocus(frame); }} />}
         {running && active && tab === 'chat' && <ChatView id={id} inst={inst} frame={frame} active={active} touch={false} onTerminal={() => setTab('term')} />}
         {running && tab === 'git' && (
           <div className="term-files-tab">
@@ -393,6 +402,12 @@ export default function TerminalView({ id }) {
   const keybarShown = touch && keys && live && tab === 'term';
   const files = useTermFiles({ id, inst, frame, enabled: live, touch, hostOs: status.capabilities.os, keybar: keybarShown || tabbarShown });
   const vars = useTermChrome(status.settings.theme, true);
+  useRefitOnReturn(frame, live);
+  const [selecting, setSelecting] = useTextSelect(frame, live && tab === 'term');
+  // 选择文字时收起手机键盘，屏幕留给文字
+  useEffect(() => {
+    if (selecting) mobile.ime.hide();
+  }, [selecting]);
 
   useEffect(() => {
     const iv = setInterval(reload, 5000);
@@ -493,6 +508,7 @@ export default function TerminalView({ id }) {
   const compact = touch || narrow;
   const tap = touch ? keepFocus : undefined;
   const more = [
+    tab === 'term' && live && { icon: TextSelectIcon, label: t('select.toggle'), onClick: () => setSelecting(true) },
     tab === 'term' && live && { icon: RefreshCw, label: t('term.reload'), onClick: reloadTerm },
     { icon: full ? Minimize2 : Maximize2, label: t(full ? 'term.exit_full' : 'term.full'), onClick: toggleFull },
     { icon: ExternalLink, label: t('instance.new_window'), onClick: newWindow },
@@ -512,6 +528,11 @@ export default function TerminalView({ id }) {
         </span>
         {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
         {live && !bottomTabs && <TermTabs tab={tab} onChange={setTab} inst={inst} />}
+        {!compact && tab === 'term' && live && (
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => setSelecting(!selecting)} aria-pressed={selecting} aria-label={t('select.toggle')} title={t('select.toggle')}>
+            <TextSelectIcon size={18} />
+          </button>
+        )}
         {!compact && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onClick={reloadTerm} aria-label={t('term.reload')} title={t('term.reload')}>
             <RefreshCw size={18} />
@@ -550,6 +571,7 @@ export default function TerminalView({ id }) {
             <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
           </div>
         )}
+        {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); if (!touch) termFocus(frame); }} />}
         {live && tab === 'chat' && <ChatView id={id} inst={inst} frame={frame} active touch={touch} onTerminal={() => setTab('term')} />}
         {live && tab === 'git' && (
           <div className="term-files-tab">
@@ -558,7 +580,7 @@ export default function TerminalView({ id }) {
         )}
       </div>
       {live && tab === 'term' && composer && <Composer frame={frame} id={id} touch={touch} onClose={() => setComposer(false)} />}
-      {keybarShown && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
+      {keybarShown && !selecting && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
       {tabbarShown && <TermTabBar tab={tab} onChange={setTab} inst={inst} />}
     </div>
   );

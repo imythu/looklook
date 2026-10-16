@@ -416,7 +416,7 @@ function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
   const remove = async () => {
     const ok = await confirm({
       title: t("instance.delete_title", { name: inst.name }),
-      body: t("instance.delete_body"),
+      body: t(live ? "instance.delete_body_running" : "instance.delete_body"),
       confirm: t("action.delete"),
       danger: true,
     });
@@ -464,8 +464,6 @@ function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
       label: t("action.delete"),
       onClick: remove,
       danger: true,
-      disabled: live,
-      hint: live ? t("instance.delete_stop_first") : null,
     },
   ];
   // 点名称 / 整行：DSH 打开它的网页，其他终端在本页打开
@@ -986,6 +984,15 @@ const shellLabel = (data, value) =>
  * 最后“自定义”可以输入任意命令（如 bash、fish、C:\Program Files\Git\bin\bash.exe -l）。
  * value 为空表示自动/默认。inherit：设置里的默认 shell（只在新建终端时传入）。
  */
+// 不填名字时电脑上取的名字（src/instances.rs 的 default_name；重名时那边再加序号）：`my-app · Claude Code`，普通终端就是文件夹名。
+const TOOL_NAMES = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode", dsh_tui: "DSH" };
+function guessName(launch, workdir) {
+  if (launch === "dsh") return "DSH";
+  const dir = (workdir || "").trim().replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.trim();
+  if (!dir || dir === "~" || dir.endsWith(":")) return "";
+  return TOOL_NAMES[launch] ? `${dir} · ${TOOL_NAMES[launch]}` : dir;
+}
+
 export function ShellPicker({ value, onChange, data, inherit }) {
   const { t } = useTranslation();
   const known = data?.items.some((o) => o.value === value);
@@ -1399,7 +1406,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
           </Field>
         )}
         <Field label={t('form.name')} hint={t('form.name_hint')}>
-          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={t(`launch.${launch}.title`)} />
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={guessName(launch, workdir) || t(`launch.${launch}.title`)} />
         </Field>
         {launch === "dsh" && <Note>{t("dsh.form_note")}</Note>}
         <FolderField

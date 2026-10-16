@@ -88,9 +88,22 @@ export function useTouchTerminal(frame, enabled) {
     on();
     vv.addEventListener('resize', on);
     vv.addEventListener('scroll', on);
+    // 切到别的应用再回来：键盘可能已经收起，但在后台时收不到 resize，页面还按键盘弹着的高度排，底部被截掉。
+    let timer = 0;
+    const back = () => {
+      if (document.visibilityState !== 'visible') return;
+      on();
+      clearTimeout(timer);
+      timer = setTimeout(on, 400);
+    };
+    document.addEventListener('visibilitychange', back);
+    window.addEventListener('pageshow', back);
     return () => {
+      clearTimeout(timer);
       vv.removeEventListener('resize', on);
       vv.removeEventListener('scroll', on);
+      document.removeEventListener('visibilitychange', back);
+      window.removeEventListener('pageshow', back);
       setVp(null);
     };
   }, [enabled]);

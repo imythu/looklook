@@ -921,6 +921,26 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
   .term-tab-label { display: none; }
 }
 .term-files-tab { position: absolute; inset: 0; z-index: 3; background: var(--bg); color: var(--text); }
+/* ---------- 选择文字（TextSelect.jsx）：终端文字铺成普通网页文字，用浏览器自己的选择 ---------- */
+.text-select { position: absolute; inset: 0; z-index: 4; display: flex; flex-direction: column; background: var(--term-bg, #11131a); color: var(--term-fg, #e3e6ee); }
+.text-select-bar { flex: none; display: flex; align-items: center; gap: 4px; min-height: 44px; padding: 4px 6px 4px 12px; border-bottom: 1px solid var(--term-line, #343a4a); background: var(--term-bar, #171a22); }
+.text-select-bar .btn-plain { color: var(--term-muted, #c5cad6); }
+.text-select-title { font-weight: 600; font-size: 14px; white-space: nowrap; }
+.text-select-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--term-muted, #8a91a3); }
+.text-select-action { display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 13px; white-space: nowrap; }
+.text-select-scroll { flex: 1; min-height: 0; overflow: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+.text-select pre {
+  margin: 0; padding: 10px 12px 24px; font: 13px/1.45 "JetBrains Mono", "LXGW WenKai Mono", ui-monospace, monospace;
+  white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; cursor: text;
+}
+.text-select pre::selection { background: var(--term-accent, #a5b4fc); color: var(--term-bg, #11131a); }
+.text-select-empty { margin: 0; padding: 32px 16px; text-align: center; color: var(--term-muted, #8a91a3); }
+@media (max-width: 719px) {
+  .text-select-hint { display: none; }
+  .text-select-title { flex: 1; }
+  .text-select-action span { display: none; }
+  .text-select-action { padding: 6px 8px; }
+}
 /* ---------- 终端页的 Git 标签 ---------- */
 .git { --git-add: #12a150; --git-add-bg: #e9f8ef; --git-del: #d9364f; --git-del-bg: #fdeef1; --git-hunk-bg: #eef0ff;
   height: 100%; display: flex; min-height: 0; background: var(--bg); }

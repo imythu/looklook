@@ -362,6 +362,7 @@
     "restarted": "已重新启动",
     "delete_title": "删除“{{name}}”？",
     "delete_body": "会删除这个终端和它的运行记录。文件夹里的文件不会被删除。",
+    "delete_body_running": "终端还在运行：删除前会先停止它，里面正在运行的程序（包括放到后台的）都会被结束，没保存的内容会丢失。文件夹里的文件不会被删除。",
     "deleted": "已删除",
     "logs_title": "“{{name}}”的运行记录",
     "logs_hint": "终端出问题时，这里的内容可以帮助找到原因。",
@@ -373,7 +374,6 @@
     "history_output": "终端最近输出",
     "history_output_empty": "（暂无输出，或此模式不保存输出）",
     "history_service": "终端服务记录",
-    "delete_stop_first": "终端还在运行，先停止才能删除",
     "open_page_hint": "整页打开终端，带常用按键条"
   },
   "created": {
@@ -1540,5 +1540,19 @@
     "choice": "等你选择",
     "working": "正在做",
     "idle": "空闲"
+  },
+  "select": {
+    "toggle": "选择文字",
+    "title": "选择文字",
+    "hint": "长按或拖动选择，选好后复制",
+    "copy_selection": "复制选中",
+    "copy_all": "全部复制",
+    "copied": "已复制",
+    "copy_failed": "浏览器不允许复制",
+    "nothing": "先在下面选中一些文字",
+    "reload": "重新读取",
+    "close": "回到终端",
+    "loading": "正在读取…",
+    "empty": "终端里还没有文字"
   }
 }

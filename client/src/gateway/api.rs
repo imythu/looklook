@@ -40,6 +40,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/stop", post(stop_instance))
         .route("/instances/{id}/restart", post(restart_instance))
         .route("/instances/{id}/logs", get(instance_logs))
+        .route("/instances/{id}/text", get(instance_text))
         .route("/instances/activity", get(instances_activity))
         .route("/instances/{id}/chat", get(instance_chat))
         .route("/instances/{id}/approve", post(instance_approve))
@@ -523,6 +524,12 @@ async fn instance_logs(State(app): State<App>, Path(id): Path<String>) -> R<Json
         "last_activity_at": v.last_activity_at,
         "error": v.error,
     })))
+}
+
+/// 终端里的文字（“选择文字”看法：手机长按、鼠标拖选都能用浏览器自己的选择）。null：不是 tmux 会话，由页面读终端自己的缓冲区。
+async fn instance_text(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    app.instances.get(&id).await?;
+    Ok(Json(json!({ "text": app.instances.text(&id).await })))
 }
 
 // ---------------- 终端文件传输（docs/FILE_TRANSFER.md §4） ----------------

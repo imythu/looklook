@@ -227,13 +227,49 @@ export const termSend = (frame, data, opts) => call(frame, 'looklookSend', 'look
 /** 往终端粘贴（上传完成后填路径）。 */
 export const termPaste = (frame, data, opts) => call(frame, 'looklookPaste', 'looklook:paste', data, opts);
 
+/**
+ * 让终端拿到键盘焦点。光聚焦 iframe 不够：终端被隐藏过（工作台切到别的终端）时浏览器已把焦点从里面的输入框拿走，
+ * 切回来后 iframe 有焦点、打字却没反应，所以还要聚焦终端本身（同源直接调用，跨源发消息）。
+ */
 export function termFocus(frame) {
   const w = frame.current?.contentWindow;
   if (!w) return;
   w.focus();
-  if (frameOrigin(frame) !== location.origin) w.postMessage({ type: 'looklook:focus' }, frameOrigin(frame));
+  let term = null;
+  try {
+    term = w.term;
+  } catch {
+    term = null; // 跨源
+  }
+  if (term?.focus) term.focus();
+  else w.postMessage({ type: 'looklook:focus' }, frameOrigin(frame));
 }
 
 export function termFit(frame) {
   frame.current?.contentWindow?.postMessage({ type: 'looklook:fit' }, frameOrigin(frame));
+}
+
+/**
+ * 切到别的窗口 / 应用再回来时让终端重新适配、整屏重画（不然可能只画了一部分，见 term-inject.js 的 refitOnReturn）。
+ * 终端页自己也会处理；这里补上焦点留在管理台（没点进终端）的情况。`enabled`：工作台里只管当前显示的那个。
+ */
+export function useRefitOnReturn(frame, enabled = true) {
+  useEffect(() => {
+    if (!enabled) return undefined;
+    let timers = [];
+    const later = () => {
+      if (document.visibilityState !== 'visible') return;
+      timers.forEach(clearTimeout);
+      timers = [60, 400].map((ms) => setTimeout(() => termFit(frame), ms));
+    };
+    document.addEventListener('visibilitychange', later);
+    window.addEventListener('pageshow', later);
+    window.addEventListener('focus', later);
+    return () => {
+      timers.forEach(clearTimeout);
+      document.removeEventListener('visibilitychange', later);
+      window.removeEventListener('pageshow', later);
+      window.removeEventListener('focus', later);
+    };
+  }, [frame, enabled]);
 }

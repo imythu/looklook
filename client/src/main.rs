@@ -39,6 +39,7 @@ mod metrics;
 mod model;
 mod paths;
 mod platform;
+mod proctree;
 mod relay;
 mod relay_watch;
 mod screen;
