@@ -206,33 +206,18 @@ fn show_main(app: &AppHandle) {
 /// 管理台窗口。网页里 `window.open` 的本机页面（终端“新标签页打开”等）开成新的应用窗口，
 /// 其它网址（看看网站、会员页、授权页）交给系统浏览器。
 ///
-/// 本机 / 多台电脑：页面里注入 `window.__LOOKLOOK_DESKTOP__.console`（本机管理台地址，不含任何凭据），
-/// 管理台顶栏据此显示切换：切到“多台电脑”就在这个窗口里打开专属地址（和手机上一样看到所有电脑），
-/// 切回“本机”回到这个地址。从专属地址里新开的窗口（终端“新窗口打开”）同样留在应用里。
-///
 /// `console`：本机管理台地址；`url`：窗口一开始加载的地址。网页新开的窗口先加载 about:blank，由 WebKit / WebView2
 /// 把请求的页面载入返回的窗口（Tauri 文档的做法）。自己再加载一次目标地址会有两次导航，前一次被取消后
 /// macOS 上 WKWebView 的地址短暂为空，wry 读它时 panic，应用直接崩溃（用户报告：打开 DSH、终端“新窗口打开”）。
 fn window<'a>(app: &'a AppHandle, label: &str, console: Url, url: Url) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
     let handle = app.clone();
-    let opener = label.to_string();
-    let base = console.origin().ascii_serialization();
-    let script = format!(
-        "window.__LOOKLOOK_DESKTOP__=Object.freeze({{console:{}}});",
-        serde_json::to_string(&format!("{base}/")).unwrap_or_else(|_| "\"\"".into())
-    );
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
         .title(tr("看看", "Looklook"))
-        .initialization_script(&script)
         .on_document_title_changed(|w, title| {
             let _ = w.set_title(&title);
         })
         .on_new_window(move |target, features| {
-            // 当前页面所在的站点（切到多台电脑后是专属地址）也算自己人
-            let here = handle.get_webview_window(&opener).and_then(|w| w.url().ok()).map(|u| u.origin());
-            let same = target.as_str() == "about:blank"
-                || target.origin() == console.origin()
-                || here.is_some_and(|o| o.is_tuple() && o == target.origin());
+            let same = target.as_str() == "about:blank" || (target.origin() == console.origin());
             if !same {
                 let t = target.to_string();
                 std::thread::spawn(move || crate::util::open_url(&t));

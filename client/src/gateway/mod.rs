@@ -11,6 +11,7 @@
 pub mod access;
 mod api;
 mod assets;
+mod chat;
 pub mod direct;
 pub mod lan;
 pub mod mcp;
@@ -59,6 +60,8 @@ pub struct Inner {
     pub relay_watch: Arc<crate::relay_watch::RelayWatch>,
     /// 终端文件传输：进行中的分块上传（docs/FILE_TRANSFER.md §4）
     pub transfers: Arc<crate::transfer::Transfers>,
+    /// Claude Code 对话界面（docs/CLAUDE_UI.md）
+    pub chat: Arc<crate::chat::Chat>,
     pub store: Arc<Store>,
     pub paths: Paths,
     pub ui_addr: SocketAddr,
@@ -120,6 +123,7 @@ pub fn router(app: App) -> Router {
         .route("/i/{id}/{*rest}", any(terminal))
         .route(direct::PING_PATH, get(direct::ping).options(direct::ping))
         .route(mcp::PATH, axum::routing::post(mcp::handle).get(mcp::not_allowed).delete(mcp::not_allowed))
+        .route(crate::chat::hooks::PATH, axum::routing::post(chat::hook))
         .route("/fonts/{*path}", get(assets::font))
         .route("/static/term.js", get(assets::term_js))
         .fallback(assets::ui)

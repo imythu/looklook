@@ -31,7 +31,7 @@ pub const PORT_RANGE: (u16, u16) = (41000, 41999);
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TMUX_SOCKET: &str = "looklook";
-const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "dsh_tui", "custom"];
+const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "custom"];
 
 #[derive(Debug, Clone)]
 pub enum Backend {
@@ -128,6 +128,8 @@ pub struct View {
     pub root_confirmed: bool,
     /// DSH：网页界面监听的本机端口
     pub web_port: Option<u16>,
+    /// Claude Code 带对话界面启动（docs/CLAUDE_UI.md）
+    pub chat_ui: bool,
 }
 
 /// 启动选项（不在 SQLite 的 instances 表里，单独存在 kv：`instance_opts.{id}`）。
@@ -140,6 +142,9 @@ pub struct Opts {
     /// DSH 网页界面的端口（新建时选定，之后不变）
     #[serde(default)]
     pub web_port: Option<u16>,
+    /// Claude Code：注入 hooks 启动，管理台多一个“对话”视图（docs/CLAUDE_UI.md）
+    #[serde(default)]
+    pub chat_ui: bool,
 }
 
 /// DSH 网页界面的端口从这里开始找（`dsh web` 自己默认 3080）；避开终端用的 41000–41999。
@@ -159,6 +164,7 @@ pub struct Input {
     pub auto_start: Option<bool>,
     pub full_access: Option<bool>,
     pub root_confirmed: Option<bool>,
+    pub chat_ui: Option<bool>,
     /// DSH 网页界面的端口（只在新建时由网关填写，不接受请求里的值）
     #[serde(skip)]
     pub web_port: Option<u16>,
@@ -227,6 +233,7 @@ impl Instances {
             full_access: opts.full_access,
             root_confirmed: opts.root_confirmed,
             web_port: opts.web_port,
+            chat_ui: opts.chat_ui,
             running,
             task_alive: sessions.map(|_| sess.is_some()),
             started_at: sess.map(|(c, _)| ts(*c)),
@@ -237,7 +244,7 @@ impl Instances {
         }
     }
 
-    fn opts(&self, id: &str) -> Opts {
+    pub fn opts(&self, id: &str) -> Opts {
         self.store.get::<Opts>(&opts_key(id)).ok().flatten().unwrap_or_default()
     }
 
@@ -301,6 +308,9 @@ impl Instances {
         } else {
             opts.web_port = None;
         }
+        if row.launch != "claude" {
+            opts.chat_ui = false;
+        }
         if !matches!(row.launch.as_str(), "codex" | "claude" | "opencode") {
             opts.full_access = false;
             opts.root_confirmed = false;
@@ -350,6 +360,8 @@ impl Instances {
             full_access: input.full_access.unwrap_or(false),
             root_confirmed: input.root_confirmed.unwrap_or(false),
             web_port: input.web_port,
+            // 新建的 Claude Code 终端默认带对话界面（需要会话保持）
+            chat_ui: input.chat_ui.unwrap_or(matches!(self.backend, Backend::Tmux(_))),
         };
         Self::validate_opts(&row, &mut opts)?;
         self.store.insert_instance(&row)?;
@@ -390,6 +402,9 @@ impl Instances {
         }
         if let Some(v) = input.root_confirmed {
             opts.root_confirmed = v;
+        }
+        if let Some(v) = input.chat_ui {
+            opts.chat_ui = v;
         }
         Self::validate_opts(&row, &mut opts)?;
         row.updated_at = now_rfc3339();
@@ -599,7 +614,7 @@ impl Instances {
                 let mut v = vec![tmux.display().to_string()];
                 v.extend(self.tmux_base_args());
                 v.extend(["new-session", "-A", "-s", &Self::session_name(&row.id), "-c", &row.workdir].map(String::from));
-                v.extend(self.session_env_args());
+                v.extend(self.session_env_args(row));
                 v.push("--".into());
                 v.extend(program);
                 v
@@ -621,18 +636,10 @@ impl Instances {
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
         Ok(match self.launch_command(row).filter(|c| !c.trim().is_empty()) {
             None => (shell.interactive(), None),
-            Some(cmd) => {
-                // DSH 终端版用的也是 dsh 这个程序
-                let tool = if row.launch == "dsh_tui" { "dsh" } else { row.launch.as_str() };
-                let cmd = match crate::tools::launch_program(&self.store, tool) {
-                    Some(p) => with_program(&cmd, tool, &p, shell.family),
-                    None => cmd,
-                };
-                match shell.run(&self.model_wrap(row, &cmd, shell.family)) {
-                    Some(v) => (v, None),
-                    None => (shell.interactive(), Some(cmd)),
-                }
-            }
+            Some(cmd) => match shell.run(&self.model_wrap(row, &cmd, shell.family)) {
+                Some(v) => (v, None),
+                None => (shell.interactive(), Some(cmd)),
+            },
         })
     }
 
@@ -646,7 +653,36 @@ impl Instances {
 
     /// 启动类型对应的命令行（含“全部权限”参数）；普通终端为 None。
     fn launch_command(&self, row: &InstanceRow) -> Option<String> {
-        launch_command_line(row, self.opts(&row.id), crate::platform::is_root())
+        let cmd = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
+        match self.chat_settings(row) {
+            Some(settings) => Some(with_chat_hooks(&cmd, &row.id, &settings, None)),
+            None => Some(cmd),
+        }
+    }
+
+    /// 带对话界面的 Claude Code 终端：hooks 配置文件（顺便确保它已经写好）。不是这类终端时为 None。
+    fn chat_settings(&self, row: &InstanceRow) -> Option<PathBuf> {
+        if row.launch != "claude" || !self.opts(&row.id).chat_ui || !matches!(self.backend, Backend::Tmux(_)) {
+            return None;
+        }
+        match crate::chat::hooks::ensure_settings(&self.paths) {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!(error = %e, "无法写入 Claude Code 的 hooks 配置，按普通方式启动");
+                None
+            }
+        }
+    }
+
+    /// 对话界面“以对话模式重新启动”：在面板的 shell 里接着某个会话启动 Claude Code（带 hooks、全部权限等原来的参数）。
+    pub fn chat_relaunch_command(&self, id: &str, session: Option<&str>) -> Result<String, LocalError> {
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let settings = self.chat_settings(&row).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
+        let cmd = launch_command_line(&row, self.opts(id), crate::platform::is_root()).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
+        let cmd = with_chat_hooks(&cmd, id, &settings, session);
+        // 面板里是哪种 shell 就按哪种写法加环境变量
+        let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
+        Ok(self.model_wrap(&row, &crate::shells::adapt_for(&cmd, shell.family), shell.family))
     }
 
     // ---------------- tmux ----------------
@@ -654,15 +690,20 @@ impl Instances {
     /// 新会话的环境：`PATH` 最前面加上随包 trzsz 的目录。tmux 服务早已在运行时（例如客户端升级后接着用原来的服务），
     /// 新会话用的是服务启动时的环境，光改我们自己进程的环境不够，要用 `new-session -e` 传进去。
     /// `-e` 要 tmux 3.2 以上，只对随包的 looklook-mux 使用；psmux 不确定是否支持，Windows 靠进程环境。
-    fn session_env_args(&self) -> Vec<String> {
+    fn session_env_args(&self, row: &InstanceRow) -> Vec<String> {
         let Backend::Tmux(tmux) = &self.backend else { return vec![] };
         if cfg!(windows) || self.paths.mux.as_ref() != Some(tmux) {
             return vec![];
         }
-        match self.session_path().and_then(|p| p.into_string().ok()) {
-            Some(p) => vec!["-e".into(), format!("PATH={p}")],
-            None => vec![],
+        let mut v = vec![];
+        if let Some(p) = self.paths.session_path().and_then(|p| p.into_string().ok()) {
+            v.extend(["-e".into(), format!("PATH={p}")]);
         }
+        // 对话界面：面板里手动重开的 claude 也带着终端标识（启动命令上也加了，这里是给之后在 shell 里运行的）
+        if row.launch == "claude" && self.opts(&row.id).chat_ui {
+            v.extend(["-e".into(), format!("{}={}", crate::chat::hooks::INSTANCE_ENV, row.id)]);
+        }
+        v
     }
 
     /// 终端当前面板：shell 进程号、当前目录、前台命令（文件传输用）。非 tmux 后端或会话不在时返回 None。
@@ -710,14 +751,14 @@ impl Instances {
         }
     }
 
-    async fn ensure_session(&self, row: &InstanceRow) -> Result<(), LocalError> {
+    pub(crate) async fn ensure_session(&self, row: &InstanceRow) -> Result<(), LocalError> {
         let name = Self::session_name(&row.id);
         if self.tmux(&["has-session", "-t", &exact(&name)]).await?.status.success() {
             return Ok(());
         }
         let (program, typed) = self.program_for(row)?;
         let mut args: Vec<String> = ["new-session", "-d", "-s", &name, "-c", &row.workdir, "-x", "120", "-y", "36"].map(String::from).to_vec();
-        args.extend(self.session_env_args());
+        args.extend(self.session_env_args(row));
         args.push("--".into());
         args.extend(program);
         let refs: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -734,6 +775,63 @@ impl Instances {
             let _ = self.tmux(&["send-keys", "-t", &target, "Enter"]).await;
         }
         Ok(())
+    }
+
+    // ---------------- 对话界面用的 tmux 操作（chat/mod.rs） ----------------
+
+    /// `send-keys`：`keys` 是 tmux 的按键名（`Enter`、`Escape`、`C-j`、`2` …）。
+    pub async fn send_keys(&self, id: &str, keys: &[&str]) -> Result<(), LocalError> {
+        let target = format!("{}:", exact(&Self::session_name(id)));
+        let mut args = vec!["send-keys", "-t", &target];
+        args.extend_from_slice(keys);
+        self.tmux_ok(&args).await
+    }
+
+    /// 按字面送出文字（不解释按键名）。`--` 不能少：以 `-` 开头的文字会被 tmux 当成选项。
+    pub async fn send_literal(&self, id: &str, text: &str) -> Result<(), LocalError> {
+        let target = format!("{}:", exact(&Self::session_name(id)));
+        self.tmux_ok(&["send-keys", "-t", &target, "-l", "--", text]).await
+    }
+
+    /// 以 bracketed paste 粘贴（图片路径用这个，TUI 才会把它变成图片附件；超长文字也用这个）。
+    pub async fn paste(&self, id: &str, text: &str) -> Result<(), LocalError> {
+        let buffer = format!("ll_chat_{id}");
+        let Backend::Tmux(tmux) = &self.backend else { return Err(LocalError::new("NO_TMUX")) };
+        let mut cmd = Command::new(tmux);
+        cmd.args(self.tmux_base_args()).args(["load-buffer", "-b", &buffer, "-"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        self.apply_env(&mut cmd);
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+        let mut child = cmd.spawn().map_err(|e| LocalError::new("START_FAILED").with("detail", e.to_string()))?;
+        if let Some(mut stdin) = child.stdin.take() {
+            use tokio::io::AsyncWriteExt;
+            stdin.write_all(text.as_bytes()).await?;
+        }
+        let out = tokio::time::timeout(Duration::from_secs(10), child.wait_with_output())
+            .await
+            .map_err(|_| LocalError::new("START_FAILED").with("detail", "tmux timeout"))??;
+        if !out.status.success() {
+            return Err(LocalError::new("START_FAILED").with("detail", String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        let target = format!("{}:", exact(&Self::session_name(id)));
+        self.tmux_ok(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &target]).await
+    }
+
+    /// 当前可见的屏幕（不含回滚缓冲区），带颜色属性（判断灰色的推荐提示）。会话不在时返回 None。
+    pub async fn screen(&self, id: &str) -> Option<String> {
+        let Backend::Tmux(_) = self.backend else { return None };
+        let target = format!("{}:", exact(&Self::session_name(id)));
+        let out = self.tmux(&["capture-pane", "-p", "-e", "-t", &target]).await.ok()?;
+        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    async fn tmux_ok(&self, args: &[&str]) -> Result<(), LocalError> {
+        let out = self.tmux(args).await?;
+        if out.status.success() {
+            Ok(())
+        } else {
+            Err(LocalError::new("START_FAILED").with("detail", String::from_utf8_lossy(&out.stderr).trim()))
+        }
     }
 
     /// 终端里最近的输出（tmux 面板与回滚缓冲区最后约 200 行）。非 tmux 后端或会话不在时返回 None。
@@ -936,24 +1034,6 @@ pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[Strin
 /// OpenCode：`--auto`（没有明确拒绝的权限都自动同意）。
 /// DSH：`dsh web` 只监听 127.0.0.1 的网页界面，经本机网页映射打开（本机、远程都是同一个地址）；
 /// 工作目录是默认项目，别的项目文件夹在网页里添加。
-/// 手动指定了位置的 AI 工具：把命令开头的工具名换成完整路径，按 shell 的写法加引号。
-/// 不是以工具名开头的命令（例如自定义命令）原样返回。
-fn with_program(cmd: &str, tool: &str, program: &str, family: crate::shells::Family) -> String {
-    use crate::shells::Family;
-    let (prefix, rest) = match cmd.strip_prefix("IS_SANDBOX=1 ") {
-        Some(r) => ("IS_SANDBOX=1 ", r),
-        None => ("", cmd),
-    };
-    let Some(args) = rest.strip_prefix(tool).filter(|a| a.is_empty() || a.starts_with(' ')) else { return cmd.to_string() };
-    let quoted = match family {
-        Family::Pwsh => format!("& '{}'", program.replace('\'', "''")),
-        Family::Cmd => format!("\"{program}\""),
-        Family::Nu => format!("^\"{}\"", program.replace('\\', "\\\\").replace('"', "\\\"")),
-        Family::Posix | Family::Other => format!("'{}'", program.replace('\'', "'\\''")),
-    };
-    format!("{prefix}{quoted}{args}")
-}
-
 pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<String> {
     match row.launch.as_str() {
         "codex" if opts.full_access => Some("codex --yolo".into()),
@@ -964,10 +1044,17 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
         "opencode" if opts.full_access => Some("opencode --auto".into()),
         "opencode" => Some("opencode".into()),
         "dsh" => opts.web_port.map(|p| format!("dsh web --no-open --port {p}")),
-        "dsh_tui" => Some("dsh tui".into()),
         "custom" => Some(row.command.clone()),
         _ => None,
     }
+}
+
+/// 对话界面：启动命令前加终端标识，后面加 hooks 配置（`--settings`），要接着某个会话时加 `--resume`。
+/// 环境变量用 POSIX 写法，PowerShell / cmd 由 shells.rs 改成各自的写法。
+pub fn with_chat_hooks(cmd: &str, id: &str, settings: &Path, resume: Option<&str>) -> String {
+    let path = settings.display().to_string().replace('"', "");
+    let resume = resume.filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).map(|s| format!(" --resume {s}")).unwrap_or_default();
+    format!("{}={id} {cmd} --settings \"{path}\"{resume}", crate::chat::hooks::INSTANCE_ENV)
 }
 
 /// 没填名字时的默认名：带上文件夹名，一眼看出是哪个项目——`my-app · Claude Code`，普通终端就是 `my-app`；
@@ -978,7 +1065,6 @@ fn default_name(launch: &str, workdir: &str, taken: &HashSet<&str>) -> String {
         "claude" => Some("Claude Code"),
         "opencode" => Some("OpenCode"),
         "dsh" => return "DSH".into(),
-        "dsh_tui" => Some("DSH"),
         _ => None,
     };
     let base = match (folder_name(workdir), tool) {
@@ -1025,25 +1111,11 @@ fn expand_home(p: &str) -> String {
 }
 
 impl Instances {
-    /// 终端里的 PATH：手动指定位置的 AI 工具所在的文件夹在最前面，然后是随包 trzsz 的目录，再是原来的 PATH。
-    /// 都没有时返回 None（不改 PATH）。
-    fn session_path(&self) -> Option<std::ffi::OsString> {
-        let extra = crate::tools::extra_dirs(&self.store);
-        let base = self.paths.session_path();
-        if extra.is_empty() {
-            return base;
-        }
-        let rest = base.or_else(|| std::env::var_os("PATH")).unwrap_or_default();
-        let mut v = extra.clone();
-        v.extend(std::env::split_paths(&rest).filter(|p| !extra.contains(p)));
-        std::env::join_paths(v).ok()
-    }
-
     /// 子进程环境：保证 UTF-8（中文输入输出正常），去掉外层 tmux 的变量；Windows 上固定 psmux 的数据目录。
     fn apply_env(&self, cmd: &mut Command) {
         apply_env(cmd);
-        // 随包的 trz / tsz、手动指定位置的 AI 工具：tmux 服务、ttyd（直接运行模式下的 shell）都从这里继承 PATH
-        if let Some(p) = self.session_path() {
+        // 随包的 trz / tsz：tmux 服务、ttyd（直接运行模式下的 shell）都从这里继承 PATH
+        if let Some(p) = self.paths.session_path() {
             cmd.env("PATH", p);
         }
         // psmux 按 USERPROFILE 找会话登记文件（端口、密钥），每次启动还会清理“没有登记的”会话进程。
@@ -1189,17 +1261,6 @@ mod tests {
         assert_eq!(parse_marker(""), None);
     }
 
-    #[test]
-    fn configured_program_replaces_tool_name() {
-        use crate::shells::Family;
-        let p = r"C:\Tools\it's\claude.cmd";
-        assert_eq!(with_program("claude --resume abc", "claude", p, Family::Pwsh), r"& 'C:\Tools\it''s\claude.cmd' --resume abc");
-        assert_eq!(with_program("claude", "claude", p, Family::Cmd), r#""C:\Tools\it's\claude.cmd""#);
-        assert_eq!(with_program("IS_SANDBOX=1 claude --dangerously-skip-permissions", "claude", "/opt/c/claude", Family::Posix), "IS_SANDBOX=1 '/opt/c/claude' --dangerously-skip-permissions");
-        // 不是以工具名开头：不动
-        assert_eq!(with_program("claudette", "claude", p, Family::Pwsh), "claudette");
-        assert_eq!(with_program("dsh web --no-open --port 5", "dsh", r"D:\dsh\dsh.exe", Family::Pwsh), r"& 'D:\dsh\dsh.exe' web --no-open --port 5");
-    }
 
     fn row() -> InstanceRow {
         InstanceRow {
@@ -1307,7 +1368,7 @@ mod tests {
     #[test]
     fn full_access_flags() {
         let mut r = row();
-        let on = Opts { full_access: true, root_confirmed: true, web_port: None };
+        let on = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false };
         assert_eq!(launch_command_line(&r, Opts::default(), false), None);
         r.launch = "codex".into();
         assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("codex"));
@@ -1327,21 +1388,40 @@ mod tests {
     #[test]
     fn opts_validation() {
         let mut r = row();
-        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(o == Opts::default(), "shell 终端忽略全部权限选项");
         r.launch = "claude".into();
-        let mut o = Opts { full_access: false, root_confirmed: true, web_port: None };
+        let mut o = Opts { full_access: false, root_confirmed: true, web_port: None, chat_ui: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(!o.root_confirmed);
-        let mut o = Opts { full_access: true, root_confirmed: false, web_port: None };
+        let mut o = Opts { full_access: true, root_confirmed: false, web_port: None, chat_ui: false };
         assert_eq!(Instances::validate_opts(&r, &mut o).is_err(), crate::platform::is_root());
         r.launch = "dsh".into();
-        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false };
         assert!(Instances::validate_opts(&r, &mut o).is_err(), "DSH 必须有网页端口");
-        let mut o = Opts { full_access: true, root_confirmed: true, web_port: Some(3080) };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: Some(3080), chat_ui: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(o == Opts { web_port: Some(3080), ..Opts::default() }, "DSH 没有全部权限选项");
+    }
+
+    #[test]
+    fn chat_hooks_wrap_the_launch_command() {
+        let p = Path::new("/home/a/.local/share/looklook/run/claude-hooks.json");
+        assert_eq!(
+            with_chat_hooks("IS_SANDBOX=1 claude --dangerously-skip-permissions", "abcd2345", p, None),
+            "LOOKLOOK_INSTANCE=abcd2345 IS_SANDBOX=1 claude --dangerously-skip-permissions --settings \"/home/a/.local/share/looklook/run/claude-hooks.json\""
+        );
+        assert!(with_chat_hooks("claude", "x", p, Some("96e9b84c-16d9-4bc7-ab76-f92861e5f141")).ends_with(" --resume 96e9b84c-16d9-4bc7-ab76-f92861e5f141"));
+        assert!(!with_chat_hooks("claude", "x", p, Some("x; rm -rf /")).contains("rm"));
+        let mut r = row();
+        r.launch = "claude".into();
+        let mut o = Opts { chat_ui: true, ..Opts::default() };
+        Instances::validate_opts(&r, &mut o).unwrap();
+        assert!(o.chat_ui);
+        r.launch = "codex".into();
+        Instances::validate_opts(&r, &mut o).unwrap();
+        assert!(!o.chat_ui, "只有 Claude Code 有对话界面");
     }
 
     #[test]

@@ -60,6 +60,17 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/git/commit", post(git_commit))
         .route("/instances/{id}/git/remote", post(git_remote))
         .route("/instances/{id}/page", post(instance_page))
+        .route("/instances/{id}/chat", get(super::chat::snapshot))
+        .route("/instances/{id}/chat/events", get(super::chat::events))
+        .route("/instances/{id}/chat/history", get(super::chat::history))
+        .route("/instances/{id}/chat/item", get(super::chat::item))
+        .route("/instances/{id}/chat/agent", get(super::chat::agent))
+        .route("/instances/{id}/chat/commands", get(super::chat::commands))
+        .route("/instances/{id}/chat/input", post(super::chat::input))
+        .route("/instances/{id}/chat/interrupt", post(super::chat::interrupt))
+        .route("/instances/{id}/chat/permission", post(super::chat::permission))
+        .route("/instances/{id}/chat/plan", post(super::chat::plan))
+        .route("/instances/{id}/chat/relaunch", post(super::chat::relaunch))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/keys/info", post(ssh_key_info))
@@ -96,7 +107,6 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tools", get(get_tools))
         .route("/tools/install", post(install_tool))
         .route("/tools/install/{tool}", get(install_job))
-        .route("/tools/{tool}/path", put(set_tool_path).delete(clear_tool_path))
         .route("/diag", get(diag_list))
         .route("/diag/clear", post(diag_clear))
         .route("/diag/ui-error", post(diag_ui_error))
@@ -314,7 +324,18 @@ async fn account(State(app): State<App>) -> R<Json<Value>> {
 // ---------------- 终端 ----------------
 
 async fn list_instances(State(app): State<App>) -> R<Json<Value>> {
-    Ok(Json(json!({ "items": app.instances.list().await? })))
+    let items: Vec<Value> = app.instances.list().await?.into_iter().map(|v| with_chat(&app, v)).collect();
+    Ok(Json(json!({ "items": items })))
+}
+
+/// 带对话界面的终端加上对话状态（会话卡片上的“等待确认”角标）
+fn with_chat(app: &App, v: crate::instances::View) -> Value {
+    let chat = v.chat_ui.then(|| app.chat.brief(&v.row.id)).flatten();
+    let mut out = serde_json::to_value(v).unwrap_or_default();
+    if let (Some(c), Some(o)) = (chat, out.as_object_mut()) {
+        o.insert("chat".into(), c);
+    }
+    out
 }
 
 #[derive(Deserialize)]
@@ -465,7 +486,7 @@ fn with_query(url: &str, key: &str, value: &str) -> String {
 }
 
 async fn get_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
-    Ok(Json(app.instances.get(&id).await?))
+    Ok(Json(with_chat(&app, app.instances.get(&id).await?)))
 }
 
 async fn update_instance(State(app): State<App>, Path(id): Path<String>, Json(input): Json<Input>) -> R<impl IntoResponse> {
@@ -475,6 +496,7 @@ async fn update_instance(State(app): State<App>, Path(id): Path<String>, Json(in
 async fn delete_instance(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
     let page: Option<DshPage> = app.store.get(&page_key(&id))?;
     app.instances.delete(&id).await?;
+    app.chat.forget(&id);
     if let Some(p) = page {
         // 映射跟着删；平台上已经没有（用户自己删了）或暂时连不上都不影响删除终端
         if let Err(e) = app.account.delete_tunnel(&p.tunnel_id).await {
@@ -1379,31 +1401,7 @@ async fn get_shells(State(app): State<App>) -> Json<Value> {
 // ---------------- AI 工具 ----------------
 
 async fn get_tools(State(app): State<App>) -> Json<Value> {
-    let d = tools::detect_for(app.instances.shell(), &app.store).await;
-    // DSH 终端版要带 tui 的 DSH（桌面版自带的没有）
-    let dsh_tui = match &d.dsh {
-        Some(p) => Some(tools::dsh_has_tui(p).await),
-        None => None,
-    };
-    Json(json!({ "tools": d, "configured": tools::configured(&app.store), "dsh_tui": dsh_tui }))
-}
-
-#[derive(Deserialize)]
-struct ToolPathReq {
-    path: String,
-}
-
-/// 手动指定 AI 工具的位置（程序文件或所在文件夹）。找得到程序才保存；返回新的检测结果。
-async fn set_tool_path(State(app): State<App>, Path(tool): Path<String>, Json(req): Json<ToolPathReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
-    let program = tools::set_path(&app.store, &tool, &req.path).map_err(|(field, rule)| LocalError::invalid(field, rule))?;
-    Ok(Json(json!({ "program": program, "tools": tools::detect_for(app.instances.shell(), &app.store).await, "configured": tools::configured(&app.store) })))
-}
-
-async fn clear_tool_path(State(app): State<App>, Path(tool): Path<String>) -> R<Json<Value>> {
-    require_allowed(&app)?;
-    tools::clear_path(&app.store, &tool);
-    Ok(Json(json!({ "tools": tools::detect_for(app.instances.shell(), &app.store).await, "configured": tools::configured(&app.store) })))
+    Json(json!({ "tools": tools::detect(app.instances.shell()).await }))
 }
 
 #[derive(Deserialize)]

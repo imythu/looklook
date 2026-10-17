@@ -26,6 +26,9 @@ const MIGRATIONS: &[&str] = &[
      );",
     // v2：每个终端可以选用不同的 shell（空 = 跟随默认）
     "ALTER TABLE instances ADD COLUMN shell TEXT NOT NULL DEFAULT '';",
+    // v3：撤下“DSH（终端）”启动类型和手动指定的 AI 工具位置；已有的 DSH 终端版改成自定义命令，照样能用
+    "UPDATE instances SET launch = 'custom', command = 'dsh tui' WHERE launch = 'dsh_tui';
+     DELETE FROM kv WHERE key = 'tool_paths';",
 ];
 
 pub struct Store {

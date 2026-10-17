@@ -89,6 +89,11 @@ impl Shell {
     }
 }
 
+/// 在某种 shell 里直接输入的命令（对话界面“重新启动”）：开头的 `NAME=值` 换成这种 shell 的写法。
+pub fn adapt_for(cmd: &str, family: Family) -> String {
+    adapt_env_prefix(cmd, family)
+}
+
 /// 启动命令开头的 `NAME=值 命令`（例如 root 下的 `IS_SANDBOX=1 claude …`）是 POSIX 写法，
 /// PowerShell 与 cmd 不认识，换成各自的设置环境变量写法。
 fn adapt_env_prefix(cmd: &str, family: Family) -> String {

@@ -185,5 +185,11 @@
   "SSH_MISSING": "No ssh command on this computer. Install the OpenSSH client first.",
   "SSH_HOST_NOT_ALLOWED": "This host isn’t available to AI assistants.",
   "SSH_JUMP_IN_USE": "Other hosts connect through it ({{names}}). Give them another jump host or connect them directly first.",
-  "SSH_AI_DISABLED": "SSH access for AI assistants is turned off (turn it on on the AI assistants page)."
+  "SSH_AI_DISABLED": "SSH access for AI assistants is turned off (turn it on on the AI assistants page).",
+  "CHAT_UNAVAILABLE": "The chat view isn't turned on for this terminal",
+  "CHAT_NOT_RUNNING": "Claude Code isn't running",
+  "CHAT_BUSY": "Claude Code is showing a dialog in the terminal; finish it there first",
+  "CHAT_STALE": "This was already answered in the terminal",
+  "CHAT_SCREEN_CHANGED": "The dialog in the terminal has changed; continue in the terminal",
+  "CHAT_CLAUDE_RUNNING": "Claude Code is still running; exit it in the terminal first"
 }

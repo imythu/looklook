@@ -185,5 +185,11 @@
   "SSH_MISSING": "这台电脑上没有找到 ssh 命令，请先安装 OpenSSH 客户端。",
   "SSH_HOST_NOT_ALLOWED": "这台主机没有允许 AI 助手使用。",
   "SSH_JUMP_IN_USE": "还有主机经它连接（{{names}}），先给它们换个跳板机或改成直接连接，再删除。",
-  "SSH_AI_DISABLED": "AI 助手使用 SSH 主机的总开关已关闭（在“AI 助手”页打开）。"
+  "SSH_AI_DISABLED": "AI 助手使用 SSH 主机的总开关已关闭（在“AI 助手”页打开）。",
+  "CHAT_UNAVAILABLE": "这个终端没有开启对话界面",
+  "CHAT_NOT_RUNNING": "Claude Code 没在运行",
+  "CHAT_BUSY": "Claude Code 正在显示终端里的对话框，请先到终端里完成",
+  "CHAT_STALE": "这个确认已经在终端里回答过了",
+  "CHAT_SCREEN_CHANGED": "终端里的确认框已经变了，请到终端里操作",
+  "CHAT_CLAUDE_RUNNING": "Claude Code 还在运行，请先在终端里退出它"
 }

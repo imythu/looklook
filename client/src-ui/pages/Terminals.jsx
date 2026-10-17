@@ -80,14 +80,11 @@ export const LAUNCH_ICON = {
   claude: Sparkles,
   opencode: Braces,
   dsh: Fish,
-  dsh_tui: Fish,
   custom: Command,
 };
-const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "dsh_tui", "custom"];
+const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
 // 能一键安装的 AI 工具（没装时提示安装）；能以全部权限启动的
 const AI_TOOLS = ["codex", "claude", "opencode", "dsh"];
-// 启动类型用的是哪个程序：DSH 终端版（dsh tui）用的也是 dsh
-const toolOf = (launch) => (launch === "dsh_tui" ? "dsh" : launch);
 const FULL_ACCESS = ["codex", "claude", "opencode"];
 
 function RemoteCard() {
@@ -262,6 +259,16 @@ const BADGE = {
   stopped: "",
 };
 
+/** 对话界面的状态（docs/CLAUDE_UI.md）：等待确认、等你回答、要到终端里操作。没有需要人处理的事时不显示。 */
+function ChatBadge({ inst }) {
+  const { t } = useTranslation();
+  const c = inst.chat;
+  if (!inst.running || !c) return null;
+  const key = c.pending ? `chat.badge_${c.pending}` : c.phase === "tui" ? "chat.badge_tui" : null;
+  if (!key) return null;
+  return <span className="badge badge-warn chat-badge">{t(key)}</span>;
+}
+
 // 手机/平板打开整页终端 /t/{id}（带按键条）；电脑上新标签页直接打开 /i/{id}/。
 // 新窗口打开管理台的终端页（带文件面板、粘贴、拖放），不再直接打开裸 /i/{id}/。
 const tabUrl = (inst) => `/t/${inst.id}`;
@@ -390,6 +397,7 @@ function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
         auto_start: false,
         full_access: inst.full_access,
         root_confirmed: inst.root_confirmed,
+        chat_ui: inst.chat_ui,
         start: true,
       });
       if (dev && r.id) rememberTerminals(dev, [r]);
@@ -467,6 +475,7 @@ function InstanceCard({ inst, ...handlers }) {
           <span className={`badge ${BADGE[state]}`}>
             {t(`instance.state.${state}`)}
           </span>
+          <ChatBadge inst={inst} />
         </span>
       </div>
       <div className="instance-meta">
@@ -573,6 +582,7 @@ function InstanceRow({ inst, compact, current, opened, ...handlers }) {
         {!compact && (
           <span className="irow-meta">
             <span className={`badge ${BADGE[a.state]}`}>{t(`instance.state.${a.state}`)}</span>
+            <ChatBadge inst={inst} />
             {inst.last_activity_at && a.state === "running" && <span className="small muted nowrap">{relativeTime(t, inst.last_activity_at)}</span>}
           </span>
         )}
@@ -934,7 +944,7 @@ const shellLabel = (data, value) =>
  * value 为空表示自动/默认。inherit：设置里的默认 shell（只在新建终端时传入）。
  */
 // 不填名字时电脑上取的名字（src/instances.rs 的 default_name；重名时那边再加序号）：`my-app · Claude Code`，普通终端就是文件夹名。
-const TOOL_NAMES = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode", dsh_tui: "DSH" };
+const TOOL_NAMES = { codex: "Codex", claude: "Claude Code", opencode: "OpenCode" };
 function guessName(launch, workdir) {
   if (launch === "dsh") return "DSH";
   const dir = (workdir || "").trim().replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.trim();
@@ -1027,79 +1037,6 @@ export function ShellPicker({ value, onChange, data, inherit }) {
 
 /** 新建 / 编辑终端。 */
 /** 后台安装的进度：最后几十行输出，自动滚到底；结束后给出结果。 */
-/**
- * 找不到 AI 工具时（或想换一个）：手动指定程序文件或它所在的文件夹。保存前客户端先确认找得到程序；
- * 保存后重新检测，新开的终端也会把那个文件夹加进 PATH。
- */
-function ToolLocate({ tool, client, configured, onChanged }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
-  const [path, setPath] = useState(configured ?? "");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  useEffect(() => setPath(configured ?? ""), [tool, configured]);
-  const name = t(`launch.${tool}.title`);
-  const save = async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      const r = await client.put(`/tools/${tool}/path`, { path: path.trim() });
-      onChanged?.(r);
-      setOpen(false);
-    } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const clear = async () => {
-    setBusy(true);
-    try {
-      onChanged?.(await client.del(`/tools/${tool}/path`));
-    } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-  if (configured && !open) {
-    return (
-      <p className="small muted tool-locate-note">
-        {t("tools.locate_using", { tool: name })} <span className="mono">{configured}</span>{" "}
-        <button type="button" className="link-btn" onClick={() => setOpen(true)}>{t("tools.locate_change")}</button>{" "}
-        <button type="button" className="link-btn" disabled={busy} onClick={clear}>{t("tools.locate_auto")}</button>
-      </p>
-    );
-  }
-  if (!open) {
-    return (
-      <button type="button" className="link-btn tool-locate-open" onClick={() => setOpen(true)}>
-        {t("tools.locate_open", { tool: name })}
-      </button>
-    );
-  }
-  return (
-    <div className="tool-locate">
-      <FolderField
-        value={path}
-        onChange={setPath}
-        label={t("tools.locate_label", { tool: name })}
-        hint={t("tools.locate_hint", { tool: name, exe: tool })}
-        client={client}
-      />
-      {error && (
-        <p className="small" style={{ color: "var(--danger)", margin: "0 0 8px" }}>
-          {error.params?.rule === "not_found" ? t("tools.locate_not_found", { tool: name, exe: tool }) : errorText(t, error)}
-        </p>
-      )}
-      <div className="row" style={{ gap: 8 }}>
-        <Button busy={busy} disabled={!path.trim()} onClick={save}>{t("tools.locate_save")}</Button>
-        <Button variant="ghost" onClick={() => setOpen(false)}>{t("action.cancel")}</Button>
-      </div>
-    </div>
-  );
-}
-
 function InstallProgress({ job, tool, onRetry, busy }) {
   const { t } = useTranslation();
   const ref = useRef(null);
@@ -1157,6 +1094,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const [autoStart, setAutoStart] = useState(false);
   const [fullAccess, setFullAccess] = useState(false);
   const [rootOk, setRootOk] = useState(false);
+  const [chatUi, setChatUi] = useState(true);
   const [mirror, setMirror] = useState("npmmirror");
   const { busy, error, setError, run } = useAction();
   const [tools, , reloadTools] = useLoad(
@@ -1178,6 +1116,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
     setAutoStart(initial?.auto_start ?? false);
     setFullAccess(initial?.full_access ?? false);
     setRootOk(initial?.root_confirmed ?? false);
+    setChatUi(initial?.chat_ui ?? true);
     setError(null);
   }, [open]);
   // 换了电脑：默认目录跟着换（用户自己改过就不动）
@@ -1190,16 +1129,15 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   };
   const isRoot = Boolean(status.capabilities?.root);
   const canFull = FULL_ACCESS.includes(launch);
+  // 对话界面要靠会话保持（tmux）往同一个 Claude Code 里送输入
+  const canChat = launch === "claude" && Boolean(status.capabilities?.persistent);
   // DSH 带着自己的端口和网页映射，编辑时不能和别的启动方式互换
   const launches = editing
     ? LAUNCHES.filter((l) => (l === "dsh") === (initial.launch === "dsh"))
     : LAUNCHES;
   const needRoot = canFull && fullAccess && isRoot && !rootOk;
-  const tool = toolOf(launch);
-  // DSH 终端版要带 tui 的 DSH：桌面版自带的命令行没有，当作“还没装”处理（可以装命令行版或指定别的位置）
-  const noTui = launch === "dsh_tui" && Boolean(tools?.tools?.dsh) && tools?.dsh_tui === false;
   const missing =
-    tools && AI_TOOLS.includes(tool) && (!tools.tools[tool] || noTui);
+    tools && AI_TOOLS.includes(launch) && !tools.tools[launch];
   const submit = async (e) => {
     e.preventDefault();
     if (needRoot) return;
@@ -1212,6 +1150,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
       auto_start: autoStart,
       full_access: canFull && fullAccess,
       root_confirmed: canFull && fullAccess && isRoot && rootOk,
+      chat_ui: canChat && chatUi,
     };
     const r = await run(() =>
       editing
@@ -1228,11 +1167,11 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const [job, setJob] = useState(null);
   useEffect(() => setJob(null), [open, launch, dev]);
   useEffect(() => {
-    if (!open || !AI_TOOLS.includes(tool)) return undefined;
+    if (!open || !AI_TOOLS.includes(launch)) return undefined;
     let alive = true;
     let timer = null;
     const poll = async () => {
-      const j = await client.get(`/tools/install/${tool}`).catch(() => null);
+      const j = await client.get(`/tools/install/${launch}`).catch(() => null);
       if (!alive) return;
       setJob(j);
       if (j?.state === "running") timer = setTimeout(poll, 1000);
@@ -1245,7 +1184,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
     };
   }, [open, launch, dev, job?.started_at]);
   const install = async () => {
-    const r = await run(() => client.post("/tools/install", { tool, mirror }));
+    const r = await run(() => client.post("/tools/install", { tool: launch, mirror }));
     if (r) setJob(r);
   };
   return (
@@ -1289,13 +1228,11 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
             );
           })}
         </div>
-        {job?.tool === tool && (missing || job.state === "ok") ? (
+        {job?.tool === launch && (missing || job.state === "ok") ? (
           <InstallProgress job={job} tool={t(`launch.${launch}.title`)} onRetry={install} busy={busy} />
         ) : missing && (
           <Note kind="warn">
-            <b>{noTui ? t("tools.dsh_no_tui") : t("tools.missing", { tool: t(`launch.${launch}.title`) })}</b>
-            {noTui && <p className="small" style={{ margin: "4px 0" }}>{t("tools.dsh_no_tui_hint", { path: tools.tools.dsh })}</p>}
-            <ToolLocate tool={tool} client={client} configured={tools.configured?.[tool]} onChanged={() => reloadTools()} />
+            <b>{t("tools.missing", { tool: t(`launch.${launch}.title`) })}</b>
             {tools.tools.npm ? (
               <>
                 <p style={{ margin: "4px 0 8px" }}>{t("tools.install_hint")}</p>
@@ -1337,9 +1274,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
               </p>
             )}
           </Note>
-        )}
-        {!missing && tools?.configured?.[tool] && AI_TOOLS.includes(tool) && (
-          <ToolLocate tool={tool} client={client} configured={tools.configured[tool]} onChanged={() => reloadTools()} />
         )}
         {launch === "custom" && (
           <Field label={t("form.command")} hint={t("form.command_hint")}>
@@ -1416,6 +1350,25 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
               </Note>
             )}
           </div>
+        )}
+        {canChat && (
+          <label
+            className="row"
+            style={{ alignItems: "flex-start", gap: 8, cursor: "pointer", marginBottom: 12 }}
+          >
+            <input
+              type="checkbox"
+              checked={chatUi}
+              onChange={(e) => setChatUi(e.target.checked)}
+              style={{ marginTop: 3 }}
+            />
+            <span>
+              <b style={{ fontSize: 14 }}>{t("form.chat_ui")}</b>
+              <span className="field-hint" style={{ display: "block" }}>
+                {t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
+              </span>
+            </span>
+          </label>
         )}
         {status.capabilities?.persistent && (
           <div className="between" style={{ marginBottom: 12 }}>
@@ -1904,7 +1857,7 @@ function QuickCreateDialog({ open, device: wantDevice, workdir: wantWorkdir, onC
     setBusy(null);
     setError(null);
   }, [open]);
-  const missing = (l) => AI_TOOLS.includes(toolOf(l)) && tools && (!tools.tools[toolOf(l)] || (l === "dsh_tui" && tools.dsh_tui === false));
+  const missing = (l) => AI_TOOLS.includes(l) && tools && !tools.tools[l];
   const go = async (launch) => {
     if (missing(launch)) {
       onMore({ preset: launch, device: dev, workdir });

@@ -24,6 +24,7 @@
 
 mod account;
 mod agents;
+mod chat;
 mod clock;
 mod diag;
 mod error;
@@ -171,6 +172,13 @@ enum CodeAction {
 }
 
 fn main() -> Result<()> {
+    // Claude Code 调用的 hook（对话界面，src/chat/hooks.rs）：最先处理，不做别的初始化，启动要快
+    {
+        let mut args = std::env::args().skip(1);
+        if args.next().as_deref() == Some(chat::hooks::SUBCOMMAND) {
+            std::process::exit(chat::hooks::main(&args.next().unwrap_or_default()));
+        }
+    }
     // Windows release 构建去掉了控制台（见上面的 `windows_subsystem` 属性）：从真正的终端
     // 启动时把标准输入输出接回父进程的控制台，命令行子命令才看得见输出；双击/开机启动等
     // 没有父控制台的场景这个调用是无害的空操作。其它平台是空实现。
@@ -409,6 +417,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     let metrics = metrics::Metrics::new();
     let relay_watch = relay_watch::RelayWatch::new(account.clone());
     let transfers = transfer::Transfers::new(paths.clone());
+    let chat = chat::Chat::new(store.clone(), paths.clone(), instances.clone());
     instances.recover().await;
     let relay = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     // 监听 0.0.0.0 时，本机命令行和浏览器仍然用 127.0.0.1 连。
@@ -429,6 +438,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         metrics: metrics.clone(),
         relay_watch: relay_watch.clone(),
         transfers: transfers.clone(),
+        chat: chat.clone(),
         store: store.clone(),
         paths: paths.clone(),
         ui_addr,
@@ -443,6 +453,9 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         lan: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
+    if let Err(e) = chat.publish(ui_addr) {
+        tracing::warn!(error = %e, "无法写入对话界面的 hook 配置");
+    }
     let open_base = app.write_open_file()?;
 
     // `shutdown` 现在是调用者传进来的（不再在这里创建）：托盘的“停止”菜单（任务 7b，

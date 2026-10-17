@@ -1,6 +1,6 @@
 // 看看客户端管理台。未登录时只显示登录页；登录后左侧菜单（手机为抽屉）：终端、文件、SSH 主机、本机网页、系统、设置、账户。
 // 终端页 /t/{id} 占满整个窗口。界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, LogOut, Menu, Monitor, MonitorSmartphone, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
+import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, LogOut, Menu, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -146,41 +146,6 @@ function useRemoteLatency(enabled) {
     };
   }, [enabled]);
   return ms;
-}
-
-/** 桌面应用（Tauri）注入的信息：本机管理台地址。浏览器里打开时没有。 */
-const DESKTOP = typeof window !== 'undefined' ? window.__LOOKLOOK_DESKTOP__ ?? null : null;
-
-/**
- * 桌面应用里切换“本机 / 多台电脑”：本机是这台电脑自己的管理台；多台电脑在同一个窗口里打开专属地址，
- * 和手机上一样能看到、切换所有登录的电脑。浏览器里打开时不显示（网页本身就是其中一种）。
- */
-function DesktopMode() {
-  const { t } = useTranslation();
-  const { status } = useStatus();
-  if (!DESKTOP?.console) return null;
-  const remote = status.access === 'remote';
-  const home = status.account.session?.user_host_url;
-  const go = (url) => url && window.location.assign(url);
-  const relayOk = status.relay?.state === 'connected';
-  return (
-    <div className="seg desktop-mode" role="group" aria-label={t('desktop_mode.label')}>
-      <button type="button" aria-pressed={!remote} onClick={() => remote && go(DESKTOP.console)} title={t('desktop_mode.local_hint')}>
-        <Monitor size={15} aria-hidden="true" />
-        <span className="hide-narrow">{t('desktop_mode.local')}</span>
-      </button>
-      <button
-        type="button"
-        aria-pressed={remote}
-        disabled={!remote && (!home || !relayOk)}
-        onClick={() => !remote && go(home)}
-        title={!remote && !relayOk ? t('desktop_mode.multi_offline') : t('desktop_mode.multi_hint')}
-      >
-        <MonitorSmartphone size={15} aria-hidden="true" />
-        <span className="hide-narrow">{t('desktop_mode.multi')}</span>
-      </button>
-    </div>
-  );
 }
 
 const SLOW_MS = 150;
@@ -341,7 +306,6 @@ function ConsoleLayout({ path, stale, children }) {
           </Link>
         </span>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
-          <DesktopMode />
           {devices.multi && <DeviceSwitcher perDevice={switcher} helpUrl={webUrl(status, '/docs/faq')} />}
           {status.access === 'remote' && <RemoteBadge narrow={devices.multi} />}
           {status.access !== 'remote' && !lanPage && <RelayPill />}
