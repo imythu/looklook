@@ -54,9 +54,28 @@ pub fn endpoint_path(paths: &Paths) -> PathBuf {
     paths.home.join("run").join("hook.json")
 }
 
-/// 命令行里的路径：双引号括起来（Windows 上 Claude Code 用 Git Bash 运行 hook，反斜杠在双引号里原样保留）。
+/// 命令行里的路径，双引号括起来。Windows 上 Claude Code 用 Git Bash 运行 hook，所以：
+/// - 去掉 `canonicalize()` 留下的 `\\?\` 前缀（bash 会把开头的 `\\` 变成 `\`，结果是 `\?\G:\…`，找不到程序）；
+/// - 反斜杠换成斜杠（`G:/Program Files/…`，Git Bash 和 Windows 都认）；
+/// - 双引号里还会展开的 `"`、`$`、`` ` ``、`\` 加反斜杠。
 fn quote(p: &Path) -> String {
-    format!("\"{}\"", p.display().to_string().replace('"', "\\\""))
+    format!("\"{}\"", shell_path(&p.display().to_string(), cfg!(windows)))
+}
+
+fn shell_path(p: &str, windows: bool) -> String {
+    let p = match p.strip_prefix(r"\\?\UNC\") {
+        Some(rest) => format!(r"\\{rest}"),
+        None => p.strip_prefix(r"\\?\").unwrap_or(p).to_string(),
+    };
+    let p = if windows { p.replace('\\', "/") } else { p };
+    let mut out = String::with_capacity(p.len());
+    for c in p.chars() {
+        if matches!(c, '"' | '$' | '`' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 pub fn settings_json(exe: &Path, endpoint: &Path) -> Value {
@@ -171,6 +190,14 @@ mod tests {
             assert!(h.get("async").is_none(), "{ev} 必须同步");
         }
         assert_eq!(v["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"], 600);
+    }
+
+    #[test]
+    fn windows_paths_for_git_bash() {
+        assert_eq!(shell_path(r"\\?\G:\Program Files\Looklook\looklook.exe", true), "G:/Program Files/Looklook/looklook.exe");
+        assert_eq!(shell_path(r"C:\Users\a\AppData\Roaming\looklook\run\hook.json", true), "C:/Users/a/AppData/Roaming/looklook/run/hook.json");
+        assert_eq!(shell_path(r"\\?\UNC\nas\share\looklook.exe", true), "//nas/share/looklook.exe");
+        assert_eq!(shell_path("/opt/a$b/look`x\"y", false), "/opt/a\\$b/look\\`x\\\"y");
     }
 
     #[test]
