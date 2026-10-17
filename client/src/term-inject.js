@@ -15,6 +15,8 @@
 // 11. 切到别的窗口再回来时重新适配、整屏重画，免得只画了一部分。见 refitOnReturn。
 // 12. 选择文字：手机上长按终端时通知管理台打开“选择文字”（用浏览器自己的选择，见 src-ui/shared/TextSelect.jsx）；
 //     提供 window.looklookText() 读出终端缓冲区的文字（没有 tmux 时用）。tmux 里拖选后浏览器不让直接写剪贴板时给一个“复制”按钮。
+// 13. 同一个终端在几处打开（电脑和手机）：tmux 窗口按最近有输入的那一处的尺寸排版，另一处看到的是按别的屏幕排的画面。
+//     页面回到前台、拿到焦点、手指/鼠标按到终端上时重新报一次尺寸，让 tmux 按这一处排版。见 claimSize。
 (function () {
   'use strict';
   var tries = 0;
@@ -39,7 +41,7 @@
 
   // 连接状态提示：首次连接时盖一层“正在连接”，断线后顶部给一条“正在重连”并带按钮，重连成功短暂提示。
   // 在 ttyd 创建 WebSocket 之前包一层，只观察 /ws 连接的开闭，不改变它的行为。
-  var overlay = null, banner = null, everOpen = false;
+  var overlay = null, banner = null, everOpen = false, socket = null;
   var css = document.createElement('style');
   css.textContent =
     '@keyframes llb{0%,80%,100%{transform:scale(.6);opacity:.5}40%{transform:scale(1);opacity:1}}' +
@@ -87,8 +89,12 @@
         ws.addEventListener('close', showLost);
         ws.addEventListener('message', function (e) { if (e.data instanceof ArrayBuffer) watchTransfer(e.data); });
         transferTail = '';
+        socket = ws;
         var nativeSend = ws.send;
-        ws.send = function (data) { return nativeSend.call(ws, withMods(data)); };
+        ws.send = function (data) {
+          if (data instanceof Uint8Array && data[0] === 0x30) lastLocal = Date.now();
+          return nativeSend.call(ws, withMods(data));
+        };
       }
       return ws;
     }
@@ -242,6 +248,28 @@
     }
   }
 
+  // tmux 的窗口尺寸跟着最近有输入（或改过尺寸）的那一处走（window-size latest）。电脑和手机同时开着同一个终端时，
+  // 回到手机上看到的还是按电脑屏幕排的画面（宽度、高度都不对，底部的输入框不见了、留下零星的残字），要打一个字才变回来。
+  // 尺寸没变时 ttyd 不会再报，这里直接按 ttyd 的格式（'1' + JSON）报一次少一行、再报回原样，tmux 就按这一处重新排版。
+  // 已经是这一处的尺寸时只是高度来回变一行，程序（AI 编程助手等）按同样的尺寸重画，看不出变化。
+  // lastLocal：这一处最近一次发出输入（或要回尺寸）的时间。刚打过字的话 tmux 已经按这一处排版了。
+  var claimAt = 0, claimTimer = 0, lastLocal = 0;
+  function claimSize(term, idle) {
+    var now = Date.now();
+    if (idle && now - lastLocal < idle) return;
+    if (now - claimAt < 1500 || document.visibilityState !== 'visible') return;
+    if (!socket || socket.readyState !== 1 || !(term.cols > 1) || !(term.rows > 2)) return;
+    claimAt = lastLocal = now;
+    var enc = new TextEncoder();
+    function report(rows) {
+      try { if (socket && socket.readyState === 1) socket.send(enc.encode('1' + JSON.stringify({ columns: term.cols, rows: rows }))); } catch (e) { /* 忽略 */ }
+    }
+    report(term.rows - 1);
+    clearTimeout(claimTimer);
+    // 隔一会儿再报回来：两次挨得太近时 tmux 只看到最后的尺寸（没变），不会切换
+    claimTimer = setTimeout(function () { report(term.rows); }, 80);
+  }
+
   // 切到别的窗口（或手机切到别的应用）再回来：浏览器在后台时会暂停终端的绘制，窗口尺寸也可能在这期间变过，
   // 回来后屏幕只画了一部分（例如 AI 编程助手底部的输入框不见了），要刷新或切到别的终端再切回来才恢复。
   // 回到前台 / 窗口重新拿到焦点时重新测量、适配并整屏重画；布局稳定需要一点时间，过一会儿再来一次。
@@ -249,12 +277,14 @@
     var timers = [];
     function later() {
       timers.forEach(clearTimeout);
-      timers = [60, 400].map(function (ms) { return setTimeout(function () { refit(term); }, ms); });
+      timers = [60, 400].map(function (ms) { return setTimeout(function () { refit(term); if (ms === 400) claimSize(term); }, ms); });
     }
     document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible') later(); });
     window.addEventListener('pageshow', later);
     window.addEventListener('focus', later);
     window.addEventListener('resize', function () { setTimeout(function () { try { term.refresh(0, term.rows - 1); } catch (e) { /* 忽略 */ } }, 120); });
+    // 按到终端上（准备打字、滑动翻看）：先把窗口尺寸要回来
+    document.addEventListener('pointerdown', function () { claimSize(term, 10000); }, true);
   }
 
   function decodeBase64Utf8(b64) {
@@ -330,7 +360,9 @@
     // 不让浏览器自己处理竖向拖动（拖动整个页面）；双指缩放照常。
     el.style.touchAction = 'pinch-zoom';
     var start = null, scrolling = false, lastY = 0, lastT = 0, vel = 0, acc = 0, x = 0, y = 0, fling = 0, hold = 0;
+    var moved = 0, scrolledAt = 0;
     // 长按（不动 0.5 秒）：嵌在管理台里时打开“选择文字”。xterm.js 在手机上选不了字。
+    // 滑动中途按住不动（让惯性停下来、或停一下再接着滑）不算长按，否则一滑就弹出“选择文字”。
     function cancelHold() { clearTimeout(hold); hold = 0; }
     function rowHeight() { return Math.max(8, screen.clientHeight / (term.rows || 24)); }
     // 开了鼠标上报时每个滚轮事件只上报一次（tmux 一次滚 5 行），攒够约 2.5 行的滑动距离再发一次，滚动速度跟手。
@@ -362,6 +394,7 @@
     var onOutput = term.onWriteParsed || term.onRender;
     if (typeof onOutput === 'function') onOutput.call(term, ack);
     function scrollBy(d) {
+      scrolledAt = Date.now();
       acc += d;
       if (mouseMode()) { pump(); return; }
       // 本地回滚区：立即滚动
@@ -372,10 +405,13 @@
       acc = 0; // 手指按下就停：还没发出去的不再发
       if (e.touches.length !== 1) { start = null; return; }
       var t = e.touches[0];
+      var wasScrolling = fling || Date.now() - scrolledAt < 400; // 按下时还在滚（惯性）或刚滚过
+      fling = 0;
       start = { x: t.clientX, y: t.clientY };
       scrolling = false;
+      moved = 0;
       cancelHold();
-      if (window.parent !== window) {
+      if (window.parent !== window && !wasScrolling) {
         hold = setTimeout(function () {
           hold = 0;
           longPressAt = Date.now();
@@ -387,9 +423,10 @@
     el.addEventListener('touchmove', function (e) {
       if (!start || e.touches.length !== 1) { start = null; cancelHold(); return; }
       var t = e.touches[0];
+      moved = Math.max(moved, Math.abs(t.clientX - start.x) + Math.abs(t.clientY - start.y));
       if (!scrolling) {
         var dx = t.clientX - start.x, dy = t.clientY - start.y;
-        if (Math.abs(dx) + Math.abs(dy) > 10) cancelHold();
+        if (moved > 8) cancelHold();
         if (Math.abs(dy) < 10 || Math.abs(dy) < Math.abs(dx)) return;
         scrolling = true;
         lastY = t.clientY; lastT = e.timeStamp; vel = 0; acc = 0;
@@ -409,6 +446,9 @@
       if (!start) return;
       var was = scrolling;
       start = null; scrolling = false;
+      // 手指动过（哪怕没够滑动的距离）就不算点击：不让浏览器再补发 mousedown / mouseup / click。
+      // 否则两下短促的滑动会被当成双击，tmux 选中一个词并复制（剪贴板被改掉，还弹出“已复制”）。
+      if (moved > 4 && e.cancelable) e.preventDefault();
       if (!was) return;
       e.stopPropagation();
       // 停顿后才松手不算甩动
@@ -420,10 +460,34 @@
         prev = now;
         scrollBy(v * dt);
         v *= Math.pow(0.95, dt / 16);
-        if (Math.abs(v) > 0.05) fling = requestAnimationFrame(step);
+        fling = Math.abs(v) > 0.05 ? requestAnimationFrame(step) : 0;
       })(prev + 16);
     }
-    el.addEventListener('touchend', end, { capture: true, passive: true });
+    el.addEventListener('touchend', end, { capture: true, passive: false });
+    // 手机上连点两三下（浏览器补发的鼠标事件）在 tmux 里是双击选词、三击选行并立即复制，手机上从来不是想要的：
+    // 只把第一下交给终端（点按钮、定位光标照常），紧跟着的几下拦下来。选文字用长按打开的“选择文字”。
+    var tapDown = 0, swallowUp = false;
+    function fromTouch(e) {
+      return Boolean(e.sourceCapabilities ? e.sourceCapabilities.firesTouchEvents : Date.now() - lastGesture < 1000);
+    }
+    document.addEventListener('mousedown', function (e) {
+      if (!fromTouch(e)) return;
+      var now = Date.now();
+      var repeat = now - tapDown < 500;
+      tapDown = now;
+      if (!repeat && e.detail < 2) return;
+      swallowUp = true;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    }, true);
+    ['mouseup', 'dblclick'].forEach(function (type) {
+      document.addEventListener(type, function (e) {
+        if (!fromTouch(e) || (type === 'mouseup' && !swallowUp)) return;
+        if (type === 'mouseup') swallowUp = false;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }, true);
+    });
     el.addEventListener('touchcancel', function () { cancelHold(); start = null; scrolling = false; }, { capture: true, passive: true });
   }
 
@@ -635,7 +699,7 @@
       if (d.type === 'looklook:send' && typeof d.data === 'string') window.looklookSend(d.data, opts);
       if (d.type === 'looklook:paste' && typeof d.data === 'string') window.looklookPaste(d.data, opts);
       if (d.type === 'looklook:focus') term.focus();
-      if (d.type === 'looklook:fit') refit(term);
+      if (d.type === 'looklook:fit') { refit(term); claimSize(term); }
       if (d.type === 'looklook:text') toParent({ type: 'looklook:text', text: bufferText(term) });
     });
     // 告诉管理台终端准备好了：当前显示的终端由它再聚焦一次
