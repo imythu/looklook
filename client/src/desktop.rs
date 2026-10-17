@@ -193,7 +193,7 @@ fn show_main(app: &AppHandle) {
         let handle = app.clone();
         // 创建窗口要在主线程上做。
         let _ = app.run_on_main_thread(move || {
-            match window(&handle, MAIN, url).inner_size(1280.0, 820.0).min_inner_size(420.0, 480.0).center().build() {
+            match window(&handle, MAIN, url.clone(), url).inner_size(1280.0, 820.0).min_inner_size(420.0, 480.0).center().build() {
                 Ok(w) => {
                     let _ = w.set_focus();
                 }
@@ -209,8 +209,11 @@ fn show_main(app: &AppHandle) {
 /// 本机 / 多台电脑：页面里注入 `window.__LOOKLOOK_DESKTOP__.console`（本机管理台地址，不含任何凭据），
 /// 管理台顶栏据此显示切换：切到“多台电脑”就在这个窗口里打开专属地址（和手机上一样看到所有电脑），
 /// 切回“本机”回到这个地址。从专属地址里新开的窗口（终端“新窗口打开”）同样留在应用里。
-fn window<'a>(app: &'a AppHandle, label: &str, url: Url) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
-    let console = url.clone();
+///
+/// `console`：本机管理台地址；`url`：窗口一开始加载的地址。网页新开的窗口先加载 about:blank，由 WebKit / WebView2
+/// 把请求的页面载入返回的窗口（Tauri 文档的做法）。自己再加载一次目标地址会有两次导航，前一次被取消后
+/// macOS 上 WKWebView 的地址短暂为空，wry 读它时 panic，应用直接崩溃（用户报告：打开 DSH、终端“新窗口打开”）。
+fn window<'a>(app: &'a AppHandle, label: &str, console: Url, url: Url) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
     let handle = app.clone();
     let opener = label.to_string();
     let base = console.origin().ascii_serialization();
@@ -237,7 +240,8 @@ fn window<'a>(app: &'a AppHandle, label: &str, url: Url) -> WebviewWindowBuilder
             }
             static NEXT: AtomicU32 = AtomicU32::new(1);
             let label = format!("w{}", NEXT.fetch_add(1, Ordering::Relaxed));
-            match window(&handle, &label, target).window_features(features).inner_size(1100.0, 720.0).build() {
+            let blank = Url::parse("about:blank").expect("about:blank");
+            match window(&handle, &label, console.clone(), blank).window_features(features).inner_size(1100.0, 720.0).build() {
                 Ok(window) => NewWindowResponse::Create { window },
                 Err(e) => {
                     tracing::warn!(error = %e, "无法打开新窗口");

@@ -1,13 +1,12 @@
 // 看看客户端管理台。未登录时只显示登录页；登录后左侧菜单（手机为抽屉）：终端、文件、SSH 主机、本机网页、系统、设置、账户。
 // 终端页 /t/{id} 占满整个窗口。界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, History as HistoryIcon, LogOut, Menu, Monitor, MonitorSmartphone, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
+import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, LogOut, Menu, Monitor, MonitorSmartphone, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Account from './pages/Account.jsx';
 import AiPage from './pages/Ai.jsx';
 import Files from './pages/Files.jsx';
-import History from './pages/History.jsx';
 import Login from './pages/Login.jsx';
 import Pages from './pages/Pages.jsx';
 import Settings from './pages/Settings.jsx';
@@ -71,7 +70,6 @@ export function SafetyNote({ full = false }) {
 
 const NAV = [
   { to: '/', icon: SquareTerminal, key: 'nav.terminals' },
-  { to: '/history', icon: HistoryIcon, key: 'nav.history' },
   { to: '/files', icon: FolderOpen, key: 'nav.files' },
   { to: '/ssh', icon: Server, key: 'nav.ssh' },
   { to: '/pages', icon: Globe, key: 'nav.pages' },
@@ -81,7 +79,7 @@ const NAV = [
   { to: '/account', icon: UserRound, key: 'nav.account' },
 ];
 // 按电脑的页面：多台电脑时顶栏显示电脑切换（终端页合并显示所有电脑，账户页不分电脑）
-const DEVICE_PAGES = ['/history', '/files', '/ssh', '/pages', '/ai', '/system', '/settings'];
+const DEVICE_PAGES = ['/files', '/ssh', '/pages', '/ai', '/system', '/settings'];
 const TERM = /^\/t\/([a-z2-7]{8})$/;
 const isKnown = (p) => NAV.some((x) => x.to === p) || TERM.test(p);
 
@@ -491,7 +489,7 @@ function Shell() {
     // 换了登录（退出后重新登录）时重置终端页。远程打开时状态来自选中的那台电脑，选中的电脑一变 device_id 就变，
     // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
     const login = remote ? 'remote' : status.account.session?.device_id;
-    const page = { '/': <Terminals key={login} />, '/history': <History />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
+    const page = { '/': <Terminals key={login} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
     body = (
       <ConsoleLayout path={path} stale={devices.multi && statusDevice !== devices.selected}>
         {page}

@@ -175,7 +175,7 @@ for t in "$@"; do
   rm -f "$stage/fonts/.version"
   licenses "$stage" "$t"
   case $t in
-    linux-*) cp packaging/install-linux.sh "$stage/install.sh"; cp packaging/uninstall-linux.sh "$stage/uninstall.sh" ;;
+    linux-*) cp packaging/install-linux.sh "$stage/install.sh"; cp packaging/uninstall-linux.sh "$stage/uninstall.sh"; cp packaging/stop-linux.sh "$stage/stop.sh" ;;
     darwin-*) cp packaging/install-macos.sh "$stage/install.sh"; cp packaging/uninstall-macos.sh "$stage/uninstall.sh" ;;
     windows-*) bat packaging/install-windows.bat "$stage/install.bat"; bat packaging/uninstall-windows.bat "$stage/uninstall.bat" ;;
   esac

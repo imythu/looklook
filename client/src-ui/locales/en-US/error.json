@@ -185,8 +185,5 @@
   "SSH_MISSING": "No ssh command on this computer. Install the OpenSSH client first.",
   "SSH_HOST_NOT_ALLOWED": "This host isn’t available to AI assistants.",
   "SSH_JUMP_IN_USE": "Other hosts connect through it ({{names}}). Give them another jump host or connect them directly first.",
-  "SSH_AI_DISABLED": "SSH access for AI assistants is turned off (turn it on on the AI assistants page).",
-  "CONVO_FAILED": "Migration failed: {{detail}}",
-  "STALE_PROMPT": "The prompt in the terminal has changed, please look again",
-  "HARNESS_UNSUPPORTED": "This tool is not supported yet ({{harness}})"
+  "SSH_AI_DISABLED": "SSH access for AI assistants is turned off (turn it on on the AI assistants page)."
 }

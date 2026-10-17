@@ -234,6 +234,8 @@ export const termPaste = (frame, data, opts) => call(frame, 'looklookPaste', 'lo
 export function termFocus(frame) {
   const w = frame.current?.contentWindow;
   if (!w) return;
+  // 先把焦点放到 iframe 元素上：跨源（本机直连）时只调 contentWindow.focus() 有的浏览器不移动焦点
+  frame.current.focus({ preventScroll: true });
   w.focus();
   let term = null;
   try {
@@ -243,6 +245,25 @@ export function termFocus(frame) {
   }
   if (term?.focus) term.focus();
   else w.postMessage({ type: 'looklook:focus' }, frameOrigin(frame));
+}
+
+/**
+ * 终端准备好时（term-inject.js 发 `looklook:ready`）聚焦它。iframe 的 load 事件比终端准备好早，那时聚焦可能落空；
+ * 进入会话页、刷新终端后，当前显示的终端都能直接打字。`enabled`：工作台里只管当前显示的那个。
+ */
+export function useFocusWhenReady(frame, enabled = true) {
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const on = (e) => {
+      if (e.data?.type !== 'looklook:ready' || !frame.current || e.source !== frame.current.contentWindow) return;
+      // 别的输入框（对话框、搜索框）正在用时不抢焦点
+      const el = document.activeElement;
+      if (el && el !== frame.current && el.matches?.('input, textarea, select, [contenteditable="true"]')) return;
+      termFocus(frame);
+    };
+    window.addEventListener('message', on);
+    return () => window.removeEventListener('message', on);
+  }, [enabled]);
 }
 
 export function termFit(frame) {

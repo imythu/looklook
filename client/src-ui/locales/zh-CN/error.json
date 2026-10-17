@@ -185,8 +185,5 @@
   "SSH_MISSING": "这台电脑上没有找到 ssh 命令，请先安装 OpenSSH 客户端。",
   "SSH_HOST_NOT_ALLOWED": "这台主机没有允许 AI 助手使用。",
   "SSH_JUMP_IN_USE": "还有主机经它连接（{{names}}），先给它们换个跳板机或改成直接连接，再删除。",
-  "SSH_AI_DISABLED": "AI 助手使用 SSH 主机的总开关已关闭（在“AI 助手”页打开）。",
-  "CONVO_FAILED": "迁移失败：{{detail}}",
-  "STALE_PROMPT": "终端里的提示已经变了，请再看一下",
-  "HARNESS_UNSUPPORTED": "这个工具暂时还不支持（{{harness}}）"
+  "SSH_AI_DISABLED": "AI 助手使用 SSH 主机的总开关已关闭（在“AI 助手”页打开）。"
 }

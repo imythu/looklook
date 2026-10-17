@@ -1,6 +1,5 @@
 // 首页：我的终端。每个终端是一个可以长期运行的工作区（例如让 Claude Code 在里面干活），关掉网页也不会停。
 import {
-  ArrowLeftRight,
   ArrowUp,
   Bot,
   Braces,
@@ -39,7 +38,7 @@ import {
   Wifi,
   X,
 } from "lucide-react";
-import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { SafetyNote, useStatus } from "../App.jsx";
@@ -51,7 +50,6 @@ import { urlHost } from "../shared/host.js";
 import { errorText } from "../shared/i18n.js";
 import { Link, useRouter } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
-import ConvoDialog from "./Convo.jsx";
 import { TermPane, useTermChrome } from "./TerminalView.jsx";
 import { ModelChoiceLine } from "./ModelProviders.jsx";
 import { isTouch } from "../shared/KeyBar.jsx";
@@ -250,52 +248,6 @@ function BackendNote() {
       )}
     </FoldNote>
   );
-}
-
-// 正在运行的 Codex 终端在干什么（客户端读终端屏幕认出来的，见 src/screen.rs）：列表上显示“等你同意”等标签，
-// 有终端在等你时页面标题前面加上数量。
-const ActivityCtx = createContext({});
-const ACTIVITY_BADGE = { approval: "badge-warn", choice: "badge-warn", working: "badge-ok", idle: "" };
-
-function useActivity(enabled) {
-  const [items, setItems] = useState({});
-  useEffect(() => {
-    if (!enabled) return undefined;
-    let alive = true;
-    let timer;
-    const load = async () => {
-      if (!document.hidden) {
-        try {
-          const r = await api.get("/instances/activity");
-          if (alive) setItems(r.items ?? {});
-        } catch {
-          /* 旧版本客户端没有这个接口：不显示 */
-        }
-      }
-      if (alive) timer = setTimeout(load, 4000);
-    };
-    load();
-    return () => {
-      alive = false;
-      clearTimeout(timer);
-    };
-  }, [enabled]);
-  const waiting = Object.values(items).filter((a) => a.state === "approval" || a.state === "choice").length;
-  useEffect(() => {
-    const base = document.title.replace(/^(d+) /, "");
-    document.title = waiting ? `(${waiting}) ${base}` : base;
-    return () => {
-      document.title = document.title.replace(/^(d+) /, "");
-    };
-  }, [waiting]);
-  return items;
-}
-
-function ActivityBadge({ id }) {
-  const { t } = useTranslation();
-  const a = useContext(ActivityCtx)[id];
-  if (!a || !(a.state in ACTIVITY_BADGE)) return null;
-  return <span className={`badge act-badge ${ACTIVITY_BADGE[a.state] ?? ""}`}>{t(`activity.${a.state}`)}</span>;
 }
 
 function stateOf(i) {
@@ -515,7 +467,6 @@ function InstanceCard({ inst, ...handlers }) {
           <span className={`badge ${BADGE[state]}`}>
             {t(`instance.state.${state}`)}
           </span>
-          <ActivityBadge id={inst.id} />
         </span>
       </div>
       <div className="instance-meta">
@@ -602,7 +553,6 @@ function InstanceRow({ inst, compact, current, opened, ...handlers }) {
         <span className="irow-text">
           <span className="irow-name ellipsis">
             {inst.name}
-            {compact && <ActivityBadge id={inst.id} />}
           </span>
           <span className="irow-sub ellipsis">
             {compact ? (
@@ -622,7 +572,6 @@ function InstanceRow({ inst, compact, current, opened, ...handlers }) {
         </span>
         {!compact && (
           <span className="irow-meta">
-            <ActivityBadge id={inst.id} />
             <span className={`badge ${BADGE[a.state]}`}>{t(`instance.state.${a.state}`)}</span>
             {inst.last_activity_at && a.state === "running" && <span className="small muted nowrap">{relativeTime(t, inst.last_activity_at)}</span>}
           </span>
@@ -2210,10 +2159,8 @@ export default function Terminals() {
   const error = multi ? null : singleError;
   const reload = () => (multi ? reloadGroups() : reloadSingle());
   const allowed = status.account.allowed;
-  const activity = useActivity(allowed);
   const [dialog, setDialog] = useState(null);
   const [quick, setQuick] = useState(null);
-  const [convo, setConvo] = useState(false);
   const [logs, setLogs] = useState(null);
   const wsOk = useWorkspaceOk();
   const [view, setView] = useView(wsOk);
@@ -2263,7 +2210,7 @@ export default function Terminals() {
   const loading = !data && !error;
   const searchable = items.length > 0 && !workspace;
   return (
-    <ActivityCtx.Provider value={activity}>
+    <>
       <div className={`page-head ${workspace ? "page-head-ws" : ""}`}>
         <h1>
           {t("terminals.title")}
@@ -2271,9 +2218,6 @@ export default function Terminals() {
         </h1>
         <span className="inline page-tools">
           {items.length > 0 && <ViewSwitch view={view} onChange={setView} wsOk={wsOk} />}
-          <Button variant="secondary" icon={ArrowLeftRight} disabled={!allowed} onClick={() => setConvo(true)} title={t("convo.button_hint")} aria-label={t("convo.button")}>
-            <span className="hide-narrow">{t("convo.button")}</span>
-          </Button>
           {items.length > 0 && (
             <Button icon={Plus} disabled={!allowed} onClick={() => create("shell")} aria-label={t("terminals.new")}>
               <span className="hide-narrow">{t("terminals.new")}</span>
@@ -2398,14 +2342,6 @@ export default function Terminals() {
         onClose={() => setDialog(null)}
         onSaved={saved}
       />
-      <ConvoDialog
-        open={convo}
-        onClose={() => setConvo(false)}
-        onOpened={(inst) => {
-          reload();
-          openHere(inst.id);
-        }}
-      />
       <QuickCreateDialog
         open={Boolean(quick)}
         device={quick?.device}
@@ -2426,6 +2362,6 @@ export default function Terminals() {
         onOpenHere={openHere}
       />
       <LogsDialog inst={logs} onClose={() => setLogs(null)} />
-    </ActivityCtx.Provider>
+    </>
   );
 }

@@ -76,16 +76,10 @@ function useDictation(onText) {
   return { supported: true, on, toggle: () => (on ? stop() : start()) };
 }
 
-/** 整段发进终端并按回车（对话看法里的快捷短语用）。 */
-export function sendToTerminal(frame, text, touch) {
-  termPaste(frame, text, { focus: !touch });
-  setTimeout(() => termSend(frame, '\r', { focus: !touch }), submitDelay(text));
-}
-
 /**
  * 终端下方的输入框。`frame`：终端 iframe；`id`：终端 id（草稿按它保存）；`touch`：手机上发完不抢焦点（免得弹出终端的键盘）。
  */
-export default function Composer({ frame, id, touch, onClose, light, placeholder }) {
+export default function Composer({ frame, id, touch, onClose }) {
   const { t } = useTranslation();
   const [text, setText] = useState(() => readLocal(DRAFT_KEY + id, ''));
   const [submit, setSubmit] = useState(() => readLocal(SUBMIT_KEY, '1') === '1');
@@ -117,7 +111,7 @@ export default function Composer({ frame, id, touch, onClose, light, placeholder
     writeLocal(SUBMIT_KEY, v ? '1' : '0');
   };
   return (
-    <div className={`composer ${light ? 'composer-light' : ''}`} role="group" aria-label={t('composer.label')}>
+    <div className="composer" role="group" aria-label={t('composer.label')}>
       <textarea
         ref={area}
         value={text}
@@ -131,7 +125,7 @@ export default function Composer({ frame, id, touch, onClose, light, placeholder
             onClose?.();
           }
         }}
-        placeholder={placeholder ?? t(touch ? 'composer.placeholder_touch' : 'composer.placeholder')}
+        placeholder={t(touch ? 'composer.placeholder_touch' : 'composer.placeholder')}
         aria-label={t('composer.label')}
         enterKeyHint="enter"
       />

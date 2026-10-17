@@ -149,16 +149,6 @@ fn opts_key(id: &str) -> String {
     format!("instance_opts.{id}")
 }
 
-/// 迁移来的对话：Codex 终端启动时接着这个会话聊（`codex resume <id>`），存在 kv：`instance_resume.{id}`。
-fn resume_key(id: &str) -> String {
-    format!("instance_resume.{id}")
-}
-
-/// 会话 id 会拼进命令行：只接受字母、数字和连字符（Codex 的会话 id 是 UUID）。
-fn valid_resume(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
-}
-
 #[derive(Debug, Default, Deserialize)]
 pub struct Input {
     pub name: Option<String>,
@@ -172,9 +162,6 @@ pub struct Input {
     /// DSH 网页界面的端口（只在新建时由网关填写，不接受请求里的值）
     #[serde(skip)]
     pub web_port: Option<u16>,
-    /// 只在新建 Codex 终端时：接着这个会话聊（对话迁移，src/convo）
-    #[serde(default)]
-    pub resume: Option<String>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -365,17 +352,8 @@ impl Instances {
             web_port: input.web_port,
         };
         Self::validate_opts(&row, &mut opts)?;
-        let resume = input.resume.filter(|r| !r.is_empty());
-        if let Some(r) = &resume {
-            if !matches!(row.launch.as_str(), "codex" | "claude" | "dsh_tui") || !valid_resume(r) {
-                return Err(LocalError::invalid("resume", "invalid"));
-            }
-        }
         self.store.insert_instance(&row)?;
         self.store.set(&opts_key(&row.id), &opts)?;
-        if let Some(r) = &resume {
-            self.store.set(&resume_key(&row.id), r)?;
-        }
         self.bump();
         Ok(self.view(row, None))
     }
@@ -430,7 +408,6 @@ impl Instances {
         self.store.delete_instance(id)?;
         self.bump();
         let _ = self.store.remove(&opts_key(id));
-        let _ = self.store.remove(&resume_key(id));
         lock(&self.health).remove(id);
         let _ = std::fs::remove_file(self.paths.instance_log(id));
         // 附件目录（粘贴的截图、“发给 AI”的文件）随终端一起删掉
@@ -608,7 +585,7 @@ impl Instances {
     ///
     /// Windows 上 ttyd 只运行很短的“接入会话”命令：它把要运行的命令拼进一块约 256 字节的固定缓冲区，
     /// 超长就溢出崩溃（安装目录、配置文件、工作目录都是完整路径，工作目录深一点、带中文或启动命令长一点
-    /// ——例如 `codex resume <id>`——就会超）。会话由客户端在浏览器连上之前按完整参数创建
+    /// 就会超）。会话由客户端在浏览器连上之前按完整参数创建
     /// （[`Instances::ensure_attachable`]），效果与 `new-session -A` 相同，也不经过 ttyd 的本地编码转换。
     fn command_for(&self, row: &InstanceRow) -> Result<Vec<String>, LocalError> {
         if cfg!(windows) {
@@ -669,30 +646,7 @@ impl Instances {
 
     /// 启动类型对应的命令行（含“全部权限”参数）；普通终端为 None。
     fn launch_command(&self, row: &InstanceRow) -> Option<String> {
-        let opts = self.opts(&row.id);
-        if row.launch == "codex" {
-            if let Some(r) = self.store.get::<String>(&resume_key(&row.id)).ok().flatten().filter(|r| valid_resume(r)) {
-                let yolo = if opts.full_access { " --dangerously-bypass-approvals-and-sandbox" } else { "" };
-                // --no-daemon：迁移 / 接着聊的会话带着自己的设置，与电脑上已在运行的共享后台服务不一致时
-                // Codex 会拒绝复用它并退出（"Cannot use the shared background server"）。单独运行，也不会为了
-                // 换设置去重启共享后台服务、打断别的 Codex 任务。
-                return Some(format!("codex resume --no-daemon{yolo} {r}"));
-            }
-        }
-        // DSH 终端版接着聊：`dsh tui --resume <会话>`
-        if row.launch == "dsh_tui" {
-            if let Some(r) = self.store.get::<String>(&resume_key(&row.id)).ok().flatten().filter(|r| valid_resume(r)) {
-                return Some(format!("dsh tui --resume {r}"));
-            }
-        }
-        // 迁移来的 / 从对话记录接着聊的 Claude Code 会话：在会话的工作目录里 `claude --resume <id>`
-        if row.launch == "claude" {
-            if let Some(r) = self.store.get::<String>(&resume_key(&row.id)).ok().flatten().filter(|r| valid_resume(r)) {
-                let line = launch_command_line(row, opts, crate::platform::is_root())?;
-                return Some(format!("{line} --resume {r}"));
-            }
-        }
-        launch_command_line(row, opts, crate::platform::is_root())
+        launch_command_line(row, self.opts(&row.id), crate::platform::is_root())
     }
 
     // ---------------- tmux ----------------
@@ -785,22 +739,6 @@ impl Instances {
     /// 终端里最近的输出（tmux 面板与回滚缓冲区最后约 200 行）。非 tmux 后端或会话不在时返回 None。
     pub async fn recent_output(&self, id: &str) -> Option<String> {
         self.capture(id, "-200").await
-    }
-
-    /// 往终端里按键（tmux `send-keys`）：`Escape` `Enter` `Up` `Down` 按名字发，其余按字面发。
-    /// 给“对话”看法里的同意按钮用；非 tmux 后端不支持。
-    pub async fn send_keys(&self, id: &str, keys: &[String]) -> Result<(), LocalError> {
-        let Backend::Tmux(_) = self.backend else { return Err(LocalError::new("UNSUPPORTED")) };
-        let target = format!("{}:", exact(&Self::session_name(id)));
-        for k in keys {
-            let named = matches!(k.as_str(), "Escape" | "Enter" | "Up" | "Down");
-            let args: Vec<&str> = if named { vec!["send-keys", "-t", &target, k] } else { vec!["send-keys", "-t", &target, "-l", k] };
-            let out = self.tmux(&args).await?;
-            if !out.status.success() {
-                return Err(LocalError::new("NOT_FOUND"));
-            }
-        }
-        Ok(())
     }
 
     /// “选择文字”看法用：最近约 3000 行输出（折行已接回原来的长行）。非 tmux 后端或会话不在时返回 None。

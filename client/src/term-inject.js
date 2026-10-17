@@ -576,9 +576,17 @@
     }, true);
   }
 
+  // 管理台在终端还没准备好时（iframe 刚加载完）就要求聚焦：先记下，准备好后再聚焦（消息不会因为来得太早丢掉）
+  var wantFocus = false;
+  function earlyFocus(e) {
+    if (fromParent(e) && e.data && e.data.type === 'looklook:focus') wantFocus = true;
+  }
+  window.addEventListener('message', earlyFocus);
+
   function setup(term) {
-    // 管理台在终端还没准备好时（iframe 刚加载完）就要求过聚焦：页面有焦点就把它交给终端（手机上不主动弹键盘）
-    if (!touch && document.hasFocus()) term.focus();
+    window.removeEventListener('message', earlyFocus);
+    // 要求过聚焦，或者页面已经有焦点：交给终端（手机上不主动弹键盘）
+    if (wantFocus || (!touch && document.hasFocus())) term.focus();
     refitOnReturn(term);
     setupIme(term);
     setupTouchScroll(term);
@@ -630,6 +638,8 @@
       if (d.type === 'looklook:fit') refit(term);
       if (d.type === 'looklook:text') toParent({ type: 'looklook:text', text: bufferText(term) });
     });
+    // 告诉管理台终端准备好了：当前显示的终端由它再聚焦一次
+    toParent({ type: 'looklook:ready' });
   }
 
   (function wait() {

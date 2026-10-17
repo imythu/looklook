@@ -7,11 +7,17 @@
 #
 #   ./looklook/install.sh            安装并启动
 #   ./looklook/install.sh --no-start 只安装
+#
+# 没有 systemd 时（Docker 容器、WSL 等）用 nohup 在后台启动；再次运行会先结束旧版本（stop.sh）再启动新版本。
+# LOOKLOOK_CONTAINER=1：由 Docker 主机上的一键安装（/install-docker.sh）调用，只安装、不装服务，启动由它负责。
 set -eu
 
 SRC=$(cd "$(dirname "$0")" && pwd)
 START=1
 [ "${1:-}" = "--no-start" ] && START=0
+CONTAINER=${LOOKLOOK_CONTAINER:-0}
+SYSTEMD=0
+[ "$CONTAINER" != 1 ] && command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ] && SYSTEMD=1
 
 say() { printf '%s\n' "$*"; }
 
@@ -25,20 +31,28 @@ fi
 
 say "安装到 / Installing to $PREFIX ..."
 mkdir -p "$PREFIX" "$BIN"
-# 先停掉正在运行的旧版本，避免替换正在使用的文件。
-if [ "$(id -u)" = 0 ]; then systemctl stop looklook.service 2>/dev/null || true
-else systemctl --user stop looklook.service 2>/dev/null || true; fi
+# 先停掉正在运行的旧版本。
+if [ $SYSTEMD = 1 ]; then
+  if [ "$(id -u)" = 0 ]; then systemctl stop looklook.service 2>/dev/null || true
+  else systemctl --user stop looklook.service 2>/dev/null || true; fi
+else
+  sh "$SRC/stop.sh" "$PREFIX" 2>/dev/null || true
+fi
 rm -rf "$PREFIX/fonts"
 # 终端服务以前叫 ttyd，现在是 looklook-term：删掉旧文件（还在运行的旧进程由新版启动时清理）
 rm -f "$PREFIX/ttyd"
-cp -R "$SRC/looklook" "$SRC/looklook-term" "$SRC/fonts" "$SRC/LICENSES" "$PREFIX/"
+cp -R "$SRC/fonts" "$SRC/LICENSES" "$PREFIX/"
+# 程序文件先写临时文件再改名替换：终端里可能还有正在运行的 looklook（例如 looklook ssh），直接覆盖会失败（Text file busy）。
+for f in looklook looklook-term; do
+  cp "$SRC/$f" "$PREFIX/$f.new" && chmod 0755 "$PREFIX/$f.new" && mv -f "$PREFIX/$f.new" "$PREFIX/$f"
+done
 # 会话保持程序（looklook-mux）可能正被后台任务使用：不能直接覆盖运行中的文件（Text file busy），先写临时文件再改名替换，
 # 正在运行的旧进程不受影响，任务继续运行。
 cp "$SRC/looklook-mux" "$PREFIX/looklook-mux.new" && chmod 0755 "$PREFIX/looklook-mux.new" && mv -f "$PREFIX/looklook-mux.new" "$PREFIX/looklook-mux"
 # trz / tsz 可能正在运行：删掉再复制（不覆盖运行中的文件）
 rm -rf "$PREFIX/trzsz" && { cp -R "$SRC/trzsz" "$PREFIX/" 2>/dev/null || true; }
 cp "$SRC/uninstall.sh" "$PREFIX/uninstall.sh" 2>/dev/null || true
-chmod 0755 "$PREFIX/looklook" "$PREFIX/looklook-term"
+cp "$SRC/stop.sh" "$PREFIX/stop.sh" 2>/dev/null && chmod 0755 "$PREFIX/stop.sh" || true
 ln -sf "$PREFIX/looklook" "$BIN/looklook"
 
 UNIT='[Unit]
@@ -58,7 +72,9 @@ WantedBy=__TARGET__
 '
 
 # 只有系统确实由 systemd 管理时才安装服务（容器、WSL 等环境里常有 systemctl 但不能用）。
-if command -v systemctl >/dev/null 2>&1 && [ -d /run/systemd/system ]; then
+if [ "$CONTAINER" = 1 ]; then
+  :
+elif [ $SYSTEMD = 1 ]; then
   if [ "$(id -u)" = 0 ]; then
     printf '%s' "$UNIT" | sed "s|__EXEC__|$PREFIX/looklook|; s|__USER__|User=root|; s|__TARGET__|multi-user.target|" >/etc/systemd/system/looklook.service
     systemctl daemon-reload || true
@@ -83,6 +99,9 @@ else
   say "  nohup $PREFIX/looklook run --no-browser >/dev/null 2>&1 &"
   [ $START = 1 ] && nohup "$PREFIX/looklook" run --no-browser >/dev/null 2>&1 &
 fi
+
+# Docker 主机上的一键安装自己给出后续命令
+if [ "$CONTAINER" = 1 ]; then say "✓ 看看客户端已安装 / Looklook client installed"; exit 0; fi
 
 # 在 PATH 里就直接写 looklook，否则写完整路径（复制就能运行）
 LL=looklook
