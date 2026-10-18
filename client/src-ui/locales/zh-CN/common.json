@@ -898,7 +898,7 @@
     "uploading": "正在上传 {{n}} 个文件 · {{pct}}%",
     "uploaded": "已上传 {{n}} 个文件",
     "drop": "松开上传到 {{dir}}",
-    "tab_git": "改动"
+    "tab_git": "Git"
   },
   "lan": {
     "hint": "你和这台电脑在同一个网络里。改用局域网直接连接，不绕远程线路，打字更跟手。",
@@ -980,32 +980,6 @@
     "detached": "分离的提交 {{head}}",
     "ahead": "有 {{n}} 个提交还没推送",
     "behind": "远程有 {{n}} 个新提交还没拉取",
-    "fetch": "抓取",
-    "fetch_hint": "看看远程有没有新提交（git fetch，不改动你的文件）",
-    "pull": "拉取",
-    "pull_hint": "拉取远程的新提交（git pull --ff-only，只快进，不自动合并）",
-    "push": "推送",
-    "push_hint": "把本地提交推送到远程（git push）",
-    "done": {
-      "fetch": "已抓取",
-      "pull": "已拉取",
-      "push": "已推送"
-    },
-    "message_ph": "提交说明（提交到 {{branch}}，Ctrl+Enter 提交）",
-    "commit": "提交",
-    "commit_n": "提交 {{n}} 个文件",
-    "committed": "已提交 {{commit}}",
-    "stage": "暂存",
-    "unstage": "取消暂存",
-    "stage_all": "全部暂存",
-    "unstage_all": "全部取消",
-    "stage_tip": "先点文件旁的 + 把要提交的改动暂存，或者“全部暂存”。",
-    "sec": {
-      "conflict": "有冲突",
-      "staged": "已暂存",
-      "changed": "未暂存",
-      "untracked": "新文件"
-    },
     "st": {
       "modified": "已修改",
       "added": "新增",

@@ -898,7 +898,7 @@
     "uploading": "Uploading {{n}} files · {{pct}}%",
     "uploaded": "Uploaded {{n}} files",
     "drop": "Drop to upload to {{dir}}",
-    "tab_git": "Changes"
+    "tab_git": "Git"
   },
   "lan": {
     "hint": "You're on the same network as this computer. Connect over the local network instead of the remote route for snappier typing.",
@@ -980,32 +980,6 @@
     "detached": "Detached at {{head}}",
     "ahead": "{{n}} commits not pushed yet",
     "behind": "{{n}} new commits on the remote to pull",
-    "fetch": "Fetch",
-    "fetch_hint": "Check the remote for new commits (git fetch — doesn’t touch your files)",
-    "pull": "Pull",
-    "pull_hint": "Pull new commits from the remote (git pull --ff-only — fast-forward only, never merges)",
-    "push": "Push",
-    "push_hint": "Push your local commits to the remote (git push)",
-    "done": {
-      "fetch": "Fetched",
-      "pull": "Pulled",
-      "push": "Pushed"
-    },
-    "message_ph": "Commit message (to {{branch}}, Ctrl+Enter to commit)",
-    "commit": "Commit",
-    "commit_n": "Commit {{n}} files",
-    "committed": "Committed {{commit}}",
-    "stage": "Stage",
-    "unstage": "Unstage",
-    "stage_all": "Stage all",
-    "unstage_all": "Unstage all",
-    "stage_tip": "Stage what you want to commit with the + next to each file, or Stage all.",
-    "sec": {
-      "conflict": "Conflicts",
-      "staged": "Staged",
-      "changed": "Not staged",
-      "untracked": "New files"
-    },
     "st": {
       "modified": "Modified",
       "added": "Added",

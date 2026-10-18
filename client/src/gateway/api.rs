@@ -56,9 +56,6 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/git", get(git_status))
         .route("/instances/{id}/git/diff", get(git_diff))
         .route("/instances/{id}/git/show", get(git_show))
-        .route("/instances/{id}/git/stage", post(git_stage))
-        .route("/instances/{id}/git/commit", post(git_commit))
-        .route("/instances/{id}/git/remote", post(git_remote))
         .route("/instances/{id}/page", post(instance_page))
         .route("/instances/{id}/chat", get(super::chat::snapshot))
         .route("/instances/{id}/chat/events", get(super::chat::events))
@@ -821,8 +818,6 @@ struct GitQ {
     #[serde(default)]
     file: String,
     #[serde(default, deserialize_with = "de_flag")]
-    staged: bool,
-    #[serde(default, deserialize_with = "de_flag")]
     untracked: bool,
     #[serde(default)]
     commit: String,
@@ -844,56 +839,12 @@ async fn git_status(State(app): State<App>, Path(id): Path<String>, Query(q): Qu
 
 async fn git_diff(State(app): State<App>, Path(id): Path<String>, Query(q): Query<GitQ>) -> R<Json<crate::git::Diff>> {
     let dir = git_dir(&app, &id, &q.path).await?;
-    Ok(Json(blocking(move || crate::git::diff_file(&dir, &q.file, q.staged, q.untracked)).await?))
+    Ok(Json(blocking(move || crate::git::diff_file(&dir, &q.file, q.untracked)).await?))
 }
 
 async fn git_show(State(app): State<App>, Path(id): Path<String>, Query(q): Query<GitQ>) -> R<Json<crate::git::Diff>> {
     let dir = git_dir(&app, &id, &q.path).await?;
     Ok(Json(blocking(move || crate::git::show(&dir, &q.commit)).await?))
-}
-
-#[derive(Deserialize)]
-struct GitStageReq {
-    #[serde(default)]
-    path: String,
-    /// 空 = 全部
-    #[serde(default)]
-    files: Vec<String>,
-    /// true 暂存，false 取消暂存
-    on: bool,
-}
-
-async fn git_stage(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitStageReq>) -> R<StatusCode> {
-    let dir = git_dir(&app, &id, &req.path).await?;
-    blocking(move || crate::git::stage(&dir, &req.files, req.on)).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-#[derive(Deserialize)]
-struct GitCommitReq {
-    #[serde(default)]
-    path: String,
-    message: String,
-}
-
-async fn git_commit(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitCommitReq>) -> R<Json<Value>> {
-    let dir = git_dir(&app, &id, &req.path).await?;
-    let short = blocking(move || crate::git::commit(&dir, &req.message)).await?;
-    Ok(Json(json!({ "commit": short })))
-}
-
-#[derive(Deserialize)]
-struct GitRemoteReq {
-    #[serde(default)]
-    path: String,
-    /// fetch | pull | push
-    action: String,
-}
-
-async fn git_remote(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitRemoteReq>) -> R<Json<Value>> {
-    let dir = git_dir(&app, &id, &req.path).await?;
-    let output = blocking(move || crate::git::remote(&dir, &req.action)).await?;
-    Ok(Json(json!({ "output": output })))
 }
 
 // ---------------- SSH 主机（ssh.rs） ----------------
