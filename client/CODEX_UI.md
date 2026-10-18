@@ -61,6 +61,8 @@ client/src/chat/
 client/scripts/record-codex.mjs   新文件，放在已有的 scripts/ 里（§10.4）
 ```
 
+**第 1 期已完成**：`src/chat/agent.rs` 里有 `trait Agent` 和 `trait TranscriptReader`，Claude 的实现调用原来的 `transcript.rs`、`screen.rs`、`commands.rs`；`mod.rs` 的核心只通过 trait 调用（按终端的启动类型选适配器，状态里多推一个 `agent` 字段给界面）。现在 trait 里的方法是：`launch`、`valid_transcript`、`open_transcript`、`classify`、`live`、`pending_kind`、`decision`、`plan_check`、`commands`。启动命令（`launch_args`、`relaunch_command`）还在 `instances.rs` 里写死 Claude，加 Codex 时一起挪进来。
+
 `trait Agent`（每个方法都是现在代码里写死 Claude 的地方）：
 
 | 方法 | Claude 现状 | Codex |

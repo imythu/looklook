@@ -8,6 +8,7 @@
 //!
 //! 审批时 TUI 也同时弹出了自己的确认框，两边谁先回答算谁的（实测）；任何异常都交给 TUI，不会自动放行。
 
+pub mod agent;
 pub mod commands;
 pub mod hooks;
 pub mod screen;
@@ -27,6 +28,7 @@ use crate::error::LocalError;
 use crate::instances::Instances;
 use crate::paths::Paths;
 use crate::store::Store;
+use agent::{Agent, PendingView, TranscriptReader};
 use screen::Screen;
 use transcript::{Change, Item, Transcript};
 
@@ -73,20 +75,14 @@ struct Pending {
     id: u64,
     at: Instant,
     tool: String,
+    /// `permission` / `question` / `plan`（[`Agent::pending_kind`]）
+    kind: &'static str,
     input: Value,
     suggestions: Value,
     tx: Option<oneshot::Sender<String>>,
 }
 
 impl Pending {
-    fn kind(&self) -> &'static str {
-        match self.tool.as_str() {
-            "AskUserQuestion" => "question",
-            "ExitPlanMode" => "plan",
-            _ => "permission",
-        }
-    }
-
     fn resolve(&mut self, out: String) {
         if let Some(tx) = self.tx.take() {
             let _ = tx.send(out);
@@ -123,9 +119,11 @@ pub enum Event {
 
 pub struct Inst {
     id: String,
+    /// 这个终端运行的 AI 工具
+    agent: &'static dyn Agent,
     st: Mutex<State>,
     tx: broadcast::Sender<Event>,
-    tr: tokio::sync::Mutex<Option<Transcript>>,
+    tr: tokio::sync::Mutex<Option<Box<dyn TranscriptReader>>>,
     viewers: AtomicUsize,
     watching: AtomicBool,
     /// 收到的 `UserPromptSubmit` 个数（确认输入送达）
@@ -177,8 +175,11 @@ impl Chat {
         map.entry(id.to_string())
             .or_insert_with(|| {
                 let binding: Option<Binding> = self.store.get(&binding_key(id)).ok().flatten();
+                // 只有带对话界面的启动类型才会走到这里（require 查过 chat_ui），认不出时按 Claude Code
+                let agent = self.store.instance(id).ok().flatten().and_then(|r| agent::for_launch(&r.launch)).unwrap_or(&agent::Claude);
                 Arc::new(Inst {
                     id: id.to_string(),
+                    agent,
                     st: Mutex::new(State {
                         // 客户端重启后先按空闲处理，抓屏和下一个 hook 会纠正
                         phase: if binding.is_some() { Phase::Idle } else { Phase::Detached },
@@ -225,8 +226,9 @@ impl Chat {
 
     // ---------------- 状态 ----------------
 
-    fn status_of(st: &State) -> Value {
+    fn status_of(inst: &Inst, st: &State) -> Value {
         json!({
+            "agent": inst.agent.launch(),
             "phase": st.phase,
             "reason": st.reason,
             "tool": st.tool,
@@ -240,7 +242,7 @@ impl Chat {
             "preview": st.live.text,
             "pending": st.pending.as_ref().map(|p| json!({
                 "id": p.id,
-                "kind": p.kind(),
+                "kind": p.kind,
                 "tool": p.tool,
                 "input": p.input,
                 "suggestions": p.suggestions,
@@ -249,7 +251,7 @@ impl Chat {
     }
 
     fn emit_status(inst: &Inst, st: &State) {
-        let _ = inst.tx.send(Event::Status(Self::status_of(st)));
+        let _ = inst.tx.send(Event::Status(Self::status_of(inst, st)));
     }
 
     fn set_phase(inst: &Inst, st: &mut State, phase: Phase, reason: Option<&'static str>) {
@@ -283,7 +285,7 @@ impl Chat {
             if let Some(m) = ev["model"].as_str() {
                 st.model = Some(m.to_string());
             }
-            let rebound = self.rebind(id, &mut st, &ev);
+            let rebound = self.rebind(&inst, &mut st, &ev);
             match name.as_str() {
                 "SessionStart" => {
                     // 自动压缩发生在一轮当中，不能改成空闲
@@ -355,10 +357,10 @@ impl Chat {
     }
 
     /// hook 带来的会话和 transcript 路径（`/clear`、`/resume` 会换）。换了返回 true。
-    fn rebind(&self, id: &str, st: &mut State, ev: &Value) -> bool {
+    fn rebind(&self, inst: &Inst, st: &mut State, ev: &Value) -> bool {
         let (Some(sid), Some(path)) = (ev["session_id"].as_str(), ev["transcript_path"].as_str()) else { return false };
         let path = PathBuf::from(path);
-        if !valid_transcript_path(&path) {
+        if !inst.agent.valid_transcript(&path) {
             tracing::warn!(path = %path.display(), "hook 带来的 transcript 路径不对，忽略");
             return false;
         }
@@ -366,7 +368,7 @@ impl Chat {
         if st.binding.as_ref() == Some(&b) {
             return false;
         }
-        let _ = self.store.set(&binding_key(id), &b);
+        let _ = self.store.set(&binding_key(&inst.id), &b);
         st.binding = Some(b);
         st.version = None;
         true
@@ -385,7 +387,8 @@ impl Chat {
         {
             let mut st = lock(&inst.st);
             Self::drop_pending(&mut st);
-            st.pending = Some(Pending { id, at: Instant::now(), tool, input: ev["tool_input"].clone(), suggestions: ev["permission_suggestions"].clone(), tx: Some(tx) });
+            let kind = inst.agent.pending_kind(&tool);
+            st.pending = Some(Pending { id, at: Instant::now(), tool, kind, input: ev["tool_input"].clone(), suggestions: ev["permission_suggestions"].clone(), tx: Some(tx) });
             st.phase = Phase::Approval;
             st.reason = None;
             Self::emit_status(inst, &st);
@@ -409,11 +412,11 @@ impl Chat {
         let mut tr = inst.tr.lock().await;
         let fresh = tr.as_ref().is_none_or(|t| t.path() != path);
         if fresh {
-            *tr = Some(Transcript::new(path));
+            *tr = Some(inst.agent.open_transcript(path));
         }
         let t = tr.as_mut().expect("transcript");
         let change = tokio::task::block_in_place(|| t.poll());
-        let (version, stats) = (t.version.clone(), t.stats);
+        let (version, stats) = (t.version(), t.stats());
         drop(tr);
         {
             let mut st = lock(&inst.st);
@@ -446,7 +449,7 @@ impl Chat {
             None => (0, vec![]),
         };
         drop(tr);
-        let status = Self::status_of(&lock(&inst.st));
+        let status = Self::status_of(&inst, &lock(&inst.st));
         Ok(json!({ "status": status, "total": total, "start": total - items.len(), "items": items }))
     }
 
@@ -509,7 +512,7 @@ impl Chat {
             Some(p) if !is_shell(&p.command) => self.instances.screen(&inst.id).await,
             _ => None,
         };
-        let screen = capture.as_deref().map(screen::classify);
+        let screen = capture.as_deref().map(|c| inst.agent.classify(c));
         let mut st = lock(&inst.st);
         let quiet = st.last_hook.is_none_or(|t| t.elapsed() >= QUIET);
         match (&pane, screen) {
@@ -544,7 +547,7 @@ impl Chat {
                 }
                 // 运行中：把屏幕上正在输出的内容推给界面（transcript 要等整段写完才有）
                 if st.phase == Phase::Running {
-                    let live = capture.as_deref().map(screen::live).unwrap_or_default();
+                    let live = capture.as_deref().map(|c| inst.agent.live(c)).unwrap_or_default();
                     if live != st.live {
                         st.live = live;
                         Self::emit_status(inst, &st);
@@ -558,14 +561,14 @@ impl Chat {
     pub fn brief(&self, id: &str) -> Option<Value> {
         let inst = lock(&self.insts).get(id).cloned()?;
         let st = lock(&inst.st);
-        Some(json!({ "phase": st.phase, "pending": st.pending.as_ref().map(|p| p.kind()) }))
+        Some(json!({ "phase": st.phase, "pending": st.pending.as_ref().map(|p| p.kind) }))
     }
 
     /// 输入 / 时提示的自定义命令和技能
     pub fn commands(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
-        Ok(json!({ "items": commands::scan(Path::new(&row.workdir)) }))
+        Ok(json!({ "items": self.inst(id).agent.commands(Path::new(&row.workdir)) }))
     }
 
     /// 子代理（Task / Agent 工具）自己的步骤。`agent`：工具结果里的 agentId；还没有结果时用 `tool`（工具调用 id）
@@ -625,7 +628,7 @@ impl Chat {
         // 刚启动时 SessionStart 比输入框先到，多看几次。
         let mut ready = false;
         for _ in 0..10 {
-            if !matches!(self.instances.screen(id).await.map(|s| screen::classify(&s)), Some(Screen::Modal)) {
+            if !matches!(self.instances.screen(id).await.map(|s| inst.agent.classify(&s)), Some(Screen::Modal)) {
                 ready = true;
                 break;
             }
@@ -656,7 +659,7 @@ impl Chat {
         }
         // 没收到：文字还在输入框里就再按一次回车（TUI 刚启动、刚结束一轮时偶尔会吞掉回车）
         let first: String = text.lines().next().unwrap_or("").chars().take(20).collect();
-        let still_there = matches!(self.instances.screen(id).await.map(|s| screen::classify(&s)), Some(Screen::Input { text: t, .. }) if !first.is_empty() && t.contains(&first));
+        let still_there = matches!(self.instances.screen(id).await.map(|s| inst.agent.classify(&s)), Some(Screen::Input { text: t, .. }) if !first.is_empty() && t.contains(&first));
         if still_there {
             self.instances.send_keys(id, &["Enter"]).await?;
             if tokio::time::timeout(DELIVERY_WAIT, prompts.changed()).await.is_ok() {
@@ -697,41 +700,13 @@ impl Chat {
         let inst = self.inst(id);
         let mut st = lock(&inst.st);
         let Some(p) = st.pending.as_mut().filter(|p| p.id == req.id) else { return Err(LocalError::new("CHAT_STALE")) };
-        let decision = match req.decision.as_str() {
-            "allow" => json!({ "behavior": "allow" }),
-            "allow_session" => {
-                let mut rule = json!({ "toolName": p.tool });
-                if let Some(cmd) = p.input["command"].as_str() {
-                    rule["ruleContent"] = json!(cmd);
-                }
-                json!({ "behavior": "allow", "updatedPermissions": [{ "type": "addRules", "rules": [rule], "behavior": "allow", "destination": "session" }] })
-            }
-            // 只回传“允许访问这个目录”那一条建议：建议里可能还有 setMode，会切换权限模式
-            "allow_dirs" => {
-                let dirs: Vec<Value> = p.suggestions.as_array().map(|a| a.iter().filter(|s| s["type"] == "addDirectories").cloned().collect()).unwrap_or_default();
-                if dirs.is_empty() {
-                    return Err(LocalError::invalid("decision", "invalid"));
-                }
-                json!({ "behavior": "allow", "updatedPermissions": dirs })
-            }
-            "deny" => {
-                let msg = req.message.as_deref().map(str::trim).filter(|m| !m.is_empty()).unwrap_or("The user denied this in the Looklook chat view.");
-                json!({ "behavior": "deny", "message": msg.chars().take(2000).collect::<String>() })
-            }
-            "answer" if p.kind() == "question" => {
-                let answers = req.answers.as_ref().filter(|a| a.is_object()).ok_or_else(|| LocalError::invalid("answers", "required"))?;
-                let mut input = p.input.clone();
-                input["answers"] = answers.clone();
-                json!({ "behavior": "allow", "updatedInput": input })
-            }
-            "terminal" => {
-                p.resolve(String::new());
-                st.pending = None;
-                Self::set_phase(&inst, &mut st, Phase::Tui, None);
-                return Ok(());
-            }
-            _ => return Err(LocalError::invalid("decision", "invalid")),
-        };
+        if req.decision == "terminal" {
+            p.resolve(String::new());
+            st.pending = None;
+            Self::set_phase(&inst, &mut st, Phase::Tui, None);
+            return Ok(());
+        }
+        let decision = inst.agent.decision(&PendingView { tool: &p.tool, input: &p.input, suggestions: &p.suggestions }, p.kind, req)?;
         p.resolve(json!({ "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": decision } }).to_string());
         st.pending = None;
         Self::set_phase(&inst, &mut st, Phase::Running, None);
@@ -741,15 +716,11 @@ impl Chat {
     /// 计划审批：hook 批准不了（实测），只能在 TUI 的确认框里按数字键。先抓屏核对确认框还在、选项和预期一致。
     pub async fn plan(&self, id: &str, choice: u8) -> Result<(), LocalError> {
         self.require(id)?;
-        let expect = match choice {
-            1 => "1. Yes",
-            2 => "2. Yes",
-            _ => return Err(LocalError::invalid("choice", "invalid")),
-        };
+        let inst = self.inst(id);
+        let Some((markers, expect)) = inst.agent.plan_check(choice) else { return Err(LocalError::invalid("choice", "invalid")) };
         let shown = self.instances.screen(id).await.unwrap_or_default();
         let plain = shown.lines().map(screen_plain).collect::<Vec<_>>().join("\n");
-        if !(plain.contains("ready to execute") || plain.contains("Would you like to proceed")) || !plain.contains(expect) {
-            let inst = self.inst(id);
+        if !markers.iter().any(|m| plain.contains(m)) || !plain.contains(expect) {
             let mut st = lock(&inst.st);
             Self::set_phase(&inst, &mut st, Phase::Tui, None);
             return Err(LocalError::new("CHAT_SCREEN_CHANGED"));
@@ -806,14 +777,6 @@ fn find_subagent(dir: &Path, prompt: &str) -> Option<PathBuf> {
     })
 }
 
-/// transcript 只能是 `…/projects/<项目>/<session>.jsonl`：防止借伪造的 hook 读任意文件（hook 本身还要令牌）。
-fn valid_transcript_path(p: &Path) -> bool {
-    p.is_absolute()
-        && p.extension().is_some_and(|e| e == "jsonl")
-        && p.parent().and_then(|d| d.parent()).and_then(|d| d.file_name()).is_some_and(|n| n == "projects")
-        && !p.components().any(|c| matches!(c, std::path::Component::ParentDir))
-}
-
 /// 面板前台是 shell：claude 没在运行。
 fn is_shell(command: &str) -> bool {
     let name = command.rsplit(['/', '\\']).next().unwrap_or("").trim_start_matches('-').to_ascii_lowercase();
@@ -854,14 +817,6 @@ mod tests {
         assert_eq!(find_subagent(d.path(), "查一下 B").unwrap().file_name().unwrap(), "agent-bbb.jsonl");
         assert!(find_subagent(d.path(), "不存在").is_none());
         assert!(find_subagent(d.path(), "").is_none());
-    }
-
-    #[test]
-    fn transcript_paths() {
-        assert!(valid_transcript_path(Path::new("/root/.claude/projects/-tmp-proj/96e9b84c.jsonl")));
-        assert!(!valid_transcript_path(Path::new("/etc/passwd")));
-        assert!(!valid_transcript_path(Path::new("/root/.claude/projects/x/../../../etc/a.jsonl")));
-        assert!(!valid_transcript_path(Path::new("relative/projects/x/a.jsonl")));
     }
 
     /// 端到端：真的 tmux + 真的 Claude Code。要登录好的 claude，并消耗少量额度，默认不跑：
