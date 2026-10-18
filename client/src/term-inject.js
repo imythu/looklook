@@ -361,6 +361,19 @@
     el.style.touchAction = 'pinch-zoom';
     var start = null, scrolling = false, lastY = 0, lastT = 0, vel = 0, acc = 0, x = 0, y = 0, fling = 0, hold = 0;
     var moved = 0, scrolledAt = 0;
+    // 手指在浏览器的“点按容差”范围内移动时，Chrome 不发 touchmove，整个手势算作一次点按（随后补发 mousedown / click，
+    // xterm 就聚焦输入框、弹出键盘）。pointermove 照常发，而且在 touchend 之前到：用它判断手指到底动没动。
+    var pdown = null, pmoved = 0;
+    el.addEventListener('pointerdown', function (e) {
+      if (e.pointerType !== 'touch' || !e.isPrimary) return;
+      pdown = { x: e.clientX, y: e.clientY };
+      pmoved = 0;
+    }, { capture: true, passive: true });
+    el.addEventListener('pointermove', function (e) {
+      if (!pdown || e.pointerType !== 'touch' || !e.isPrimary) return;
+      pmoved = Math.max(pmoved, Math.abs(e.clientX - pdown.x) + Math.abs(e.clientY - pdown.y));
+      if (pmoved > 8) cancelHold();
+    }, { capture: true, passive: true });
     // 长按（不动 0.5 秒）：嵌在管理台里时打开“选择文字”。xterm.js 在手机上选不了字。
     // 滑动中途按住不动（让惯性停下来、或停一下再接着滑）不算长按，否则一滑就弹出“选择文字”。
     function cancelHold() { clearTimeout(hold); hold = 0; }
@@ -447,8 +460,10 @@
       var was = scrolling;
       start = null; scrolling = false;
       // 手指动过（哪怕没够滑动的距离）就不算点击：不让浏览器再补发 mousedown / mouseup / click。
-      // 否则两下短促的滑动会被当成双击，tmux 选中一个词并复制（剪贴板被改掉，还弹出“已复制”）。
-      if (moved > 4 && e.cancelable) e.preventDefault();
+      // 否则一次短促的滑动会聚焦终端、弹出键盘；两下会被当成双击，tmux 选中一个词并复制（剪贴板被改掉，还弹出“已复制”）。
+      var swiped = moved > 4 || pmoved > 10;
+      pdown = null;
+      if (swiped && e.cancelable) e.preventDefault();
       if (!was) return;
       e.stopPropagation();
       // 停顿后才松手不算甩动

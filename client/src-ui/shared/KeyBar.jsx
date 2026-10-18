@@ -121,6 +121,18 @@ export function useTouchTerminal(frame, enabled) {
   });
 
   const call = (open) => frame.current?.contentWindow?.looklookIme?.(open);
+  // 键盘收着、终端输入框却还聚焦着（安卓返回键收起键盘）时，在管理台上点任何地方（底部标签、顶栏、按键条），
+  // 浏览器都会把键盘重新弹出来。按下时先让终端失焦；要弹键盘的按钮（⌨、Ctrl / Alt）会在点击里自己再叫出来。
+  const focusedRef = useRef(false);
+  focusedRef.current = focused;
+  useEffect(() => {
+    if (!enabled) return undefined;
+    const down = () => {
+      if (focusedRef.current && !upRef.current) call(false);
+    };
+    document.addEventListener('pointerdown', down, true);
+    return () => document.removeEventListener('pointerdown', down, true);
+  }, [enabled]);
   return {
     style: vp ? { top: vp.top, height: vp.height, bottom: 'auto' } : undefined,
     ime: { focused, up, show: () => call(true), hide: () => call(false) },

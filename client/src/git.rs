@@ -1,10 +1,8 @@
-//! 终端页的 “Git” 标签：终端当前目录所在仓库的状态、改动对比、提交历史，以及暂存 / 取消暂存 / 提交 / 拉取 / 推送。
+//! 终端页的 “Git” 标签（只读）：终端当前目录所在仓库的状态、改动对比、提交历史。
+//! 暂存、提交、拉取、推送都交给终端（AI 编程助手或 git 命令），这里不改动仓库。
 //!
 //! - 直接调用这台电脑上的 `git`（参数列表，不经过 shell）；没装 git → `GIT_MISSING`，不是仓库 → `{repo: false}`；
-//! - 读操作加 `--no-optional-locks`，不和终端里正在跑的 git 抢锁；
-//! - 远程操作（fetch / pull / push）不允许交互：`GIT_TERMINAL_PROMPT=0`、ssh `BatchMode=yes`，最多 60 秒；
-//!   需要输入密码的仓库会失败并提示到终端里操作；
-//! - 不提供丢弃改动这类不可撤销的操作。
+//! - 读操作加 `--no-optional-locks`，不和终端里正在跑的 git 抢锁。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -19,7 +17,6 @@ type R<T> = Result<T, LocalError>;
 /// 一次对比最多返回这么多字节（再多界面也看不过来，提示到终端里看）。
 pub const DIFF_MAX: usize = 512 * 1024;
 const LOCAL_TIMEOUT: Duration = Duration::from_secs(15);
-const REMOTE_TIMEOUT: Duration = Duration::from_secs(60);
 const LOG_LIMIT: usize = 50;
 
 fn git_bin() -> R<String> {
@@ -27,14 +24,11 @@ fn git_bin() -> R<String> {
 }
 
 /// 在 `dir` 里运行 git，超时就结束它。返回完整输出（不检查退出码）。
-fn run(dir: &Path, args: &[&str], timeout: Duration, remote: bool) -> R<Output> {
+fn run(dir: &Path, args: &[&str], timeout: Duration) -> R<Output> {
     let mut cmd = Command::new(git_bin()?);
     cmd.arg("-C").arg(dir).args(["-c", "core.quotepath=false", "-c", "color.ui=false"]).args(args);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C").env("GIT_OPTIONAL_LOCKS", "0");
-    if remote {
-        cmd.env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes -o ConnectTimeout=15").env("GCM_INTERACTIVE", "never");
-    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -74,8 +68,8 @@ fn run(dir: &Path, args: &[&str], timeout: Duration, remote: bool) -> R<Output> 
 }
 
 /// 运行并要求成功；失败时带上 git 的错误信息（最后几行）。
-fn run_ok(dir: &Path, args: &[&str], timeout: Duration, remote: bool) -> R<String> {
-    let out = run(dir, args, timeout, remote)?;
+fn run_ok(dir: &Path, args: &[&str], timeout: Duration) -> R<String> {
+    let out = run(dir, args, timeout)?;
     if !out.status.success() {
         return Err(failed(&out));
     }
@@ -98,7 +92,7 @@ fn toplevel(dir: &Path) -> R<Option<PathBuf>> {
     if !dir.is_dir() {
         return Err(LocalError::not_found().with("path", dir.display().to_string()));
     }
-    let out = run(dir, &["rev-parse", "--show-toplevel"], LOCAL_TIMEOUT, false)?;
+    let out = run(dir, &["rev-parse", "--show-toplevel"], LOCAL_TIMEOUT)?;
     if !out.status.success() {
         return Ok(None);
     }
@@ -248,13 +242,13 @@ fn parse_log(raw: &str) -> Vec<Commit> {
 /// `GET /api/instances/{id}/git?path=`：`dir` 所在仓库的状态与最近的提交。
 pub fn status(dir: &Path) -> R<Status> {
     let Some(root) = toplevel(dir)? else { return Ok(Status::default()) };
-    let raw = run_ok(&root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], LOCAL_TIMEOUT, false)?;
+    let raw = run_ok(&root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], LOCAL_TIMEOUT)?;
     let mut s = parse_status(&raw);
     s.root = Some(root.display().to_string());
     // 还没有任何提交时 log 会失败，当作没有历史
     if s.head.is_some() {
         let n = format!("-n{LOG_LIMIT}");
-        let log = run_ok(&root, &["log", &n, "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%D%x1e"], LOCAL_TIMEOUT, false)?;
+        let log = run_ok(&root, &["log", &n, "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1f%D%x1e"], LOCAL_TIMEOUT)?;
         s.commits = parse_log(&log);
     }
     Ok(s)
@@ -292,29 +286,26 @@ fn repo_path(file: &str) -> R<&str> {
     Ok(file)
 }
 
-/// 一个文件的改动：`staged` 为暂存区对比 HEAD，否则工作区对比暂存区；未跟踪的文件显示为整份新增。
-pub fn diff_file(dir: &Path, file: &str, staged: bool, untracked: bool) -> R<Diff> {
+/// 一个文件相对上次提交（HEAD）的全部改动（暂存与否都算）；未跟踪的文件显示为整份新增。
+pub fn diff_file(dir: &Path, file: &str, untracked: bool) -> R<Diff> {
     let root = repo(dir)?;
     let file = repo_path(file)?;
+    let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let out = if untracked {
         // --no-index 有差异时退出码是 1
-        let null = if cfg!(windows) { "NUL" } else { "/dev/null" };
-        let out = run(&root, &["diff", "--no-index", "--no-ext-diff", "--", null, file], LOCAL_TIMEOUT, false)?;
+        let out = run(&root, &["diff", "--no-index", "--no-ext-diff", "--", null, file], LOCAL_TIMEOUT)?;
         if !matches!(out.status.code(), Some(0 | 1)) {
             return Err(failed(&out));
         }
         out.stdout
     } else {
-        let mut args = vec!["diff", "--no-ext-diff", "-M"];
-        if staged {
-            args.push("--cached");
-        }
-        args.extend(["--", file]);
-        let out = run(&root, &args, LOCAL_TIMEOUT, false)?;
-        if !out.status.success() {
-            return Err(failed(&out));
-        }
-        out.stdout
+        // 还没有任何提交：和空目录树比
+        let base = if run(&root, &["rev-parse", "--verify", "-q", "HEAD"], LOCAL_TIMEOUT)?.status.success() {
+            "HEAD".to_string()
+        } else {
+            run_ok(&root, &["hash-object", "-t", "tree", null], LOCAL_TIMEOUT)?.trim().to_string()
+        };
+        run_ok(&root, &["diff", "--no-ext-diff", "-M", &base, "--", file], LOCAL_TIMEOUT)?.into_bytes()
     };
     Ok(cap(&out))
 }
@@ -325,62 +316,11 @@ pub fn show(dir: &Path, hash: &str) -> R<Diff> {
         return Err(LocalError::invalid("commit", "hash"));
     }
     let root = repo(dir)?;
-    let out = run(&root, &["show", "--no-ext-diff", "-M", "--stat", "--patch", "--format=commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%n%B", hash], LOCAL_TIMEOUT, false)?;
+    let out = run(&root, &["show", "--no-ext-diff", "-M", "--stat", "--patch", "--format=commit %H%nAuthor: %an <%ae>%nDate:   %ad%n%n%B", hash], LOCAL_TIMEOUT)?;
     if !out.status.success() {
         return Err(failed(&out));
     }
     Ok(cap(&out.stdout))
-}
-
-// ---------------- 操作 ----------------
-
-/// 暂存 / 取消暂存。`files` 为空表示全部。
-pub fn stage(dir: &Path, files: &[String], on: bool) -> R<()> {
-    let root = repo(dir)?;
-    for f in files {
-        repo_path(f)?;
-    }
-    let mut args: Vec<&str> = if on { vec!["add", "-A"] } else { vec!["reset", "-q"] };
-    if !on && run(&root, &["rev-parse", "--verify", "-q", "HEAD"], LOCAL_TIMEOUT, false)?.status.code() != Some(0) {
-        // 还没有任何提交：没有 HEAD 可以 reset，改成从暂存区移除
-        args = vec!["rm", "-q", "--cached", "-r"];
-    }
-    args.push("--");
-    if files.is_empty() {
-        args.push(".");
-    } else {
-        args.extend(files.iter().map(String::as_str));
-    }
-    run_ok(&root, &args, LOCAL_TIMEOUT, false)?;
-    Ok(())
-}
-
-/// 提交暂存区。返回新提交的短哈希。
-pub fn commit(dir: &Path, message: &str) -> R<String> {
-    let root = repo(dir)?;
-    let msg = message.trim();
-    if msg.is_empty() {
-        return Err(LocalError::invalid("message", "required"));
-    }
-    run_ok(&root, &["commit", "-q", "-m", msg], LOCAL_TIMEOUT, false)?;
-    Ok(run_ok(&root, &["rev-parse", "--short", "HEAD"], LOCAL_TIMEOUT, false)?.trim().to_string())
-}
-
-/// fetch / pull（只快进）/ push。返回 git 的输出摘要。
-pub fn remote(dir: &Path, action: &str) -> R<String> {
-    let root = repo(dir)?;
-    let args: &[&str] = match action {
-        "fetch" => &["fetch", "--prune"],
-        "pull" => &["pull", "--ff-only"],
-        "push" => &["push"],
-        _ => return Err(LocalError::invalid("action", "enum")),
-    };
-    let out = run(&root, args, REMOTE_TIMEOUT, true)?;
-    if !out.status.success() {
-        return Err(failed(&out));
-    }
-    let text = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
-    Ok(text.trim().lines().rev().take(6).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n"))
 }
 
 #[cfg(test)]
@@ -427,7 +367,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         assert_eq!(status(dir).unwrap(), Status::default(), "不是仓库");
-        let git = |args: &[&str]| run_ok(dir, args, LOCAL_TIMEOUT, false).unwrap();
+        let git = |args: &[&str]| run_ok(dir, args, LOCAL_TIMEOUT).unwrap();
         git(&["init", "-q", "-b", "main"]);
         git(&["config", "user.email", "t@example.com"]);
         git(&["config", "user.name", "Tester"]);
@@ -437,25 +377,22 @@ mod tests {
         let s = status(&dir.join("sub")).unwrap();
         assert!(s.repo && s.head.is_none() && s.commits.is_empty());
         assert_eq!(s.files[0].index, '?');
-        let d = diff_file(dir, "sub/a.txt", false, true).unwrap();
+        let d = diff_file(dir, "sub/a.txt", true).unwrap();
         assert!(d.text.contains("+one"), "{}", d.text);
-        stage(dir, &["sub/a.txt".into()], true).unwrap();
-        stage(dir, &["sub/a.txt".into()], false).unwrap();
-        assert_eq!(status(dir).unwrap().files[0].index, '?', "没有提交时也能取消暂存");
-        stage(dir, &[], true).unwrap();
+        git(&["add", "-A"]);
         assert_eq!(status(dir).unwrap().files[0].index, 'A');
-        let short = commit(dir, "first commit").unwrap();
-        assert!(!short.is_empty());
+        assert!(diff_file(dir, "sub/a.txt", false).unwrap().text.contains("+one"), "还没有提交时和空目录树比");
+        git(&["commit", "-q", "-m", "first commit"]);
         std::fs::write(dir.join("sub/a.txt"), "one\ntwo\n").unwrap();
         let s = status(dir).unwrap();
         assert_eq!(s.branch.as_deref(), Some("main"));
         assert_eq!(s.commits.len(), 1);
         assert_eq!(s.commits[0].subject, "first commit");
         assert_eq!((s.files[0].index, s.files[0].worktree), ('.', 'M'));
-        assert!(diff_file(dir, "sub/a.txt", false, false).unwrap().text.contains("+two"));
+        assert!(diff_file(dir, "sub/a.txt", false).unwrap().text.contains("+two"));
+        git(&["add", "-A"]);
+        assert!(diff_file(dir, "sub/a.txt", false).unwrap().text.contains("+two"), "暂存了也照样显示");
         assert!(show(dir, &s.commits[0].hash).unwrap().text.contains("first commit"));
-        assert_eq!(commit(dir, "  ").unwrap_err().code, "VALIDATION_FAILED");
         assert_eq!(show(dir, "zz; rm -rf /").unwrap_err().code, "VALIDATION_FAILED");
-        assert_eq!(remote(dir, "push").unwrap_err().code, "GIT_FAILED", "没有远程仓库");
     }
 }

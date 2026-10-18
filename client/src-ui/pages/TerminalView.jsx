@@ -181,7 +181,7 @@ function TermTabBar({ tab, onChange, chat }) {
   return (
     <nav className="term-tabbar" role="tablist" aria-label={t('fb.tabs')}>
       {tabsFor(chat).map(([key, Icon, label]) => (
-        <button key={key} type="button" role="tab" aria-selected={tab === key} onPointerDown={keepFocus} onClick={() => onChange(key)}>
+        <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => onChange(key)}>
           <Icon size={20} aria-hidden="true" />
           <span>{t(label)}</span>
         </button>
