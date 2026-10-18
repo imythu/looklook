@@ -115,6 +115,16 @@ Codex 只运行“信任过”的 hooks。三个办法：
 
 注意：B 即使今天能用，本质上也是从命令行绕过 Codex 的信任机制，Codex 很可能把它当成漏洞修掉。所以就算 B 能行，也要同时实现 C 作为退路，并在 `codex_compat.rs` 里按版本判断 B 还能不能用。看看是远程控制工具，A 不能默认打开。
 
+**定下来的做法（S1 实测，§11.1）：用 B，C 作为退路。**
+
+1. 启动前算出看看这几条 hook 的 key 和哈希：起一个 `codex app-server`（`CODEX_HOME` 指向看看自己的临时目录，不读用户配置、不用登录），带上和启动时**完全相同**的 `-c hooks.<事件>=…`，调 `hooks/list`，取每条的 `key` 和 `currentHash`。哈希算法是 Codex 内部的，不自己实现。结果按“Codex 版本 + hooks 配置串”缓存，平时不用每次都起进程。
+2. 启动命令再加一个 `-c hooks.state={'<key>'={trusted_hash='<哈希>'},…}`：**整张表一次写**（key 里带 `.`，写成 `hooks.state."<key>".trusted_hash` 会被拆开、不生效）；key 和哈希都用 TOML 字面量字符串（单引号），key 里的反斜杠不用转义。
+3. 只信任这几条：key 是 `<session-flags>\config.toml:<事件>:<组>:<序号>`，哈希覆盖命令和 timeout，别处来的 hook（用户的、项目 `.codex/` 的、插件的）key 或哈希对不上，照样要用户自己确认。不写任何文件，不用 `--dangerously-bypass-hook-trust`。
+4. hook 命令保持稳定：令牌放在 `hook.json` 里，命令只有 `looklook.exe` 和 `hook.json` 的路径；看看的安装路径变了，哈希也变，第 1 步重新算即可（对用户无感）。
+5. 退路 C：Codex 改了规则、`hooks/list` 报出来不是 `trusted`（或者启动后 10 秒内没收到 SessionStart，而屏幕上是 “Hooks need review”），对话标签显示 `not_trusted` 卡片，引导用户去终端里确认；同时诊断信息里记下 Codex 版本，方便更新 `codex_compat.rs`。
+
+另外两个实现细节（都是实测踩到的）：**Windows 上要直接调 `codex.exe`，不能经过 `codex.cmd`**——信任值里的 `<session-flags>` 带 `<` `>`，过批处理会被 cmd 当成重定向（“系统找不到指定的文件”）；npm 装的 `codex.exe` 在 `node_modules/@openai/codex/node_modules/@openai/codex-win32-x64/vendor/<三元组>/bin/`。另外 `-c` 值里有双引号时，经 psmux 传给 PowerShell 会被吃掉，命令要按参数数组传或写进 `.ps1`。
+
 ### 4.4 启动类型和开关
 
 - `chat_ui` 开关从“只对 claude”放宽到 `claude | codex`（`instances.rs` 的 `chat_settings`、`TerminalView.jsx` 的 `hasChat`、`Terminals.jsx` 的 `canChat`）。
@@ -344,7 +354,7 @@ pub struct Patterns {
 | S12 | 哪些请求会走到 `PermissionRequest`：`guardian_approval` 默认开，会先自动审查一部分请求 | 默认配置下分别触发：沙箱外命令、写工作区外的文件、联网；看哪些被 guardian 直接处理、哪些到了 hook | 审批卡片什么时候出现；界面要不要显示“已被 Codex 自动审查放行” |
 | S13 | hook 的开销：每个 Pre/PostToolUse 都同步启动一次 `looklook.exe` | Windows（开着 Defender）上让 Codex 连续跑 50 条短命令，对比挂 hooks 和不挂的总用时 | 可以接受就照做；明显变慢就只挂必要的事件（PreToolUse / PostToolUse 改成异步或去掉，状态靠 rollout 补） |
 
-**S0、S1 任何一个不过，hooks 方案都不能上线**；S10 能行的话优先考虑 app-server。这三项放在最前面做。（S0、S10 已实测通过，见 §11.1；**建议第一版改走 app-server**，hooks 方案留作退路，S1 只在走 hooks 时才需要做。）
+**S0、S1 任何一个不过，hooks 方案都不能上线**；S10 能行的话优先考虑 app-server。这三项放在最前面做。（S0、S10 已实测通过，见 §11.1。**2026-10-18 决定：第一版默认走 hooks，接口和 Claude 对齐**（§3 的 `trait Agent`，核心和界面两边共用）；app-server 作为以后的选项（§12），S1 必须先做。）
 
 ### 11.1 实测结果（2026-10-18，Codex 0.159.3，Windows 11）
 
@@ -383,6 +393,21 @@ pub struct Patterns {
 
 顺带发现：在 TUI 的审批框里按 Esc 会**中断整轮**（“Conversation interrupted”），而且**不触发 `Stop` hook**——只靠 hooks 的话，这种中断要靠抓屏或 rollout 的 `turn_aborted` 才知道（§5 的“中断”一行）。app-server 有 `turn/completed`，不存在这个问题。
 
+**S1：通过，可以只信任看看自己的 hook，不写文件、不用 bypass。**
+
+临时 `CODEX_HOME` 里起 `codex app-server`，`-c` 注入一条和看看同样形式的 hook，用 `hooks/list` 看信任状态：
+
+| 做法 | 结果 |
+|---|---|
+| 只用 `-c` 注入 hook | `untrusted`；来源 `sessionFlags`，key 是 `C:\<session-flags>\config.toml:permission_request:0:0`，哈希 `sha256:…` |
+| 再加 `-c hooks.state={'<key>'={trusted_hash='<哈希>'}}`（整张表） | **`trusted`**，只对这个进程有效 |
+| 再加 `-c hooks.state."<key>".trusted_hash=…`（点号路径） | `untrusted`——key 里的 `.config.toml` 被当成路径拆开了 |
+| `config/batchWrite`，`keyPath: "hooks.state"`、值是整张表 | `trusted`，写进了 `config.toml`，重启后仍然有效（方案 ③ 可行，但要写用户配置） |
+| 信任之后把命令里的路径改掉 | `modified` |
+| hook.json 路径变 / timeout 变 | 哈希都变；换工作目录哈希不变 |
+
+端到端：交互式 TUI **不带** `--dangerously-bypass-hook-trust`，只加上面的 `-c hooks.state={…}`，没有出现 “Hooks need review”，PermissionRequest 等 hook 正常运行，hook 答允许后文件建出来了。结论写进 §4.3。
+
 **hooks 方案的实测副产品**（S10 也会碰到的不算）：
 
 - `codex exec` 会把审批策略强制设成 never（`-c approval_policy=…` 覆盖不了），`PermissionRequest` 只能在交互式 TUI 里测；
@@ -395,7 +420,7 @@ Codex 有 `codex app-server`（JSON-RPC，`thread/start`、`turn/start`、逐条
 
 没有选它作为第一版，因为：接口标着 experimental，变动比 hooks 和 rollout 更频繁；两个客户端同时连一个会话时审批发给谁、谁先答，还没有文档；还要管理 app-server 进程的生命周期。等 hooks 方案稳定后，可以把“逐字输出”这一项单独用 app-server 做，其余不变。
 
-**S10 已经实测通过（§11.1）**，下面这段是当时的分析，结论成立：hooks 方案实际上是 hooks + rollout + 抓屏 + 模拟打字四样东西，其中三样是 Codex 的内部格式，Codex 两周就从 0.159 升到 0.163，四样一起跟版本变，并不比 app-server 稳。而 0.159.3 里 `tui_app_server` 已经默认生效，TUI 本身可能就是 app-server 的一个客户端。如果 S10 证明两个客户端可以连同一个会话，app-server 能一次解决：结构化的条目（不用解析 code mode 的 JS）、逐字输出（不用抓屏）、审批请求（不用 hook 信任）、发消息（不用模拟打字）。所以动手前先花一两天做 S10，再决定第一版走哪条路。
+**S10 已经实测通过（§11.1），但第一版仍决定走 hooks**（和 Claude 同一套接口和做法，见 §11 末尾），app-server 留到以后。下面这段是当时的分析，供以后评估时参考：hooks 方案实际上是 hooks + rollout + 抓屏 + 模拟打字四样东西，其中三样是 Codex 的内部格式，Codex 两周就从 0.159 升到 0.163，四样一起跟版本变，并不比 app-server 稳。而 0.159.3 里 `tui_app_server` 已经默认生效，TUI 本身可能就是 app-server 的一个客户端。如果 S10 证明两个客户端可以连同一个会话，app-server 能一次解决：结构化的条目（不用解析 code mode 的 JS）、逐字输出（不用抓屏）、审批请求（不用 hook 信任）、发消息（不用模拟打字）。所以动手前先花一两天做 S10，再决定第一版走哪条路。
 
 ## 13. 分期
 
