@@ -9,6 +9,10 @@
 //! 审批时 TUI 也同时弹出了自己的确认框，两边谁先回答算谁的（实测）；任何异常都交给 TUI，不会自动放行。
 
 pub mod agent;
+pub mod codex_compat;
+pub mod codex_launch;
+pub mod codex_rollout;
+pub mod codex_screen;
 pub mod commands;
 pub mod hooks;
 pub mod screen;
@@ -106,6 +110,8 @@ struct State {
     stats: transcript::Stats,
     /// 运行中屏幕上的状态行和正在输出的那段回复（transcript 里还没有）
     live: screen::Live,
+    /// TUI 上是界面能直接回答的对话框（例如信任文件夹，[`Agent::dialog`]）
+    dialog: Option<Value>,
 }
 
 /// 推给界面的事件
@@ -195,6 +201,7 @@ impl Chat {
                         version: None,
                         stats: Default::default(),
                         live: Default::default(),
+                        dialog: None,
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
@@ -229,6 +236,7 @@ impl Chat {
     fn status_of(inst: &Inst, st: &State) -> Value {
         json!({
             "agent": inst.agent.launch(),
+            "caps": inst.agent.caps(),
             "phase": st.phase,
             "reason": st.reason,
             "tool": st.tool,
@@ -237,6 +245,8 @@ impl Chat {
             "error": st.error,
             "session_id": st.binding.as_ref().map(|b| &b.session_id),
             "version": st.version,
+            "untested_version": st.version.as_deref().is_some_and(|v| inst.agent.untested(v)),
+            "dialog": st.dialog,
             "stats": st.stats,
             "activity": st.live.activity,
             "preview": st.live.text,
@@ -262,6 +272,9 @@ impl Chat {
                 st.tool = None;
                 st.live = Default::default();
             }
+            if phase != Phase::Tui {
+                st.dialog = None;
+            }
             Self::emit_status(inst, st);
         }
     }
@@ -285,7 +298,7 @@ impl Chat {
             if let Some(m) = ev["model"].as_str() {
                 st.model = Some(m.to_string());
             }
-            let rebound = self.rebind(&inst, &mut st, &ev);
+            let rebound = self.rebind(&inst, &mut st, &ev, &name);
             match name.as_str() {
                 "SessionStart" => {
                     // 自动压缩发生在一轮当中，不能改成空闲
@@ -318,7 +331,8 @@ impl Chat {
                     }
                     Self::set_phase(&inst, &mut st, Phase::Running, None);
                 }
-                "Stop" => {
+                // Codex 有 Interrupt（Esc 中断）；Claude Code 没有，靠抓屏
+                "Stop" | "Interrupt" => {
                     Self::drop_pending(&mut st);
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                 }
@@ -357,8 +371,11 @@ impl Chat {
     }
 
     /// hook 带来的会话和 transcript 路径（`/clear`、`/resume` 会换）。换了返回 true。
-    fn rebind(&self, inst: &Inst, st: &mut State, ev: &Value) -> bool {
+    fn rebind(&self, inst: &Inst, st: &mut State, ev: &Value, event: &str) -> bool {
         let (Some(sid), Some(path)) = (ev["session_id"].as_str(), ev["transcript_path"].as_str()) else { return false };
+        if st.binding.is_some() && !inst.agent.rebinds_on(event) {
+            return false;
+        }
         let path = PathBuf::from(path);
         if !inst.agent.valid_transcript(&path) {
             tracing::warn!(path = %path.display(), "hook 带来的 transcript 路径不对，忽略");
@@ -508,10 +525,13 @@ impl Chat {
     /// 抓屏纠正状态：hooks 覆盖不到信任对话框、选择器、Esc 中断，也看不出 claude 退出了（docs/CLAUDE_UI.md §4.3）。
     async fn check_screen(&self, inst: &Inst) {
         let pane = self.instances.pane(&inst.id).await;
-        let capture = match &pane {
-            Some(p) if !is_shell(&p.command) => self.instances.screen(&inst.id).await,
-            _ => None,
+        let running = pane.as_ref().and_then(|p| agent_state(inst.agent, p));
+        let capture = match running {
+            Some(_) => self.instances.screen(&inst.id).await,
+            None => None,
         };
+        // 在运行、但不是带着看看的 hooks 启动的（开启对话界面之前就开着的、在终端里手动开的）
+        let unhooked = running == Some(Some(false));
         let screen = capture.as_deref().map(|c| inst.agent.classify(c));
         let mut st = lock(&inst.st);
         let quiet = st.last_hook.is_none_or(|t| t.elapsed() >= QUIET);
@@ -528,8 +548,12 @@ impl Chat {
             }
             (Some(_), Some(scr)) => {
                 let since = *st.claude_since.get_or_insert_with(Instant::now);
-                let attached = st.binding.is_some() || since.elapsed() < ATTACH_GRACE;
+                let attached = !unhooked && (st.binding.is_some() || since.elapsed() < ATTACH_GRACE || inst.agent.session_starts_on_prompt());
                 let pending_age = st.pending.as_ref().map(|p| p.at.elapsed());
+                // 先认出对话框，切到 Tui 时和状态一起推给界面（界面看到能直接回答的对话框就不跳到终端）
+                if scr == Screen::Modal {
+                    st.dialog = capture.as_deref().and_then(|c| inst.agent.dialog(c));
+                }
                 match (st.phase, scr) {
                     // 确认框已经不在了（在终端里按了 Esc 或选了“否”：这两种都没有 hook）
                     (Phase::Approval, Screen::Input { busy, .. }) if pending_age.is_some_and(|a| a >= QUIET) => {
@@ -544,6 +568,14 @@ impl Chat {
                     (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),
                     (Phase::Running, Screen::Input { .. }) => {}
                     (_, Screen::Input { busy, .. }) => Self::set_phase(inst, &mut st, if busy { Phase::Running } else { Phase::Idle }, None),
+                }
+                // 界面能直接回答的对话框（信任文件夹）
+                if st.phase == Phase::Tui {
+                    let dialog = capture.as_deref().and_then(|c| inst.agent.dialog(c));
+                    if dialog != st.dialog {
+                        st.dialog = dialog;
+                        Self::emit_status(inst, &st);
+                    }
                 }
                 // 运行中：把屏幕上正在输出的内容推给界面（transcript 要等整段写完才有）
                 if st.phase == Phase::Running {
@@ -622,7 +654,7 @@ impl Chat {
                 Phase::Tui | Phase::Approval => return Err(LocalError::new("CHAT_BUSY")),
                 _ => {}
             }
-            st.binding.is_some()
+            st.binding.is_some() || inst.agent.session_starts_on_prompt()
         };
         // 确认输入框是普通输入框（选择器打开时打进去的字母会被当成快捷键）。
         // 刚启动时 SessionStart 比输入框先到，多看几次。
@@ -728,11 +760,24 @@ impl Chat {
         self.instances.send_keys(id, &[&choice.to_string()]).await
     }
 
+    /// 回答 TUI 上的对话框（[`Agent::dialog`]，例如信任文件夹）：先抓屏核对还是这个对话框、选中的是预期的选项，再按键。
+    pub async fn dialog(&self, id: &str, kind: &str) -> Result<(), LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        let shown = self.instances.screen(id).await.unwrap_or_default();
+        let Some(keys) = inst.agent.dialog_keys(&shown, kind) else {
+            return Err(LocalError::new("CHAT_SCREEN_CHANGED"));
+        };
+        self.instances.send_keys(id, keys).await?;
+        lock(&inst.st).last_hook = None;
+        Ok(())
+    }
+
     /// 面板里是 shell（claude 已退出，或是没带 hooks 启动后退出了）：以对话模式接着上次的会话启动。
     pub async fn relaunch(&self, id: &str) -> Result<(), LocalError> {
         self.require(id)?;
         let pane = self.instances.pane(id).await.ok_or_else(|| LocalError::new("CHAT_NOT_RUNNING"))?;
-        if !is_shell(&pane.command) {
+        if agent_state(self.inst(id).agent, &pane).is_some() {
             return Err(LocalError::new("CHAT_CLAUDE_RUNNING"));
         }
         let session = lock(&self.inst(id).st).binding.as_ref().map(|b| b.session_id.clone());
@@ -775,6 +820,47 @@ fn find_subagent(dir: &Path, prompt: &str) -> Option<PathBuf> {
         let text = content.as_str().map(String::from).or_else(|| content.as_array().and_then(|a| a.iter().find_map(|b| b["text"].as_str().map(String::from)))).unwrap_or_default();
         !head.is_empty() && text.starts_with(&head)
     })
+}
+
+/// 面板里的 AI 工具：没在运行时 None；在运行时 `Some(是不是带着看看的 hooks 启动的)`，看不出来为 `Some(None)`。
+///
+/// 一般看前台命令是不是 shell 就行；psmux（Windows）报的是最近启动的子进程，Codex 跑命令、跑 hook 时
+/// 会报成 `powershell`，所以有进程名的工具（[`Agent::process_names`]）再看面板进程底下有没有它，顺便看它的命令行参数。
+fn agent_state(agent: &dyn Agent, pane: &crate::instances::Pane) -> Option<Option<bool>> {
+    let names = agent.process_names();
+    if names.is_empty() {
+        return (!is_shell(&pane.command)).then_some(None);
+    }
+    match tokio::task::block_in_place(|| find_under(pane.pid, names)) {
+        Some(args) => Some(agent.launched_with_hooks(&args)),
+        None => (!is_shell(&pane.command)).then_some(None),
+    }
+}
+
+/// `root` 的子孙里叫这些名字的进程（不分大小写，不带 `.exe`）：返回它的命令行参数
+fn find_under(root: u32, names: &[&str]) -> Option<Vec<String>> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
+    let root = Pid::from_u32(root);
+    let pid = sys.processes().values().find_map(|p| {
+        let name = p.name().to_string_lossy().to_ascii_lowercase();
+        let name = name.strip_suffix(".exe").unwrap_or(&name);
+        if !names.contains(&name) {
+            return None;
+        }
+        let mut cur = p.parent();
+        for _ in 0..32 {
+            match cur {
+                Some(pid) if pid == root => return Some(p.pid()),
+                Some(pid) => cur = sys.process(pid).and_then(|x| x.parent()),
+                None => return None,
+            }
+        }
+        None
+    })?;
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+    Some(sys.process(pid).map(|p| p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect()).unwrap_or_default())
 }
 
 /// 面板前台是 shell：claude 没在运行。

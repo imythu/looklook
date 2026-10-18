@@ -32,9 +32,9 @@ pub const PORT_RANGE: (u16, u16) = (41000, 41999);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TMUX_SOCKET: &str = "looklook";
 const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "custom"];
-/// 有对话界面的启动类型。Codex 的对话界面（CODEX_UI.md）接好之后再把 "codex" 加进来；
+/// 有对话界面的启动类型（Claude Code：docs/CLAUDE_UI.md；Codex：CODEX_UI.md）；
 /// 前端 `src-ui/shared/chat.js` 的 `CHAT_LAUNCHES` 要一起改。
-pub const CHAT_LAUNCHES: &[&str] = &["claude"];
+pub const CHAT_LAUNCHES: &[&str] = &["claude", "codex"];
 
 fn has_chat(launch: &str) -> bool {
     CHAT_LAUNCHES.contains(&launch)
@@ -161,6 +161,24 @@ fn opts_key(id: &str) -> String {
     format!("instance_opts.{id}")
 }
 
+/// Codex 也有对话界面了（CODEX_UI.md）。之前 Codex 终端的 `chat_ui` 是被强制关掉的，不是用户选的，
+/// 所以升级后给已有的 Codex 终端打开一次（和新建时的默认一样），下次启动生效；之后用户关掉的不再动。
+fn enable_codex_chat_once(store: &Store) {
+    const DONE: &str = "migrate.codex_chat_ui";
+    if store.get::<bool>(DONE).ok().flatten().is_some() {
+        return;
+    }
+    let Ok(rows) = store.instances() else { return };
+    for r in rows.iter().filter(|r| r.launch == "codex") {
+        let mut o: Opts = store.get(&opts_key(&r.id)).ok().flatten().unwrap_or_default();
+        if !o.chat_ui {
+            o.chat_ui = true;
+            let _ = store.set(&opts_key(&r.id), &o);
+        }
+    }
+    let _ = store.set(DONE, &true);
+}
+
 #[derive(Debug, Default, Deserialize)]
 pub struct Input {
     pub name: Option<String>,
@@ -188,6 +206,9 @@ impl Instances {
         }
         let backend = Backend::detect(&paths);
         tracing::info!(backend = backend.name(), ttyd = ?paths.ttyd, mux = ?paths.mux, "终端后端");
+        if matches!(backend, Backend::Tmux(_)) {
+            enable_codex_chat_once(&store);
+        }
         Arc::new(Self {
             store,
             paths,
@@ -643,7 +664,7 @@ impl Instances {
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
         Ok(match self.launch_command(row).filter(|c| !c.trim().is_empty()) {
             None => (shell.interactive(), None),
-            Some(cmd) => match shell.run(&self.model_wrap(row, &cmd, shell.family)) {
+            Some(cmd) => match shell.run(&self.model_wrap(row, &with_launch_program(row, &cmd, shell.family), shell.family)) {
                 Some(v) => (v, None),
                 None => (shell.interactive(), Some(cmd)),
             },
@@ -662,33 +683,39 @@ impl Instances {
     fn launch_command(&self, row: &InstanceRow) -> Option<String> {
         let cmd = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
         match self.chat_settings(row) {
-            Some(settings) => Some(with_chat_hooks(&cmd, &row.id, &settings, None)),
+            Some(settings) => Some(with_chat(row, &cmd, &settings, None)),
             None => Some(cmd),
         }
     }
 
-    /// 带对话界面的 Claude Code 终端：hooks 配置文件（顺便确保它已经写好）。不是这类终端时为 None。
+    /// 带对话界面的终端：hooks 配置文件（Claude Code 的 `--settings` 文件、Codex 的 profile；顺便确保它已经写好）。
+    /// 不是这类终端时为 None。
     fn chat_settings(&self, row: &InstanceRow) -> Option<PathBuf> {
         if !has_chat(&row.launch) || !self.opts(&row.id).chat_ui || !matches!(self.backend, Backend::Tmux(_)) {
             return None;
         }
-        match crate::chat::hooks::ensure_settings(&self.paths) {
+        let written = match row.launch.as_str() {
+            "codex" => crate::chat::codex_launch::ensure_profile(&self.paths),
+            _ => crate::chat::hooks::ensure_settings(&self.paths),
+        };
+        match written {
             Ok(p) => Some(p),
             Err(e) => {
-                tracing::warn!(error = %e, "无法写入 Claude Code 的 hooks 配置，按普通方式启动");
+                tracing::warn!(error = %e, launch = %row.launch, "无法写入对话界面的 hooks 配置，按普通方式启动");
                 None
             }
         }
     }
 
-    /// 对话界面“以对话模式重新启动”：在面板的 shell 里接着某个会话启动 Claude Code（带 hooks、全部权限等原来的参数）。
+    /// 对话界面“以对话模式重新启动”：在面板的 shell 里接着某个会话启动 Claude Code / Codex（带 hooks、全部权限等原来的参数）。
     pub fn chat_relaunch_command(&self, id: &str, session: Option<&str>) -> Result<String, LocalError> {
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         let settings = self.chat_settings(&row).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
         let cmd = launch_command_line(&row, self.opts(id), crate::platform::is_root()).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
-        let cmd = with_chat_hooks(&cmd, id, &settings, session);
+        let cmd = with_chat(&row, &cmd, &settings, session);
         // 面板里是哪种 shell 就按哪种写法加环境变量
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
+        let cmd = with_launch_program(&row, &cmd, shell.family);
         Ok(self.model_wrap(&row, &crate::shells::adapt_for(&cmd, shell.family), shell.family))
     }
 
@@ -1058,6 +1085,54 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
 
 /// 对话界面：启动命令前加终端标识，后面加 hooks 配置（`--settings`），要接着某个会话时加 `--resume`。
 /// 环境变量用 POSIX 写法，PowerShell / cmd 由 shells.rs 改成各自的写法。
+/// 对话界面的启动命令：Claude Code 加 `--settings`，Codex 选用看看的 profile。
+fn with_chat(row: &InstanceRow, cmd: &str, settings: &Path, resume: Option<&str>) -> String {
+    match row.launch.as_str() {
+        "codex" => crate::chat::codex_launch::with_chat(cmd, &row.id, resume),
+        _ => with_chat_hooks(cmd, &row.id, settings, resume),
+    }
+}
+
+/// 程序换成完整路径：
+/// - Claude Code 不在 PATH 里（例如只有 Claude 桌面版自带的那一份）；
+/// - 对话模式的 Codex 在 Windows 上直接调 `codex.exe`（npm 的 `codex.ps1` 会被执行策略拦住，`codex.cmd` 会吃掉参数里的特殊字符）。
+fn with_launch_program(row: &InstanceRow, cmd: &str, family: crate::shells::Family) -> String {
+    let program = match row.launch.as_str() {
+        "claude" => crate::agents::claude_launch_program(),
+        "codex" if cmd.contains(crate::chat::codex_launch::PROFILE) => crate::chat::codex_launch::program().map(|p| p.display().to_string()),
+        _ => None,
+    };
+    match program {
+        Some(p) => with_program(cmd, &row.launch, &p, family),
+        None => cmd.to_string(),
+    }
+}
+
+/// 把命令开头（跳过 `NAME=值` 这样的环境变量）的程序名换成完整路径，按 shell 的写法加引号。
+/// 不是以这个程序名开头的命令原样返回。
+fn with_program(cmd: &str, tool: &str, program: &str, family: crate::shells::Family) -> String {
+    use crate::shells::Family;
+    let mut prefix = String::new();
+    let mut rest = cmd;
+    while let Some((word, tail)) = rest.split_once(' ') {
+        let Some((k, _)) = word.split_once('=') else { break };
+        if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            break;
+        }
+        prefix.push_str(word);
+        prefix.push(' ');
+        rest = tail;
+    }
+    let Some(args) = rest.strip_prefix(tool).filter(|a| a.is_empty() || a.starts_with(' ')) else { return cmd.to_string() };
+    let quoted = match family {
+        Family::Pwsh => format!("& '{}'", program.replace('\'', "''")),
+        Family::Cmd => format!("\"{program}\""),
+        Family::Nu => format!("^'{program}'"),
+        Family::Posix | Family::Other => format!("'{}'", program.replace('\'', "'\\''")),
+    };
+    format!("{prefix}{quoted}{args}")
+}
+
 pub fn with_chat_hooks(cmd: &str, id: &str, settings: &Path, resume: Option<&str>) -> String {
     let path = settings.display().to_string().replace('"', "");
     let resume = resume.filter(|s| s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')).map(|s| format!(" --resume {s}")).unwrap_or_default();
@@ -1413,6 +1488,23 @@ mod tests {
     }
 
     #[test]
+    fn claude_by_full_path() {
+        use crate::shells::Family;
+        let p = r"C:\Users\a\AppData\Roaming\Claude\claude-code\2.1.299\f0584be0fbaf\claude.exe";
+        let cmd = "LOOKLOOK_INSTANCE=abcd2345 claude --settings \"C:/x/claude-hooks.json\"";
+        assert_eq!(with_program(cmd, "claude", p, Family::Pwsh), format!("LOOKLOOK_INSTANCE=abcd2345 & '{p}' --settings \"C:/x/claude-hooks.json\""));
+        // 环境变量前缀之后的程序名换成路径，换完再由 adapt_for 改成 PowerShell 的写法
+        assert_eq!(
+            crate::shells::adapt_for(&with_program(cmd, "claude", p, Family::Pwsh), Family::Pwsh),
+            format!("$env:LOOKLOOK_INSTANCE='abcd2345'; & '{p}' --settings \"C:/x/claude-hooks.json\"")
+        );
+        assert_eq!(with_program("IS_SANDBOX=1 claude --dangerously-skip-permissions", "claude", "/opt/it's/claude", Family::Posix), "IS_SANDBOX=1 '/opt/it'\\''s/claude' --dangerously-skip-permissions");
+        assert_eq!(with_program("claude", "claude", p, Family::Cmd), format!("\"{p}\""));
+        assert_eq!(with_program("claudette --x", "claude", p, Family::Pwsh), "claudette --x");
+        assert_eq!(with_program("codex --yolo", "claude", p, Family::Pwsh), "codex --yolo");
+    }
+
+    #[test]
     fn chat_hooks_wrap_the_launch_command() {
         let p = Path::new("/home/a/.local/share/looklook/run/claude-hooks.json");
         assert_eq!(
@@ -1428,7 +1520,10 @@ mod tests {
         assert!(o.chat_ui);
         r.launch = "codex".into();
         Instances::validate_opts(&r, &mut o).unwrap();
-        assert!(!o.chat_ui, "只有 Claude Code 有对话界面");
+        assert!(o.chat_ui, "Codex 也有对话界面");
+        r.launch = "opencode".into();
+        Instances::validate_opts(&r, &mut o).unwrap();
+        assert!(!o.chat_ui, "OpenCode 没有对话界面");
     }
 
     #[test]

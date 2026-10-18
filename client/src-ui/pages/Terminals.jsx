@@ -1366,7 +1366,8 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
             <span>
               <b style={{ fontSize: 14 }}>{t("form.chat_ui")}</b>
               <span className="field-hint" style={{ display: "block" }}>
-                {t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
+                {launch === "codex" && t("form.chat_ui_hint_codex")}
+                {launch !== "codex" && t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
               </span>
             </span>
           </label>

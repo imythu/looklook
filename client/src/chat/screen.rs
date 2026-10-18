@@ -34,7 +34,7 @@ fn is_rule(line: &str) -> bool {
 }
 
 /// `capture-pane -p -e` 的输出（带 SGR 转义）：去掉转义，同时记下哪些字符是“暗淡”（推荐提示）的。
-fn strip(line: &str) -> (String, String) {
+pub(super) fn strip(line: &str) -> (String, String) {
     let mut plain = String::new();
     let mut bright = String::new();
     let mut dim = false;

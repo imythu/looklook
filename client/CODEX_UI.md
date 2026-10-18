@@ -1,6 +1,6 @@
 # Codex 对话界面设计方案
 
-> 状态：方案，未实现。依据：客户端 1.17.2 的 Claude Code 对话界面（`src/chat/`），以及 2026-10-18 在 Windows 上对 Codex CLI 0.159.3 的实测（见 §2）。
+> 状态：第一版已实现（2026-10-18，和方案不同的地方见 §11.2）。依据：客户端 1.17.2 的 Claude Code 对话界面（`src/chat/`），以及 2026-10-18 在 Windows 上对 Codex CLI 0.159.3 的实测（见 §2）。
 > 目标读者：实现和以后维护这块代码的人。§10 是 Codex 升级时怎么跟进，单独看也能用。
 
 ## 1. 目标与范围
@@ -415,6 +415,21 @@ pub struct Patterns {
 - `codex exec` 会把审批策略强制设成 never（`-c approval_policy=…` 覆盖不了），`PermissionRequest` 只能在交互式 TUI 里测；
 - PowerShell 下 `-c "hooks.X=[{…}]"` 的双引号会被吃掉（经 psmux 传参时），只能写进 `.ps1` 再 `-File` 运行——S8 的引号问题是真的；
 - 粘贴后马上回车会被吞（实测 #13 复现），要等输入框稳定后再按，而且多按的回车会落在随后弹出的审批框上、默认选中“Yes, proceed”——**模拟打字有误批准的风险**，这是 hooks 方案特有的。
+
+### 11.2 第一版实际做法（2026-10-18，和上面方案不同的地方）
+
+- **启动用 profile，不用 `-c`**：hooks 和信任哈希写进 `$CODEX_HOME/looklook-chat.config.toml`（看看自己的文件，自动重写），启动命令是 `LOOKLOOK_INSTANCE=<id> codex --no-daemon -p looklook-chat [--yolo]`，接着聊是 `codex resume --no-daemon -p looklook-chat [--yolo] <会话>`。命令行里没有带引号的 TOML，PowerShell / cmd / psmux 都不会吃引号；用户自己的 `config.toml` 不动（profile 只在 `-p looklook-chat` 时生效）。代码：`src/chat/codex_launch.rs`。
+- **信任哈希**：key 是 `<profile 绝对路径>:<事件 snake_case>:0:0`；哈希由临时 `CODEX_HOME`（`run/codex-trust-home`）里的 `codex app-server` + `hooks/list` 算出，按“codex 程序 + hook 命令”缓存在 `run/codex-trust.json`。算不出来就不写信任，Codex 会在终端里要求确认（对话界面显示“到终端里操作”），不会自动放行。
+- **Windows 上 Codex 用 PowerShell 跑 hook 命令**（实测 `$PSVersionTable` 被展开），所以 hook 命令写成 `& '<looklook.exe>' hook '<hook.json>'`；Claude 用的 `"<exe>" hook "<json>"` 在 PowerShell 里是语法错误（TUI 显示 “Hook failed — hook exited with code 1”）。
+- **Windows 上直接调 `codex.exe`**（npm 的 vendor 目录），只对对话模式的 Codex 终端替换。
+- **对话内容读 `event_msg: item_completed`**（`UserMessage`、`AgentMessage`、`Reasoning`、`CommandExecution`、`FileChange`（带 `unified_diff`）、`McpToolCall`、`WebSearch`、`ImageView`、`ContextCompaction`），不解析 code mode 的 JS；`FileChange` 的 diff 翻成 Claude 的 `structuredPatch`。代码：`src/chat/codex_rollout.rs`。
+- **事件**：12 个（含 `Interrupt`：Esc 停止后马上回到空闲；没有 `Notification`）。`SessionStart` 要到第一条消息才来，所以 Codex 没收到 hook 之前也当作已接上；已绑定后只在 `SessionStart` / `UserPromptSubmit` 换会话（子代理的 hook 不换）。
+- **psmux 报的前台命令不可靠**：Codex 跑命令、跑 hook 时报成 `powershell`，这时再看面板进程底下有没有 `codex` 进程（sysinfo），否则会误判成“已经退出”。
+- **能力 caps**：第一版 Codex 只有允许 / 拒绝 / 到终端里回答；“本会话都允许”“允许访问目录”、发图片、计划、提问都不显示（`caps` 全为 false），等 S4、S6、S7 验证后再开。
+- **已有的 Codex 终端**：升级后一次性打开对话界面开关（kv `migrate.codex_chat_ui`），下次启动生效。还在运行、但不是带着 `-p looklook-chat` 启动的 Codex（看面板底下 codex 进程的命令行），对话标签显示 `not_attached`，带“重启并接入对话界面”（先确认，会结束当前进程）。
+- **信任文件夹在对话界面里确认**：`codex_screen::dialog` 认出 “Trust this folder?”，状态里带 `dialog: { kind: "trust_folder", path }`，界面显示确认卡片、不跳到终端；`POST /instances/{id}/chat/dialog` 先抓屏核对选中的是 “1. Trust and continue” 再按回车。Codex 会把信任写进 `looklook-chat.config.toml`，所以重写 profile 时只换 `[hooks]`，其余原样保留（以前整个重写，每次都要重新信任）。
+- **版本检查**：`codex_compat.rs` 的验证范围（目前 0.159.x），范围外状态里 `untested_version: true`，对话顶部一条黄色提示。验证过新版本后改 `TESTED_MAX`。
+- **端到端验证过**（Windows 11，Codex 0.159.3）：发消息并确认送达、命令卡片和输出、用时、审批（界面上允许后在工作区外建出文件）、Esc 停止；Claude Code 的对话界面回归正常。
 
 ## 12. 以后的选项：走 app-server
 

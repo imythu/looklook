@@ -71,6 +71,11 @@ impl Agent {
     }
 }
 
+/// Codex 的配置目录（`$CODEX_HOME`，默认 `~/.codex`）
+pub fn codex_home() -> PathBuf {
+    Agent::Codex.dir()
+}
+
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
@@ -84,17 +89,56 @@ fn claude_json() -> PathBuf {
 }
 
 /// 找 `claude` 命令：先在登录 shell 的 PATH 里找；找不到再看官方安装脚本的固定位置
-/// （`~/.local/bin`，旧版的 `~/.claude/local`）——安装脚本只把它加进交互 shell 的配置，登录 shell 不一定有。
+/// （`~/.local/bin`，旧版的 `~/.claude/local`）——安装脚本只把它加进交互 shell 的配置，登录 shell 不一定有；
+/// 再找不到就用 Claude 桌面版自带的那一份（见 [`claude_desktop_bundled`]）。
 async fn claude_cli(shell: &str) -> Option<String> {
     crate::tools::detect(shell).await.claude.or_else(claude_fallback)
 }
 
-fn claude_fallback() -> Option<String> {
+pub fn claude_fallback() -> Option<String> {
     let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
     [home().join(".local").join("bin").join(exe), Agent::Claude.dir().join("local").join(exe)]
         .into_iter()
         .find(|p| p.is_file())
+        .or_else(claude_desktop_bundled)
         .map(|p| p.display().to_string())
+}
+
+/// Claude 桌面版自带的 Claude Code：`<配置目录>/Claude/claude-code/<版本>/<…>/claude(.exe)`
+/// （Windows 是 `%APPDATA%\Claude\…`，macOS 是 `~/Library/Application Support/Claude/…`）。
+/// 桌面版更新时会放进新的版本目录，取版本号最大的那个；和桌面版共用 `~/.claude`，登录状态也是同一个。
+fn claude_desktop_bundled() -> Option<PathBuf> {
+    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let base = dirs::config_dir()?.join("Claude").join("claude-code");
+    let mut versions: Vec<(Vec<u64>, PathBuf)> = std::fs::read_dir(&base)
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .filter_map(|p| {
+            let key: Option<Vec<u64>> = p.file_name()?.to_str()?.split('.').map(|n| n.parse().ok()).collect();
+            Some((key?, p))
+        })
+        .collect();
+    versions.sort_by(|a, b| b.0.cmp(&a.0));
+    versions.into_iter().find_map(|(_, dir)| {
+        if dir.join(exe).is_file() {
+            return Some(dir.join(exe));
+        }
+        std::fs::read_dir(&dir).ok()?.flatten().map(|e| e.path().join(exe)).find(|p| p.is_file())
+    })
+}
+
+/// 新开的 Claude Code 终端用什么启动：PATH 里有 `claude` 就照常用名字（返回 None）；
+/// 没有时用 [`claude_fallback`] 找到的完整路径。
+pub fn claude_launch_program() -> Option<String> {
+    let names: &[&str] = if cfg!(windows) { &["claude.exe", "claude.cmd", "claude.bat"] } else { &["claude"] };
+    let on_path = std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| names.iter().any(|n| d.join(n).is_file())));
+    if on_path {
+        None
+    } else {
+        claude_fallback()
+    }
 }
 
 fn codex_toml() -> PathBuf {

@@ -157,6 +157,17 @@ pub async fn plan(State(app): State<App>, Path(id): Path<String>, Json(req): Jso
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct DialogReq {
+    kind: String,
+}
+
+pub async fn dialog(State(app): State<App>, Path(id): Path<String>, Json(req): Json<DialogReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.dialog(&id, &req.kind).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn relaunch(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
     require_allowed(&app)?;
     app.chat.relaunch(&id).await?;

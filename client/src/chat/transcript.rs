@@ -449,7 +449,7 @@ fn join_text(content: &Value) -> (String, u32, bool) {
     (text, images, truncated)
 }
 
-fn truncate(s: &str, limit: usize) -> (String, bool) {
+pub(super) fn truncate(s: &str, limit: usize) -> (String, bool) {
     if s.len() <= limit {
         return (s.to_string(), false);
     }

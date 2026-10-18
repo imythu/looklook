@@ -265,7 +265,8 @@
     "root_confirm_hint": "当前客户端以 root 运行，AI 工具将拥有整台机器的最高权限，请谨慎使用。",
     "chat_ui": "对话界面",
     "chat_ui_hint": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片；终端里的功能一个不少，随时可以切过去。",
-    "chat_ui_hint_restart": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片。开启后要重启这个终端才生效。"
+    "chat_ui_hint_restart": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片。开启后要重启这个终端才生效。",
+    "chat_ui_hint_codex": "除了终端，还可以在聊天界面里和 Codex 对话、审批操作。看看会用 --no-daemon 单独运行它，并通过自己的配置（looklook-chat）带上 hooks，不改你的 Codex 配置。"
   },
   "tools": {
     "missing": "这台电脑还没有安装 {{tool}}",
@@ -1408,7 +1409,15 @@
     "detached_ended_title": "会话已结束",
     "detached_ended_body": "",
     "detached_not_attached_title": "这个 {{agent}} 没有接入对话界面",
-    "detached_not_attached_body": "它可能是在终端里手动启动的，或者 Claude Code 的设置里关闭了 hooks（disableAllHooks）。请在终端里使用；退出后可以在这里以对话模式重新启动。",
+    "detached_not_attached_body": "它可能是在开启对话界面之前、或在终端里手动启动的，也可能是 {{agent}} 的设置里关闭了 hooks。可以重启并接入对话界面，或者继续在终端里使用。",
+    "restart_attach": "重启并接入对话界面",
+    "restart_attach_confirm": "会结束终端里正在运行的 {{agent}}，再带着对话界面重新启动。之前的对话可以在 {{agent}} 里用 /resume 找回。",
+    "trust_title": "要信任这个文件夹吗？",
+    "trust_body": "{{agent}} 第一次在这个文件夹里运行，要先确认信任：它可以读写、运行这里的文件（仍受权限设置限制），文件夹里的设置也可能自动运行代码。只需要确认一次。",
+    "trust_ok": "信任并继续",
+    "untested_version": "{{agent}} {{version}} 还没在看看里验证过，对话显示不对时可以切到终端使用。",
+    "codex_working": "正在工作（{{s}} 秒）",
+    "no_images": "这个版本的 {{agent}} 还不能在对话里发图片",
     "relaunch": "以对话模式启动 {{agent}}",
     "relaunch_resume": "以对话模式继续上次的会话",
     "phase_not_attached": "未接入对话界面",

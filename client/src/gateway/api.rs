@@ -71,6 +71,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/permission", post(super::chat::permission))
         .route("/instances/{id}/chat/plan", post(super::chat::plan))
         .route("/instances/{id}/chat/relaunch", post(super::chat::relaunch))
+        .route("/instances/{id}/chat/dialog", post(super::chat::dialog))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/keys/info", post(ssh_key_info))
@@ -1401,7 +1402,12 @@ async fn get_shells(State(app): State<App>) -> Json<Value> {
 // ---------------- AI 工具 ----------------
 
 async fn get_tools(State(app): State<App>) -> Json<Value> {
-    Json(json!({ "tools": tools::detect(app.instances.shell()).await }))
+    let mut d = tools::detect(app.instances.shell()).await;
+    // 不在 PATH 里的 Claude Code（官方安装脚本的位置、Claude 桌面版自带的）
+    if d.claude.is_none() {
+        d.claude = crate::agents::claude_fallback();
+    }
+    Json(json!({ "tools": d }))
 }
 
 #[derive(Deserialize)]
