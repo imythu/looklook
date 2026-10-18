@@ -556,7 +556,8 @@ impl Chat {
                 }
                 match (st.phase, scr) {
                     // 确认框已经不在了（在终端里按了 Esc 或选了“否”：这两种都没有 hook）
-                    (Phase::Approval, Screen::Input { busy, .. }) if pending_age.is_some_and(|a| a >= QUIET) => {
+                    // Codex 要等 hook 答复之后才在 TUI 上弹确认框，挂起时屏幕上本来就是输入框，不能据此放掉
+                    (Phase::Approval, Screen::Input { busy, .. }) if pending_age.is_some_and(|a| a >= QUIET) && inst.agent.tui_asks_while_hook_waits() => {
                         Self::drop_pending(&mut st);
                         Self::set_phase(inst, &mut st, if busy { Phase::Running } else { Phase::Idle }, None);
                     }
@@ -670,6 +671,16 @@ impl Chat {
             let mut st = lock(&inst.st);
             Self::set_phase(&inst, &mut st, Phase::Tui, None);
             return Err(LocalError::new("CHAT_BUSY"));
+        }
+        // 输入框里有残留的文字（终端里打了一半、误入的鼠标转义序列）：先清掉，不然会和这条消息拼在一起发出去
+        if let Some(keys) = inst.agent.clear_input_keys() {
+            for _ in 0..8 {
+                match self.instances.screen(id).await.map(|s| inst.agent.classify(&s)) {
+                    Some(Screen::Input { text, .. }) if !text.is_empty() => self.instances.send_keys(id, keys).await?,
+                    _ => break,
+                }
+                tokio::time::sleep(Duration::from_millis(60)).await;
+            }
         }
         let mut prompts = inst.prompts.subscribe();
         prompts.borrow_and_update();

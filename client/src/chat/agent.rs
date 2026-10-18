@@ -113,6 +113,15 @@ pub trait Agent: Send + Sync {
     fn untested(&self, _version: &str) -> bool {
         false
     }
+    /// 审批 hook 还在等答复时，TUI 是不是同时也弹出了自己的确认框（Claude Code 是，两边谁先答算谁的；
+    /// Codex 不是：要等 hook 不做决定才弹）。是的话，确认框从屏幕上消失就说明已经在终端里答过了。
+    fn tui_asks_while_hook_waits(&self) -> bool {
+        true
+    }
+    /// 清掉 TUI 输入框里残留文字的按键（发消息前用；终端里打了一半的字、误入的鼠标转义序列）。None：不清
+    fn clear_input_keys(&self) -> Option<&'static [&'static str]> {
+        None
+    }
 }
 
 /// 按终端的启动类型选适配器；没有对话界面的类型为 None。
@@ -301,6 +310,16 @@ impl Agent for Codex {
 
     fn untested(&self, version: &str) -> bool {
         super::codex_compat::untested(version)
+    }
+
+    /// 实测：hook 答复之前 TUI 一直是“Working”的输入框，hook 不做决定才弹确认框
+    fn tui_asks_while_hook_waits(&self) -> bool {
+        false
+    }
+
+    /// Ctrl+U 删到行首（实测），再退格并到上一行，多行的残留也能清掉
+    fn clear_input_keys(&self) -> Option<&'static [&'static str]> {
+        Some(&["C-u", "BSpace"])
     }
 }
 
