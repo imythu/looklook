@@ -32,6 +32,13 @@ pub const PORT_RANGE: (u16, u16) = (41000, 41999);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TMUX_SOCKET: &str = "looklook";
 const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "custom"];
+/// 有对话界面的启动类型。Codex 的对话界面（CODEX_UI.md）接好之后再把 "codex" 加进来；
+/// 前端 `src-ui/shared/chat.js` 的 `CHAT_LAUNCHES` 要一起改。
+pub const CHAT_LAUNCHES: &[&str] = &["claude"];
+
+fn has_chat(launch: &str) -> bool {
+    CHAT_LAUNCHES.contains(&launch)
+}
 
 #[derive(Debug, Clone)]
 pub enum Backend {
@@ -308,7 +315,7 @@ impl Instances {
         } else {
             opts.web_port = None;
         }
-        if row.launch != "claude" {
+        if !has_chat(&row.launch) {
             opts.chat_ui = false;
         }
         if !matches!(row.launch.as_str(), "codex" | "claude" | "opencode") {
@@ -662,7 +669,7 @@ impl Instances {
 
     /// 带对话界面的 Claude Code 终端：hooks 配置文件（顺便确保它已经写好）。不是这类终端时为 None。
     fn chat_settings(&self, row: &InstanceRow) -> Option<PathBuf> {
-        if row.launch != "claude" || !self.opts(&row.id).chat_ui || !matches!(self.backend, Backend::Tmux(_)) {
+        if !has_chat(&row.launch) || !self.opts(&row.id).chat_ui || !matches!(self.backend, Backend::Tmux(_)) {
             return None;
         }
         match crate::chat::hooks::ensure_settings(&self.paths) {
@@ -700,7 +707,7 @@ impl Instances {
             v.extend(["-e".into(), format!("PATH={p}")]);
         }
         // 对话界面：面板里手动重开的 claude 也带着终端标识（启动命令上也加了，这里是给之后在 shell 里运行的）
-        if row.launch == "claude" && self.opts(&row.id).chat_ui {
+        if has_chat(&row.launch) && self.opts(&row.id).chat_ui {
             v.extend(["-e".into(), format!("{}={}", crate::chat::hooks::INSTANCE_ENV, row.id)]);
         }
         v

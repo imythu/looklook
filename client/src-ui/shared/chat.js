@@ -1,6 +1,9 @@
 // Claude Code 对话界面（docs/CLAUDE_UI.md §5）的纯逻辑：事件合并、工具卡片摘要、diff、哪些命令要到终端里操作。
 // 不依赖 React 和浏览器，`node --test` 直接测。
 
+/** 有对话界面的启动类型（和服务端 instances.rs 的 CHAT_LAUNCHES 一致；Codex 接好后加 'codex'） */
+export const CHAT_LAUNCHES = ['claude'];
+
 /** 空的对话状态 */
 export const EMPTY = { status: null, items: [], start: 0, total: 0 };
 

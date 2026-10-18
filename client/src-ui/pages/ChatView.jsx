@@ -23,7 +23,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
@@ -34,6 +34,19 @@ import { runUpload } from '../shared/uploader.js';
 import { Button, useToast } from '../shared/ui.jsx';
 
 // ---------------- 数据 ----------------
+
+/** 服务端状态里的 `agent` → 文案里的 {{agent}}；老版本服务端不带 agent，就是 Claude Code */
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
+const agentName = (status) => AGENT_NAMES[status?.agent] ?? AGENT_NAMES.claude;
+const AgentName = createContext(AGENT_NAMES.claude);
+
+/** 和 useTranslation 一样，但文案里的 {{agent}} 换成这个会话的 AI 工具 */
+function useT(agent) {
+  const { t } = useTranslation();
+  const ctx = useContext(AgentName);
+  const name = agent ?? ctx;
+  return { t: useCallback((key, opts) => t(key, { agent: name, ...opts }), [t, name]) };
+}
 
 /** 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。 */
 function useChat(id) {
@@ -106,7 +119,7 @@ function Pre({ text, className = '' }) {
 }
 
 function DiffView({ lines }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const [all, setAll] = useState(false);
   const shown = all ? lines : lines.slice(0, DIFF_LIMIT);
   return (
@@ -145,7 +158,7 @@ function TodoList({ todos }) {
 
 /** 工具结果的文字；被截断时可以取完整内容。 */
 function ResultText({ id, result }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const [full, setFull] = useState(null);
   const [busy, setBusy] = useState(false);
   if (!result) return null;
@@ -177,7 +190,7 @@ function ResultText({ id, result }) {
  * 后台运行的子代理一开始就有结果（“已在后台启动”），所以按内容判断是否结束：最后一条是文字回复就算结束。
  */
 function SubAgent({ id, block, result }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -229,7 +242,7 @@ function SubAgent({ id, block, result }) {
 }
 
 function ToolBody({ id, block, result }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const input = block.input ?? {};
   switch (block.name) {
     case 'Bash':
@@ -285,7 +298,7 @@ function ToolBody({ id, block, result }) {
 }
 
 function ToolCard({ id, block, result, live }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const diff = DIFF_TOOLS.includes(block.name) ? diffLines(block.name, block.input, result?.extra) : null;
   const stat = diff ? diffStat(diff) : null;
   // 改动默认展开（看改了什么是最常见的需要），太长的不展开
@@ -319,7 +332,7 @@ function ToolCard({ id, block, result, live }) {
 }
 
 function Thinking({ text }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   return (
     <details className="chat-thinking">
       <summary>
@@ -331,7 +344,7 @@ function Thinking({ text }) {
 }
 
 function Item({ id, item, results, live }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   switch (item.k) {
     case 'user':
       return (
@@ -392,7 +405,7 @@ function Item({ id, item, results, live }) {
 // ---------------- 审批 ----------------
 
 function QuestionForm({ pending, onAnswer, onTerminal, busy }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const questions = pending.input?.questions ?? [];
   const [picked, setPicked] = useState({});
   const toggle = (n, label, multi) =>
@@ -433,7 +446,7 @@ function QuestionForm({ pending, onAnswer, onTerminal, busy }) {
 }
 
 function ApprovalBar({ id, pending, onTerminal }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [denying, setDenying] = useState(false);
@@ -556,7 +569,7 @@ function ApprovalBar({ id, pending, onTerminal }) {
 let attachSeq = 0;
 
 function Composer({ id, phase, touch, onTerminal }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const toast = useToast();
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
@@ -721,7 +734,7 @@ function Composer({ id, phase, touch, onTerminal }) {
 const MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk'];
 
 function StatusLine({ status, online, onTerminal }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   if (!status) return null;
   const { phase, tool, mode, error, reason } = status;
   const label = phase === 'detached' && reason === 'not_attached' ? 'chat.phase_not_attached' : `chat.phase_${phase}`;
@@ -743,7 +756,7 @@ function StatusLine({ status, online, onTerminal }) {
 
 /** Claude Code 没在运行或没接上对话界面时的说明 */
 function Detached({ id, status, onTerminal }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const reason = status?.reason ?? 'starting';
@@ -780,7 +793,7 @@ function Detached({ id, status, onTerminal }) {
  * transcript 要等整段写完才有，写进来之后这里自动不再显示。
  */
 function Live({ status, items }) {
-  const { t } = useTranslation();
+  const { t } = useT();
   const preview = status?.preview ?? '';
   const last = [...items].reverse().find((i) => i.k === 'assistant');
   const lastText = (last?.blocks ?? []).filter((b) => b.t === 'text').map((b) => b.text).join('\n');
@@ -800,8 +813,8 @@ function Live({ status, items }) {
  * 页面在后台时：需要确认、要到终端里操作、这一轮做完了，发浏览器通知，标题前面加个标记，回到页面时去掉。
  * `prev` 是 ChatView 记的上一个状态（这里只读）。
  */
-function useAttention(id, phase, pendingKind, prev) {
-  const { t } = useTranslation();
+function useAttention(id, phase, pendingKind, prev, agent) {
+  const { t } = useT(agent);
   const mark = useRef(null);
   useEffect(() => {
     const from = prev.current;
@@ -843,9 +856,10 @@ function useAttention(id, phase, pendingKind, prev) {
  * onTerminal(auto)：切到“终端”标签（auto=true 表示是界面自己切过去的，操作完会自动切回来）；onBack()：切回“对话”。
  */
 export default function ChatView({ id, active, touch, onTerminal, onBack }) {
-  const { t } = useTranslation();
   const chat = useChat(id);
   const { status, items } = chat;
+  const agent = agentName(status);
+  const { t } = useT(agent);
   const phase = status?.phase ?? 'detached';
   const list = useRef(null);
   const stick = useRef(true);
@@ -864,7 +878,7 @@ export default function ChatView({ id, active, touch, onTerminal, onBack }) {
     [onTerminal],
   );
   const prev = useRef(phase);
-  useAttention(id, phase, status?.pending?.kind, prev);
+  useAttention(id, phase, status?.pending?.kind, prev, agent);
   useEffect(() => {
     if (prev.current !== phase) {
       if (phase === 'tui' && active) goTerminal(true);
@@ -919,48 +933,50 @@ export default function ChatView({ id, active, touch, onTerminal, onBack }) {
     );
   }
   return (
-    <div className="chat-view">
-      <div className="chat-list" ref={list} onScroll={onScroll}>
-        <div className="chat-items" ref={inner}>
-          {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
-          {!items.length && status && phase !== 'detached' && <p className="chat-empty">{t('chat.empty')}</p>}
-          {items.map((item) => (item.k === 'tool_result' && usedIds.has(item.tool_use_id) ? null : <Item key={item.key} id={id} item={item} results={results} live={live} />))}
-          {phase === 'running' && <Live status={status} items={items} />}
-          {status?.stats?.failed > 0 && (
-            <p className="chat-event">
-              <TriangleAlert size={13} aria-hidden="true" /> {t('chat.format_warning', { version: status.version ?? '?' })}
-            </p>
+    <AgentName.Provider value={agent}>
+      <div className="chat-view">
+        <div className="chat-list" ref={list} onScroll={onScroll}>
+          <div className="chat-items" ref={inner}>
+            {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
+            {!items.length && status && phase !== 'detached' && <p className="chat-empty">{t('chat.empty')}</p>}
+            {items.map((item) => (item.k === 'tool_result' && usedIds.has(item.tool_use_id) ? null : <Item key={item.key} id={id} item={item} results={results} live={live} />))}
+            {phase === 'running' && <Live status={status} items={items} />}
+            {status?.stats?.failed > 0 && (
+              <p className="chat-event">
+                <TriangleAlert size={13} aria-hidden="true" /> {t('chat.format_warning', { version: status.version ?? '?' })}
+              </p>
+            )}
+          </div>
+        </div>
+        {!atBottom && (
+          <button type="button" className="chat-to-bottom" onClick={toBottom} aria-label={t('chat.to_bottom')}>
+            <ArrowDown size={16} />
+          </button>
+        )}
+        <div className="chat-dock">
+          {todos && todos.some((x) => x.status !== 'completed') && (
+            <details className="chat-dock-todos">
+              <summary>
+                <ListTodo size={14} aria-hidden="true" /> {t('chat.todos', { done: todos.filter((x) => x.status === 'completed').length, total: todos.length })}
+                <span className="ellipsis chat-note">{todos.find((x) => x.status === 'in_progress')?.activeForm ?? ''}</span>
+              </summary>
+              <TodoList todos={todos} />
+            </details>
           )}
+          {status?.pending && <ApprovalBar id={id} pending={status.pending} onTerminal={() => goTerminal(true)} />}
+          {phase === 'detached' && <Detached id={id} status={status} onTerminal={goTerminal} />}
+          {phase === 'tui' && (
+            <div className="chat-tui">
+              <span className="grow">{t('chat.tui_hint')}</span>
+              <Button icon={SquareTerminal} onClick={() => goTerminal(true)}>
+                {t('chat.open_terminal')}
+              </Button>
+            </div>
+          )}
+          <StatusLine status={status} online={chat.online} onTerminal={goTerminal} />
+          <Composer id={id} phase={phase} touch={touch} onTerminal={goTerminal} />
         </div>
       </div>
-      {!atBottom && (
-        <button type="button" className="chat-to-bottom" onClick={toBottom} aria-label={t('chat.to_bottom')}>
-          <ArrowDown size={16} />
-        </button>
-      )}
-      <div className="chat-dock">
-        {todos && todos.some((x) => x.status !== 'completed') && (
-          <details className="chat-dock-todos">
-            <summary>
-              <ListTodo size={14} aria-hidden="true" /> {t('chat.todos', { done: todos.filter((x) => x.status === 'completed').length, total: todos.length })}
-              <span className="ellipsis chat-note">{todos.find((x) => x.status === 'in_progress')?.activeForm ?? ''}</span>
-            </summary>
-            <TodoList todos={todos} />
-          </details>
-        )}
-        {status?.pending && <ApprovalBar id={id} pending={status.pending} onTerminal={() => goTerminal(true)} />}
-        {phase === 'detached' && <Detached id={id} status={status} onTerminal={goTerminal} />}
-        {phase === 'tui' && (
-          <div className="chat-tui">
-            <span className="grow">{t('chat.tui_hint')}</span>
-            <Button icon={SquareTerminal} onClick={() => goTerminal(true)}>
-              {t('chat.open_terminal')}
-            </Button>
-          </div>
-        )}
-        <StatusLine status={status} online={chat.online} onTerminal={goTerminal} />
-        <Composer id={id} phase={phase} touch={touch} onTerminal={goTerminal} />
-      </div>
-    </div>
+    </AgentName.Provider>
   );
 }
