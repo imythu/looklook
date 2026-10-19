@@ -77,7 +77,7 @@
     "host_ip": "The IP address is incomplete or incorrect, e.g. 192.168.1.20",
     "host_unusable": "This address can't be used to open a page (e.g. 0.0.0.0). Enter the machine's actual IP",
     "host_name": "Invalid format: only letters, digits, hyphens and dots, e.g. nas.local",
-    "ip_format": "Invalid IP format, e.g. 203.0.113.7 or 203.0.113.0/24",
+    "ip_format": "Invalid entry; use an IP, range or domain, e.g. 203.0.113.7, 203.0.113.0/24 or home.example.com",
     "ip_prefix": "Invalid prefix length; IPv4 uses /8 to /32",
     "ip_too_wide": "Range too wide; it can't be opened to the whole internet",
     "ip_loopback": "This computer can already open it itself; no need to add",

@@ -4,7 +4,7 @@
 //! - **这台机器自己**（127.0.0.1 / ::1，或连接两端是同一个 IP）：总是放行，不需要访问码；
 //! - **局域网**（192.168.x.x、10.x.x.x、172.16–31.x.x、100.64/10、169.254/16、fc00::/7、fe80::/10）：
 //!   打开“允许局域网访问”后放行；
-//! - **白名单**：用户自己添加的 IP 或网段（例如公司固定公网 IP）；
+//! - **白名单**：用户自己添加的 IP、网段或域名（例如公司固定公网 IP；动态 IP 用 DDNS 域名，按解析结果放行，见 [`Resolved`]）；
 //! - 其他一律拒绝。
 //!
 //! 局域网和白名单访问在启用访问码后还要输入访问码。访问码只保存在本机数据库（`access` 键），
@@ -15,7 +15,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
+use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -37,7 +37,7 @@ const FAIL_WINDOW: Duration = Duration::from_secs(15 * 60);
 pub struct AccessConfig {
     /// 允许局域网里的其他设备打开管理台
     pub allow_lan: bool,
-    /// 额外允许的 IP 或网段（白名单），如 `203.0.113.7`、`203.0.113.0/24`
+    /// 额外允许的 IP、网段或域名（白名单），如 `203.0.113.7`、`203.0.113.0/24`、`home.example.com`
     pub allowed_ips: Vec<String>,
     /// 局域网 / 白名单访问是否需要访问码
     pub code_enabled: bool,
@@ -63,11 +63,16 @@ impl AccessConfig {
             c.code = generate_code();
         }
         // 存进去之前都校验过；万一不合法（手改数据库等）就丢掉那一项。
-        c.allowed_ips.retain(|s| parse_net(s).is_ok());
+        c.allowed_ips.retain(|s| parse_entry(s).is_ok());
         if parse_open_host(&c.open_host).is_err() {
             c.open_host.clear();
         }
         c
+    }
+
+    /// 白名单里的域名。
+    pub fn domains(&self) -> impl Iterator<Item = &str> {
+        self.allowed_ips.iter().map(String::as_str).filter(|s| matches!(parse_entry(s), Ok(Entry::Domain(_))))
     }
 
     pub fn save(&self, store: &Store) -> anyhow::Result<()> {
@@ -117,12 +122,13 @@ impl Peer {
 }
 
 /// 判断来源。`same_host`：连接两端是同一个 IP（从这台机器用自己的局域网地址打开），也算本机。
-pub fn classify(ip: IpAddr, cfg: &AccessConfig, same_host: bool) -> Peer {
+/// `resolved`：白名单里的域名当前解析出来的 IP（[`Resolved::ips`]）。
+pub fn classify(ip: IpAddr, cfg: &AccessConfig, same_host: bool, resolved: &[IpAddr]) -> Peer {
     let ip = ip.to_canonical();
     if ip.is_loopback() || same_host {
         return Peer::Local;
     }
-    if cfg.allowed_ips.iter().filter_map(|s| parse_net(s).ok()).any(|(net, len)| in_net(ip, net, len)) {
+    if cfg.allowed_ips.iter().filter_map(|s| parse_net(s).ok()).any(|(net, len)| in_net(ip, net, len)) || resolved.iter().any(|r| r.to_canonical() == ip) {
         return Peer::Listed;
     }
     if cfg.allow_lan && is_lan(ip) {
@@ -169,6 +175,36 @@ pub fn parse_net(input: &str) -> Result<(IpAddr, u8), &'static str> {
         return Err("ip_loopback");
     }
     Ok((ip, len))
+}
+
+/// 白名单的一项。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Entry {
+    Net(IpAddr, u8),
+    /// 域名（小写、不带结尾的点），按解析出来的 IP 放行
+    Domain(String),
+}
+
+/// 解析白名单的一项：IP、网段或域名。
+pub fn parse_entry(input: &str) -> Result<Entry, &'static str> {
+    match parse_net(input) {
+        Ok((ip, len)) => Ok(Entry::Net(ip, len)),
+        // 有字母、不是 IPv6 的才当域名，`203.0.113` 之类的笔误仍然报 IP 格式不对。
+        Err("ip_format") if input.chars().any(|c| c.is_ascii_alphabetic()) && !input.contains(':') => match parse_open_host(input) {
+            Ok(OpenHost::Name(n)) if n == "localhost" || n.ends_with(".localhost") => Err("ip_loopback"),
+            Ok(OpenHost::Name(n)) => Ok(Entry::Domain(n)),
+            _ => Err("ip_format"),
+        },
+        Err(e) => Err(e),
+    }
+}
+
+/// 规范写法。
+pub fn format_entry(e: &Entry) -> String {
+    match e {
+        Entry::Net(ip, len) => format_net((*ip, *len)),
+        Entry::Domain(n) => n.clone(),
+    }
 }
 
 /// 规范写法（去掉多余空格，单个 IP 不带 /32）。
@@ -252,6 +288,86 @@ pub fn own_lan_ips() -> Vec<IpAddr> {
     ips
 }
 
+/// 白名单里域名的解析结果。后台每分钟解析一次（[`Resolved::run`]）；
+/// 有不在名单里的来源时最多每 15 秒再补解析一次，DDNS 的 IP 刚变时不用等太久。
+#[derive(Default)]
+pub struct Resolved {
+    ips: RwLock<HashMap<String, Vec<IpAddr>>>,
+    last: Mutex<Option<Instant>>,
+}
+
+const RESOLVE_EVERY: Duration = Duration::from_secs(60);
+const RESOLVE_RETRY: Duration = Duration::from_secs(15);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
+
+impl Resolved {
+    /// 这些域名当前解析出来的所有 IP。
+    pub fn ips(&self, cfg: &AccessConfig) -> Vec<IpAddr> {
+        let m = self.ips.read().unwrap_or_else(|e| e.into_inner());
+        cfg.domains().filter_map(|d| m.get(d)).flatten().copied().collect()
+    }
+
+    /// 每个域名解析出来的 IP（界面显示用）。
+    pub fn view(&self, cfg: &AccessConfig) -> HashMap<String, Vec<String>> {
+        let m = self.ips.read().unwrap_or_else(|e| e.into_inner());
+        cfg.domains().map(|d| (d.to_string(), m.get(d).map(|v| v.iter().map(IpAddr::to_string).collect()).unwrap_or_default())).collect()
+    }
+
+    /// 重新解析所有域名。解析失败时保留上次的结果（DNS 偶尔出错不至于把自己挡在外面）。
+    pub async fn refresh(&self, cfg: &AccessConfig) {
+        *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+        let domains: Vec<String> = cfg.domains().map(str::to_string).collect();
+        let lookups = domains.iter().map(|d| async move {
+            let r = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((d.as_str(), 0))).await;
+            let ips: Option<Vec<IpAddr>> = match r {
+                Ok(Ok(addrs)) => Some(addrs.map(|a| a.ip().to_canonical()).collect()),
+                _ => None,
+            };
+            if ips.is_none() {
+                tracing::debug!(domain = %d, "白名单域名解析失败");
+            }
+            (d.clone(), ips)
+        });
+        let results = futures_util::future::join_all(lookups).await;
+        let mut m = self.ips.write().unwrap_or_else(|e| e.into_inner());
+        m.retain(|k, _| domains.contains(k));
+        for (d, ips) in results {
+            if let Some(mut ips) = ips {
+                ips.sort();
+                ips.dedup();
+                m.insert(d, ips);
+            }
+        }
+    }
+
+    /// 来源不在名单里时调用：距上次解析超过 15 秒就再解析一次，返回是否解析了。
+    pub async fn refresh_if_stale(&self, cfg: &AccessConfig) -> bool {
+        if cfg.domains().next().is_none() {
+            return false;
+        }
+        {
+            let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+            if last.is_some_and(|t| t.elapsed() < RESOLVE_RETRY) {
+                return false;
+            }
+            *last = Some(Instant::now());
+        }
+        self.refresh(cfg).await;
+        true
+    }
+
+    /// 后台定时解析；`cfg` 每次取当前的访问设置。
+    pub async fn run(self: std::sync::Arc<Self>, cfg: impl Fn() -> AccessConfig) {
+        loop {
+            let c = cfg();
+            if c.domains().next().is_some() {
+                self.refresh(&c).await;
+            }
+            tokio::time::sleep(RESOLVE_EVERY).await;
+        }
+    }
+}
+
 /// 访问码输错次数限制：每个 IP 15 分钟内最多错 10 次。
 #[derive(Default)]
 pub struct Limiter(Mutex<HashMap<IpAddr, (u32, Instant)>>);
@@ -284,21 +400,25 @@ mod tests {
     #[test]
     fn classify_sources() {
         let mut c = AccessConfig::default();
-        assert_eq!(classify(ip("127.0.0.1"), &c, false), Peer::Local);
-        assert_eq!(classify(ip("::ffff:127.0.0.1"), &c, false), Peer::Local);
-        assert_eq!(classify(ip("192.168.1.20"), &c, true), Peer::Local);
-        assert_eq!(classify(ip("192.168.1.30"), &c, false), Peer::Denied);
-        assert_eq!(classify(ip("203.0.113.7"), &c, false), Peer::Denied);
+        assert_eq!(classify(ip("127.0.0.1"), &c, false, &[]), Peer::Local);
+        assert_eq!(classify(ip("::ffff:127.0.0.1"), &c, false, &[]), Peer::Local);
+        assert_eq!(classify(ip("192.168.1.20"), &c, true, &[]), Peer::Local);
+        assert_eq!(classify(ip("192.168.1.30"), &c, false, &[]), Peer::Denied);
+        assert_eq!(classify(ip("203.0.113.7"), &c, false, &[]), Peer::Denied);
         c.allow_lan = true;
         for lan in ["192.168.1.30", "10.1.2.3", "172.20.0.5", "100.100.1.1", "169.254.3.4", "fd00::5", "fe80::1"] {
-            assert_eq!(classify(ip(lan), &c, false), Peer::Lan, "{lan}");
+            assert_eq!(classify(ip(lan), &c, false, &[]), Peer::Lan, "{lan}");
         }
-        assert_eq!(classify(ip("172.32.0.1"), &c, false), Peer::Denied);
-        assert_eq!(classify(ip("203.0.113.7"), &c, false), Peer::Denied);
+        assert_eq!(classify(ip("172.32.0.1"), &c, false, &[]), Peer::Denied);
+        assert_eq!(classify(ip("203.0.113.7"), &c, false, &[]), Peer::Denied);
         c.allowed_ips = vec!["203.0.113.0/24".into(), "2001:db8::1".into()];
-        assert_eq!(classify(ip("203.0.113.7"), &c, false), Peer::Listed);
-        assert_eq!(classify(ip("203.0.114.7"), &c, false), Peer::Denied);
-        assert_eq!(classify(ip("2001:db8::1"), &c, false), Peer::Listed);
+        assert_eq!(classify(ip("203.0.113.7"), &c, false, &[]), Peer::Listed);
+        assert_eq!(classify(ip("203.0.114.7"), &c, false, &[]), Peer::Denied);
+        assert_eq!(classify(ip("2001:db8::1"), &c, false, &[]), Peer::Listed);
+        let ddns = AccessConfig { allowed_ips: vec!["home.example.com".into()], ..AccessConfig::default() };
+        assert_eq!(classify(ip("198.51.100.9"), &ddns, false, &[]), Peer::Denied);
+        assert_eq!(classify(ip("198.51.100.9"), &ddns, false, &[ip("198.51.100.9")]), Peer::Listed);
+        assert_eq!(classify(ip("::ffff:198.51.100.9"), &ddns, false, &[ip("198.51.100.9")]), Peer::Listed);
         assert!(!Peer::Local.needs_code(&AccessConfig { code_enabled: true, ..c.clone() }));
         assert!(Peer::Lan.needs_code(&AccessConfig { code_enabled: true, ..c.clone() }));
         assert!(!Peer::Lan.needs_code(&c));
@@ -315,6 +435,16 @@ mod tests {
         assert_eq!(parse_net("0.0.0.0/0"), Err("ip_too_wide"));
         assert_eq!(parse_net("10.0.0.0/4"), Err("ip_too_wide"));
         assert_eq!(parse_net("127.0.0.1"), Err("ip_loopback"));
+        assert_eq!(parse_entry(" 4.looklook.example. "), Ok(Entry::Domain("4.looklook.example".into())));
+        assert_eq!(parse_entry("nas"), Ok(Entry::Domain("nas".into())));
+        assert_eq!(parse_entry("203.0.113.0/24"), Ok(Entry::Net(ip("203.0.113.0"), 24)));
+        assert_eq!(parse_entry("203.0.113"), Err("ip_format"));
+        assert_eq!(parse_entry("http://example.com"), Err("ip_format"));
+        assert_eq!(parse_entry("example.com/24"), Err("ip_format"));
+        assert_eq!(parse_entry("bad_name.com"), Err("ip_format"));
+        assert_eq!(parse_entry("localhost"), Err("ip_loopback"));
+        let cfg = AccessConfig { allowed_ips: vec!["203.0.113.7".into(), "home.example.com".into()], ..AccessConfig::default() };
+        assert_eq!(cfg.domains().collect::<Vec<_>>(), ["home.example.com"]);
     }
 
     #[test]

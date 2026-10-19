@@ -486,8 +486,10 @@
     "code_custom": "Set your own",
     "code_custom_placeholder": "At least 8 characters, case-insensitive",
     "code_forgot": "After changing the code, browsers that entered the old one must enter it again. Forgot it? Open this page on this computer to view it, or run looklook access in a terminal. 10 wrong attempts lock you out for 15 minutes.",
-    "list_title": "Allowlist (extra allowed IPs)",
-    "list_hint": "Usually not needed. Add one only to open the dashboard directly from a fixed public IP (e.g. an office network); enter a single IP or a range such as 203.0.113.7 or 203.0.113.0/24. Enabling the access code is recommended when using the allowlist.",
+    "list_title": "Allowlist (extra allowed IPs or domains)",
+    "list_hint": "Usually not needed. Add an entry only to open the dashboard directly from another network (e.g. an office): a single IP, a range or a domain, such as 203.0.113.7, 203.0.113.0/24 or home.example.com. If that network has a dynamic public IP, enter its DDNS domain: Looklook resolves it regularly and lets in visitors whose IP matches. Enabling the access code is recommended when using the allowlist.",
+    "list_placeholder": "203.0.113.7 or home.example.com",
+    "list_unresolved": "(not resolving yet)",
     "list_add": "Add",
     "list_remove": "Remove {{ip}}",
     "list_no_code": "IPs on the allowlist can currently open the dashboard without an access code; enabling the access code is recommended.",
@@ -512,10 +514,13 @@
     "state": {
       "connecting": "Connecting the remote tunnel…",
       "connected": "Remote tunnel connected — phones and other computers can open this",
-      "failed": "Remote tunnel connection failed"
+      "failed": "Remote tunnel connection failed",
+      "blocked": "Remote tunnel connected, but the remote console can't connect"
     },
     "retrying": "Retried automatically {{n}} times",
     "local_ok": "Using terminals on this computer is not affected; you just can't open them remotely from a phone or another computer for now. Looklook keeps retrying automatically.",
+    "blocked_why": "This computer can't reach UDP port 3478 on route {{name}}. The remote console sets up its encrypted connection over UDP, so opening it from a phone or another computer will fail. Usually the network (office, school, some cloud servers) blocks UDP.",
+    "blocked_fix": "Using it on this computer is not affected. Try another network (such as a phone hotspot), or switch to a route that shows a latency:",
     "show_detail": "Show technical details",
     "hide_detail": "Hide technical details",
     "since": "(since {{when}})",
@@ -533,7 +538,8 @@
     "pill": {
       "connecting": "Connecting",
       "connected": "Remote on",
-      "failed": "Remote off"
+      "failed": "Remote off",
+      "blocked": "Remote limited"
     },
     "pill_title": "Remote channel",
     "reconnect": "Reconnect now",

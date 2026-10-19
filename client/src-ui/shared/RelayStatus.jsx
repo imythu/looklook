@@ -1,4 +1,4 @@
-// 远程通道连接状态：连接中（动画）/ 已连接 / 失败（给出原因、怎么办，以及可展开的技术详情）。
+// 远程通道连接状态：连接中（动画）/ 已连接 / 已连接但到线路的 UDP 不通（远程控制台连不上）/ 失败（给出原因、怎么办，以及可展开的技术详情）。
 // RelayPill：管理台右上角的小标记，点开是同样的详情和“立即重连”。
 import { RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -7,10 +7,17 @@ import { useTranslation } from 'react-i18next';
 import { useStatus } from '../App.jsx';
 import { api } from './api.js';
 import { errorText } from './i18n.js';
+import { RELAYS_ANCHOR } from './RelayPicker.jsx';
+import { Link } from './router.jsx';
 import { relativeTime } from './time.js';
 import { Button, useToast } from './ui.jsx';
 
 const KNOWN = ['dns', 'refused', 'timeout', 'network', 'auth', 'handshake', 'heartbeat', 'config'];
+
+/** 远程通道连着，但测速发现这台电脑到当前线路的 UDP 不通：远程控制台（WebRTC）连不上。 */
+function udpBlocked(status) {
+  return status.relay?.state === 'connected' && !!status.relay_check?.blocked;
+}
 
 export default function RelayStatus() {
   const { t } = useTranslation();
@@ -19,6 +26,7 @@ export default function RelayStatus() {
   const r = status.relay;
   if (!r || r.state === 'off') return null;
   const failed = r.state === 'failed';
+  const blocked = udpBlocked(status);
   const reason = KNOWN.includes(r.reason) ? r.reason : 'other';
   return (
     <div className={`relay-status relay-${r.state}`} role="status" aria-live="polite">
@@ -30,11 +38,19 @@ export default function RelayStatus() {
             <i />
           </span>
         ) : (
-          <span className={`dot ${r.state === 'connected' ? 'on' : 'bad'}`} aria-hidden="true" />
+          <span className={`dot ${blocked ? 'warn' : r.state === 'connected' ? 'on' : 'bad'}`} aria-hidden="true" />
         )}
-        <b>{t(`relay.state.${r.state}`)}</b>
+        <b>{t(blocked ? 'relay.state.blocked' : `relay.state.${r.state}`)}</b>
         {failed && r.failures > 1 && <span className="muted small">{t('relay.retrying', { n: r.failures })}</span>}
       </div>
+      {blocked && (
+        <>
+          <p className="relay-why">{t('relay.blocked_why', { name: status.relay_check.current })}</p>
+          <p className="muted small relay-local">
+            {t('relay.blocked_fix')} <Link to={`/settings#${RELAYS_ANCHOR}`}>{t('relays.change_in_settings')}</Link>
+          </p>
+        </>
+      )}
       {failed && (
         <>
           <p className="relay-why">{t(`relay.reason.${reason}`)}</p>
@@ -81,6 +97,7 @@ export function RelayPill() {
   }, [open]);
   const r = status.relay;
   if (!r || r.state === 'off') return null;
+  const pill = udpBlocked(status) ? 'blocked' : r.state;
   const reconnect = async () => {
     setBusy(true);
     try {
@@ -95,9 +112,9 @@ export function RelayPill() {
   };
   return (
     <span className="relay-pill-wrap" ref={ref}>
-      <button type="button" className={`relay-pill relay-pill-${r.state}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="dialog" title={t(`relay.state.${r.state}`)}>
-        <span className={`dot ${r.state === 'connected' ? 'on' : r.state === 'failed' ? 'bad' : 'wait'}`} aria-hidden="true" />
-        <span className="relay-pill-label">{t(`relay.pill.${r.state}`)}</span>
+      <button type="button" className={`relay-pill relay-pill-${pill}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="dialog" title={t(`relay.state.${pill}`)}>
+        <span className={`dot ${pill === 'blocked' ? 'warn' : r.state === 'connected' ? 'on' : r.state === 'failed' ? 'bad' : 'wait'}`} aria-hidden="true" />
+        <span className="relay-pill-label">{t(`relay.pill.${pill}`)}</span>
       </button>
       {open && (
         <div className="relay-pop" role="dialog" aria-label={t('relay.pill_title')}>

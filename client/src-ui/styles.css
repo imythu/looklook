@@ -178,6 +178,7 @@ p { margin: 0 0 12px; }
 .dot.on { background: #34d27b; box-shadow: 0 0 0 0 rgba(52, 210, 123, .6); animation: pulse 2s infinite; }
 @keyframes pulse { 70% { box-shadow: 0 0 0 8px rgba(52, 210, 123, 0); } 100% { box-shadow: 0 0 0 0 rgba(52, 210, 123, 0); } }
 @media (prefers-reduced-motion: reduce) { .dot.on { animation: none; } }
+.dot.warn { background: var(--warn); }
 
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 12px; }
 .tile {
@@ -333,6 +334,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 }
 .relay-pill:hover { color: var(--text); border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); }
 .relay-pill-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: var(--danger-soft); }
+.relay-pill-blocked { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
 .relay-pill .dot.wait { background: var(--warn); animation: blink 1.2s infinite ease-in-out; }
 @keyframes blink { 50% { opacity: .35; } }
 .relay-pop {

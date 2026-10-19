@@ -1,5 +1,5 @@
 // 设置 → 访问控制：其他设备能不能直接打开这台电脑上的管理台。
-// 这台电脑自己总是可以打开；局域网要勾选允许；白名单是额外允许的 IP；访问码可选，只存在本机。
+// 这台电脑自己总是可以打开；局域网要勾选允许；白名单是额外允许的 IP、网段或域名（DDNS）；访问码可选，只存在本机。
 // 修改立即生效（开关点一下就保存），不需要重启看看。
 import { KeyRound, Plus, RefreshCw, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -7,6 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { SafetyNote, useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
+import { errorText } from '../shared/i18n.js';
 import { checkOpenHost, urlHost } from '../shared/host.js';
 import { Button, Card, CopyButton, ErrorNote, Note, Skeleton, Switch, useAction, useToast } from '../shared/ui.jsx';
 
@@ -61,7 +62,8 @@ function CodeBox({ data, save, busy }) {
   );
 }
 
-function Whitelist({ data, save, busy }) {
+/** `error`：白名单这一项保存失败的错误，显示在输入框下面；`clearError` 改输入时清掉它。 */
+function Whitelist({ data, save, busy, error, clearError }) {
   const { t } = useTranslation();
   const [ip, setIp] = useState('');
   const add = async (e) => {
@@ -77,6 +79,7 @@ function Whitelist({ data, save, busy }) {
           {data.allowed_ips.map((x) => (
             <span key={x} className="chip chip-x mono">
               {x}
+              {data.resolved?.[x] && <span className="muted">{data.resolved[x].length ? `→ ${data.resolved[x].join(' ')}` : t('access.list_unresolved')}</span>}
               <button type="button" aria-label={t('access.list_remove', { ip: x })} disabled={busy} onClick={() => save({ allowed_ips: data.allowed_ips.filter((y) => y !== x) })}>
                 <X size={14} />
               </button>
@@ -85,11 +88,26 @@ function Whitelist({ data, save, busy }) {
         </div>
       )}
       <form className="row" onSubmit={add}>
-        <input value={ip} onChange={(e) => setIp(e.target.value)} className="mono" inputMode="decimal" autoComplete="off" spellCheck={false} placeholder="203.0.113.7" aria-label={t('access.list_title')} />
+        <input
+          value={ip}
+          onChange={(e) => {
+            setIp(e.target.value);
+            if (error) clearError();
+          }}
+          className="mono"
+          inputMode="url"
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          placeholder={t('access.list_placeholder')}
+          aria-label={t('access.list_title')}
+          aria-invalid={error ? 'true' : undefined}
+        />
         <Button type="submit" variant="secondary" icon={Plus} busy={busy} disabled={!ip.trim()}>
           {t('access.list_add')}
         </Button>
       </form>
+      {error && <span className="field-error">{t(`error:rule.${error.params.rule}`, { defaultValue: errorText(t, error) })}</span>}
     </div>
   );
 }
@@ -167,7 +185,7 @@ export default function AccessCard() {
   const toast = useToast();
   const [data, setData] = useState(null);
   const [loadError, setLoadError] = useState(null);
-  const { busy, error, run } = useAction();
+  const { busy, error, setError, run } = useAction();
   useEffect(() => {
     api.get('/access').then(setData, setLoadError);
   }, []);
@@ -189,6 +207,8 @@ export default function AccessCard() {
   }
   if (loadError) return <ErrorNote error={loadError} />;
   if (!data) return <Skeleton height={240} />;
+  // 白名单的错误显示在白名单输入框下面，不放到卡片最下面
+  const listError = error?.params?.field === 'allowed_ips' ? error : null;
   const lanUrls = data.lan_ips.map((ip) => `http://${urlHost(ip)}:${data.port}/`);
   return (
     <Card title={t('access.title')}>
@@ -232,7 +252,7 @@ export default function AccessCard() {
       </Toggle>
       {data.code_enabled && <CodeBox data={data} save={save} busy={busy} />}
 
-      <Whitelist data={data} save={save} busy={busy} />
+      <Whitelist data={data} save={save} busy={busy} error={listError} clearError={() => setError(null)} />
       {data.allowed_ips.length > 0 && !data.code_enabled && (
         <Note kind="warn" icon={KeyRound}>
           {t('access.list_no_code')}{' '}
@@ -243,7 +263,7 @@ export default function AccessCard() {
       )}
 
       <OpenHost data={data} save={save} busy={busy} />
-      <ErrorNote error={error} />
+      <ErrorNote error={listError ? null : error} />
       <SafetyNote full />
     </Card>
   );

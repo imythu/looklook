@@ -74,6 +74,8 @@ pub struct Inner {
     /// 直接访问控制（局域网、白名单、访问码、打开地址），改设置时同步更新
     pub access: RwLock<access::AccessConfig>,
     pub limiter: access::Limiter,
+    /// 白名单里域名（DDNS）的解析结果
+    pub resolved: Arc<access::Resolved>,
     /// 这台机器的局域网 IP（启动时取一次，只用于显示）
     pub lan_ips: Vec<IpAddr>,
     /// 远程入口的凭证缓存与 jti 去重
@@ -155,7 +157,11 @@ pub async fn local_guard(State(app): State<App>, mut req: Request, next: Next) -
     let peer_ip = conn.map(|c| c.remote.ip().to_canonical()).unwrap_or(IpAddr::from([127, 0, 0, 1]));
     let same_host = conn.and_then(|c| c.local).is_some_and(|l| l.ip().to_canonical() == peer_ip);
     let cfg = app.access();
-    let mut peer = access::classify(peer_ip, &cfg, same_host);
+    let mut peer = access::classify(peer_ip, &cfg, same_host, &app.resolved.ips(&cfg));
+    // 白名单域名的 IP 可能刚变（DDNS）：重新解析一次再判断
+    if peer == access::Peer::Denied && app.resolved.refresh_if_stale(&cfg).await {
+        peer = access::classify(peer_ip, &cfg, same_host, &app.resolved.ips(&cfg));
+    }
     if !host_name(req.headers()).is_some_and(|n| access::host_allowed(n, cfg.open_host().as_ref())) {
         if peer == access::Peer::Denied {
             return assets::denied_page(&peer_ip.to_string());

@@ -153,7 +153,7 @@ enum AccessCmd {
     Lan { state: OnOff },
     /// 访问码：on 开启、off 关闭、new 换新的 / Access code: on, off, or new
     Code { action: CodeAction },
-    /// 把 IP 或网段加入白名单 / Add an IP or range to the whitelist (e.g. 203.0.113.0/24)
+    /// 把 IP、网段或域名加入白名单 / Add an IP, range or domain to the whitelist (e.g. 203.0.113.0/24, home.example.com)
     Allow { ip: String },
     /// 从白名单移除 / Remove from the whitelist
     Remove { ip: String },
@@ -448,6 +448,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         http: gateway::proxy_client(),
         access: std::sync::RwLock::new(access),
         limiter: Default::default(),
+        resolved: Default::default(),
         lan_ips: gateway::access::own_lan_ips(),
         remote: Default::default(),
         direct: Default::default(),
@@ -474,6 +475,10 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(relay_watch.run(shutdown.clone())),
         tokio::spawn(transfers.run(store.clone())),
         tokio::spawn(app.rtc.clone().watch(account.clone())),
+        {
+            let app = app.clone();
+            tokio::spawn(app.resolved.clone().run(move || app.access()))
+        },
         {
             let account = account.clone();
             tokio::spawn(async move {
@@ -716,7 +721,15 @@ async fn cli_access(home: &Option<PathBuf>, listen: SocketAddr, action: Option<A
         Some(ip) => println!("局域网访问 / LAN access: {}（http://{ip}:{}/）", on("allow_lan"), v["port"]),
         None => println!("局域网访问 / LAN access: {}", on("allow_lan")),
     }
-    let ips: Vec<&str> = v["allowed_ips"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let ips: Vec<String> = v["allowed_ips"]
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str()).map(|x| match v["resolved"][x].as_array() {
+            // 域名后面带上它当前解析到的 IP
+            Some(r) if r.is_empty() => format!("{x}（解析不到 / unresolved）"),
+            Some(r) => format!("{x} → {}", r.iter().filter_map(|i| i.as_str()).collect::<Vec<_>>().join(" ")),
+            None => x.to_string(),
+        }).collect())
+        .unwrap_or_default();
     println!("白名单 / Whitelist: {}", if ips.is_empty() { "（无 / none）".to_string() } else { ips.join(", ") });
     println!("访问码 / Access code: {}{}", on("code_enabled"), if v["code_enabled"].as_bool() == Some(true) { format!(", {}", v["code"].as_str().unwrap_or("")) } else { String::new() });
     if !ips.is_empty() && v["code_enabled"].as_bool() != Some(true) {
@@ -743,7 +756,7 @@ fn cli_error(code: &str, params: &Value) -> String {
         "ALREADY_LOGGED_IN" => "已经登录了 / Already signed in".into(),
         "CLIENT_VERSION_UNSUPPORTED" => "客户端版本太旧，请先运行 looklook upgrade / This client is too old; run looklook upgrade".into(),
         "VALIDATION_FAILED" => match params["rule"].as_str() {
-            Some("ip_format") => "IP 格式不对，例如 203.0.113.7 或 203.0.113.0/24 / Invalid IP, e.g. 203.0.113.7 or 203.0.113.0/24".into(),
+            Some("ip_format") => "格式不对，填 IP、网段或域名，例如 203.0.113.7、203.0.113.0/24、home.example.com / Invalid entry; use an IP, range or domain, e.g. 203.0.113.7, 203.0.113.0/24, home.example.com".into(),
             Some("ip_prefix") => "网段长度不对，IPv4 是 /8 到 /32 / Invalid prefix length; IPv4 takes /8 to /32".into(),
             Some("ip_too_wide") => "范围太大，不能对整个互联网开放 / Range too wide; it can't open to the whole internet".into(),
             Some("ip_loopback") => "这台电脑自己本来就可以打开，不用添加 / This computer is always allowed; no need to add it".into(),

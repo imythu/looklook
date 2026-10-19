@@ -1183,6 +1183,8 @@ fn access_view(app: &App, peer: Option<Peer>) -> Value {
     json!({
         "allow_lan": c.allow_lan,
         "allowed_ips": c.allowed_ips,
+        // 白名单域名当前解析到的 IP（解析不出来是空列表）
+        "resolved": app.resolved.view(&c),
         "code_enabled": c.code_enabled,
         "code": c.code,
         "open_host": c.open_host,
@@ -1221,7 +1223,7 @@ struct AccessReq {
 async fn put_access(State(app): State<App>, Extension(access): Extension<Access>, peer: Option<Extension<Peer>>, Json(req): Json<AccessReq>) -> R<Json<Value>> {
     require_local(&access)?;
     let mut c = app.access();
-    let net = |s: &str| access::parse_net(s).map(access::format_net).map_err(|rule| LocalError::invalid("allowed_ips", rule).with("value", s));
+    let net = |s: &str| access::parse_entry(s).map(|e| access::format_entry(&e)).map_err(|rule| LocalError::invalid("allowed_ips", rule).with("value", s));
     if let Some(v) = req.allow_lan {
         c.allow_lan = v;
     }
@@ -1258,8 +1260,13 @@ async fn put_access(State(app): State<App>, Extension(access): Extension<Access>
         c.open_host = if h.trim().is_empty() { String::new() } else { parsed.to_string() };
     }
     c.save(&app.store)?;
+    let domains_changed = !c.domains().eq(app.access().domains());
     *app.access.write().unwrap_or_else(|e| e.into_inner()) = c;
     let _ = app.write_open_file();
+    if domains_changed {
+        // 马上解析新加的域名，界面能直接看到它解析到哪个 IP
+        app.resolved.refresh(&app.access()).await;
+    }
     Ok(Json(access_view(&app, peer.map(|p| p.0))))
 }
 

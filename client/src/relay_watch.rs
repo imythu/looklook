@@ -22,6 +22,8 @@ const FIRST_DELAY: Duration = Duration::from_secs(20);
 const INTERVAL: Duration = Duration::from_secs(15 * 60);
 /// 发现更快的线路后，隔多久再测一次确认。
 const CONFIRM_DELAY: Duration = Duration::from_secs(60);
+/// 当前线路测不通时隔多久重测（网络恢复后提示要尽快消失）。
+const BLOCKED_RETRY: Duration = Duration::from_secs(60);
 /// 延迟达到这个值（毫秒）算慢。
 pub const SLOW_MS: u32 = 150;
 
@@ -51,6 +53,9 @@ pub struct Check {
     pub best_ms: Option<u32>,
     /// 当前线路偏慢（或测不通）
     pub slow: bool,
+    /// 当前线路测不通：这台电脑到它的 UDP 3478（TURN）不通，远程控制台（WebRTC）连不上，
+    /// 远程通道显示已连接也一样。原因见对应条目的 `error`。
+    pub blocked: bool,
     /// 建议换到的线路：当前偏慢、且这条明显更快，但没有自动换（手动模式，或者有终端开着）
     pub suggest: Option<String>,
 }
@@ -88,7 +93,8 @@ fn conclude(items: Vec<Item>, preferred: Option<String>, current: Option<String>
     // 能测的线路里有当前这条但测不通，算慢；当前线路不能测（没开直连）时什么也不说。
     let current_testable = current.as_ref().is_some_and(|c| items.iter().any(|i| &i.name == c && i.error.as_deref() != Some("unsupported")));
     let slow = current_testable && current_ms.is_none_or(|ms| ms >= SLOW_MS);
-    Check { checked_at: now, items, preferred, current, auto, current_ms, best, best_ms, slow, suggest: None }
+    let blocked = current_testable && current_ms.is_none();
+    Check { checked_at: now, items, preferred, current, auto, current_ms, best, best_ms, slow, blocked, suggest: None }
 }
 
 /// `best` 是否明显比当前线路快。
@@ -184,6 +190,7 @@ impl RelayWatch {
                         c.current = r.current;
                         c.current_ms = c.current.as_ref().and_then(|n| c.items.iter().find(|i| &i.name == n)).and_then(|i| i.latency_ms);
                         c.slow = c.current_ms.is_none_or(|ms| ms >= SLOW_MS);
+                        c.blocked = c.current_ms.is_none();
                     }
                     Err(e) => tracing::warn!(error = %e, "自动换线路失败"),
                 }
@@ -191,8 +198,19 @@ impl RelayWatch {
         }
         let old = self.view();
         c.suggest = suggest_for(&c, old.as_ref(), confirmed);
+        let blocked = c.blocked;
+        if blocked != old.as_ref().is_some_and(|o| o.blocked) {
+            let error = c.current.as_ref().and_then(|n| c.items.iter().find(|i| &i.name == n)).and_then(|i| i.error.clone());
+            if blocked {
+                tracing::warn!(relay = ?c.current, ?error, "到线路的 UDP 不通，远程控制台连不上");
+            } else {
+                tracing::info!(relay = ?c.current, "到线路的 UDP 通了");
+            }
+        }
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
-        if pending.is_some() {
+        if blocked {
+            BLOCKED_RETRY
+        } else if pending.is_some() {
             CONFIRM_DELAY
         } else {
             INTERVAL
@@ -231,7 +249,7 @@ mod tests {
     #[test]
     fn concludes_slow_and_candidate() {
         let c = conclude(vec![item("r1", Some(320)), item("r2", Some(60))], None, Some("r1".into()), false, 0);
-        assert!(c.auto && c.slow);
+        assert!(c.auto && c.slow && !c.blocked);
         assert_eq!((c.best.as_deref(), c.candidate()), (Some("r2"), Some("r2")));
         // 手动选的是当前这条
         let c = conclude(vec![item("r1", Some(90)), item("r2", Some(30))], Some("r1".into()), Some("r1".into()), false, 0);
@@ -240,12 +258,12 @@ mod tests {
         assert_eq!(suggest_for(&c, None, true), None, "不慢就不提示");
         // 自动选过的仍算自动模式
         let c = conclude(vec![item("r1", None), item("r2", Some(30))], Some("r1".into()), Some("r1".into()), true, 0);
-        assert!(c.auto && c.slow);
+        assert!(c.auto && c.slow && c.blocked, "当前线路测不通");
         // 当前线路不能测速时不算慢
         let mut u = item("r1", None);
         u.error = Some("unsupported".into());
         let c = conclude(vec![u, item("r2", Some(30))], None, Some("r1".into()), false, 0);
-        assert!(!c.slow);
+        assert!(!c.slow && !c.blocked);
     }
 
     #[test]
