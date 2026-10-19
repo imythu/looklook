@@ -182,7 +182,7 @@ export function RemoteCard() {
             </div>
           ) : (
             <div className="remote-address">
-              <Link to="/settings" className="btn btn-plain remote-open">
+              <Link to="/settings#access" className="btn btn-plain remote-open">
                 {t("terminals.lan_go_settings")}
               </Link>
             </div>

@@ -1,20 +1,25 @@
 // 极简前端路由（History API）。客户端网关对非 /api 路径回落到入口 HTML。
 import { createContext, useContext, useEffect, useState } from 'react';
 
-const Ctx = createContext({ path: '/', search: '', navigate: () => {} });
+const Ctx = createContext({ path: '/', search: '', hash: '', navigate: () => {} });
 
 export function Router({ children }) {
-  const [loc, setLoc] = useState({ path: window.location.pathname, search: window.location.search });
+  const here = () => ({ path: window.location.pathname, search: window.location.search, hash: window.location.hash });
+  const [loc, setLoc] = useState(here);
   useEffect(() => {
-    const on = () => setLoc({ path: window.location.pathname, search: window.location.search });
+    const on = () => setLoc(here());
     window.addEventListener('popstate', on);
-    return () => window.removeEventListener('popstate', on);
+    window.addEventListener('hashchange', on);
+    return () => {
+      window.removeEventListener('popstate', on);
+      window.removeEventListener('hashchange', on);
+    };
   }, []);
   const navigate = (to, { replace = false } = {}) => {
     if (replace) window.history.replaceState(null, '', to);
     else window.history.pushState(null, '', to);
     const u = new URL(to, window.location.origin);
-    setLoc({ path: u.pathname, search: u.search });
+    setLoc({ path: u.pathname, search: u.search, hash: u.hash });
     window.scrollTo(0, 0);
   };
   return <Ctx.Provider value={{ ...loc, navigate }}>{children}</Ctx.Provider>;

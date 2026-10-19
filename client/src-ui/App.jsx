@@ -241,6 +241,7 @@ function ToolMeta({ x }) {
 function ToolGroup({ path }) {
   const { t } = useTranslation();
   const { status } = useStatus();
+  const devices = useDevices();
   const [open, setOpen] = useState(() => readFlag(TOOLS_KEY, false));
   const toggle = () => {
     writeFlag(TOOLS_KEY, !open);
@@ -252,6 +253,7 @@ function ToolGroup({ path }) {
         <ChevronDown size={14} aria-hidden="true" />
         {t('sess.tools')}
       </button>
+      {devices.multi && <DeviceSwitcher perDevice side helpUrl={webUrl(status, '/docs/faq')} />}
       {open ? (
         <nav className="side-group" aria-label={t('sess.tools')}>
           {TOOLS.map((x) => (
@@ -406,7 +408,12 @@ function ConsoleLayout({ path, stale, children }) {
           </Link>
         </span>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
-          {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
+          {/* 宽屏展开的侧栏里“工具”上方已有电脑切换，顶栏的只在手机和收起侧栏时显示 */}
+          {switcher && (
+            <span className={rail ? 'inline' : 'inline side-dup'}>
+              <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />
+            </span>
+          )}
           <ConnChip />
           <LangSwitch />
           <Link to="/account" aria-label={t('nav.account')}>

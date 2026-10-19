@@ -128,8 +128,9 @@ function markTipSeen() {
  * - 终端页（合并显示所有电脑）：按钮写“N 台电脑”，点一台跳到它的终端分组。
  * 第一次看到时在按钮下面提示一次“在这里切换电脑”，免得用户不知道有这个入口。
  * `helpUrl`：多台电脑的说明（看看网页的常见问题）。
+ * `side`：侧栏“工具”上方的整行样式，表示下面的工具作用在哪台电脑上。
  */
-export function DeviceSwitcher({ perDevice, helpUrl }) {
+export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
   const { t } = useTranslation();
   const d = useDevices();
   const [open, setOpen] = useState(false);
@@ -167,12 +168,19 @@ export function DeviceSwitcher({ perDevice, helpUrl }) {
     document.getElementById(`device-${x.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   };
   return (
-    <div className="device-switch" ref={ref}>
+    <div className={`device-switch${side ? ' device-switch-side' : ''}`} ref={ref}>
       <button type="button" className="device-pill" aria-haspopup="menu" aria-expanded={open} onClick={toggle} title={t(perDevice ? 'devices.switch_hint' : 'devices.list_hint')}>
         {perDevice ? (
           <>
-            <DeviceAvatar device={current} size={20} dot />
-            <span className="ellipsis">{deviceName(t, current)}</span>
+            <DeviceAvatar device={current} size={side ? 24 : 20} dot />
+            {side ? (
+              <span className="device-pill-text">
+                <span className="ellipsis">{deviceName(t, current)}</span>
+                <span className="small muted ellipsis">{t('devices.tools_on')}</span>
+              </span>
+            ) : (
+              <span className="ellipsis">{deviceName(t, current)}</span>
+            )}
           </>
         ) : (
           <span className="ellipsis">
@@ -183,7 +191,8 @@ export function DeviceSwitcher({ perDevice, helpUrl }) {
         )}
         <ChevronDown size={15} aria-hidden="true" className="device-chev" />
       </button>
-      {tip && !open && (
+      {/* 侧栏里的按钮本身写着“工具作用于这台电脑”，不再弹提示（免得盖住下面的工具） */}
+      {tip && !open && !side && (
         <div className="device-tip" role="note">
           <span>{t(perDevice ? 'devices.tip_switch' : 'devices.tip_list', { count: d.items.length })}</span>
           <button type="button" className="btn btn-plain btn-icon" onClick={dismissTip} aria-label={t('action.close')}>

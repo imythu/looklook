@@ -98,7 +98,7 @@
     "jump_missing": "no longer exists",
     "jump_depth": "nests too many jump hosts"
   },
-  "LAN_SWITCH_OFF": "Switching to the local network is turned off (Settings → Access)",
+  "LAN_SWITCH_OFF": "Switching to the local network is turned off (Settings → Network & access)",
   "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
   "CLIENT_UNREACHABLE": "Can't reach Looklook on this computer; it may have quit",
   "RTC_RELAY_UDP": "Can't reach this computer: neither this browser nor the computer can reach the UDP ports of the current route, so they can only connect directly on the same local network. The relay server may not allow UDP (3478 and 49160–49999); try switching routes in Looklook on that computer",

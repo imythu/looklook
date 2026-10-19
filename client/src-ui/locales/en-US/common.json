@@ -147,7 +147,7 @@
     "route_lan": "Same Wi‑Fi",
     "lan_body": "When your phone and this computer are on the same Wi‑Fi, a direct connection is faster and data doesn't go through the internet.",
     "lan_body_code": "When your phone and this computer are on the same Wi‑Fi, a direct connection is faster and data stays at home. You'll need to enter the access code the first time.",
-    "lan_off": "LAN access isn't enabled yet. Turn it on in Settings → Access control and a scannable QR code will appear here.",
+    "lan_off": "LAN access isn't enabled yet. Turn it on in Settings → Network & access and a scannable QR code will appear here.",
     "lan_unknown": "Couldn't find this computer's LAN address. Make sure you're on Wi‑Fi or Ethernet, or check its IP in your router.",
     "lan_pick": "Choose this computer's network address",
     "lan_go_settings": "Go to access control",
@@ -289,7 +289,7 @@
     "direct": "Direct",
     "direct_hint": "This browser runs on the same computer, so the terminal connects to it directly without the relay (round trip about {{ms}} ms; via the relay about {{relay}} ms).",
     "relay_ms": "{{ms}} ms",
-    "relay_hint": "Connected through a remote route; round trip about {{ms}} ms. Typing delay mostly comes from network distance: a route closer to both you and the computer (Settings → Route) is faster, and opening it on the computer itself connects directly.",
+    "relay_hint": "Connected through a remote route; round trip about {{ms}} ms. Typing delay mostly comes from network distance: a route closer to both you and the computer (Settings → Network & access) is faster, and opening it on the computer itself connects directly.",
     "newline_hint": "newline",
     "newline_title": "Shift+Enter adds a new line, Enter sends"
   },
@@ -404,7 +404,18 @@
     "check_update": "Check for updates",
     "up_to_date": "You're up to date",
     "beta": "Beta",
-    "theme_agent": "Agent"
+    "theme_agent": "Agent",
+    "sec_general": "General",
+    "sec_terminal": "Terminal",
+    "sec_ai": "AI models",
+    "sec_network": "Network & access",
+    "sec_about": "About",
+    "new_terminal": "Defaults for new terminals",
+    "autosave": "Changes are saved automatically",
+    "saving": "Saving…",
+    "saved": "Saved",
+    "scope": "Settings for this computer:",
+    "language_hint": "Only affects this browser or app, not your other computers."
   },
   "account": {
     "days_left": "{{n}} days left",
@@ -439,7 +450,7 @@
     "body": "The Looklook dashboard uses port {{port}} on this computer. If this computer has a public IP (e.g. a cloud server), do not open port {{port}} to the internet in the firewall, security group or router. To connect from outside, use your personal address (requires signing in to Looklook).",
     "local_only": "Only this computer itself can open the dashboard right now.",
     "open": "Devices on the LAN or allowlist may open the dashboard; they need to enter the access code.",
-    "open_no_code": "Devices on the LAN or allowlist may open the dashboard, but no access code is enabled: anyone on the same network can open your terminals. Enable the access code in Settings → Access control.",
+    "open_no_code": "Devices on the LAN or allowlist may open the dashboard, but no access code is enabled: anyone on the same network can open your terminals. Enable the access code in Settings → Network & access.",
     "short": {
       "local_only": "Only this computer can open the dashboard",
       "open": "Other devices need the access code",
@@ -602,7 +613,7 @@
     "default": "Default",
     "custom": "Custom",
     "custom_label": "Custom shell command",
-    "hint": "Codex, Claude Code and custom commands run inside this shell too. Change the default in Settings.",
+    "hint": "Codex, Claude Code and custom commands run inside this shell too. Change the default in Settings → Terminal.",
     "custom_hint": "Enter a program name or full path, optionally with arguments; quote paths that contain spaces. You'll be told if it can't be found on this computer."
   },
   "update": {
@@ -724,7 +735,8 @@
     "tip_switch": "You're signed in on {{count}} computers. Switch here",
     "tip_list": "You're signed in on {{count}} computers. See them here",
     "default": "default",
-    "help": "How do several computers work?"
+    "help": "How do several computers work?",
+    "tools_on": "Tools apply to this computer"
   },
   "files": {
     "button": "Upload",
