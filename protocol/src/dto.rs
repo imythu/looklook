@@ -90,10 +90,12 @@ pub struct RelayChoices {
 pub struct RelayChoice {
     /// 中转名（`r2`…），选择时提交这个值。
     pub name: String,
-    /// 用户在这个中转上的地址（`alice.r2.example.com`）；中转没开直连时为 None。
+    /// 中转的地址（`r2.example.com`）。
     pub address: Option<String>,
-    /// 测延迟的地址：中转直连入口（443）上的 `/_ll/ping`。中转没开直连时为 None，不能测。
-    pub ping_url: Option<String>,
+    /// 测延迟的地址：中转上 TURN 服务（coturn）的 STUN 端口，`主机:端口`。远程控制台的连接（WebRTC）
+    /// 经它中继，测的就是这条路；它不通（比如 UDP 被拦）时这条线路也用不了。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stun: Option<String>,
     /// 中转所在地（按 IP 库或管理员填写，到省/州一级）；未知时为 None。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub location: Option<RelayLocation>,

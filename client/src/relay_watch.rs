@@ -59,8 +59,8 @@ pub struct Check {
 pub async fn measure(account: &Account) -> crate::platform::PResult<Check> {
     let list = account.relays().await?;
     let pings = futures_util::future::join_all(list.items.iter().map(|i| async {
-        match &i.ping_url {
-            Some(u) => crate::relay::ping(u).await,
+        match &i.stun {
+            Some(a) => crate::relay::ping(a).await,
             None => Err("unsupported".to_string()),
         }
     }))

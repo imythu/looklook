@@ -393,51 +393,66 @@ fn start(p: &RelayParams, local: SocketAddr, path: &std::path::Path) -> anyhow::
     Ok((tx, task))
 }
 
-/// 测一条线路的延迟（毫秒）：向中转直连入口（443）的 `/_ll/ping` 发请求。第一次请求建立连接
-/// （DNS、TCP、TLS），不计入；之后在同一连接上再发 `PING_SAMPLES` 次，取最小值，约等于一次往返。
-/// 不走系统代理：远程通道本身也是直连中转。
-pub async fn ping(url: &str) -> Result<u32, String> {
+/// 测一条线路的延迟（毫秒）：向中转上 TURN 服务（coturn）的 STUN 端口（`主机:端口`）发 Binding 请求（UDP），
+/// 发 `PING_SAMPLES` 次取最小值。远程控制台的 WebRTC 连接经它中继，测的就是这条路；
+/// 电脑端只能经 UDP 用 TURN，UDP 不通就是测不通。不走系统代理（UDP 本来也不走）。
+pub async fn ping(addr: &str) -> Result<u32, String> {
     const PING_SAMPLES: usize = 3;
-    let mut b = reqwest::Client::builder();
+    const WAIT: Duration = Duration::from_secs(1);
+    let (host, port) = addr
+        .rsplit_once(':')
+        .and_then(|(h, p)| Some((h.trim_start_matches('[').trim_end_matches(']'), p.parse::<u16>().ok()?)))
+        .ok_or_else(|| "address".to_string())?;
     // 与通道相同的开发用解析覆盖（`*.localhost`、`LOOKLOOK_RESOLVE`）
-    if let Some(u) = reqwest::Url::parse(url).ok().filter(|u| u.host_str().is_some()) {
-        let host = u.host_str().unwrap_or_default();
-        if let Some(ip) = localhost_addr(host).or_else(|| resolve_override(host)) {
-            b = b.resolve(host, SocketAddr::new(ip, u.port_or_known_default().unwrap_or(443)));
-        }
-    }
-    let http = b
-        .no_proxy()
-        .timeout(Duration::from_secs(3))
-        .pool_max_idle_per_host(1)
-        .user_agent(concat!("looklook-client/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| e.to_string())?;
-    let once = || async {
-        let t = std::time::Instant::now();
-        let r = http.get(url).send().await.map_err(|e| ping_error(&e))?;
-        if !r.status().is_success() {
-            return Err(format!("HTTP {}", r.status().as_u16()));
-        }
-        Ok(t.elapsed())
+    let ip = match localhost_addr(host).or_else(|| resolve_override(host)).or_else(|| host.parse().ok()) {
+        Some(ip) => ip,
+        None => tokio::net::lookup_host((host, port)).await.ok().and_then(|mut a| a.next()).map(|a| a.ip()).ok_or_else(|| "dns".to_string())?,
     };
-    once().await?;
-    let mut best = Duration::MAX;
+    let bind: SocketAddr = if ip.is_ipv4() { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
+    let sock = tokio::net::UdpSocket::bind(bind).await.map_err(|_| "network".to_string())?;
+    sock.connect((ip, port)).await.map_err(|_| "network".to_string())?;
+    let mut best: Option<Duration> = None;
+    let mut buf = [0u8; 1024];
     for _ in 0..PING_SAMPLES {
-        best = best.min(once().await?);
+        let tx: [u8; 12] = rand::random();
+        let t = Instant::now();
+        sock.send(&stun_binding_request(&tx)).await.map_err(|_| "network".to_string())?;
+        let reply = tokio::time::timeout(WAIT, async {
+            loop {
+                let n = sock.recv(&mut buf).await?;
+                if is_stun_binding_success(&buf[..n], &tx) {
+                    return Ok::<_, std::io::Error>(());
+                }
+            }
+        })
+        .await;
+        match reply {
+            Ok(Ok(())) => best = Some(best.map_or(t.elapsed(), |b| b.min(t.elapsed()))),
+            // 端口不可达（ICMP）：对面没有 STUN 服务
+            Ok(Err(e)) => {
+                tracing::debug!(error = %e, addr, "线路测速失败");
+                return Err("connect".into());
+            }
+            Err(_) => {}
+        }
     }
-    Ok(best.as_millis().clamp(1, u32::MAX as u128) as u32)
+    best.map(|b| b.as_millis().clamp(1, u32::MAX as u128) as u32).ok_or_else(|| "timeout".into())
 }
 
-fn ping_error(e: &reqwest::Error) -> String {
-    tracing::debug!(error = ?e, "线路测速失败");
-    if e.is_timeout() {
-        "timeout".into()
-    } else if e.is_connect() {
-        "connect".into()
-    } else {
-        "network".into()
-    }
+const STUN_MAGIC: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
+
+/// STUN Binding 请求（RFC 8489，不带属性）：类型 0x0001、长度 0、magic cookie、12 字节事务 id。
+fn stun_binding_request(tx: &[u8; 12]) -> [u8; 20] {
+    let mut m = [0u8; 20];
+    m[1] = 0x01;
+    m[4..8].copy_from_slice(&STUN_MAGIC);
+    m[8..20].copy_from_slice(tx);
+    m
+}
+
+/// 是同一事务的 Binding 成功响应（类型 0x0101）。
+fn is_stun_binding_success(m: &[u8], tx: &[u8; 12]) -> bool {
+    m.len() >= 20 && m[0..2] == [0x01, 0x01] && m[4..8] == STUN_MAGIC && m[8..20] == tx[..]
 }
 
 #[cfg(test)]
@@ -514,34 +529,38 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ping_measures_round_trips_on_one_connection() {
+    async fn ping_sends_stun_binding_requests() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let hits = Arc::new(AtomicUsize::new(0));
-        let conns = Arc::new(AtomicUsize::new(0));
-        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = l.local_addr().unwrap();
-        let (h, c) = (hits.clone(), conns.clone());
+        let srv = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let addr = srv.local_addr().unwrap();
+        let h = hits.clone();
         tokio::spawn(async move {
+            let mut buf = [0u8; 1024];
             loop {
-                let (s, _) = l.accept().await.unwrap();
-                c.fetch_add(1, Ordering::SeqCst);
-                let h = h.clone();
-                tokio::spawn(async move {
-                    let svc = hyper::service::service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
-                        h.fetch_add(1, Ordering::SeqCst);
-                        let status = if req.uri().path() == "/_ll/ping" { 204 } else { 404 };
-                        async move { Ok::<_, std::convert::Infallible>(hyper::Response::builder().status(status).body(String::new()).unwrap()) }
-                    });
-                    let _ = hyper::server::conn::http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(s), svc).await;
-                });
+                let (n, from) = srv.recv_from(&mut buf).await.unwrap();
+                h.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(n, 20);
+                assert_eq!(&buf[0..2], &[0, 1]);
+                // 先回一个别的事务的响应（应被忽略），再回正确的
+                let mut wrong = [0u8; 20];
+                wrong[..8].copy_from_slice(&[1, 1, 0, 0, 0x21, 0x12, 0xa4, 0x42]);
+                srv.send_to(&wrong, from).await.unwrap();
+                let mut ok = [0u8; 20];
+                ok[..8].copy_from_slice(&[1, 1, 0, 0, 0x21, 0x12, 0xa4, 0x42]);
+                ok[8..20].copy_from_slice(&buf[8..20]);
+                srv.send_to(&ok, from).await.unwrap();
             }
         });
-        let ms = ping(&format!("http://{addr}/_ll/ping")).await.unwrap();
+        let ms = ping(&addr.to_string()).await.unwrap();
         assert!((1..1000).contains(&ms), "{ms}");
-        assert_eq!(hits.load(Ordering::SeqCst), 4);
-        assert_eq!(conns.load(Ordering::SeqCst), 1, "samples reuse the warm-up connection");
-        assert_eq!(ping(&format!("http://{addr}/nope")).await, Err("HTTP 404".into()));
-        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
-        assert_eq!(ping(&format!("http://{closed}/_ll/ping")).await, Err("connect".into()));
+        assert_eq!(hits.load(Ordering::SeqCst), 3);
+        // 没人应答：回环上端口不可达会立刻报错；被丢包时超时
+        let closed = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap().local_addr().unwrap();
+        let e = ping(&closed.to_string()).await.unwrap_err();
+        assert!(e == "connect" || e == "timeout", "{e}");
+        let silent = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        assert_eq!(ping(&silent.local_addr().unwrap().to_string()).await, Err("timeout".into()));
+        assert_eq!(ping("no-port").await, Err("address".into()));
     }
 }
