@@ -114,6 +114,107 @@ pub fn classify(capture: &str) -> Screen {
     Screen::Input { text: text.trim().to_string(), busy }
 }
 
+/// 输入框上下的状态信息：权限模式、思考强度、后台任务个数（`⏸ manual mode on · 1 shell · ↓ to manage`）。
+/// hooks 只在下一个事件时才带权限模式，后台任务个数更是只有屏幕上有。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Footer {
+    /// 和 hook 的 `permission_mode` 同样的写法
+    pub mode: Option<String>,
+    pub effort: Option<String>,
+    /// 还在运行的后台任务：`[(个数, 种类)]`，种类是单数（shell、subagent、monitor……）
+    pub background: Vec<(u32, String)>,
+}
+
+/// 后台任务的种类（`1 shell`、`2 subagents`）：单数形式
+const TASK_KINDS: &[&str] = &["shell", "subagent", "agent", "monitor", "workflow", "teammate", "task", "background task", "mcp task", "cloud session"];
+pub const EFFORTS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
+
+/// 普通输入框时的状态信息；不是普通输入框时为 None。
+pub fn footer(capture: &str) -> Option<Footer> {
+    if !matches!(classify(capture), Screen::Input { .. }) {
+        return None;
+    }
+    let lines: Vec<String> = capture.lines().map(|l| strip(l).0.trim_end().to_string()).collect();
+    let bottom = lines.iter().rposition(|l| is_rule(l))?;
+    let top = lines[..bottom].iter().rposition(|l| is_rule(l))?;
+    let mut out = Footer::default();
+    for seg in lines[bottom + 1..].iter().flat_map(|l| l.split(" · ")) {
+        let s = seg.trim().trim_start_matches(|c: char| !c.is_ascii_alphanumeric()).trim();
+        let low = s.to_ascii_lowercase();
+        if out.mode.is_none() {
+            out.mode = mode_label(&low).map(String::from);
+        }
+        if let Some((n, kind)) = low.split_once(' ') {
+            if let Ok(n) = n.parse::<u32>() {
+                let one = if n > 1 { kind.strip_suffix('s').unwrap_or(kind) } else { kind };
+                if TASK_KINDS.contains(&one) {
+                    out.background.push((n, one.to_string()));
+                }
+            }
+        }
+    }
+    // 默认模式：新版本显示“manual mode on”，老版本什么也不显示
+    out.mode.get_or_insert_with(|| "default".into());
+    // 输入框上沿上面一行右边：`◐ medium · /effort`
+    if let Some(l) = top.checked_sub(1).map(|i| &lines[i]).filter(|l| l.contains("/effort")) {
+        let head = l.split(" · /effort").next().unwrap_or("");
+        out.effort = head.split_whitespace().last().filter(|w| EFFORTS.contains(w)).map(String::from);
+    }
+    Some(out)
+}
+
+/// 状态栏上的权限模式（`⏵⏵ accept edits on (shift+tab to cycle)`）
+fn mode_label(s: &str) -> Option<&'static str> {
+    let s = s.split(" (").next().unwrap_or(s);
+    if !s.ends_with(" on") {
+        return None;
+    }
+    Some(match s.trim_end_matches(" on").trim() {
+        "manual mode" | "default mode" => "default",
+        "accept edits" | "auto-accept edits" => "acceptEdits",
+        "plan mode" => "plan",
+        "auto mode" => "auto",
+        "bypass permissions" | "bypass permissions mode" => "bypassPermissions",
+        "don't ask mode" | "dont ask mode" => "dontAsk",
+        _ => return None,
+    })
+}
+
+/// 后台任务列表（输入框里按 ↓ 再按回车打开）：每行一个任务，`❯` 是选中的那个。
+/// 返回 (各行的说明, 选中的序号)；不是这个列表时为 None。
+pub fn task_list(capture: &str) -> Option<(Vec<String>, usize)> {
+    let lines: Vec<String> = capture.lines().map(|l| strip(l).0.trim_end().to_string()).collect();
+    if !lines.iter().any(|l| l.contains("x to stop") && l.contains("to select")) {
+        return None;
+    }
+    let mut rows = vec![];
+    let mut selected = None;
+    for l in &lines {
+        let t = l.trim_start();
+        let (sel, rest) = match t.strip_prefix('❯') {
+            Some(r) => (true, r.trim_start()),
+            None => (false, t),
+        };
+        let Some(body) = rest.strip_prefix("● ").or_else(|| rest.strip_prefix("◯ ")).or_else(|| rest.strip_prefix("○ ")) else { continue };
+        if sel {
+            selected = Some(rows.len());
+        }
+        rows.push(body.trim().to_string());
+    }
+    Some((rows, selected?))
+}
+
+/// 单个后台任务的详情（只有一个任务时直接打开这个）：`Command:` / `Description:` 那一行的内容。
+/// 有输出时详情比屏幕高，最下面的按键提示（`x to stop`）看不到，所以按标题（`Shell details`）和 `Status:` 认。
+pub fn task_details(capture: &str) -> Option<String> {
+    let lines: Vec<String> = capture.lines().map(|l| strip(l).0.trim().to_string()).collect();
+    let title = lines.iter().position(|l| l.ends_with(" details") && l.split_whitespace().count() <= 3)?;
+    if !lines[title..].iter().any(|l| l.starts_with("Status:")) {
+        return None;
+    }
+    lines.iter().find_map(|l| l.strip_prefix("Command:").or_else(|| l.strip_prefix("Description:")).or_else(|| l.strip_prefix("Prompt:")).map(|s| s.trim().to_string()))
+}
+
 /// 运行中屏幕上看得到、但 transcript 里还没有的东西（docs/CLAUDE_UI.md §4.5“正在输出的预览”）
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Live {
@@ -251,6 +352,45 @@ mod tests {
         assert_eq!(live(&s), Live { activity: Some("Running… (3s)".into()), text: None });
         let s = format!("● 第一段很长的回复\n  第二行\n\n{RULE}\n❯ \n{RULE}\n  ? for shortcuts\n");
         assert_eq!(live(&s).text.as_deref(), Some("第一段很长的回复\n第二行"));
+    }
+
+    #[test]
+    fn footer_from_real_frames() {
+        // Claude Code 2.1.303：后台有一个 shell
+        let f = footer(include_str!("testdata/bg-shell.txt")).unwrap();
+        assert_eq!(f.mode.as_deref(), Some("default"));
+        assert_eq!(f.background, vec![(1, "shell".to_string())]);
+        let f = footer(include_str!("testdata/idle.txt")).unwrap();
+        assert_eq!((f.mode.as_deref(), f.effort.as_deref()), (Some("auto"), Some("medium")));
+        assert!(f.background.is_empty());
+        assert_eq!(footer(include_str!("testdata/model.txt")), None);
+        assert_eq!(footer(include_str!("testdata/bg-details.txt")), None);
+    }
+
+    #[test]
+    fn footer_variants() {
+        let s = format!("{RULE}\n❯ \n{RULE}\n  ⏵⏵ accept edits on (shift+tab to cycle) · 2 shells · 1 subagent · ↓ to manage\n");
+        let f = footer(&s).unwrap();
+        assert_eq!(f.mode.as_deref(), Some("acceptEdits"));
+        assert_eq!(f.background, vec![(2, "shell".into()), (1, "subagent".into())]);
+        let s = format!("  ○ low · /effort\n{RULE}\n❯ \n{RULE}\n  ? for shortcuts\n");
+        let f = footer(&s).unwrap();
+        assert_eq!((f.mode.as_deref(), f.effort.as_deref()), (Some("default"), Some("low")));
+        let s = format!("{RULE}\n❯ \n{RULE}\n  ⏸ plan mode on · esc to interrupt\n");
+        assert_eq!(footer(&s).unwrap().mode.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn background_task_dialogs() {
+        let list = format!("{RULE}\n  Background\n  2 active shells\n\n    ● sleep 501   running\n  ❯ ● sleep 500   running\n\n  ↑/↓ to select · Enter to view · x to stop · Esc to close\n");
+        assert_eq!(task_list(&list), Some((vec!["sleep 501   running".into(), "sleep 500   running".into()], 1)));
+        assert_eq!(classify(&list), Screen::Modal);
+        assert_eq!(task_details(include_str!("testdata/bg-details.txt")).as_deref(), Some("sleep 501"));
+        assert_eq!(task_list(include_str!("testdata/bg-details.txt")), None);
+        assert_eq!(task_details(include_str!("testdata/idle.txt")), None);
+        // 有输出时按键提示在屏幕外
+        let tall = format!("{RULE}\n  Shell details\n\n  Status:   running\n  Runtime:  15s\n  Command:  for i in 1 2 3; do echo tick$i; done\n\n  Output:\n  ╭──╮\n  │ tick1 │\n");
+        assert_eq!(task_details(&tall).as_deref(), Some("for i in 1 2 3; do echo tick$i; done"));
     }
 
     #[test]

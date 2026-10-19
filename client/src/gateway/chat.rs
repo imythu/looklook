@@ -162,3 +162,36 @@ pub async fn relaunch(State(app): State<App>, Path(id): Path<String>) -> R<Statu
     app.chat.relaunch(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(Deserialize)]
+pub struct SettingReq {
+    kind: String,
+    value: String,
+}
+
+/// 快捷设置：模型、思考强度、权限模式
+pub async fn setting(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SettingReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.setting(&id, &req.kind, &req.value).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 子代理和后台命令
+pub async fn tasks(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.tasks(&id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct TaskQuery {
+    tool: String,
+}
+
+pub async fn task_output(State(app): State<App>, Path(id): Path<String>, Query(q): Query<TaskQuery>) -> R<Json<Value>> {
+    Ok(Json(app.chat.task_output(&id, &q.tool).await?))
+}
+
+pub async fn task_stop(State(app): State<App>, Path(id): Path<String>, Json(q): Json<TaskQuery>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.stop_task(&id, &q.tool).await?;
+    Ok(StatusCode::NO_CONTENT)
+}

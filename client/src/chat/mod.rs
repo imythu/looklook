@@ -13,7 +13,7 @@ pub mod hooks;
 pub mod screen;
 pub mod transcript;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -101,6 +101,11 @@ struct State {
     tool: Option<String>,
     mode: Option<String>,
     model: Option<String>,
+    effort: Option<String>,
+    /// 屏幕状态栏上的后台任务个数（`1 shell`、`2 subagents`）
+    background: Vec<(u32, String)>,
+    /// 正在运行的子代理（SubagentStart 到 SubagentStop）
+    agents: HashSet<String>,
     error: Option<String>,
     pending: Option<Pending>,
     last_hook: Option<Instant>,
@@ -110,6 +115,8 @@ struct State {
     stats: transcript::Stats,
     /// 运行中屏幕上的状态行和正在输出的那段回复（transcript 里还没有）
     live: screen::Live,
+    /// 正在替界面按键（切换模型时的确认框、后台任务列表）：这段时间里屏幕上的对话框不算“要到终端里操作”
+    hold: Option<Instant>,
 }
 
 /// 推给界面的事件
@@ -126,6 +133,8 @@ pub struct Inst {
     st: Mutex<State>,
     tx: broadcast::Sender<Event>,
     tr: tokio::sync::Mutex<Option<Transcript>>,
+    /// 子代理的 transcript（“任务”面板用，增量跟读）
+    agents: tokio::sync::Mutex<HashMap<PathBuf, Transcript>>,
     viewers: AtomicUsize,
     watching: AtomicBool,
     /// 收到的 `UserPromptSubmit` 个数（确认输入送达）
@@ -187,6 +196,9 @@ impl Chat {
                         tool: None,
                         mode: None,
                         model: None,
+                        effort: None,
+                        background: vec![],
+                        agents: HashSet::new(),
                         error: None,
                         pending: None,
                         last_hook: None,
@@ -194,9 +206,11 @@ impl Chat {
                         version: None,
                         stats: Default::default(),
                         live: Default::default(),
+                        hold: None,
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
+                    agents: tokio::sync::Mutex::new(HashMap::new()),
                     viewers: AtomicUsize::new(0),
                     watching: AtomicBool::new(false),
                     prompts: watch::channel(0).0,
@@ -232,6 +246,9 @@ impl Chat {
             "tool": st.tool,
             "mode": st.mode,
             "model": st.model,
+            "effort": st.effort,
+            "background": st.background.iter().map(|(n, kind)| json!({ "n": n, "kind": kind })).collect::<Vec<_>>(),
+            "agents": st.agents.len(),
             "error": st.error,
             "session_id": st.binding.as_ref().map(|b| &b.session_id),
             "version": st.version,
@@ -283,17 +300,23 @@ impl Chat {
             if let Some(m) = ev["model"].as_str() {
                 st.model = Some(m.to_string());
             }
+            if let Some(e) = ev["effort"].as_str().or_else(|| ev["effort"]["level"].as_str()) {
+                st.effort = Some(e.to_string());
+            }
+            let agent = ev["agent_id"].as_str().filter(|_| !ev["agent_type"].as_str().unwrap_or("").is_empty()).map(String::from);
             let rebound = self.rebind(id, &mut st, &ev);
             match name.as_str() {
                 "SessionStart" => {
                     // 自动压缩发生在一轮当中，不能改成空闲
                     if ev["source"] != "compact" {
                         st.error = None;
+                        st.agents.clear();
                         Self::set_phase(&inst, &mut st, Phase::Idle, None);
                     }
                 }
                 "SessionEnd" => {
                     Self::drop_pending(&mut st);
+                    st.agents.clear();
                     Self::set_phase(&inst, &mut st, Phase::Detached, Some("ended"));
                 }
                 "UserPromptSubmit" => {
@@ -334,7 +357,22 @@ impl Chat {
                 },
                 // Stop 之后总会有一个 agent_type 为空的 SubagentStop（后台生成推荐提示），不算
                 "SubagentStop" if ev["agent_type"].as_str().unwrap_or("").is_empty() => {}
+                // 后台运行的子代理在这一轮结束后才停：只更新个数，不改状态
+                "SubagentStop" if st.phase != Phase::Running => {
+                    if agent.is_some_and(|a| st.agents.remove(&a)) {
+                        Self::emit_status(&inst, &st);
+                    }
+                }
                 "SubagentStart" | "SubagentStop" | "PreCompact" => {
+                    match (name.as_str(), agent) {
+                        ("SubagentStart", Some(a)) => {
+                            st.agents.insert(a);
+                        }
+                        ("SubagentStop", Some(a)) => {
+                            st.agents.remove(&a);
+                        }
+                        _ => {}
+                    }
                     if st.phase != Phase::Approval {
                         Self::set_phase(&inst, &mut st, Phase::Running, None);
                     }
@@ -511,6 +549,9 @@ impl Chat {
         };
         let screen = capture.as_deref().map(screen::classify);
         let mut st = lock(&inst.st);
+        if st.hold.is_some_and(|h| h > Instant::now()) {
+            return;
+        }
         let quiet = st.last_hook.is_none_or(|t| t.elapsed() >= QUIET);
         match (&pane, screen) {
             (None, _) => {
@@ -520,6 +561,8 @@ impl Chat {
             (Some(_), None) => {
                 // 面板里是 shell：claude 没在运行
                 st.claude_since = None;
+                st.agents.clear();
+                st.background.clear();
                 Self::drop_pending(&mut st);
                 Self::set_phase(inst, &mut st, Phase::Detached, Some("not_running"));
             }
@@ -541,6 +584,16 @@ impl Chat {
                     (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),
                     (Phase::Running, Screen::Input { .. }) => {}
                     (_, Screen::Input { busy, .. }) => Self::set_phase(inst, &mut st, if busy { Phase::Running } else { Phase::Idle }, None),
+                }
+                // 状态栏：权限模式、思考强度（hook 要等下一个事件才带）、后台任务个数（只有屏幕上有）
+                if let Some(f) = capture.as_deref().and_then(screen::footer) {
+                    let effort = f.effort.or_else(|| st.effort.clone());
+                    if st.mode != f.mode || st.effort != effort || st.background != f.background {
+                        st.mode = f.mode;
+                        st.effort = effort;
+                        st.background = f.background;
+                        Self::emit_status(inst, &st);
+                    }
                 }
                 // 运行中：把屏幕上正在输出的内容推给界面（transcript 要等整段写完才有）
                 if st.phase == Phase::Running {
@@ -642,6 +695,15 @@ impl Chat {
             self.instances.paste(id, text).await?;
         } else {
             self.type_text(id, text).await?;
+            // 斜杠命令（/effort、/model……）刚执行完时 TUI 会重置输入框，这时打进去的开头会丢（实测 2.1.303，
+            // 回车后 0.1 秒内打的字）。按回车前看一眼：开头不在就清空重打一次。
+            if let Some(Screen::Input { text: shown, .. }) = self.instances.screen(id).await.map(|s| screen::classify(&s)) {
+                if !typed_ok(&shown, text) {
+                    tracing::info!(id, "输入框里的内容和送进去的不一致，清空重打");
+                    self.clear_input(id, shown.lines().count()).await?;
+                    self.type_text(id, text).await?;
+                }
+            }
         }
         for p in images {
             self.instances.paste(id, &format!(" {p}")).await?;
@@ -679,6 +741,18 @@ impl Chat {
                 tokio::time::sleep(TYPE_GAP).await;
             }
         }
+        Ok(())
+    }
+
+    /// 清空 TUI 的输入框：Ctrl-U 删到行首，退格接上上一行，一行一行删（不用 Esc：输入框空着时连按两次 Esc 会打开回退菜单）。
+    async fn clear_input(&self, id: &str, lines: usize) -> Result<(), LocalError> {
+        let mut keys = vec![];
+        for _ in 0..lines.clamp(1, 40) {
+            keys.extend(["C-u", "BSpace"]);
+        }
+        keys.push("C-u");
+        self.instances.send_keys(id, &keys).await?;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         Ok(())
     }
 
@@ -769,6 +843,347 @@ impl Chat {
         self.instances.send_literal(id, &cmd).await?;
         self.instances.send_keys(id, &["Enter"]).await
     }
+
+    // ---------------- 快捷设置 ----------------
+
+    /// 输入框是空的普通输入框时才替界面按键（选择器里打字会被当成快捷键；用户在终端里打了一半的字不能接着往后打）。
+    async fn ready_for_keys(&self, id: &str) -> Result<(), LocalError> {
+        match self.instances.screen(id).await.map(|s| screen::classify(&s)) {
+            Some(Screen::Input { text, .. }) if text.is_empty() => Ok(()),
+            Some(Screen::Input { .. }) => Err(LocalError::new("CHAT_INPUT_NOT_EMPTY")),
+            _ => Err(LocalError::new("CHAT_BUSY")),
+        }
+    }
+
+    fn hold(&self, id: &str, on: bool) {
+        lock(&self.inst(id).st).hold = on.then(|| Instant::now() + Duration::from_secs(5));
+    }
+
+    /// 快捷设置，不用到终端里去：
+    /// - `model`：`/model <名字>`。对话已经有缓存时 Claude Code 会先问“要切换吗”，替用户选第一项（实测 2.1.303）；
+    /// - `effort`：`/effort <级别>`；
+    /// - `mode`：权限模式只能用 Shift+Tab 轮换，按到状态栏显示目标模式为止。
+    pub async fn setting(&self, id: &str, kind: &str, value: &str) -> Result<(), LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        match lock(&inst.st).phase {
+            Phase::Detached => return Err(LocalError::new("CHAT_NOT_RUNNING")),
+            Phase::Tui | Phase::Approval => return Err(LocalError::new("CHAT_BUSY")),
+            // 运行中斜杠命令会排进队列，等这一轮做完才执行
+            Phase::Running if kind != "mode" => return Err(LocalError::new("CHAT_RUNNING")),
+            _ => {}
+        }
+        match kind {
+            "model" | "effort" => {
+                let ok = match kind {
+                    "model" => !value.is_empty() && value.len() <= 64 && value.chars().all(|c| c.is_ascii_alphanumeric() || "._-[]".contains(c)),
+                    _ => screen::EFFORTS.contains(&value),
+                };
+                if !ok {
+                    return Err(LocalError::invalid("value", "invalid"));
+                }
+                self.ready_for_keys(id).await?;
+                self.hold(id, true);
+                let r = self.slash_setting(id, kind, value).await;
+                self.hold(id, false);
+                r?;
+                let mut st = lock(&inst.st);
+                if kind == "model" {
+                    st.model = Some(value.to_string());
+                } else {
+                    st.effort = Some(value.to_string());
+                }
+                Self::emit_status(&inst, &st);
+                Ok(())
+            }
+            "mode" => {
+                const MODES: [&str; 5] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+                if !MODES.contains(&value) {
+                    return Err(LocalError::invalid("value", "invalid"));
+                }
+                // 一圈最多 5 个模式；没开的模式（自动模式、全部权限）轮不到
+                for _ in 0..6 {
+                    let f = self.instances.screen(id).await.as_deref().and_then(screen::footer).ok_or_else(|| LocalError::new("CHAT_BUSY"))?;
+                    if f.mode.as_deref() == Some(value) {
+                        let mut st = lock(&inst.st);
+                        st.mode = f.mode;
+                        Self::emit_status(&inst, &st);
+                        return Ok(());
+                    }
+                    self.instances.send_keys(id, &["BTab"]).await?;
+                    tokio::time::sleep(Duration::from_millis(350)).await;
+                }
+                Err(LocalError::new("CHAT_MODE_UNAVAILABLE"))
+            }
+            _ => Err(LocalError::invalid("kind", "invalid")),
+        }
+    }
+
+    async fn slash_setting(&self, id: &str, kind: &str, value: &str) -> Result<(), LocalError> {
+        self.type_text(id, &format!("/{kind} {value}")).await?;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        self.instances.send_keys(id, &["Enter"]).await?;
+        // 命令执行完 TUI 会重置输入框：等一下再返回，免得紧接着发的消息开头被吞掉
+        let settle = || tokio::time::sleep(Duration::from_millis(500));
+        if kind != "model" {
+            settle().await;
+            return Ok(());
+        }
+        for _ in 0..12 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            let Some(scr) = self.instances.screen(id).await else { break };
+            if matches!(screen::classify(&scr), Screen::Input { .. }) {
+                break;
+            }
+            let plain: Vec<String> = scr.lines().map(screen_plain).collect();
+            let yes = plain.iter().any(|l| l.trim_start().trim_start_matches('❯').trim_start().starts_with("1. Yes"));
+            if plain.iter().any(|l| l.contains("Switch model?")) && yes {
+                self.instances.send_keys(id, &["1"]).await?;
+                break;
+            }
+        }
+        settle().await;
+        Ok(())
+    }
+
+    // ---------------- 后台任务和子代理 ----------------
+
+    /// “任务”面板：这个会话的子代理（`<会话>/subagents/agent-*.meta.json`）和后台命令（`run_in_background` 的 Bash）。
+    pub async fn tasks(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        self.poll(&inst).await;
+        let (main, alive, live_shells, hooked_agents) = {
+            let st = lock(&inst.st);
+            let alive = st.phase != Phase::Detached;
+            // 状态栏上的个数只在普通输入框时看得到
+            let shells = matches!(st.phase, Phase::Idle | Phase::Running).then(|| st.background.iter().filter(|(_, k)| k == "shell").map(|(n, _)| *n as usize).sum::<usize>());
+            (st.binding.as_ref().map(|b| b.transcript_path.clone()), alive, shells, st.agents.clone())
+        };
+        let Some(main) = main else { return Ok(json!({ "agents": [], "shells": [] })) };
+        let tr = inst.tr.lock().await;
+        let Some(t) = tr.as_ref() else { return Ok(json!({ "agents": [], "shells": [] })) };
+        let calls = t.tool_calls();
+        let now = time::OffsetDateTime::now_utc();
+        let age = |ts: Option<&str>| ts.and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()).map(|t| (now - t).whole_seconds());
+
+        let mut shells: Vec<Value> = vec![];
+        for c in calls.iter().filter(|c| c.name == "Bash" && c.input["run_in_background"] == true) {
+            let note = t.notes.get(c.id);
+            let failed = matches!(c.result.map(|r| &r.body), Some(transcript::Body::ToolResult { is_error: true, .. }));
+            let state = match (note, failed) {
+                (Some(n), _) => n.status.clone(),
+                (None, true) => "failed".into(),
+                (None, false) => "running".into(),
+            };
+            shells.push(json!({
+                "tool_use_id": c.id,
+                "command": c.input["command"].as_str().map(|s| s.chars().take(500).collect::<String>()),
+                "description": c.input["description"],
+                "started": c.ts,
+                "state": state,
+                "summary": note.map(|n| &n.summary),
+                "age": age(c.ts),
+            }));
+        }
+        // 没有结束通知的不一定还在跑（claude 重启过、通知还没写进来）：和状态栏上的个数对一下，多出来的算已经结束（旧的先算）
+        let running: Vec<usize> = shells.iter().enumerate().filter(|(_, s)| s["state"] == "running").map(|(i, _)| i).collect();
+        let keep = if !alive { 0 } else { live_shells.unwrap_or(running.len()) };
+        for &i in running.iter().take(running.len().saturating_sub(keep)) {
+            // 刚启动的命令，状态栏可能还没更新
+            if shells[i]["age"].as_i64().is_none_or(|a| a > 5) {
+                shells[i]["state"] = json!("ended");
+            }
+        }
+
+        let by_tool: HashMap<&str, &transcript::ToolCall> = calls.iter().map(|c| (c.id, c)).collect();
+        let dir = main.with_extension("").join("subagents");
+        let mut metas: Vec<(std::time::SystemTime, PathBuf, Value)> = std::fs::read_dir(&dir)
+            .map(|rd| {
+                rd.flatten()
+                    .filter_map(|e| {
+                        let p = e.path();
+                        let name = p.file_name()?.to_str()?;
+                        let aid = name.strip_prefix("agent-")?.strip_suffix(".meta.json")?;
+                        let jsonl = dir.join(format!("agent-{aid}.jsonl"));
+                        let modified = std::fs::metadata(&jsonl).or_else(|_| e.metadata()).and_then(|m| m.modified()).ok()?;
+                        let meta: Value = serde_json::from_slice(&std::fs::read(&p).ok()?).ok()?;
+                        Some((modified, jsonl, meta))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        metas.sort_by_key(|m| std::cmp::Reverse(m.0));
+        metas.truncate(40);
+        let mut cache = inst.agents.lock().await;
+        let mut agents: Vec<Value> = vec![];
+        for (modified, jsonl, meta) in metas {
+            let aid = jsonl.file_stem().and_then(|s| s.to_str()).and_then(|s| s.strip_prefix("agent-")).unwrap_or("").to_string();
+            let sub = cache.entry(jsonl.clone()).or_insert_with(|| Transcript::subagent(jsonl.clone()));
+            let _ = tokio::task::block_in_place(|| sub.poll());
+            let sub_calls = sub.tool_calls();
+            let last = sub.items(sub.len().saturating_sub(1), sub.len()).pop();
+            let (last_tool, last_text, finished_reply) = match last.as_ref().map(|i| &i.body) {
+                Some(transcript::Body::Assistant { blocks, .. }) => {
+                    let tool = blocks.iter().rev().find_map(|b| match b {
+                        transcript::Block::ToolUse { name, input, .. } => Some(json!({ "name": name, "input": slim_input(input) })),
+                        _ => None,
+                    });
+                    let text = blocks.iter().rev().find_map(|b| match b {
+                        transcript::Block::Text { text } => Some(text.chars().take(300).collect::<String>()),
+                        _ => None,
+                    });
+                    let done = tool.is_none() && text.is_some();
+                    (tool, text, done)
+                }
+                _ => (sub_calls.last().map(|c| json!({ "name": c.name, "input": slim_input(c.input) })), None, false),
+            };
+            let tool_id = meta["toolUseId"].as_str().unwrap_or("");
+            let call = by_tool.get(tool_id);
+            let note = t.notes.get(tool_id);
+            let background = meta["requestShape"] == "background" || call.is_some_and(|c| c.input["run_in_background"] == true);
+            let state = if meta["stoppedByUser"] == true || note.is_some_and(|n| n.status == "killed") {
+                "stopped"
+            } else if note.is_some_and(|n| n.status == "failed") {
+                "failed"
+            } else if hooked_agents.contains(&aid) {
+                "running"
+            } else if meta["finished"] == true || note.is_some() || finished_reply || (!background && call.is_some_and(|c| c.result.is_some())) {
+                "done"
+            } else if !alive {
+                "ended"
+            } else {
+                "running"
+            };
+            let started = call.and_then(|c| c.ts).map(String::from).or_else(|| sub.items(0, 1).first().and_then(|i| i.ts.clone()));
+            let updated = modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+            agents.push(json!({
+                "id": aid,
+                "type": meta["agentType"],
+                "description": meta["description"].as_str().or_else(|| call.and_then(|c| c.input["description"].as_str())),
+                "model": meta["model"],
+                "tool_use_id": tool_id,
+                "background": background,
+                "worktree": meta["worktreePath"],
+                "state": state,
+                "started": started,
+                "updated": updated,
+                "steps": sub_calls.len(),
+                "last_tool": last_tool,
+                "last_text": last_text,
+                "summary": note.map(|n| &n.summary),
+            }));
+        }
+        // 这次没列出来的（太旧了）不再跟读
+        let listed: HashSet<PathBuf> = agents.iter().filter_map(|a| a["id"].as_str()).map(|a| dir.join(format!("agent-{a}.jsonl"))).collect();
+        cache.retain(|p, _| listed.contains(p));
+        // 运行中的排前面，其余按开始时间新的在前（列表已经按最后修改时间排过）
+        agents.sort_by_key(|a| a["state"] != "running");
+        Ok(json!({ "agents": agents, "shells": shells }))
+    }
+
+    /// 后台命令的输出（最后 32 KB）。输出文件的路径来自 transcript，不接受界面传路径。
+    pub async fn task_output(&self, id: &str, tool: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        let tr = inst.tr.lock().await;
+        let t = tr.as_ref().ok_or_else(LocalError::not_found)?;
+        let from_result = || {
+            t.tool_calls().into_iter().find(|c| c.id == tool).and_then(|c| match c.result.map(|r| &r.body) {
+                Some(transcript::Body::ToolResult { content, .. }) => output_path_in(content),
+                _ => None,
+            })
+        };
+        let path = t.notes.get(tool).and_then(|n| n.output_file.clone()).or_else(from_result).map(PathBuf::from).ok_or_else(LocalError::not_found)?;
+        drop(tr);
+        if !valid_output_path(&path) {
+            return Err(LocalError::not_found());
+        }
+        const LIMIT: u64 = 32 * 1024;
+        let (text, size) = tokio::task::block_in_place(|| -> std::io::Result<(String, u64)> {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut f = std::fs::File::open(&path)?;
+            let size = f.metadata()?.len();
+            f.seek(SeekFrom::Start(size.saturating_sub(LIMIT)))?;
+            let mut buf = vec![];
+            f.take(LIMIT).read_to_end(&mut buf)?;
+            Ok((String::from_utf8_lossy(&buf).into_owned(), size))
+        })
+        .map_err(|_| LocalError::not_found())?;
+        Ok(json!({ "text": text, "size": size, "truncated": size > LIMIT }))
+    }
+
+    /// 停止一个后台任务：和在终端里一样，输入框里按 ↓ 选中状态栏上的任务、回车打开列表，选中这一项按 x。
+    /// 每一步都抓屏核对，对不上就按 Esc 退出来、交给终端。
+    pub async fn stop_task(&self, id: &str, tool: &str) -> Result<(), LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        if !matches!(lock(&inst.st).phase, Phase::Idle | Phase::Running) {
+            return Err(LocalError::new("CHAT_BUSY"));
+        }
+        let label = {
+            let tr = inst.tr.lock().await;
+            let t = tr.as_ref().ok_or_else(LocalError::not_found)?;
+            let calls = t.tool_calls();
+            let c = calls.iter().find(|c| c.id == tool).ok_or_else(LocalError::not_found)?;
+            let text = if c.name == "Bash" { c.input["command"].as_str() } else { c.input["description"].as_str() };
+            text.unwrap_or("").lines().next().unwrap_or("").split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        if label.is_empty() {
+            return Err(LocalError::not_found());
+        }
+        self.ready_for_keys(id).await?;
+        self.hold(id, true);
+        let r = self.stop_task_keys(id, &label).await;
+        // 不管成没成，都回到普通输入框
+        for _ in 0..3 {
+            if matches!(self.instances.screen(id).await.map(|s| screen::classify(&s)), Some(Screen::Input { .. })) {
+                break;
+            }
+            let _ = self.instances.send_keys(id, &["Escape"]).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        self.hold(id, false);
+        r
+    }
+
+    async fn stop_task_keys(&self, id: &str, label: &str) -> Result<(), LocalError> {
+        let wait = |ms| tokio::time::sleep(Duration::from_millis(ms));
+        let norm = |s: &str| s.split_whitespace().collect::<Vec<_>>().join(" ");
+        // 列表里长的会被截断：比开头
+        let head: String = label.chars().take(24).collect();
+        let changed = || LocalError::new("CHAT_SCREEN_CHANGED");
+        self.instances.send_keys(id, &["Down"]).await?;
+        wait(400).await;
+        let scr = self.instances.screen(id).await.unwrap_or_default();
+        if !scr.lines().map(screen_plain).any(|l| l.contains("to view tasks")) {
+            return Err(changed());
+        }
+        self.instances.send_keys(id, &["Enter"]).await?;
+        wait(700).await;
+        let scr = self.instances.screen(id).await.unwrap_or_default();
+        if let Some(cmd) = screen::task_details(&scr) {
+            if !norm(&cmd).starts_with(&head) {
+                return Err(changed());
+            }
+        } else {
+            let (rows, mut sel) = screen::task_list(&scr).ok_or_else(changed)?;
+            let target = rows.iter().position(|r| norm(r).starts_with(&head)).ok_or_else(changed)?;
+            while sel != target {
+                self.instances.send_keys(id, &[if target > sel { "Down" } else { "Up" }]).await?;
+                wait(150).await;
+                let scr = self.instances.screen(id).await.unwrap_or_default();
+                let (_, now) = screen::task_list(&scr).ok_or_else(changed)?;
+                if now == sel {
+                    return Err(changed());
+                }
+                sel = now;
+            }
+        }
+        self.instances.send_keys(id, &["x"]).await?;
+        wait(500).await;
+        Ok(())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -804,6 +1219,39 @@ fn find_subagent(dir: &Path, prompt: &str) -> Option<PathBuf> {
         let text = content.as_str().map(String::from).or_else(|| content.as_array().and_then(|a| a.iter().find_map(|b| b["text"].as_str().map(String::from)))).unwrap_or_default();
         !head.is_empty() && text.starts_with(&head)
     })
+}
+
+/// 输入框里显示的内容是不是送进去的那段（只比开头，不算空白：折行、续行的缩进都会变）
+fn typed_ok(shown: &str, sent: &str) -> bool {
+    let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).take(24).collect::<String>();
+    let (shown, sent) = (squash(shown), squash(sent));
+    sent.is_empty() || shown.starts_with(&sent)
+}
+
+/// 工具参数里只留卡片摘要用得上的几个字段
+fn slim_input(input: &Value) -> Value {
+    let mut out = serde_json::Map::new();
+    for k in ["command", "description", "file_path", "notebook_path", "path", "pattern", "url", "query", "prompt", "subagent_type"] {
+        if let Some(s) = input[k].as_str() {
+            out.insert(k.into(), json!(s.chars().take(200).collect::<String>()));
+        }
+    }
+    Value::Object(out)
+}
+
+/// 后台命令的工具结果里写着输出文件：`… Output is being written to: /tmp/claude-0/…/tasks/b95azumrm.output. …`
+fn output_path_in(content: &str) -> Option<String> {
+    let rest = &content[content.find("written to: ")? + "written to: ".len()..];
+    let end = rest.find(".output")? + ".output".len();
+    Some(rest[..end].trim().to_string())
+}
+
+/// 后台命令的输出文件只能是 `…/tasks/<任务>.output`
+fn valid_output_path(p: &Path) -> bool {
+    p.is_absolute()
+        && p.extension().is_some_and(|e| e == "output")
+        && p.parent().and_then(|d| d.file_name()).is_some_and(|n| n == "tasks")
+        && !p.components().any(|c| matches!(c, std::path::Component::ParentDir))
 }
 
 /// transcript 只能是 `…/projects/<项目>/<session>.jsonl`：防止借伪造的 hook 读任意文件（hook 本身还要令牌）。
@@ -854,6 +1302,26 @@ mod tests {
         assert_eq!(find_subagent(d.path(), "查一下 B").unwrap().file_name().unwrap(), "agent-bbb.jsonl");
         assert!(find_subagent(d.path(), "不存在").is_none());
         assert!(find_subagent(d.path(), "").is_none());
+    }
+
+    #[test]
+    fn typed_text_check() {
+        assert!(typed_ok("Use the Bash tool with run_in_background", "Use the Bash tool with run_in_background true"));
+        assert!(typed_ok("第一行\n第二行", "第一行\n第二行"));
+        // 开头被吞掉了
+        assert!(!typed_ok("done; sleep 600 . Do not wait", "Use the Bash tool … done; sleep 600 . Do not wait"));
+        assert!(!typed_ok("", "hello"));
+    }
+
+    #[test]
+    fn background_output_paths() {
+        let content = "Command running in background with ID: b95azumrm. Output is being written to: /tmp/claude-0/-tmp-x/cb08/tasks/b95azumrm.output. You will be notified when it completes";
+        let p = output_path_in(content).unwrap();
+        assert_eq!(p, "/tmp/claude-0/-tmp-x/cb08/tasks/b95azumrm.output");
+        assert!(valid_output_path(Path::new(&p)));
+        assert!(!valid_output_path(Path::new("/etc/passwd")));
+        assert!(!valid_output_path(Path::new("/tmp/tasks/../../etc/x.output")));
+        assert!(!valid_output_path(Path::new("/tmp/other/x.output")));
     }
 
     #[test]
@@ -1065,6 +1533,132 @@ mod tests {
         drop(viewer);
         instances.stop(&id).await.unwrap();
         let _ = std::fs::remove_file(format!("{dir}/chat-e2e.txt"));
+    }
+
+    /// 端到端：快捷设置（权限模式、思考强度、模型）、后台命令（列表、输出、停止）、子代理列表。
+    /// 和 chat_e2e 一样要登录好的 claude：`CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_tasks -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn chat_e2e_tasks() {
+        let bin = std::env::var("CHAT_E2E_BIN").expect("CHAT_E2E_BIN");
+        let dir = std::env::var("CHAT_E2E_DIR").expect("CHAT_E2E_DIR");
+        std::env::set_var("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap_or_default()));
+        std::env::set_var("LLV_CLAUDE_ARGS", "--permission-mode default");
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("looklook");
+        assert!(exe.is_file(), "先 cargo build");
+        std::env::set_var("LOOKLOOK_HOOK_EXE", exe);
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let store = Arc::new(Store::memory().unwrap());
+        let instances = Instances::new(store.clone(), paths.clone());
+        let input = crate::instances::Input { name: Some("e2e-tasks".into()), workdir: Some(dir.clone()), launch: Some("claude".into()), ..Default::default() };
+        let id = instances.create(input).await.unwrap().row.id;
+        let chat = Chat::new(store.clone(), paths.clone(), instances.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let c2 = chat.clone();
+        let app = axum::Router::new().route(
+            hooks::PATH,
+            axum::routing::post(move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let chat = c2.clone();
+                async move {
+                    let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    if !chat.token_ok(&h(hooks::TOKEN_HEADER)) {
+                        return String::new();
+                    }
+                    chat.hook(&h(hooks::INSTANCE_HEADER), serde_json::from_slice(&body).unwrap_or_default()).await
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        chat.publish(addr).unwrap();
+        let row = store.instance(&id).unwrap().unwrap();
+        instances.ensure_session(&row).await.unwrap();
+        let (_rx, viewer) = chat.subscribe(&id).unwrap();
+        async fn wait(chat: &Arc<Chat>, id: &str, what: &str, secs: u64, f: impl Fn(&Value) -> bool) -> Value {
+            for _ in 0..secs * 4 {
+                let s = chat.snapshot(id).await.unwrap();
+                if f(&s) {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!("等不到：{what}；最后的状态 {}", chat.snapshot(id).await.unwrap()["status"]);
+        }
+        async fn approve_until(chat: &Arc<Chat>, id: &str, what: &str, secs: u64, f: impl Fn(&Value) -> bool) -> Value {
+            for _ in 0..secs * 4 {
+                let s = chat.snapshot(id).await.unwrap();
+                if let Some(p) = s["status"]["pending"]["id"].as_u64() {
+                    let _ = chat.answer(id, &PermissionAnswer { id: p, decision: "allow".into(), message: None, answers: None });
+                }
+                if f(&s) {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!("等不到：{what}；最后的状态 {}", chat.snapshot(id).await.unwrap()["status"]);
+        }
+        wait(&chat, &id, "SessionStart", 40, |s| s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle").await;
+        // 状态栏读出来的模式
+        wait(&chat, &id, "状态栏上的模式", 10, |s| s["status"]["mode"] == "default").await;
+
+        // 权限模式：Shift+Tab 轮换到目标
+        chat.setting(&id, "mode", "plan").await.unwrap();
+        assert_eq!(chat.snapshot(&id).await.unwrap()["status"]["mode"], "plan");
+        chat.setting(&id, "mode", "default").await.unwrap();
+        assert_eq!(chat.snapshot(&id).await.unwrap()["status"]["mode"], "default");
+        assert_eq!(chat.setting(&id, "mode", "nope").await.unwrap_err().code, "VALIDATION_FAILED");
+        // 思考强度
+        chat.setting(&id, "effort", "low").await.unwrap();
+        wait(&chat, &id, "强度 low", 10, |s| s["status"]["effort"] == "low").await;
+        assert_eq!(chat.snapshot(&id).await.unwrap()["status"]["phase"], "idle");
+
+        // 后台命令：状态栏上的个数、列表、输出、停止
+        chat.input(&id, "Use the Bash tool with run_in_background true to run exactly this command: for i in 1 2 3 4 5 6 7 8 9; do echo tick$i; sleep 1; done; sleep 600 . Do not wait for it. Then reply only: started", &[]).await.unwrap();
+        let s = approve_until(&chat, &id, "状态栏上的后台命令", 90, |s| s["status"]["phase"] == "idle" && s["status"]["background"].as_array().is_some_and(|b| b.iter().any(|x| x["kind"] == "shell"))).await;
+        println!("后台：{}", s["status"]["background"]);
+        let tasks = chat.tasks(&id).await.unwrap();
+        let shell = tasks["shells"].as_array().unwrap().iter().find(|x| x["state"] == "running").cloned().unwrap_or_else(|| panic!("{tasks}"));
+        let tool = shell["tool_use_id"].as_str().unwrap().to_string();
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let out = chat.task_output(&id, &tool).await.unwrap();
+        assert!(out["text"].as_str().unwrap().contains("tick1"), "{out}");
+        chat.stop_task(&id, &tool).await.unwrap();
+        let s = wait(&chat, &id, "停止后", 15, |s| !s["status"]["background"].as_array().unwrap().iter().any(|x| x["kind"] == "shell")).await;
+        assert_eq!(s["status"]["phase"], "idle");
+        let tasks = chat.tasks(&id).await.unwrap();
+        let state = tasks["shells"].as_array().unwrap().iter().find(|x| x["tool_use_id"] == tool.as_str()).unwrap()["state"].clone();
+        assert!(state == "killed" || state == "ended", "{state}");
+
+        // 子代理：列表里有它，结束后是 done
+        chat.input(&id, "Use the Agent tool (subagent_type general-purpose, description \"List py files\") to have a subagent run the Glob tool for *.py and report. Do not use Glob yourself. Then reply only: ok", &[]).await.unwrap();
+        approve_until(&chat, &id, "子代理做完", 120, |s| s["status"]["phase"] == "idle" && s["items"].as_array().unwrap().iter().any(|i| i["k"] == "assistant" && i.to_string().contains("\"Agent\""))).await;
+        let mut agents = json!([]);
+        for _ in 0..80 {
+            agents = chat.tasks(&id).await.unwrap()["agents"].clone();
+            if agents.as_array().unwrap().iter().any(|a| a["state"] == "done") {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        let a = agents.as_array().unwrap().first().cloned().unwrap_or_else(|| panic!("没有子代理"));
+        println!("子代理：{a}");
+        assert_eq!(a["state"], "done");
+        assert!(a["steps"].as_u64().unwrap() >= 1);
+
+        // 模型：/model sonnet（对话有缓存时会先问要不要切换，自动确认）。子代理的结束通知会让主会话再开始一轮，等它做完
+        wait(&chat, &id, "空闲", 60, |s| s["status"]["phase"] == "idle").await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        wait(&chat, &id, "空闲", 60, |s| s["status"]["phase"] == "idle").await;
+        chat.setting(&id, "model", "sonnet").await.unwrap();
+        let s = wait(&chat, &id, "切换模型后回到空闲", 15, |s| s["status"]["phase"] == "idle").await;
+        assert_eq!(s["status"]["model"], "sonnet");
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        let s = chat.snapshot(&id).await.unwrap();
+        assert!(s.to_string().contains("Set model to"), "transcript 里有切换的结果");
+
+        drop(viewer);
+        instances.stop(&id).await.unwrap();
     }
 
     #[test]

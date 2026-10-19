@@ -194,6 +194,9 @@
   "CHAT_NOT_RUNNING": "Claude Code isn't running",
   "CHAT_BUSY": "Claude Code is showing a dialog in the terminal; finish it there first",
   "CHAT_STALE": "This was already answered in the terminal",
-  "CHAT_SCREEN_CHANGED": "The dialog in the terminal has changed; continue in the terminal",
-  "CHAT_CLAUDE_RUNNING": "Claude Code is still running; exit it in the terminal first"
+  "CHAT_SCREEN_CHANGED": "The terminal isn't showing what was expected. Please do this in the terminal",
+  "CHAT_CLAUDE_RUNNING": "Claude Code is still running; exit it in the terminal first",
+  "CHAT_RUNNING": "Claude is working. Switch after this turn finishes",
+  "CHAT_INPUT_NOT_EMPTY": "The terminal's input box has unsent text. Clear it in the terminal first",
+  "CHAT_MODE_UNAVAILABLE": "This mode isn't available (it wasn't enabled when Claude Code started)"
 }

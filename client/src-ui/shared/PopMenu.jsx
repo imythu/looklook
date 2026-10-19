@@ -1,14 +1,15 @@
 // “更多”菜单：点按钮弹出一列操作。菜单按按钮在屏幕上的位置固定定位（下面放得下就往下，否则往上），
 // 不会被滚动列表、终端标题栏裁掉。
-import { MoreHorizontal } from 'lucide-react';
+import { Check, ChevronDown, MoreHorizontal } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /**
- * items：[{ icon, label, onClick, danger, disabled, hint }]，假值会被跳过。
+ * items：[{ icon, label, onClick, danger, disabled, hint, checked }]，假值会被跳过。
  * className：按钮的样式（默认幽灵按钮）；icon：按钮图标；onPointerDown：例如手机终端里按住不抢键盘焦点。
+ * text：按钮上除了图标还显示的文字（下拉选择，例如对话里切换模型）；disabled：按钮不可用。
  */
-export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', icon: Icon = MoreHorizontal, label, onPointerDown }) {
+export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', icon: Icon = MoreHorizontal, label, onPointerDown, text, disabled }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
@@ -59,6 +60,7 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
         title={label ?? t('action.more')}
         aria-haspopup="menu"
         aria-expanded={open}
+        disabled={disabled}
         onPointerDown={onPointerDown}
         onClick={(e) => {
           e.stopPropagation();
@@ -66,7 +68,13 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
           setOpen(!open);
         }}
       >
-        <Icon size={18} aria-hidden="true" />
+        <Icon size={text ? 14 : 18} aria-hidden="true" />
+        {text && (
+          <>
+            <span className="ellipsis">{text}</span>
+            <ChevronDown size={13} aria-hidden="true" />
+          </>
+        )}
       </button>
       {open && (
         <ul ref={list} className="menu-pop-list menu-pop-fixed" role="menu" style={pos ?? { visibility: 'hidden', top: 0, left: 0 }}>
@@ -74,7 +82,8 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
             <li key={x.label}>
               <button
                 type="button"
-                role="menuitem"
+                role={x.checked !== undefined ? 'menuitemradio' : 'menuitem'}
+                aria-checked={x.checked}
                 className={x.danger ? 'danger' : ''}
                 disabled={x.disabled}
                 aria-describedby={x.hint ? `${x.label}-hint` : undefined}
@@ -86,6 +95,7 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
                 }}
               >
                 {x.icon && <x.icon size={17} aria-hidden="true" />}
+                {x.checked !== undefined && <Check size={15} aria-hidden="true" style={{ visibility: x.checked ? 'visible' : 'hidden' }} />}
                 <span className="grow">
                   {x.label}
                   {x.hint && (

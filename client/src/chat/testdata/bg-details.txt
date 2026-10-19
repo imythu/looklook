@@ -1,0 +1,40 @@
+
+[38;5;246m✻[39m [38;5;246mCogitated for 11s · done 3:45 AM · 1 shell still running[39m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/model sonnet[39m
+[38;5;246m[49m  ⎿  [39mSet model to [38;5;153mSonnet 5.5[39m and saved as your default for new sessions
+     [2m     .claude/settings.local.json pins [0m[38;5;153mHaiku 4.5[2m[39m — that applies on restart[0m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/effort low[39m
+[38;5;246m[49m  ⎿  [39mSet effort level to low (saved as your default for new sessions): Quick, straightforward implementation with minimal overhead
+
+[38;5;246m●[39m [38;5;246mAuto mode lets Claude handle permission prompts automatically — Claude checks each tool call for risky actions and prompt [39m
+  [38;5;246minjection before executing. Actions Claude identifies as safe are executed, while actions Claude identifies as risky are blocked [39m
+  [38;5;246mand Claude may try a different approach. Ideal for long-running tasks. Claude can make mistakes that allow harmful commands to [39m
+  [38;5;246mrun, it's recommended to only use in isolated environments. Shift+Tab to change mode.[39m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/model[39m [49m
+[38;5;246m  ⎿  [39mKept model as [38;5;153mSonnet 5.5[39m
+
+[38;5;246m[48;5;237m❯[39m [38;5;231m/effort[39m
+[38;5;246m[49m  ⎿  [39mCancelled
+
+[38;5;246m[48;5;237m❯ [38;5;231mUse Bash with run_in_background true twice (two separate tool calls): first 'sleep 500', second 'sleep 501'. Then reply only: ok[39m
+
+[49m  [38;5;246mRan [1m2[0m[38;5;246m shell commands [39m
+
+[38;5;231m●[39m ok
+
+[38;5;246m✻[39m [38;5;246mSautéed for 3s · done 3:48 AM · 1 shell still running[39m
+
+[38;5;44m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [1m[38;5;44mShell details[0m
+
+  [1mStatus:[0m   [38;5;44mrunning[39m
+  [1mRuntime:[0m  32s
+  [1mCommand:[0m  sleep 501
+
+  [1mOutput:[0m
+  [38;5;246mNo output available[39m
+
+  [3m[38;5;246m← to go back · Esc/Enter/Space to close · x to stop[0m

@@ -204,3 +204,131 @@ export function contentText(content) {
   if (Array.isArray(content)) return content.filter((b) => b?.type === 'text').map((b) => b.text).join('\n');
   return '';
 }
+
+// ---------------- 同类工具调用合成一组 ----------------
+
+// 同一类的连续调用合成一组（默认收起，点开看每一次）。看文件和搜索算一类（Claude Code 自己也这样合并显示）。
+// 待办、提问、计划不合并：它们各自有专门的显示。
+const TOOL_CLASS = {
+  Read: 'explore',
+  NotebookRead: 'explore',
+  Grep: 'explore',
+  Glob: 'explore',
+  LS: 'explore',
+  Edit: 'edit',
+  MultiEdit: 'edit',
+  Write: 'edit',
+  NotebookEdit: 'edit',
+  Bash: 'bash',
+  BashOutput: 'bash',
+  KillShell: 'bash',
+  KillBash: 'bash',
+  WebFetch: 'web',
+  WebSearch: 'web',
+  Task: 'agent',
+  Agent: 'agent',
+};
+const NO_GROUP = new Set(['TodoWrite', 'AskUserQuestion', 'ExitPlanMode']);
+
+/** 工具的类别（合并用）；不合并的返回 null。别的工具（MCP 等）按名字各成一类。 */
+export function toolClass(name) {
+  if (NO_GROUP.has(name)) return null;
+  return TOOL_CLASS[name] ?? `tool:${name}`;
+}
+
+/**
+ * 把条目展开成要显示的行：assistant 回复拆成文字、思考、工具调用，连续的同类工具调用合成一组。
+ * 结果已经画在工具卡片里的 tool_result（`used` 里有它的调用）不单独成行，也不打断分组。
+ * 行：{ k: 'item', item } | { k: 'text' | 'thinking' | 'unknown', block } | { k: 'tool', block } | { k: 'group', cls, calls: [block] }
+ */
+export function chatRows(items, used = toolUseIds(items)) {
+  const rows = [];
+  let group = null;
+  const flush = () => {
+    if (!group) return;
+    rows.push(group.calls.length > 1 ? group : { k: 'tool', key: group.calls[0].id, block: group.calls[0] });
+    group = null;
+  };
+  for (const item of items) {
+    if (item.k === 'tool_result' && used.has(item.tool_use_id)) continue;
+    if (item.k !== 'assistant') {
+      flush();
+      rows.push({ k: 'item', key: item.key, item });
+      continue;
+    }
+    (item.blocks ?? []).forEach((b, n) => {
+      const key = b.id ?? `${item.key}:${n}`;
+      if (b.t === 'tool_use') {
+        const cls = toolClass(b.name);
+        if (cls && group?.cls === cls) {
+          group.calls.push(b);
+          return;
+        }
+        flush();
+        if (cls) group = { k: 'group', key: `g:${b.id}`, cls, calls: [b] };
+        else rows.push({ k: 'tool', key, block: b });
+        return;
+      }
+      // 空白的思考不打断分组
+      if (b.t === 'thinking' && !String(b.text ?? '').trim()) return;
+      flush();
+      rows.push({ k: b.t === 'text' || b.t === 'thinking' ? b.t : 'unknown', key, block: b });
+    });
+  }
+  flush();
+  return rows;
+}
+
+/** 一组里每种工具各调用了几次：[[名字, 次数]]，按第一次出现的顺序 */
+export function toolCounts(calls) {
+  const m = new Map();
+  for (const c of calls) m.set(c.name, (m.get(c.name) ?? 0) + 1);
+  return [...m];
+}
+
+// ---------------- 模型、思考强度、权限模式 ----------------
+
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+
+/** 模型的显示名：`claude-opus-5-5` → `Opus 5.5`，`sonnet[1m]` → `Sonnet 1M`；认不出的原样返回 */
+export function modelLabel(model) {
+  if (!model) return '';
+  const s = String(model).replace(/^claude-/i, '');
+  const full = s.match(/^(opus|sonnet|haiku|fable)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$/i);
+  if (full) return `${cap(full[1])} ${full[2]}${full[3] ? `.${full[3]}` : ''}${full[4] ? ' 1M' : ''}`;
+  const alias = s.match(/^(opus|sonnet|haiku|fable)(\[1m\])?$/i);
+  if (alias) return `${cap(alias[1])}${alias[2] ? ' 1M' : ''}`;
+  return s;
+}
+
+/** 模型的系列（opus / sonnet / haiku / fable），判断快捷选项里哪个是当前的 */
+export function modelFamily(model) {
+  return String(model ?? '').match(/opus|sonnet|haiku|fable/i)?.[0].toLowerCase() ?? '';
+}
+
+/** 快捷切换的模型（`/model <名字>`），完整的列表在终端里 `/model` */
+export const MODEL_CHOICES = ['default', 'opus', 'sonnet', 'fable', 'haiku'];
+export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+/** Shift+Tab 能轮换到的权限模式（自动模式、全部权限要启动时开启才有） */
+export const MODE_CHOICES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'];
+
+/** 状态栏上的后台任务个数：{ shell: 1, subagent: 2 } */
+export function backgroundCounts(status) {
+  const out = {};
+  for (const b of status?.background ?? []) out[b.kind] = (out[b.kind] ?? 0) + b.n;
+  // 子代理：hooks 记的个数（前台的也算）和状态栏上的（只算后台的）取大的
+  const agents = Math.max(out.subagent ?? 0, out.agent ?? 0, status?.agents ?? 0);
+  delete out.agent;
+  if (agents) out.subagent = agents;
+  else delete out.subagent;
+  return out;
+}
+
+/** 时长的简短写法：`45s`、`3m12s`、`1h05m` */
+export function duration(ms) {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
+}

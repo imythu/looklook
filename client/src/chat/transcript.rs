@@ -67,6 +67,8 @@ pub enum Body {
     Info { text: String },
     /// 这一轮用了多久
     Turn { ms: u64 },
+    /// 后台任务（后台命令、后台子代理）结束的通知（`<task-notification>`）
+    Task { tool_use_id: String, status: String, summary: String },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -126,11 +128,32 @@ pub struct Transcript {
     pub stats: Stats,
     /// 子代理自己的记录（`subagents/agent-<id>.jsonl`）：每条都标着 isSidechain，要照常显示
     sidechain: bool,
+    /// 后台任务结束的通知，按工具调用 id。在终端里停掉的任务只有排队记录（`queue-operation`），不在对话链上，所以单独记
+    pub notes: HashMap<String, Note>,
+}
+
+/// 后台任务结束的通知
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Note {
+    /// completed / failed / killed …
+    pub status: String,
+    pub summary: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_file: Option<String>,
+}
+
+/// 对话里的一次工具调用和它的结果（后台任务列表用）
+pub struct ToolCall<'a> {
+    pub ts: Option<&'a str>,
+    pub id: &'a str,
+    pub name: &'a str,
+    pub input: &'a Value,
+    pub result: Option<&'a Item>,
 }
 
 impl Transcript {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false }
+        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new() }
     }
 
     /// 子代理的 transcript
@@ -147,6 +170,34 @@ impl Transcript {
             }),
             _ => None,
         })
+    }
+
+    /// 显示的链上所有的工具调用（按顺序），带上各自的结果
+    pub fn tool_calls(&self) -> Vec<ToolCall<'_>> {
+        let mut results: HashMap<&str, &Item> = HashMap::new();
+        let mut calls = vec![];
+        for group in &self.display {
+            for (r, i) in group {
+                let item = &self.recs[*r].items[*i];
+                match &item.body {
+                    Body::Assistant { blocks, .. } => {
+                        for b in blocks {
+                            if let Block::ToolUse { id, name, input, .. } = b {
+                                calls.push(ToolCall { ts: item.ts.as_deref(), id, name, input, result: None });
+                            }
+                        }
+                    }
+                    Body::ToolResult { tool_use_id, .. } => {
+                        results.insert(tool_use_id, item);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for c in &mut calls {
+            c.result = results.get(c.id).copied();
+        }
+        calls
     }
 
     pub fn path(&self) -> &Path {
@@ -283,6 +334,9 @@ impl Transcript {
 
     fn parse(&mut self, v: &Value) -> Option<Rec> {
         let ty = v["type"].as_str()?;
+        if let Some((id, note)) = task_note(v) {
+            self.notes.insert(id, note);
+        }
         if let Some(ver) = v["version"].as_str() {
             if self.version.as_deref() != Some(ver) {
                 self.version = Some(ver.to_string());
@@ -364,6 +418,12 @@ fn user_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) -> V
     if let Some(cmd) = command_text(trimmed) {
         return vec![Item { key: key(0), ts, body: Body::Command { text: cmd } }];
     }
+    if trimmed.contains("<task-notification>") {
+        return match task_note(v) {
+            Some((tool_use_id, n)) => vec![Item { key: key(0), ts, body: Body::Task { tool_use_id, status: n.status, summary: n.summary } }],
+            None => vec![],
+        };
+    }
     if trimmed.is_empty() && images == 0 {
         return vec![];
     }
@@ -398,6 +458,32 @@ fn system_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) ->
         _ => return None,
     };
     Some(Item { key: key(0), ts, body })
+}
+
+/// 后台任务结束的通知：用户消息，或者排队记录（`queue-operation`，在终端里停掉的任务只有这个）。
+/// ```text
+/// <task-notification>
+/// <task-id>b95azumrm</task-id>
+/// <tool-use-id>toolu_01RB…</tool-use-id>
+/// <output-file>/tmp/claude-0/…/tasks/b95azumrm.output</output-file>
+/// <status>killed</status>
+/// <summary>Task "Sleep for 600 seconds in background" was stopped by the user</summary>
+/// </task-notification>
+/// ```
+fn task_note(v: &Value) -> Option<(String, Note)> {
+    let text = match v["content"].as_str() {
+        Some(s) => s.to_string(),
+        None => join_text(&v["message"]["content"]).0,
+    };
+    let start = text.find("<task-notification>")?;
+    let body = &text[start..];
+    let tag = |t: &str| {
+        let open = format!("<{t}>");
+        let rest = &body[body.find(&open)? + open.len()..];
+        Some(rest[..rest.find(&format!("</{t}>"))?].trim().to_string())
+    };
+    let id = tag("tool-use-id").filter(|s| !s.is_empty())?;
+    Some((id, Note { status: tag("status").unwrap_or_default(), summary: truncate(&tag("summary").unwrap_or_default(), 2_000).0, output_file: tag("output-file") }))
 }
 
 /// 斜杠命令、`!` 命令的记录（`<command-name>/model</command-name>`、`<local-command-stdout>…`、`<bash-input>`）
@@ -551,6 +637,26 @@ mod tests {
         assert_eq!(extra.as_ref().unwrap()["stdout"], "calc.py\nREADME.md");
         assert_eq!(t.stats.unknown, 1);
         assert_eq!(t.version.as_deref(), Some("2.1.302"));
+    }
+
+    /// 后台任务：通知显示成一条简短的事件；在终端里停掉的只有排队记录，也要记下来
+    #[test]
+    fn background_task_notifications() {
+        let mut t = Transcript::new("/nonexistent".into());
+        let note = |id: &str, status: &str| format!("<task-notification>\n<task-id>b1</task-id>\n<tool-use-id>{id}</tool-use-id>\n<output-file>/tmp/claude-0/p/s/tasks/b1.output</output-file>\n<status>{status}</status>\n<summary>Task \"sleep\" {status}</summary>\n</task-notification>");
+        let mut s = user("u1", None, json!("后台跑两个命令"));
+        s += &assistant("a1", "u1", "m1", json!({"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"sleep 600","run_in_background":true}}));
+        s += &line(json!({"type":"user","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Command running in background with ID: b1."}]},"toolUseResult":{"backgroundTaskId":"b1"}}));
+        s += &assistant("a2", "r1", "m2", json!({"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"sleep 700","run_in_background":true}}));
+        s += &line(json!({"type":"queue-operation","operation":"enqueue","content":note("toolu_2","killed")}));
+        s += &line(json!({"type":"user","uuid":"n1","parentUuid":"a2","origin":{"kind":"task-notification"},"message":{"content":note("toolu_1","completed")}}));
+        t.feed(s.as_bytes());
+        assert_eq!(t.notes["toolu_2"].status, "killed");
+        assert_eq!(t.notes["toolu_1"].output_file.as_deref(), Some("/tmp/claude-0/p/s/tasks/b1.output"));
+        let last = t.items(t.len() - 1, t.len()).remove(0);
+        assert_eq!(last.body, Body::Task { tool_use_id: "toolu_1".into(), status: "completed".into(), summary: "Task \"sleep\" completed".into() });
+        let calls = t.tool_calls();
+        assert_eq!(calls.iter().map(|c| (c.id, c.result.is_some())).collect::<Vec<_>>(), [("toolu_1", true), ("toolu_2", false)]);
     }
 
     #[test]

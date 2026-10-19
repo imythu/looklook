@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, diffLines, diffStat, EMPTY, latestTodos, lineDiff, opensTui, questionAnswers, resultsById, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, backgroundCounts, chatRows, diffLines, diffStat, EMPTY, latestTodos, lineDiff, modelFamily, modelLabel, opensTui, questionAnswers, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -48,4 +48,46 @@ test('todos, tui commands, answers', () => {
   assert.ok(opensTui('/model') && opensTui(' /resume abc') && !opensTui('/compact') && !opensTui('model'));
   const qs = [{ question: '颜色？' }, { question: '水果？' }, { question: '空的' }];
   assert.deepEqual(questionAnswers(qs, { 0: { labels: ['红'] }, 1: { labels: ['苹果'], other: '梨' } }), { '颜色？': '红', '水果？': '苹果, 梨' });
+});
+
+test('consecutive tool calls of the same kind are grouped', () => {
+  const use = (id, name) => ({ t: 'tool_use', id, name, input: {} });
+  const res = (id) => ({ k: 'tool_result', key: `r${id}`, tool_use_id: id });
+  const items = [
+    { k: 'user', key: 'u', text: 'hi' },
+    { k: 'assistant', key: 'a1', blocks: [{ t: 'text', text: '先看看' }, use('1', 'Read')] },
+    res('1'),
+    { k: 'assistant', key: 'a2', blocks: [{ t: 'thinking', text: ' ' }, use('2', 'Grep'), use('3', 'Read')] },
+    res('2'),
+    res('3'),
+    { k: 'assistant', key: 'a3', blocks: [use('4', 'Edit')] },
+    res('4'),
+    { k: 'assistant', key: 'a4', blocks: [use('5', 'TodoWrite'), use('6', 'Bash'), { t: 'text', text: '好了' }] },
+    { k: 'tool_result', key: 'orphan', tool_use_id: 'gone' },
+  ];
+  const rows = chatRows(items);
+  assert.deepEqual(rows.map((r) => r.k), ['item', 'text', 'group', 'tool', 'tool', 'tool', 'text', 'item']);
+  assert.deepEqual(rows[2].calls.map((c) => c.id), ['1', '2', '3']);
+  assert.equal(rows[2].key, 'g:1');
+  assert.deepEqual(toolCounts(rows[2].calls), [['Read', 2], ['Grep', 1]]);
+  // 一个单独的调用不成组
+  assert.equal(rows[3].block.name, 'Edit');
+  assert.equal(rows[4].block.name, 'TodoWrite');
+});
+
+test('model labels', () => {
+  assert.equal(modelLabel('claude-opus-5-5'), 'Opus 5.5');
+  assert.equal(modelLabel('claude-haiku-4-5-20251001'), 'Haiku 4.5');
+  assert.equal(modelLabel('claude-sonnet-5-5[1m]'), 'Sonnet 5.5 1M');
+  assert.equal(modelLabel('claude-fable-5'), 'Fable 5');
+  assert.equal(modelLabel('sonnet'), 'Sonnet');
+  assert.equal(modelLabel('opusplan'), 'opusplan');
+  assert.equal(modelFamily('claude-opus-5-5'), 'opus');
+  assert.equal(modelFamily('default'), '');
+});
+
+test('background counts', () => {
+  assert.deepEqual(backgroundCounts({ background: [{ n: 2, kind: 'shell' }], agents: 0 }), { shell: 2 });
+  assert.deepEqual(backgroundCounts({ background: [{ n: 1, kind: 'subagent' }], agents: 3 }), { subagent: 3 });
+  assert.deepEqual(backgroundCounts(null), {});
 });

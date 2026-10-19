@@ -3,8 +3,8 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页“工作台”里的每个终端是一个 TermPane（见 Terminals.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, Zap } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { ArrowLeft, ChevronDown, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, Zap } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
@@ -189,6 +189,89 @@ function TermTabBar({ tab, onChange, chat }) {
   );
 }
 
+const SPLIT_KEY = 'll-chat-split';
+const readSplit = () => {
+  try {
+    const v = Number(localStorage.getItem(SPLIT_KEY));
+    return v >= 0.2 && v <= 0.8 ? v : 0.45;
+  } catch {
+    return 0.45;
+  }
+};
+
+/**
+ * “对话”标签下面展开的终端（同一个 iframe，只是让出下半部分）：界面处理不了的对话框、选择器在这里操作，
+ * 不用切到“终端”标签再切回来。什么时候自动展开、收起由对话界面决定（ChatView 的 onTerminal / onBack）。
+ * 返回 { open, show, close, frameProps, bar }：frameProps 放到 `.term-frame` 上，bar 是分隔条。
+ */
+function useTermDrawer(frame, chatTab, onFull) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [split, setSplit] = useState(readSplit);
+  const wrap = useRef(null);
+  const shown = open && chatTab;
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      termFit(frame);
+      if (shown && !isTouch()) termFocus(frame);
+    }, 30);
+    return () => clearTimeout(timer);
+  }, [shown]);
+  const show = useCallback(() => setOpen(true), []);
+  const close = useCallback(() => setOpen(false), []);
+  // 拖分隔条调整高度：拖动时直接改 CSS 变量，松手再记下来、让终端重新适配
+  const drag = (e) => {
+    if (e.target.closest('button')) return;
+    const el = wrap.current;
+    if (!el) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    const rect = el.getBoundingClientRect();
+    let v = split;
+    const move = (ev) => {
+      v = Math.min(0.8, Math.max(0.2, (rect.bottom - ev.clientY) / rect.height));
+      el.style.setProperty('--split', `${(v * 100).toFixed(2)}%`);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setSplit(v);
+      try {
+        localStorage.setItem(SPLIT_KEY, String(v));
+      } catch {
+        /* 记不住就只在这次打开里有效 */
+      }
+      termFit(frame);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const frameProps = { ref: wrap, 'data-split': shown ? '' : undefined, style: { '--split': `${(split * 100).toFixed(2)}%` } };
+  const bar = shown && (
+    <div className="chat-term-bar" onPointerDown={drag} role="separator" aria-orientation="horizontal" title={t('chat.drag_split')}>
+      <span className="chat-term-grip" aria-hidden="true" />
+      <SquareTerminal size={14} aria-hidden="true" />
+      <span className="grow ellipsis">{t('chat.term_drawer')}</span>
+      <button
+        type="button"
+        className="btn btn-plain btn-icon"
+        onClick={() => {
+          setOpen(false);
+          onFull();
+        }}
+        aria-label={t('chat.term_full')}
+        title={t('chat.term_full')}
+      >
+        <Expand size={15} />
+      </button>
+      <button type="button" className="btn btn-plain btn-icon" onClick={close} aria-label={t('chat.close_terminal')} title={t('chat.close_terminal')}>
+        <ChevronDown size={17} />
+      </button>
+    </div>
+  );
+  return { open: shown, show, close, frameProps, bar };
+}
+
 /** 终端没在运行 / 找不到时，终端区域里的提示。 */
 function PaneNotice({ title, body, children }) {
   return (
@@ -219,6 +302,7 @@ export function TermPane({ id, inst, active, missing, onStart }) {
   const [max, setMax] = useState(false);
   const chat = inst ? hasChat(inst) : undefined;
   const [tab, setTab] = useTab(id, chat);
+  const drawer = useTermDrawer(frame, tab === 'chat' && active, () => setTab('term'));
   const link = useTermSrc(id, reloadKey);
   const allowed = status.account.allowed;
   const running = Boolean(inst?.running && allowed);
@@ -325,9 +409,10 @@ export function TermPane({ id, inst, active, missing, onStart }) {
           <ExternalLink size={16} />
         </button>
       </header>
-      <div className="term-frame">
+      <div className="term-frame" {...drawer.frameProps}>
         {body}
         {tab !== 'chat' && files.layer}
+        {drawer.bar}
         {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); termFocus(frame); }} />}
         {running && tab === 'git' && (
           <div className="term-files-tab">
@@ -339,10 +424,10 @@ export function TermPane({ id, inst, active, missing, onStart }) {
             <FileBrowser id={id} active={active && tab === 'files'} onInsert={(text) => { setTab('term'); termPaste(frame, text); }} />
           </div>
         )}
-        {/* 对话一直挂着（切到终端时只是隐藏）：终端里操作完能自动切回来 */}
+        {/* 对话一直挂着（切到别的标签时只是隐藏）：切回来时内容和滚动位置都还在 */}
         {running && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} active={active && tab === 'chat'} touch={false} onTerminal={() => setTab('term')} onBack={() => setTab('chat')} />
+            <ChatView id={id} active={active && tab === 'chat'} touch={false} termOpen={drawer.open} onTerminal={drawer.show} onBack={drawer.close} />
           </div>
         )}
       </div>
@@ -369,13 +454,15 @@ export default function TerminalView({ id }) {
   const [inst, error, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
   const chat = inst ? hasChat(inst) : undefined;
   const [tab, setTab] = useTab(id, chat);
+  const drawer = useTermDrawer(frame, tab === 'chat', () => setTab('term'));
   const allowed = status.account.allowed;
   const running = inst?.running;
   const live = Boolean(running && allowed);
   // 底部标签栏：手机和窄屏用；键盘弹起时让给终端
   const bottomTabs = live && (touch || narrow);
   const tabbarShown = bottomTabs && !mobile.ime.up;
-  const keybarShown = touch && keys && live && tab === 'term';
+  // 对话下面展开着终端时也要按键条（选择框要用方向键、回车、Esc）
+  const keybarShown = touch && keys && live && (tab === 'term' || drawer.open);
   const files = useTermFiles({ id, inst, frame, enabled: live && tab !== 'chat', touch, hostOs: status.capabilities.os, keybar: keybarShown || tabbarShown });
   const vars = useTermChrome(status.settings.theme, true);
   useRefitOnReturn(frame, live);
@@ -517,7 +604,7 @@ export default function TerminalView({ id }) {
         )}
         {tab !== 'chat' && files.button}
         {live && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} />}
-        {touch && tab === 'term' && live && (
+        {touch && (tab === 'term' || drawer.open) && live && (
           <button type="button" className="btn btn-plain btn-icon" onPointerDown={keepFocus} onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
             <Keyboard size={19} />
           </button>
@@ -535,9 +622,10 @@ export default function TerminalView({ id }) {
           </>
         )}
       </header>
-      <div className="term-frame">
+      <div className="term-frame" {...drawer.frameProps}>
         {body}
         {tab !== 'chat' && files.layer}
+        {drawer.bar}
         {live && tab === 'files' && (
           <div className="term-files-tab">
             <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
@@ -551,7 +639,7 @@ export default function TerminalView({ id }) {
         )}
         {live && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} active={tab === 'chat'} touch={touch} onTerminal={() => setTab('term')} onBack={() => setTab('chat')} />
+            <ChatView id={id} active={tab === 'chat'} touch={touch} termOpen={drawer.open} onTerminal={drawer.show} onBack={drawer.close} />
           </div>
         )}
       </div>
