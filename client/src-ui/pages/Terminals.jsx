@@ -229,15 +229,28 @@ function stateOf(i) {
 // 新窗口打开管理台的终端页（带文件面板、粘贴、拖放），不再直接打开裸 /i/{id}/。
 const tabUrl = (inst) => `/t/${inst.id}`;
 
-// DSH 是网页界面：打开它就是打开它的本机网页映射（本机、外面都是同一个地址）。
-// 先在点击里同步开一个空白窗口（不会被当作弹窗拦截），后台确保 DSH 在运行、映射可用后再跳过去。
+// DSH 是网页界面：打开它就是打开它的本机网页映射（本机、外面都是同一个地址），带着这次启动的口令。
+// 桌面应用里交给看看用系统浏览器打开（应用窗口里登录不上 DSH）；
+// 浏览器里先在点击里同步开一个空白窗口（不会被当作弹窗拦截），后台确保 DSH 在运行、映射可用后再跳过去。
 export async function openDsh(inst, t, toast) {
+  if (window.__LOOKLOOK_DESKTOP__) {
+    try {
+      const r = await api.post(`/instances/${inst.id}/page?open=1`);
+      if (!r.opened) toast(t("dsh.starting"));
+    } catch (e) {
+      toast(errorText(t, e), "error");
+    }
+    return;
+  }
   const w = window.open("about:blank", "_blank");
   try {
     const r = await api.post(`/instances/${inst.id}/page`);
-    if (w) w.location.href = r.url;
+    // 没有口令打开了也只是 DSH 的“需要认证”页
+    if (!r.ready) {
+      w?.close();
+      toast(t("dsh.starting"));
+    } else if (w) w.location.href = r.url;
     else window.open(r.url, "_blank", "noopener");
-    if (!r.ready) toast(t("dsh.starting"));
   } catch (e) {
     w?.close();
     toast(errorText(t, e), "error");

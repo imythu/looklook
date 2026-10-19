@@ -212,6 +212,8 @@ fn show_main(app: &AppHandle) {
 fn window<'a>(app: &'a AppHandle, label: &str, console: Url, url: Url) -> WebviewWindowBuilder<'a, Wry, AppHandle> {
     let handle = app.clone();
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(url))
+        // 管理台据此知道自己在桌面应用里（例如 DSH 改由系统浏览器打开）
+        .initialization_script("window.__LOOKLOOK_DESKTOP__ = true;")
         .title(tr("看看", "Looklook"))
         .on_document_title_changed(|w, title| {
             let _ = w.set_title(&title);

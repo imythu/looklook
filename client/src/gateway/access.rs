@@ -435,7 +435,7 @@ mod tests {
         assert_eq!(parse_net("0.0.0.0/0"), Err("ip_too_wide"));
         assert_eq!(parse_net("10.0.0.0/4"), Err("ip_too_wide"));
         assert_eq!(parse_net("127.0.0.1"), Err("ip_loopback"));
-        assert_eq!(parse_entry(" 4.looklook.example. "), Ok(Entry::Domain("4.looklook.example".into())));
+        assert_eq!(parse_entry(" 4.NAS.Example.org. "), Ok(Entry::Domain("4.nas.example.org".into())));
         assert_eq!(parse_entry("nas"), Ok(Entry::Domain("nas".into())));
         assert_eq!(parse_entry("203.0.113.0/24"), Ok(Entry::Net(ip("203.0.113.0"), 24)));
         assert_eq!(parse_entry("203.0.113"), Err("ip_format"));

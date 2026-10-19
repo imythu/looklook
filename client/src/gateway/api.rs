@@ -7,7 +7,7 @@ use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, patch, post, put};
 use axum::{Extension, Json, Router};
-use looklook_protocol::dto::{CreatePageShare, CreateTunnel, UpdateTunnel};
+use looklook_protocol::dto::{CreatePageShare, CreateTunnel, Tunnel, UpdateTunnel};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -403,8 +403,16 @@ async fn create_dsh(app: &App, mut input: Input) -> R<crate::instances::View> {
     Ok(v)
 }
 
-/// 打开 DSH：确保它在运行、映射还在（被删了就重建，被关了就打开），返回映射地址。
-async fn instance_page(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct PageQ {
+    /// 桌面应用：由看看用系统浏览器打开（带着口令），不在应用窗口里打开
+    open: bool,
+}
+
+/// 打开 DSH：确保它在运行、映射还在（被删了就重建，被关了就打开），返回带口令的映射地址。
+/// `?open=1` 且是本机桌面时直接用系统浏览器打开，返回 `opened`。
+async fn instance_page(State(app): State<App>, Extension(access): Extension<Access>, Path(id): Path<String>, Query(q): Query<PageQ>) -> R<Json<Value>> {
     require_allowed(&app)?;
     require_persistent(&app)?;
     let v = app.instances.get(&id).await?;
@@ -413,12 +421,29 @@ async fn instance_page(State(app): State<App>, Path(id): Path<String>) -> R<Json
     if !v.running || v.task_alive != Some(true) {
         app.instances.start(&id).await?;
     }
-    let saved: Option<DshPage> = app.store.get(&page_key(&id))?;
+    // 映射（要问平台）和口令（等 dsh 启动完）互不依赖，一起等
+    let (tunnel, token) = tokio::join!(dsh_tunnel(&app, &id, port), dsh_token(&app, &id, port));
+    let tunnel = tunnel?;
+    let url = match &token {
+        Some(t) => with_query(&tunnel.url, "token", t),
+        None => tunnel.url.clone(),
+    };
+    // 没拿到口令时不打开：打开了也只是 DSH 的“需要认证”页
+    let opened = q.open && token.is_some() && access.is_local() && crate::util::has_desktop() && {
+        let u = url.clone();
+        tokio::task::spawn_blocking(move || crate::util::open_url(&u)).await.unwrap_or(false)
+    };
+    Ok(Json(json!({ "url": url, "ready": token.is_some(), "opened": opened })))
+}
+
+/// DSH 的本机网页映射：被删了就重建，被关了或端口不对就改回来。
+async fn dsh_tunnel(app: &App, id: &str, port: u16) -> R<Tunnel> {
+    let saved: Option<DshPage> = app.store.get(&page_key(id))?;
     let existing = match saved {
         Some(p) => app.account.tunnels().await?.items.into_iter().find(|t| t.id == p.tunnel_id),
         None => None,
     };
-    let tunnel = match existing {
+    Ok(match existing {
         Some(t) if t.status == "enabled" && t.target_port == i32::from(port) => t,
         Some(t) => {
             let req = UpdateTunnel { name: None, target_port: Some(port.into()), status: Some("enabled".into()) };
@@ -426,49 +451,38 @@ async fn instance_page(State(app): State<App>, Path(id): Path<String>) -> R<Json
         }
         None => {
             let t = app.account.create_tunnel(&CreateTunnel { name: "DSH".into(), target_port: port.into() }).await?;
-            app.store.set(&page_key(&id), &DshPage { tunnel_id: t.id.clone() })?;
+            app.store.set(&page_key(id), &DshPage { tunnel_id: t.id.clone() })?;
             t
         }
-    };
-    // 刚启动时等它开始监听（第一次运行要初始化配置，会慢一些），免得打开就是“连不上”
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(20);
-    let ready = loop {
-        if tokio::net::TcpStream::connect((std::net::Ipv4Addr::LOCALHOST, port)).await.is_ok() {
-            break true;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            break false;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    };
-    let token = if ready { dsh_token(&app, &id).await } else { None };
-    let url = match &token {
-        Some(t) => with_query(&tunnel.url, "token", t),
-        None => tunnel.url.clone(),
-    };
-    Ok(Json(json!({ "url": url, "ready": ready })))
+    })
 }
 
 /// 这次运行的 `dsh web` 打印的启动口令（`dsh web: http://127.0.0.1:P/?token=…`）。浏览器带着它打开一次，
 /// DSH 就发一个 30 天的 Cookie（按 Host 区分；本机网页映射把 Host 改成 localhost:P，所以本机、远程是同一个）。
-/// 口令每次启动都换；一直带着当前的口令打开即可（已有 Cookie 时 DSH 直接跳回首页）。
-/// 刚开始监听时那一行可能还没打印，最多再等 10 秒。回滚缓冲区被冲掉时用上次看到的。
-async fn dsh_token(app: &App, id: &str) -> Option<String> {
-    static SEEN: std::sync::Mutex<Vec<(String, String)>> = std::sync::Mutex::new(Vec::new());
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+/// 口令每次启动都换，而且 dsh 要等插件全部加载完才打印（第一次运行要初始化配置，会慢很多）。
+/// 输出里可能还留着上次运行的那一行，所以拿到口令后先向 dsh 验证一次，通过了才用；最多等 60 秒。
+async fn dsh_token(app: &App, id: &str, port: u16) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     loop {
         if let Some(t) = app.instances.full_output(id).await.as_deref().and_then(parse_dsh_token) {
-            let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-            seen.retain(|(k, _)| k != id);
-            seen.push((id.to_string(), t.clone()));
-            return Some(t);
+            if dsh_token_works(port, &t).await {
+                return Some(t);
+            }
         }
         if tokio::time::Instant::now() >= deadline {
-            let seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
-            return seen.iter().find(|(k, _)| k == id).map(|(_, t)| t.clone());
+            return None;
         }
-        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     }
+}
+
+/// 口令换 Cookie：有效时 dsh 返回 303，无效 401，还没监听时连不上。
+async fn dsh_token_works(port: u16, token: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(3)).no_proxy().build() else {
+        return false;
+    };
+    let url = format!("http://127.0.0.1:{port}/?token={token}");
+    matches!(client.get(url).send().await, Ok(r) if r.status() == StatusCode::SEE_OTHER)
 }
 
 /// 输出里最后一个 `dsh web:` 行的口令。

@@ -832,7 +832,7 @@
   },
   "dsh": {
     "output": "View DSH's output",
-    "starting": "DSH is still starting; refresh the page in a moment if it doesn't load",
+    "starting": "DSH is still starting; open it again in a moment",
     "form_note": "DSH runs as a web page, one per computer. Looklook picks a free port and adds a local page for it, so opening DSH (here or remotely) opens that page.",
     "workdir_hint": "DSH's default project folder. Add other project folders inside DSH."
   },
