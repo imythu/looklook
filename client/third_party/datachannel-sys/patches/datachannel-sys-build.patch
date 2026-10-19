@@ -1,0 +1,33 @@
+--- a/build.rs
++++ b/build.rs
+@@ -133,6 +133,8 @@
+         cmake_conf.define("CMAKE_POLICY_VERSION_MINIMUM", "3.5");
+         cmake_conf.define("NO_WEBSOCKET", "ON");
+         cmake_conf.define("NO_EXAMPLES", "ON");
++        // looklook: 副本里删掉了 test/ 和各依赖的测试目录，不关掉的话 CMake 配置阶段就找不到源文件
++        cmake_conf.define("NO_TESTS", "ON");
+         if !cfg!(feature = "media") {
+             cmake_conf.define("NO_MEDIA", "ON");
+         }
+@@ -152,6 +154,8 @@
+             openssl_root_dir.to_path_buf().join("lib/libssl.a"),
+         );
+         cmake_conf.define("OPENSSL_USE_STATIC_LIBS", "TRUE");
++        // looklook: 交叉编译时别用宿主机 pkg-config 里的 openssl.pc（会带进 -lz），路径上面已经显式给了
++        cmake_conf.define("CMAKE_DISABLE_FIND_PACKAGE_PkgConfig", "TRUE");
+ 
+         cmake_conf.build();
+ 
+@@ -169,6 +173,12 @@
+             println!("cargo:rustc-link-lib=static=crypto");
+             println!("cargo:rustc-link-lib=static=ssl");
+         }
++        // looklook: 静态 OpenSSL（随机数、证书库）与 libjuice（网卡枚举）依赖的 Windows 系统库；按目标判断，交叉编译时 cfg! 看的是宿主
++        if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
++            for lib in ["ws2_32", "bcrypt", "iphlpapi", "crypt32", "user32", "advapi32"] {
++                println!("cargo:rustc-link-lib=dylib={lib}");
++            }
++        }
+ 
+         link_static_libdatachannel(&out_dir, profile);
+     }

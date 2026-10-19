@@ -7,6 +7,7 @@ pub mod dto;
 pub mod edge_auth;
 pub mod error_code;
 pub mod gateway_token;
+pub mod rtc;
 pub mod signing;
 pub mod username;
 

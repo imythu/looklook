@@ -172,6 +172,9 @@ pub struct RemoteDevice {
     pub name: String,
     pub os: String,
     pub online: bool,
+    /// 这台设备上的终端 id（终端路由表）：WebRTC 启动页按它把 `/i/{id}…` 转给终端所在的设备（docs/06 §6.1）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub terminals: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -181,6 +184,9 @@ pub struct RemoteDevices {
     pub default: Option<String>,
     /// 每个账户最多同时登录的设备数。
     pub max: i64,
+    /// 浏览器建 WebRTC 连接用的 ICE 服务器：用户所在中转上的 STUN/TURN 与短期凭证（docs/06 §7.2）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ice_servers: Vec<crate::rtc::IceServer>,
 }
 
 pub fn default_channel() -> String {

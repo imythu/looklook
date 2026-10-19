@@ -41,8 +41,7 @@ i18n.use(initReactI18next).init({
   ns: ['common', 'error'],
   defaultNS: 'common',
   returnEmptyString: false,
-  // 对话界面的文案用 {{agent}}（Claude Code / Codex）；没传时按 Claude Code，免得露出 {{agent}}
-  interpolation: { escapeValue: false, defaultVariables: { agent: 'Claude Code' } },
+  interpolation: { escapeValue: false },
 });
 
 /** 错误码 → 文案（`error.<CODE>`，params 用于插值）。 */

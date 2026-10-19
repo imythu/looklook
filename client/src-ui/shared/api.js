@@ -139,6 +139,50 @@ export async function fetchRaw(path, options = {}) {
 /** 普通链接能不能直接打开不属于终端的接口（远程且有多台电脑时不能，见 fetchRaw）。 */
 export const plainLinksWork = () => !routing.multi;
 
+/**
+ * 远程管理台经 WebRTC 打开（服务端 docs/06）：顶层是平台的启动页，管理台在它的同源 iframe 里，
+ * 请求经 Service Worker 转给启动页、再经 DataChannel 发给电脑。
+ */
+export const rtcMode = (() => {
+  try {
+    return window.top !== window && Boolean(window.top.__llrtc);
+  } catch {
+    return false;
+  }
+})();
+
+/**
+ * WebRTC 模式下的下载链接（`<a download>`，含代码里 `a.click()` 的）：浏览器可能把它当成顶层导航直接交给平台，
+ * 拿到的是启动页。改成经 Service Worker 取回、存成 blob 再保存。
+ */
+export function installRtcDownloads() {
+  if (!rtcMode) return;
+  document.addEventListener(
+    'click',
+    (e) => {
+      const a = e.target instanceof Element ? e.target.closest('a[download]') : null;
+      if (!a || e.defaultPrevented) return;
+      const url = new URL(a.href, location.href);
+      // blob: 链接（这里自己生成的、fetchRaw 取回后保存的）照常下载
+      if (url.protocol === 'blob:' || url.origin !== location.origin) return;
+      e.preventDefault();
+      const name = a.getAttribute('download') || url.pathname.split('/').pop() || 'download';
+      fetch(url, { credentials: 'same-origin', cache: 'no-store' })
+        .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+        .then((blob) => {
+          const href = URL.createObjectURL(blob);
+          const tmp = Object.assign(document.createElement('a'), { href, download: name });
+          document.body.appendChild(tmp);
+          tmp.click();
+          tmp.remove();
+          setTimeout(() => URL.revokeObjectURL(href), 60_000);
+        })
+        .catch((err) => console.warn('download failed', err));
+    },
+    true,
+  );
+}
+
 function client(device) {
   const o = device === undefined ? {} : { device };
   return {

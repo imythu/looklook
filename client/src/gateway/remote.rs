@@ -27,6 +27,8 @@ pub struct Remote {
     pub host: String,
     /// 隧道目标端口（来自凭证）。
     pub port: Option<u16>,
+    /// 子站会话短 id（凭证的 `sid`）：WebRTC 信令据此核对授权票据属于同一会话。
+    pub sid: String,
 }
 
 /// 凭证缓存上限：超过时先清掉过期的，仍超过就整体清空（只是多验几次签）。
@@ -60,7 +62,7 @@ impl Verifier {
             return Err("wrong_host");
         }
         self.fresh_jti(&tok.jti, tok.exp + gateway_token::LEEWAY_MS, now)?;
-        Ok(Remote { kind: cap.kind, host: tok.host, port: cap.port })
+        Ok(Remote { kind: cap.kind, host: tok.host, port: cap.port, sid: cap.sid })
     }
 
     fn cap(&self, account: &Account, cap: &str, hash: &str, user: &str, now: i64) -> Result<SessionCap, &'static str> {

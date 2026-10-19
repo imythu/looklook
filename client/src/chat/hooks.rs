@@ -90,17 +90,13 @@ pub fn settings_json(exe: &Path, endpoint: &Path) -> Value {
     json!({ "hooks": hooks })
 }
 
-/// hook 用的程序：看看自己。开发、测试时可以用 `LOOKLOOK_HOOK_EXE` 指定（`cargo test` 里当前程序是测试程序）
-pub fn hook_exe() -> PathBuf {
-    std::env::var_os("LOOKLOOK_HOOK_EXE")
-        .map(PathBuf::from)
-        .or_else(crate::updater::exe_path)
-        .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("looklook")))
-}
-
 /// 写好 `claude-hooks.json`（内容没变就不动）。启动对话模式的 Claude Code 之前必须调用：文件不在时 claude 会直接报错退出。
 pub fn ensure_settings(paths: &Paths) -> std::io::Result<PathBuf> {
-    let exe = hook_exe();
+    // 开发、测试时可以指定 hook 用的程序（`cargo test` 里当前程序是测试程序）
+    let exe = std::env::var_os("LOOKLOOK_HOOK_EXE")
+        .map(PathBuf::from)
+        .or_else(crate::updater::exe_path)
+        .unwrap_or_else(|| std::env::current_exe().unwrap_or_else(|_| PathBuf::from("looklook")));
     let path = settings_path(paths);
     let text = serde_json::to_string_pretty(&settings_json(&exe, &endpoint_path(paths)))?;
     if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {

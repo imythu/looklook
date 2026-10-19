@@ -17,6 +17,8 @@
 //     提供 window.looklookText() 读出终端缓冲区的文字（没有 tmux 时用）。tmux 里拖选后浏览器不让直接写剪贴板时给一个“复制”按钮。
 // 13. 同一个终端在几处打开（电脑和手机）：tmux 窗口按最近有输入的那一处的尺寸排版，另一处看到的是按别的屏幕排的画面。
 //     页面回到前台、拿到焦点、手指/鼠标按到终端上时重新报一次尺寸，让 tmux 按这一处排版。见 claimSize。
+// 14. 远程管理台走 WebRTC 时（服务端 docs/06）：顶层是平台的启动页，持有到电脑的 DataChannel；
+//     终端的 WebSocket 改由启动页经 DataChannel 打开（window.top.__llrtc），见 RtcSocket。
 (function () {
   'use strict';
   var tries = 0;
@@ -78,9 +80,98 @@
     if (banner) { banner.remove(); banner = null; }
     if (was && document.body) toast(tr('back'));
   }
+  // 启动页提供的 WebRTC 通道（同源的顶层窗口；本机直连等跨源嵌入时读不到，返回 null）。
+  function rtcBridge() {
+    try {
+      var b = window.top !== window && window.top.__llrtc;
+      return b && b.proto === 1 && typeof b.openWs === 'function' ? b : null;
+    } catch (e) { return null; }
+  }
+  // 与 WebSocket 接口一致的替身：数据经启动页的 DataChannel 收发。收到的数据复制成本页面的 ArrayBuffer /
+  // 字符串（跨窗口的对象在 instanceof 判断里不算本页的 ArrayBuffer）。
+  function RtcSocket(bridge, url, protocols) {
+    var self = this;
+    var u = new URL(String(url), location.href);
+    self.url = u.href;
+    self.readyState = 0;
+    self.protocol = '';
+    self.extensions = '';
+    self.binaryType = 'blob';
+    self._l = {};
+    var dec = new TextDecoder();
+    var list = protocols === undefined ? [] : [].concat(protocols).map(String);
+    self._h = bridge.openWs(u.pathname + u.search, list, {
+      onopen: function (proto) {
+        if (self.readyState !== 0) return;
+        self.readyState = 1;
+        self.protocol = proto || '';
+        self._emit('open', new Event('open'));
+      },
+      onmessage: function (text, bytes) {
+        if (self.readyState !== 1) return;
+        var data;
+        if (text) data = dec.decode(bytes);
+        else {
+          var copy = new Uint8Array(bytes.length);
+          copy.set(bytes);
+          data = self.binaryType === 'arraybuffer' ? copy.buffer : new Blob([copy]);
+        }
+        self._emit('message', new MessageEvent('message', { data: data, origin: location.origin }));
+      },
+      onclose: function (code) {
+        if (self.readyState === 3) return;
+        var clean = code === 1000;
+        if (!clean) self._emit('error', new Event('error'));
+        self.readyState = 3;
+        self._emit('close', new CloseEvent('close', { code: code || 1006, reason: '', wasClean: clean }));
+      }
+    });
+  }
+  RtcSocket.CONNECTING = 0; RtcSocket.OPEN = 1; RtcSocket.CLOSING = 2; RtcSocket.CLOSED = 3;
+  RtcSocket.prototype = {
+    CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3,
+    onopen: null, onmessage: null, onclose: null, onerror: null,
+    get bufferedAmount() { return this._h ? this._h.buffered() : 0; },
+    addEventListener: function (type, fn) { (this._l[type] = this._l[type] || []).push(fn); },
+    removeEventListener: function (type, fn) {
+      var a = this._l[type];
+      if (a) { var i = a.indexOf(fn); if (i >= 0) a.splice(i, 1); }
+    },
+    dispatchEvent: function (ev) { this._emit(ev.type, ev); return true; },
+    _emit: function (type, ev) {
+      var self = this;
+      var on = self['on' + type];
+      try { if (typeof on === 'function') on.call(self, ev); } catch (e) { setTimeout(function () { throw e; }); }
+      (self._l[type] || []).slice().forEach(function (fn) {
+        try { typeof fn === 'function' ? fn.call(self, ev) : fn.handleEvent(ev); } catch (e) { setTimeout(function () { throw e; }); }
+      });
+    },
+    send: function (data) {
+      if (this.readyState === 0) throw new DOMException('Still in CONNECTING state.', 'InvalidStateError');
+      if (this.readyState !== 1) return;
+      var self = this;
+      if (typeof data === 'string') return void self._h.send(true, new TextEncoder().encode(data));
+      if (data instanceof Blob) {
+        data.arrayBuffer().then(function (b) { if (self.readyState === 1) self._h.send(false, new Uint8Array(b)); });
+        return;
+      }
+      var bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+      self._h.send(false, bytes);
+    },
+    close: function () {
+      if (this.readyState >= 2) return;
+      this.readyState = 2;
+      this._h.close();
+    }
+  };
+
   (function watchSocket() {
-    var Native = window.WebSocket;
+    var bridge = rtcBridge();
+    var Native = bridge
+      ? function (url, protocols) { return new RtcSocket(bridge, url, protocols); }
+      : window.WebSocket;
     if (!Native) return;
+    if (bridge) { Native.prototype = RtcSocket.prototype; ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'].forEach(function (k) { Native[k] = RtcSocket[k]; }); }
     function Wrapped(url, protocols) {
       var ws = protocols === undefined ? new Native(url) : new Native(url, protocols);
       if (/\/ws(\?|$)/.test(String(url))) {

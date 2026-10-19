@@ -23,7 +23,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
@@ -34,28 +34,6 @@ import { runUpload } from '../shared/uploader.js';
 import { Button, useToast } from '../shared/ui.jsx';
 
 // ---------------- 数据 ----------------
-
-/** 服务端状态里的 `agent` → 文案里的 {{agent}}；老版本服务端不带 agent，就是 Claude Code */
-const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
-const agentName = (status) => AGENT_NAMES[status?.agent] ?? AGENT_NAMES.claude;
-const AgentName = createContext(AGENT_NAMES.claude);
-/** 服务端给的能力（`status.caps`）：界面只按它显示按钮。老版本服务端不带 caps，就是全部可用（Claude Code） */
-const NO_CAPS = {};
-const Caps = createContext(NO_CAPS);
-
-/** Codex 屏幕上的 “Working (12s • esc to interrupt)” → 正在工作（12 秒） */
-function activityText(t, activity) {
-  const m = /\bWorking \((\d+)s\b/.exec(activity ?? '');
-  return m ? t('chat.codex_working', { s: m[1] }) : activity;
-}
-
-/** 和 useTranslation 一样，但文案里的 {{agent}} 换成这个会话的 AI 工具 */
-function useT(agent) {
-  const { t } = useTranslation();
-  const ctx = useContext(AgentName);
-  const name = agent ?? ctx;
-  return { t: useCallback((key, opts) => t(key, { agent: name, ...opts }), [t, name]) };
-}
 
 /** 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。 */
 function useChat(id) {
@@ -128,7 +106,7 @@ function Pre({ text, className = '' }) {
 }
 
 function DiffView({ lines }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const [all, setAll] = useState(false);
   const shown = all ? lines : lines.slice(0, DIFF_LIMIT);
   return (
@@ -167,7 +145,7 @@ function TodoList({ todos }) {
 
 /** 工具结果的文字；被截断时可以取完整内容。 */
 function ResultText({ id, result }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const [full, setFull] = useState(null);
   const [busy, setBusy] = useState(false);
   if (!result) return null;
@@ -199,7 +177,7 @@ function ResultText({ id, result }) {
  * 后台运行的子代理一开始就有结果（“已在后台启动”），所以按内容判断是否结束：最后一条是文字回复就算结束。
  */
 function SubAgent({ id, block, result }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -251,7 +229,7 @@ function SubAgent({ id, block, result }) {
 }
 
 function ToolBody({ id, block, result }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const input = block.input ?? {};
   switch (block.name) {
     case 'Bash':
@@ -307,7 +285,7 @@ function ToolBody({ id, block, result }) {
 }
 
 function ToolCard({ id, block, result, live }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const diff = DIFF_TOOLS.includes(block.name) ? diffLines(block.name, block.input, result?.extra) : null;
   const stat = diff ? diffStat(diff) : null;
   // 改动默认展开（看改了什么是最常见的需要），太长的不展开
@@ -341,7 +319,7 @@ function ToolCard({ id, block, result, live }) {
 }
 
 function Thinking({ text }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   return (
     <details className="chat-thinking">
       <summary>
@@ -353,7 +331,7 @@ function Thinking({ text }) {
 }
 
 function Item({ id, item, results, live }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   switch (item.k) {
     case 'user':
       return (
@@ -414,7 +392,7 @@ function Item({ id, item, results, live }) {
 // ---------------- 审批 ----------------
 
 function QuestionForm({ pending, onAnswer, onTerminal, busy }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const questions = pending.input?.questions ?? [];
   const [picked, setPicked] = useState({});
   const toggle = (n, label, multi) =>
@@ -455,8 +433,7 @@ function QuestionForm({ pending, onAnswer, onTerminal, busy }) {
 }
 
 function ApprovalBar({ id, pending, onTerminal }) {
-  const { t } = useT();
-  const caps = useContext(Caps);
+  const { t } = useTranslation();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [denying, setDenying] = useState(false);
@@ -543,12 +520,10 @@ function ApprovalBar({ id, pending, onTerminal }) {
             <Button busy={busy} onClick={() => answer('allow')}>
               {t('chat.allow')}
             </Button>
-            {caps.allow_session !== false && (
-              <Button variant="secondary" busy={busy} onClick={() => answer('allow_session')} title={t('chat.allow_session_hint')}>
-                {t('chat.allow_session')}
-              </Button>
-            )}
-            {caps.allow_dirs !== false && dirs.length > 0 && (
+            <Button variant="secondary" busy={busy} onClick={() => answer('allow_session')} title={t('chat.allow_session_hint')}>
+              {t('chat.allow_session')}
+            </Button>
+            {dirs.length > 0 && (
               <Button variant="secondary" busy={busy} onClick={() => answer('allow_dirs')} title={dirs.flatMap((d) => d.directories ?? []).join('\n')}>
                 {t('chat.allow_dirs')}
               </Button>
@@ -581,8 +556,7 @@ function ApprovalBar({ id, pending, onTerminal }) {
 let attachSeq = 0;
 
 function Composer({ id, phase, touch, onTerminal }) {
-  const { t } = useT();
-  const caps = useContext(Caps);
+  const { t } = useTranslation();
   const toast = useToast();
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
@@ -706,7 +680,7 @@ function Composer({ id, phase, touch, onTerminal }) {
         </div>
       )}
       <div className="chat-input-row">
-        <button type="button" className="btn btn-plain btn-icon" onClick={() => picker.current?.click()} disabled={disabled || caps.images === false} aria-label={t('chat.attach')} title={caps.images === false ? t('chat.no_images') : t('chat.attach')}>
+        <button type="button" className="btn btn-plain btn-icon" onClick={() => picker.current?.click()} disabled={disabled} aria-label={t('chat.attach')} title={t('chat.attach')}>
           <Paperclip size={18} />
         </button>
         <input ref={picker} type="file" accept="image/*" multiple hidden onChange={(e) => {
@@ -747,7 +721,7 @@ function Composer({ id, phase, touch, onTerminal }) {
 const MODES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions', 'dontAsk'];
 
 function StatusLine({ status, online, onTerminal }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   if (!status) return null;
   const { phase, tool, mode, error, reason } = status;
   const label = phase === 'detached' && reason === 'not_attached' ? 'chat.phase_not_attached' : `chat.phase_${phase}`;
@@ -769,25 +743,20 @@ function StatusLine({ status, online, onTerminal }) {
 
 /** Claude Code 没在运行或没接上对话界面时的说明 */
 function Detached({ id, status, onTerminal }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
   const reason = status?.reason ?? 'starting';
-  const run = async (path) => {
+  const relaunch = async () => {
     setBusy(true);
     try {
-      await api.post(path);
-      setConfirming(false);
+      await api.post(`/instances/${id}/chat/relaunch`);
     } catch (e) {
       toast(errorText(t, e), 'error');
     } finally {
       setBusy(false);
     }
   };
-  const relaunch = () => run(`/instances/${id}/chat/relaunch`);
-  // 开启对话界面之前就在运行、或者在终端里手动开的：重启这个终端，带着 hooks 重新启动
-  const restart = () => run(`/instances/${id}/restart`);
   return (
     <div className="chat-detached">
       <b>{t(`chat.detached_${reason}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
@@ -798,53 +767,7 @@ function Detached({ id, status, onTerminal }) {
             {t(status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
           </Button>
         )}
-        {reason === 'not_attached' && !confirming && (
-          <Button onClick={() => setConfirming(true)}>{t('chat.restart_attach')}</Button>
-        )}
-        {reason === 'not_attached' && confirming && (
-          <>
-            <p className="chat-note" style={{ flexBasis: '100%', margin: 0 }}>{t('chat.restart_attach_confirm')}</p>
-            <Button variant="danger" busy={busy} onClick={restart}>
-              {t('chat.restart_attach')}
-            </Button>
-            <Button variant="ghost" onClick={() => setConfirming(false)}>
-              {t('action.cancel')}
-            </Button>
-          </>
-        )}
         <Button variant="ghost" icon={SquareTerminal} onClick={() => onTerminal(false)}>
-          {t('chat.open_terminal')}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-/** TUI 上是“信任这个文件夹吗”：在对话界面里直接确认（服务端会先核对屏幕上还是这个对话框） */
-function TrustFolder({ id, dialog, onTerminal }) {
-  const { t } = useT();
-  const toast = useToast();
-  const [busy, setBusy] = useState(false);
-  const trust = async () => {
-    setBusy(true);
-    try {
-      await api.post(`/instances/${id}/chat/dialog`, { kind: 'trust_folder' });
-    } catch (e) {
-      toast(errorText(t, e), 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <div className="chat-detached">
-      <b>{t('chat.trust_title')}</b>
-      {dialog.path && <p className="chat-note mono" style={{ wordBreak: 'break-all' }}>{dialog.path}</p>}
-      <p className="muted">{t('chat.trust_body')}</p>
-      <div className="chat-approve-acts">
-        <Button busy={busy} onClick={trust}>
-          {t('chat.trust_ok')}
-        </Button>
-        <Button variant="ghost" icon={SquareTerminal} onClick={onTerminal}>
           {t('chat.open_terminal')}
         </Button>
       </div>
@@ -857,7 +780,7 @@ function TrustFolder({ id, dialog, onTerminal }) {
  * transcript 要等整段写完才有，写进来之后这里自动不再显示。
  */
 function Live({ status, items }) {
-  const { t } = useT();
+  const { t } = useTranslation();
   const preview = status?.preview ?? '';
   const last = [...items].reverse().find((i) => i.k === 'assistant');
   const lastText = (last?.blocks ?? []).filter((b) => b.t === 'text').map((b) => b.text).join('\n');
@@ -867,7 +790,7 @@ function Live({ status, items }) {
     <>
       {shown && <div className="chat-preview">{preview}</div>}
       <p className="chat-working">
-        <LoaderCircle size={14} className="spin" aria-hidden="true" /> {activityText(t, status?.activity) || t('chat.working')}
+        <LoaderCircle size={14} className="spin" aria-hidden="true" /> {status?.activity || t('chat.working')}
       </p>
     </>
   );
@@ -877,8 +800,8 @@ function Live({ status, items }) {
  * 页面在后台时：需要确认、要到终端里操作、这一轮做完了，发浏览器通知，标题前面加个标记，回到页面时去掉。
  * `prev` 是 ChatView 记的上一个状态（这里只读）。
  */
-function useAttention(id, phase, pendingKind, prev, agent) {
-  const { t } = useT(agent);
+function useAttention(id, phase, pendingKind, prev) {
+  const { t } = useTranslation();
   const mark = useRef(null);
   useEffect(() => {
     const from = prev.current;
@@ -920,12 +843,10 @@ function useAttention(id, phase, pendingKind, prev, agent) {
  * onTerminal(auto)：切到“终端”标签（auto=true 表示是界面自己切过去的，操作完会自动切回来）；onBack()：切回“对话”。
  */
 export default function ChatView({ id, active, touch, onTerminal, onBack }) {
+  const { t } = useTranslation();
   const chat = useChat(id);
   const { status, items } = chat;
-  const agent = agentName(status);
-  const { t } = useT(agent);
   const phase = status?.phase ?? 'detached';
-  const dialogKind = status?.dialog?.kind ?? null;
   const list = useRef(null);
   const stick = useRef(true);
   const [atBottom, setAtBottom] = useState(true);
@@ -943,17 +864,17 @@ export default function ChatView({ id, active, touch, onTerminal, onBack }) {
     [onTerminal],
   );
   const prev = useRef(phase);
-  useAttention(id, phase, status?.pending?.kind, prev, agent);
+  useAttention(id, phase, status?.pending?.kind, prev);
   useEffect(() => {
     if (prev.current !== phase) {
-      if (phase === 'tui' && active && !dialogKind) goTerminal(true);
+      if (phase === 'tui' && active) goTerminal(true);
       if (prev.current === 'tui' && (phase === 'idle' || phase === 'running') && autoTerm.current && !active) {
         autoTerm.current = false;
         onBack();
       }
       prev.current = phase;
     }
-  }, [phase, active, dialogKind]);
+  }, [phase, active]);
   // 停在底部时跟着新内容走（Markdown 是异步渲染的，内容高度会在之后变化，所以看尺寸而不是看条目）
   const inner = useRef(null);
   useEffect(() => {
@@ -998,58 +919,48 @@ export default function ChatView({ id, active, touch, onTerminal, onBack }) {
     );
   }
   return (
-    <AgentName.Provider value={agent}>
-      <Caps.Provider value={status?.caps ?? NO_CAPS}>
-      <div className="chat-view">
-        <div className="chat-list" ref={list} onScroll={onScroll}>
-          <div className="chat-items" ref={inner}>
-            {status?.untested_version && (
-              <p className="chat-event chat-warn">
-                <TriangleAlert size={13} aria-hidden="true" /> {t('chat.untested_version', { version: status.version })}
-              </p>
-            )}
-            {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
-            {!items.length && status && phase !== 'detached' && <p className="chat-empty">{t('chat.empty')}</p>}
-            {items.map((item) => (item.k === 'tool_result' && usedIds.has(item.tool_use_id) ? null : <Item key={item.key} id={id} item={item} results={results} live={live} />))}
-            {phase === 'running' && <Live status={status} items={items} />}
-            {status?.stats?.failed > 0 && (
-              <p className="chat-event">
-                <TriangleAlert size={13} aria-hidden="true" /> {t('chat.format_warning', { version: status.version ?? '?' })}
-              </p>
-            )}
-          </div>
-        </div>
-        {!atBottom && (
-          <button type="button" className="chat-to-bottom" onClick={toBottom} aria-label={t('chat.to_bottom')}>
-            <ArrowDown size={16} />
-          </button>
-        )}
-        <div className="chat-dock">
-          {todos && todos.some((x) => x.status !== 'completed') && (
-            <details className="chat-dock-todos">
-              <summary>
-                <ListTodo size={14} aria-hidden="true" /> {t('chat.todos', { done: todos.filter((x) => x.status === 'completed').length, total: todos.length })}
-                <span className="ellipsis chat-note">{todos.find((x) => x.status === 'in_progress')?.activeForm ?? ''}</span>
-              </summary>
-              <TodoList todos={todos} />
-            </details>
+    <div className="chat-view">
+      <div className="chat-list" ref={list} onScroll={onScroll}>
+        <div className="chat-items" ref={inner}>
+          {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
+          {!items.length && status && phase !== 'detached' && <p className="chat-empty">{t('chat.empty')}</p>}
+          {items.map((item) => (item.k === 'tool_result' && usedIds.has(item.tool_use_id) ? null : <Item key={item.key} id={id} item={item} results={results} live={live} />))}
+          {phase === 'running' && <Live status={status} items={items} />}
+          {status?.stats?.failed > 0 && (
+            <p className="chat-event">
+              <TriangleAlert size={13} aria-hidden="true" /> {t('chat.format_warning', { version: status.version ?? '?' })}
+            </p>
           )}
-          {status?.pending && <ApprovalBar id={id} pending={status.pending} onTerminal={() => goTerminal(true)} />}
-          {phase === 'detached' && <Detached id={id} status={status} onTerminal={goTerminal} />}
-          {phase === 'tui' && dialogKind === 'trust_folder' && <TrustFolder id={id} dialog={status.dialog} onTerminal={() => goTerminal(true)} />}
-          {phase === 'tui' && dialogKind !== 'trust_folder' && (
-            <div className="chat-tui">
-              <span className="grow">{t('chat.tui_hint')}</span>
-              <Button icon={SquareTerminal} onClick={() => goTerminal(true)}>
-                {t('chat.open_terminal')}
-              </Button>
-            </div>
-          )}
-          <StatusLine status={status} online={chat.online} onTerminal={goTerminal} />
-          <Composer id={id} phase={phase} touch={touch} onTerminal={goTerminal} />
         </div>
       </div>
-      </Caps.Provider>
-    </AgentName.Provider>
+      {!atBottom && (
+        <button type="button" className="chat-to-bottom" onClick={toBottom} aria-label={t('chat.to_bottom')}>
+          <ArrowDown size={16} />
+        </button>
+      )}
+      <div className="chat-dock">
+        {todos && todos.some((x) => x.status !== 'completed') && (
+          <details className="chat-dock-todos">
+            <summary>
+              <ListTodo size={14} aria-hidden="true" /> {t('chat.todos', { done: todos.filter((x) => x.status === 'completed').length, total: todos.length })}
+              <span className="ellipsis chat-note">{todos.find((x) => x.status === 'in_progress')?.activeForm ?? ''}</span>
+            </summary>
+            <TodoList todos={todos} />
+          </details>
+        )}
+        {status?.pending && <ApprovalBar id={id} pending={status.pending} onTerminal={() => goTerminal(true)} />}
+        {phase === 'detached' && <Detached id={id} status={status} onTerminal={goTerminal} />}
+        {phase === 'tui' && (
+          <div className="chat-tui">
+            <span className="grow">{t('chat.tui_hint')}</span>
+            <Button icon={SquareTerminal} onClick={() => goTerminal(true)}>
+              {t('chat.open_terminal')}
+            </Button>
+          </div>
+        )}
+        <StatusLine status={status} online={chat.online} onTerminal={goTerminal} />
+        <Composer id={id} phase={phase} touch={touch} onTerminal={goTerminal} />
+      </div>
+    </div>
   );
 }

@@ -9,7 +9,6 @@ import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api, terminalDevice } from '../shared/api.js';
-import { CHAT_LAUNCHES } from '../shared/chat.js';
 import { LanButton, LanFallback, useLanPage } from '../shared/lan.jsx';
 import { termFit, termFocus, termPaste, useFocusWhenReady, useLatency, useRefitOnReturn, useTermSrc } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
@@ -127,7 +126,7 @@ const CHAT_TAB = ['chat', MessagesSquare, 'chat.tab'];
 const tabsFor = (chat) => (chat ? [CHAT_TAB, ...TABS] : TABS);
 
 /** 带对话界面的 Claude Code 终端（docs/CLAUDE_UI.md） */
-export const hasChat = (inst) => Boolean(CHAT_LAUNCHES.includes(inst?.launch) && inst?.chat_ui);
+export const hasChat = (inst) => Boolean(inst?.launch === 'claude' && inst?.chat_ui);
 
 /**
  * 当前标签，按终端记在浏览器里。带对话界面的终端默认打开“对话”。

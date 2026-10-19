@@ -16,7 +16,7 @@ pub mod direct;
 pub mod lan;
 pub mod mcp;
 mod proxy;
-mod remote;
+pub mod remote;
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, RwLock};
@@ -43,6 +43,8 @@ pub use proxy::{client as proxy_client, HttpClient};
 pub enum Access {
     Local,
     Remote { host: String, proto: String },
+    /// 经 WebRTC 通道（服务端 docs/06）：只有已授权的 PeerConnection 才能发请求。`origin` 是稳定地址的源（平台签在授权票据里）。
+    Rtc { origin: String },
 }
 
 impl Access {
@@ -80,6 +82,8 @@ pub struct Inner {
     pub direct: direct::Direct,
     /// 远程打开 → 改走局域网的票据与通行 Cookie
     pub lan: lan::Lan,
+    /// 管理台经 WebRTC 的连接（src/rtc）
+    pub rtc: Arc<crate::rtc::Rtc>,
 }
 
 impl Inner {
@@ -122,6 +126,7 @@ pub fn router(app: App) -> Router {
         .route("/i/{id}/", any(terminal))
         .route("/i/{id}/{*rest}", any(terminal))
         .route(direct::PING_PATH, get(direct::ping).options(direct::ping))
+        .route(looklook_protocol::rtc::OFFER_PATH, axum::routing::post(crate::rtc::offer))
         .route(mcp::PATH, axum::routing::post(mcp::handle).get(mcp::not_allowed).delete(mcp::not_allowed))
         .route(crate::chat::hooks::PATH, axum::routing::post(chat::hook))
         .route("/fonts/{*path}", get(assets::font))
@@ -232,6 +237,7 @@ async fn relay_entry(app: App, inner: Router, mut req: Request) -> Response {
     match remote.kind {
         Kind::Tunnel => proxy::tunnel(&app, req, &remote, &proto).await,
         Kind::UserHost => {
+            req.extensions_mut().insert(remote.clone());
             req.extensions_mut().insert(Access::Remote { host: remote.host, proto });
             use tower::ServiceExt;
             inner.oneshot(req).await.into_response()
@@ -283,6 +289,8 @@ pub fn origin_matches(h: &HeaderMap, access: &Access) -> bool {
         Access::Remote { host, proto } => origin
             .split_once("://")
             .is_some_and(|(scheme, rest)| scheme.eq_ignore_ascii_case(proto) && strip_port(rest).eq_ignore_ascii_case(strip_port(host))),
+        // 通道上的请求由 Service Worker 转来，浏览器不会带 Origin；带了就必须是稳定地址本身。
+        Access::Rtc { origin: own, .. } => origin.eq_ignore_ascii_case(own),
     }
 }
 
@@ -347,10 +355,17 @@ pub fn local_app(app: App) -> Router {
 
 pub fn relay_app(app: App) -> Router {
     let inner = router(app.clone());
-    Router::new().route(looklook_protocol::PRESENCE_PATH, get(presence)).fallback(move |req: Request| {
-        let (app, inner) = (app.clone(), inner.clone());
-        async move { relay_entry(app, inner, req).await }
-    })
+    let revoke = {
+        let app = app.clone();
+        move |headers: HeaderMap, body: axum::body::Bytes| crate::rtc::revoke(State(app), headers, body)
+    };
+    Router::new()
+        .route(looklook_protocol::PRESENCE_PATH, get(presence))
+        .route(looklook_protocol::rtc::REVOKE_PATH, axum::routing::post(revoke))
+        .fallback(move |req: Request| {
+            let (app, inner) = (app.clone(), inner.clone());
+            async move { relay_entry(app, inner, req).await }
+        })
 }
 
 /// 设备在线（中转经通道请求，见 `looklook_protocol::PRESENCE_PATH`）：连上就立即回一个心跳，之后定时回，

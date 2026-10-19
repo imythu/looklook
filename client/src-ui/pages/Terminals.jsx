@@ -43,7 +43,6 @@ import { useTranslation } from "react-i18next";
 
 import { SafetyNote, useStatus } from "../App.jsx";
 import { api, ApiError, deviceApi, rememberTerminals, terminalDevice } from "../shared/api.js";
-import { CHAT_LAUNCHES } from "../shared/chat.js";
 import PopMenu from "../shared/PopMenu.jsx";
 import { termTheme } from "../shared/termTheme.js";
 import { deviceName, osLabel, RenameDeviceDialog, useDevices } from "../shared/devices.jsx";
@@ -1131,7 +1130,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const isRoot = Boolean(status.capabilities?.root);
   const canFull = FULL_ACCESS.includes(launch);
   // 对话界面要靠会话保持（tmux）往同一个 Claude Code 里送输入
-  const canChat = CHAT_LAUNCHES.includes(launch) && Boolean(status.capabilities?.persistent);
+  const canChat = launch === "claude" && Boolean(status.capabilities?.persistent);
   // DSH 带着自己的端口和网页映射，编辑时不能和别的启动方式互换
   const launches = editing
     ? LAUNCHES.filter((l) => (l === "dsh") === (initial.launch === "dsh"))
@@ -1366,8 +1365,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
             <span>
               <b style={{ fontSize: 14 }}>{t("form.chat_ui")}</b>
               <span className="field-hint" style={{ display: "block" }}>
-                {launch === "codex" && t("form.chat_ui_hint_codex")}
-                {launch !== "codex" && t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
+                {t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
               </span>
             </span>
           </label>

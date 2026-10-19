@@ -293,6 +293,12 @@ impl Account {
         })
     }
 
+    /// 用设备私钥签一段规范串（WebRTC answer，服务端 docs/06 §4.2）：返回 `(密钥 id, 签名)`；未登录时为 None。
+    pub fn sign_device(&self, message: &str) -> Option<(String, String)> {
+        let (s, key) = self.creds()?;
+        Some((s.key_id, looklook_protocol::signing::sign(&key, message)))
+    }
+
     fn creds(&self) -> Option<(Session, SigningKey)> {
         Some((lock(&self.session).clone()?, lock(&self.key).clone()?))
     }

@@ -41,6 +41,7 @@ mod platform;
 mod proctree;
 mod relay;
 mod relay_watch;
+mod rtc;
 mod settings;
 mod shells;
 mod ssh;
@@ -451,6 +452,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         remote: Default::default(),
         direct: Default::default(),
         lan: Default::default(),
+        rtc: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     if let Err(e) = chat.publish(ui_addr) {
@@ -471,6 +473,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(metrics.run()),
         tokio::spawn(relay_watch.run(shutdown.clone())),
         tokio::spawn(transfers.run(store.clone())),
+        tokio::spawn(app.rtc.clone().watch(account.clone())),
         {
             let account = account.clone();
             tokio::spawn(async move {

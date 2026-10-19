@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App.jsx';
+import { installRtcDownloads } from './shared/api.js';
 import './shared/i18n.js';
 import { ConfirmProvider, ToastProvider } from './shared/ui.jsx';
 import './styles.css';
@@ -25,6 +26,8 @@ window.addEventListener('unhandledrejection', (e) => {
   if (r?.code && r?.status !== undefined) return;
   reportUiError(r?.message ?? String(r), r?.stack ?? '');
 });
+
+installRtcDownloads();
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

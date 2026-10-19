@@ -68,7 +68,6 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/permission", post(super::chat::permission))
         .route("/instances/{id}/chat/plan", post(super::chat::plan))
         .route("/instances/{id}/chat/relaunch", post(super::chat::relaunch))
-        .route("/instances/{id}/chat/dialog", post(super::chat::dialog))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/keys/info", post(ssh_key_info))
@@ -167,7 +166,11 @@ async fn direct(State(app): State<App>, Extension(access): Extension<Access>, he
     if access.is_local() {
         return Err(LocalError::not_found());
     }
-    let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or("");
+    // 经 WebRTC 通道的请求没有 Origin（由 Service Worker 转来），用授权票据里的稳定地址源
+    let origin = match &access {
+        Access::Rtc { origin, .. } => origin.as_str(),
+        _ => headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or(""),
+    };
     // 管理台只绑在某个局域网地址上时，127.0.0.1 连不到它。
     let ip = app.ui_addr.ip();
     if !super::direct::valid_origin(origin) || !(ip.is_unspecified() || ip.is_loopback()) {
@@ -1353,12 +1356,7 @@ async fn get_shells(State(app): State<App>) -> Json<Value> {
 // ---------------- AI 工具 ----------------
 
 async fn get_tools(State(app): State<App>) -> Json<Value> {
-    let mut d = tools::detect(app.instances.shell()).await;
-    // 不在 PATH 里的 Claude Code（官方安装脚本的位置、Claude 桌面版自带的）
-    if d.claude.is_none() {
-        d.claude = crate::agents::claude_fallback();
-    }
-    Json(json!({ "tools": d }))
+    Json(json!({ "tools": tools::detect(app.instances.shell()).await }))
 }
 
 #[derive(Deserialize)]
