@@ -89,6 +89,18 @@ impl Shell {
     }
 }
 
+/// 把一段文字（第一句话）写成这种 shell 里的一个参数。POSIX 与 nu 用单引号，PowerShell 单引号里 `'` 写两遍；
+/// cmd 没有可靠的转义，用双引号括起来，去掉里面的双引号、`%` 和换行。认不出的 shell 按 POSIX 写。
+pub fn quote_arg(text: &str, family: Family) -> String {
+    match family {
+        Family::Pwsh => format!("'{}'", text.replace('\'', "''")),
+        Family::Cmd => format!("\"{}\"", text.replace(['"', '%'], "").replace(['\r', '\n'], " ")),
+        // nu 的单引号字符串里不能有单引号（也没有转义），换成全角的
+        Family::Nu => format!("'{}'", text.replace('\'', "’")),
+        Family::Posix | Family::Other => format!("'{}'", text.replace('\'', "'\\''")),
+    }
+}
+
 /// 在某种 shell 里直接输入的命令（对话界面“重新启动”）：开头的 `NAME=值` 换成这种 shell 的写法。
 pub fn adapt_for(cmd: &str, family: Family) -> String {
     adapt_env_prefix(cmd, family)
@@ -377,6 +389,15 @@ mod tests {
         assert_eq!(Family::of("C:\\Windows\\System32\\cmd.exe"), Family::Cmd);
         assert_eq!(Family::of("/usr/bin/fish"), Family::Posix);
         assert_eq!(Family::of("wsl.exe"), Family::Other);
+    }
+
+    #[test]
+    fn quoted_prompt() {
+        assert_eq!(quote_arg("fix it", Family::Posix), "'fix it'");
+        assert_eq!(quote_arg("don't $HOME `x`", Family::Posix), r"'don'\''t $HOME `x`'");
+        assert_eq!(quote_arg("it's", Family::Pwsh), "'it''s'");
+        assert_eq!(quote_arg("say \"hi\" 100%\nok", Family::Cmd), "\"say hi 100 ok\"");
+        assert_eq!(quote_arg("it's", Family::Nu), "'it’s'");
     }
 
     #[test]

@@ -192,10 +192,12 @@ const ToastCtx = createContext(() => {});
 
 export function ToastProvider({ children }) {
   const [items, setItems] = useState([]);
-  const push = useCallback((text, kind = 'ok') => {
+  // action：{ label, onClick }，例如“撤销”；带操作的提示多留一会儿
+  const push = useCallback((text, kind = 'ok', action = null) => {
     const id = Math.random();
-    setItems((xs) => [...xs, { id, text, kind }]);
-    setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== id)), 2400);
+    const drop = () => setItems((xs) => xs.filter((x) => x.id !== id));
+    setItems((xs) => [...xs, { id, text, kind, action, drop }]);
+    setTimeout(drop, action ? 6000 : 2400);
   }, []);
   return (
     <ToastCtx.Provider value={push}>
@@ -204,7 +206,19 @@ export function ToastProvider({ children }) {
         {items.map((x) => (
           <div key={x.id} className={`toast ${x.kind === 'error' ? 'error' : ''}`}>
             {x.kind === 'error' ? <XCircle size={18} /> : <CheckCircle2 size={18} />}
-            {x.text}
+            <span className="grow">{x.text}</span>
+            {x.action && (
+              <button
+                type="button"
+                className="toast-action"
+                onClick={() => {
+                  x.drop();
+                  x.action.onClick();
+                }}
+              >
+                {x.action.label}
+              </button>
+            )}
           </div>
         ))}
       </div>

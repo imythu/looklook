@@ -223,10 +223,27 @@ fn window<'a>(app: &'a AppHandle, label: &str, console: Url, url: Url) -> Webvie
                 std::thread::spawn(move || crate::util::open_url(&t));
                 return NewWindowResponse::Deny;
             }
-            static NEXT: AtomicU32 = AtomicU32::new(1);
-            let label = format!("w{}", NEXT.fetch_add(1, Ordering::Relaxed));
+            // macOS：交回 Tauri 新建的网页视图（上面那种做法）在 1.19 上仍会让 WebKit 抛 Objective-C 异常，应用直接退出
+            // （问题报告里只有一条 “panic in a function that cannot unwind”，没有 Rust 自己的 panic 信息）。
+            // 先开空白页再跳转的（DSH、未运行的终端）交给 wry 按 WebKit 的要求自己建窗口，页面拿得到窗口句柄；
+            // 直接打开本机网址的，拒绝这次请求，等回调结束后再照常新建应用窗口。
+            if cfg!(target_os = "macos") {
+                if target.as_str() == "about:blank" {
+                    return NewWindowResponse::Allow;
+                }
+                let (handle, console) = (handle.clone(), console.clone());
+                std::thread::spawn(move || {
+                    let h = handle.clone();
+                    let _ = handle.run_on_main_thread(move || {
+                        if let Err(e) = window(&h, &next_label(), console, target).inner_size(1100.0, 720.0).build() {
+                            tracing::warn!(error = %e, "无法打开新窗口");
+                        }
+                    });
+                });
+                return NewWindowResponse::Deny;
+            }
             let blank = Url::parse("about:blank").expect("about:blank");
-            match window(&handle, &label, console.clone(), blank).window_features(features).inner_size(1100.0, 720.0).build() {
+            match window(&handle, &next_label(), console.clone(), blank).window_features(features).inner_size(1100.0, 720.0).build() {
                 Ok(window) => NewWindowResponse::Create { window },
                 Err(e) => {
                     tracing::warn!(error = %e, "无法打开新窗口");
@@ -234,6 +251,12 @@ fn window<'a>(app: &'a AppHandle, label: &str, console: Url, url: Url) -> Webvie
                 }
             }
         })
+}
+
+/// 新开应用窗口的标签：w1、w2……
+fn next_label() -> String {
+    static NEXT: AtomicU32 = AtomicU32::new(1);
+    format!("w{}", NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 /// macOS：窗口显示时程序坞里有应用图标，全部隐藏后只留菜单栏图标。

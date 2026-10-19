@@ -6,6 +6,7 @@ import { createContext, useCallback, useContext, useEffect, useRef, useState } f
 import { useTranslation } from 'react-i18next';
 
 import { configureDevices, deviceApi, fetchDevices } from './api.js';
+import { DeviceAvatar } from './brands.jsx';
 import { Button, ErrorNote, Field, Modal, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
@@ -158,14 +159,14 @@ export function DeviceSwitcher({ perDevice, helpUrl }) {
   return (
     <div className="device-switch" ref={ref}>
       <button type="button" className="device-pill" aria-haspopup="menu" aria-expanded={open} onClick={toggle} title={t(perDevice ? 'devices.switch_hint' : 'devices.list_hint')}>
-        <Monitor size={16} aria-hidden="true" />
         {perDevice ? (
           <>
-            <span className={`device-dot ${current?.online ? 'on' : ''}`} aria-hidden="true" />
+            <DeviceAvatar device={current} size={20} dot />
             <span className="ellipsis">{deviceName(t, current)}</span>
           </>
         ) : (
           <span className="ellipsis">
+            <Monitor size={16} aria-hidden="true" />
             {online}/{d.items.length}
             <span className="pill-word"> {t('devices.online')}</span>
           </span>
@@ -198,7 +199,7 @@ export function DeviceSwitcher({ perDevice, helpUrl }) {
                 disabled={perDevice && !x.online}
                 onClick={() => pick(x)}
               >
-                <span className={`device-dot ${x.online ? 'on' : ''}`} aria-hidden="true" />
+                <DeviceAvatar device={x} size={26} dot />
                 <span className="device-item-text">
                   <span className="ellipsis">{deviceName(t, x)}</span>
                   <span className="small muted">

@@ -127,8 +127,6 @@
     }
   },
   "terminals": {
-    "title": "我的会话",
-    "new": "新建会话",
     "remote_title": "用手机或另一台电脑打开",
     "remote_body": "不在家也能用：扫码或输入专属地址，登录看看账户即可继续。无论身在何处，数据都经加密通道送达。",
     "remote_paused": "远程访问暂时不可用，原因见页面顶部的提示。",
@@ -139,9 +137,6 @@
       "linux": "随包的后台会话组件在这台电脑上无法启动：关掉终端页面后，里面的程序会结束。请重新安装看看；也可以安装 tmux（例如 sudo apt install tmux）作为替代，然后重新打开看看。",
       "short": "关掉终端页面后，里面的程序会结束"
     },
-    "empty_title": "还没有终端",
-    "empty_body": "新建一个终端，让 Codex、Claude Code、OpenCode 或任何命令在这台电脑上运行。关掉网页也不会停。",
-    "pages_tip": "电脑上开着网页想在外面看？试试",
     "remote_open": "在新标签页打开",
     "remote_qr_show": "显示二维码",
     "remote_qr_hide": "收起二维码",
@@ -190,7 +185,6 @@
       "paused": "后台运行中",
       "stopped": "已停止"
     },
-    "open": "打开",
     "start_open": "启动并打开",
     "stop": "停止",
     "edit": "修改",
@@ -226,21 +220,11 @@
     "logs_title": "“{{name}}”的运行记录",
     "logs_hint": "终端出问题时，这里的内容可以帮助找到原因。",
     "logs_empty": "暂时没有记录",
-    "open_here": "在此打开",
-    "open_here_hint": "在本页的工作台里打开（会话页右上角可以切换卡片 / 列表 / 工作台）",
     "history_state": "当前状态：",
     "history_started": "启动于 {{when}}",
     "history_output": "终端最近输出",
     "history_output_empty": "（暂无输出，或此模式不保存输出）",
-    "history_service": "终端服务记录",
-    "open_page_hint": "整页打开终端，带常用按键条"
-  },
-  "created": {
-    "title": "“{{name}}”已创建",
-    "body": "现在打开吗？",
-    "here": "在本页打开",
-    "new_tab": "在新标签页打开",
-    "later": "暂不打开"
+    "history_service": "终端服务记录"
   },
   "form": {
     "new_title": "新建会话",
@@ -553,13 +537,6 @@
     "slow": "连接比平时慢，再等等看；也可以点刷新重试。",
     "retry": "刷新重试"
   },
-  "guide": {
-    "title": "第一次用？三步上手",
-    "s1": "选一个想用的工具（普通终端、Codex、Claude Code、OpenCode 或 DSH），点“新建终端”。",
-    "s2": "在弹出的终端里像平时一样输入命令，关掉网页任务也不会停。",
-    "s3": "想在手机上继续？打开页面顶部的专属地址，登录同一个账户就行。",
-    "dismiss": "知道了"
-  },
   "keybar": {
     "more": "更多按键",
     "less": "收起",
@@ -826,7 +803,6 @@
     "auto": "自动选择（推荐）",
     "auto_hint": "这台电脑会定期测速，自动用延迟最低的线路；没有打开的终端时才会换，线路出问题时也会自动换一条",
     "auto_now": "现在用的是 {{name}}",
-    "line": "线路 {{name}}",
     "in_use": "正在使用",
     "ms": "{{ms}} 毫秒",
     "speed": {
@@ -855,8 +831,6 @@
     "hint_dismiss": "知道了，暂时不提示"
   },
   "dsh": {
-    "open": "打开 DSH",
-    "open_hint": "打开 DSH 的网页；在这台电脑上和在外面都是同一个地址",
     "output": "查看 DSH 的输出",
     "starting": "DSH 还在启动，页面没打开的话稍后刷新一下",
     "form_note": "DSH 是网页界面，一台电脑一个。看看会选一个空闲端口并为它添加本机网页，打开 DSH（本机或远程）就是打开这个网页。",
@@ -1223,42 +1197,6 @@
       }
     }
   },
-  "view": {
-    "label": "会话的显示方式",
-    "grid": "卡片",
-    "list": "列表",
-    "workspace": "工作台",
-    "grid_hint": "卡片：每个会话一张卡片，操作按钮一目了然",
-    "list_hint": "列表：一行一个会话，会话多时更好找",
-    "workspace_hint": "工作台：左边是开着的终端（标签页），右边是会话列表，像终端软件一样切换",
-    "search": "搜索名称、文件夹、命令",
-    "no_match": "没有符合的会话"
-  },
-  "ws": {
-    "tabs": "打开着的终端",
-    "list": "会话列表",
-    "close_tab": "关闭“{{name}}”的标签（终端继续运行）",
-    "hide_list": "收起会话列表",
-    "show_list": "显示会话列表",
-    "empty_title": "还没有打开终端",
-    "empty_body": "在右边的列表里点一个会话，它会在这里打开；可以同时开好几个，在上面的标签之间切换（Alt+1…9）。",
-    "empty_none": "先新建一个会话。",
-    "missing_body": "这个终端已经被删除了，关掉这个标签即可。",
-    "group_label": "会话列表的分组方式",
-    "by_project": "按项目",
-    "by_project_hint": "同一个文件夹的终端放在一起，在项目里点 + 一下就能新建",
-    "by_device": "按电脑",
-    "by_none": "全部",
-    "new_project": "新项目",
-    "new_project_hint": "选一个文件夹，一键新建终端或 AI 会话",
-    "new_in_project": "在“{{name}}”里新建",
-    "quick_title": "新项目",
-    "quick_title_in": "在“{{name}}”里新建",
-    "quick_folder_hint": "终端在这个文件夹里启动，不存在会自动创建。",
-    "quick_launch": "点一下就新建并打开",
-    "quick_install": "还没安装，点一下去安装",
-    "quick_more": "更多设置…"
-  },
   "ai": {
     "title": "AI 工具与权限",
     "intro": "Claude Code、Codex 等 AI 助手通过 MCP 接口使用看看：这里装好接口，并看清、控制它们能做什么。",
@@ -1495,5 +1433,71 @@
     "n_running_other": "{{count}} 个运行中",
     "notify_done_bg_one": "Claude Code 这一轮做完了，还有 {{count}} 个后台命令在运行",
     "notify_done_bg_other": "Claude Code 这一轮做完了，还有 {{count}} 个后台命令在运行"
+  },
+  "sess": {
+    "new": "新会话",
+    "undo": "撤销",
+    "quick_done": "已新建“{{name}}”",
+    "state": {
+      "attn": "等你处理",
+      "working": "正在干活",
+      "idle": "运行中",
+      "paused": "后台运行中",
+      "stopped": "已停止",
+      "error": "启动失败"
+    },
+    "new_type": "新建 {{type}}",
+    "new_type_in": "在“{{name}}”里新建 {{type}}",
+    "more_options": "更多选项…",
+    "remove_project": "从列表移除",
+    "project_menu": "项目操作",
+    "offline_note": "电脑离线，上线后这里的会话会回来（上次看到 {{count}} 个）",
+    "search": "搜索会话、项目",
+    "dev_filter": "只看某台电脑",
+    "all_devices": "全部电脑",
+    "attention": "需要你处理",
+    "projects": "项目",
+    "group_label": "项目列表的分组方式",
+    "by_project": "按项目",
+    "by_device": "按电脑",
+    "fold_all": "全部收起",
+    "unfold_all": "全部展开",
+    "empty": "还没有会话。点上面的“新会话”，选一个文件夹就能开始。",
+    "new_project": "新项目",
+    "new_project_hint": "新项目：选一台电脑上的文件夹，在里面新建会话",
+    "pick_project": "选择项目",
+    "pick_other": "选择其他文件夹…",
+    "ph_claude": "让 Claude Code 做什么？回车开始，也可以留空",
+    "ph_codex": "让 Codex 做什么？回车开始，也可以留空",
+    "ph_opencode": "让 OpenCode 做什么？回车开始，也可以留空",
+    "ph_shell": "启动后运行的命令，例如 npm run dev（可以留空）",
+    "ph_dsh": "DSH 是网页界面，回车后在新窗口打开",
+    "ph_custom": "要运行的命令（必填），例如 npm run dev",
+    "ph_dsh_open": "这台电脑上已经有 DSH 了，回车在新窗口打开它",
+    "start_title": "开始一个新会话",
+    "start_in": "在 {{name}} 里开始",
+    "not_installed": "未安装",
+    "advanced": "高级",
+    "install_first": "还没安装 {{tool}}，点右边按钮去安装",
+    "start": "开始",
+    "start_hint": "开始（回车）",
+    "name_ph": "不填就用第一句话",
+    "adv_remember": "这些选项按项目记住，下次在这里新建时沿用",
+    "device_offline": "这台电脑离线了，换一个项目或等它上线。",
+    "tools": "工具",
+    "tools_fold": "收成一行图标",
+    "tools_unfold": "展开成列表",
+    "expand_side": "展开侧栏",
+    "collapse_side": "收起侧栏",
+    "rail_attn": "{{count}} 个会话等你处理",
+    "missing_body": "这个会话已经被删除了。",
+    "no_match": "没有符合的会话",
+    "ago": {
+      "now": "刚刚",
+      "m": "{{n}} 分钟",
+      "h": "{{n}} 小时",
+      "d": "{{n}} 天"
+    },
+    "back": "会话"
   }
 }

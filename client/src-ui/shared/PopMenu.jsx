@@ -8,8 +8,9 @@ import { useTranslation } from 'react-i18next';
  * items：[{ icon, label, onClick, danger, disabled, hint, checked }]，假值会被跳过。
  * className：按钮的样式（默认幽灵按钮）；icon：按钮图标；onPointerDown：例如手机终端里按住不抢键盘焦点。
  * text：按钮上除了图标还显示的文字（下拉选择，例如对话里切换模型）；disabled：按钮不可用。
+ * children：按钮里的内容换成这个（例如侧栏的用户卡片）。
  */
-export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', icon: Icon = MoreHorizontal, label, onPointerDown, text, disabled }) {
+export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', icon: Icon = MoreHorizontal, label, onPointerDown, text, disabled, children }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState(null);
@@ -68,8 +69,8 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
           setOpen(!open);
         }}
       >
-        <Icon size={text ? 14 : 18} aria-hidden="true" />
-        {text && (
+        {children ?? <Icon size={text ? 14 : 18} aria-hidden="true" />}
+        {!children && text && (
           <>
             <span className="ellipsis">{text}</span>
             <ChevronDown size={13} aria-hidden="true" />

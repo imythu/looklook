@@ -2,7 +2,7 @@
 // 顶栏只放最常用的（返回、名称、传文件、按键条开关），其余收进“更多”，窄屏不会挤成一团互相遮挡；
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
-// 会话页“工作台”里的每个终端是一个 TermPane（见 Terminals.jsx）。
+// 会话页右边打开的每个会话是一个 TermPane（见 Sessions.jsx）。
 import { ArrowLeft, ChevronDown, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, Zap } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -286,11 +286,11 @@ function PaneNotice({ title, body, children }) {
 }
 
 /**
- * 工作台里的一个终端：上面一条细的工具栏（名称、连接方式、刷新、传文件、最大化、全屏、新窗口），下面是终端。
+ * 会话页右边的一个会话：上面一条细的工具栏（类型、名称、电脑和项目、连接方式、标签、刷新、传文件、最大化、全屏、新窗口、更多），下面是终端。
  * 不是当前标签时只是隐藏（iframe 不卸载、会话保持连接），切回来时让终端重新适配大小并聚焦。
  * 最大化：铺满整个浏览器窗口（盖住侧栏和标签栏），但不进系统全屏；双击工具栏空白处也能切换。
  */
-export function TermPane({ id, inst, active, missing, onStart }) {
+export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const wrap = useRef(null);
@@ -342,7 +342,7 @@ export function TermPane({ id, inst, active, missing, onStart }) {
   const iconBtn = 'btn btn-plain btn-icon';
   let body;
   if (missing) {
-    body = <PaneNotice title={t('term.missing_title')} body={t('ws.missing_body')} />;
+    body = <PaneNotice title={t('term.missing_title')} body={t('sess.missing_body')} />;
   } else if (!inst) {
     body = <TermConnecting onRetry={reload} />;
   } else if (!allowed) {
@@ -379,8 +379,9 @@ export function TermPane({ id, inst, active, missing, onStart }) {
     <section ref={wrap} className={`ws-pane ${max ? 'max' : ''}`} hidden={!active} aria-label={inst?.name ?? id} data-pane-id={id}>
       <header className="term-bar ws-pane-bar" onDoubleClick={(e) => !e.target.closest('button, a, input') && !full && toggleMax()}>
         <span className="term-title">
-          <span className={`dot ${running ? 'on' : ''}`} />
-          <span className="ellipsis">{inst?.name ?? id}</span>
+          {lead ?? <span className={`dot ${running ? 'on' : ''}`} />}
+          <span className="ellipsis term-name">{inst?.name ?? id}</span>
+          {sub}
           {running && <LinkBadge id={id} direct={link.direct} />}
         </span>
         {running && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
@@ -408,6 +409,7 @@ export function TermPane({ id, inst, active, missing, onStart }) {
         <button type="button" className={iconBtn} onClick={() => window.open(`/t/${id}`, '_blank', 'noopener')} aria-label={t('instance.new_window')} title={t('instance.new_window')}>
           <ExternalLink size={16} />
         </button>
+        {menu}
       </header>
       <div className="term-frame" {...drawer.frameProps}>
         {body}

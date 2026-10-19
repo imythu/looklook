@@ -96,6 +96,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tunnels/{id}/shares", get(list_page_shares).post(create_page_share))
         .route("/tunnels/{id}/shares/{share}", delete(delete_page_share))
         .route("/settings", get(get_settings).put(put_settings))
+        .route("/projects", get(get_projects).put(put_projects))
         .route("/device/name", put(put_device_name))
         .route("/direct", post(direct))
         .route("/lan", get(lan_info))
@@ -1149,6 +1150,66 @@ pub(super) fn check_tunnel_port(app: &App, port: Option<i64>) -> R<()> {
 }
 
 // ---------------- 设置 ----------------
+
+// ---------------- 项目（会话页侧栏） ----------------
+//
+// 项目就是这台电脑上的一个文件夹，外加在这里新建会话时上次选的类型和“高级”选项。存在这台电脑上，
+// 换浏览器、换手机打开都一样。还有会话的文件夹不用记，界面会从会话列表里推出来。
+
+const PROJECTS_KEY: &str = "projects";
+const PROJECTS_MAX: usize = 200;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+struct Project {
+    workdir: String,
+    /// 上次在这个项目里新建的类型（项目上的 + 用它）
+    #[serde(default)]
+    launch: String,
+    #[serde(default)]
+    shell: String,
+    #[serde(default)]
+    full_access: bool,
+    #[serde(default)]
+    auto_start: bool,
+    /// 上次在这里新建会话的时间（RFC 3339，界面用来排“最近用过的”）
+    #[serde(default)]
+    used_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Projects {
+    items: Vec<Project>,
+}
+
+fn normalize_projects(items: Vec<Project>) -> R<Vec<Project>> {
+    let mut out: Vec<Project> = vec![];
+    for mut p in items {
+        p.workdir = p.workdir.trim().to_string();
+        if p.workdir.is_empty() || p.workdir.chars().count() > 1024 {
+            return Err(LocalError::invalid("workdir", "invalid"));
+        }
+        if !matches!(p.launch.as_str(), "" | "shell" | "claude" | "codex" | "opencode" | "dsh" | "custom") {
+            p.launch.clear();
+        }
+        // 同一个文件夹只留第一条（最近用的排前面）
+        if !out.iter().any(|q| q.workdir == p.workdir) {
+            out.push(p);
+        }
+    }
+    out.truncate(PROJECTS_MAX);
+    Ok(out)
+}
+
+async fn get_projects(State(app): State<App>) -> R<Json<Projects>> {
+    let items = app.store.get::<Vec<Project>>(PROJECTS_KEY)?.unwrap_or_default();
+    Ok(Json(Projects { items }))
+}
+
+async fn put_projects(State(app): State<App>, Json(req): Json<Projects>) -> R<Json<Projects>> {
+    let items = normalize_projects(req.items)?;
+    app.store.set(PROJECTS_KEY, &items)?;
+    Ok(Json(Projects { items }))
+}
 
 async fn get_settings(State(app): State<App>) -> Json<Settings> {
     Json(Settings::load(&app.store))

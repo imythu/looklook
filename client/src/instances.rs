@@ -108,6 +108,8 @@ pub struct Instances {
     op: tokio::sync::Mutex<()>,
     /// 终端新建/删除时加一：账户据此去抖上报终端列表（多设备路由表，服务端 docs/05 §5）
     changed: tokio::sync::watch::Sender<u64>,
+    /// 新建时填的“第一句话”：只在第一次建会话时用一次（重启、开机自启不会再发），见 [`Instances::ensure_session`]
+    first_prompt: Mutex<HashMap<String, String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -147,6 +149,9 @@ pub struct Opts {
     pub chat_ui: bool,
 }
 
+/// 第一句话最长多少个字符（太长的请在会话里粘贴）
+const PROMPT_MAX: usize = 4000;
+
 /// DSH 网页界面的端口从这里开始找（`dsh web` 自己默认 3080）；避开终端用的 41000–41999。
 const WEB_PORT_START: u16 = 3080;
 
@@ -165,6 +170,8 @@ pub struct Input {
     pub full_access: Option<bool>,
     pub root_confirmed: Option<bool>,
     pub chat_ui: Option<bool>,
+    /// 第一句话（会话页开始页的输入框）：AI 工具作为启动参数交给它，普通终端当作启动后运行的命令。只在新建时有效
+    pub prompt: Option<String>,
     /// DSH 网页界面的端口（只在新建时由网关填写，不接受请求里的值）
     #[serde(skip)]
     pub web_port: Option<u16>,
@@ -190,6 +197,7 @@ impl Instances {
             health: Mutex::new(HashMap::new()),
             op: tokio::sync::Mutex::new(()),
             changed: tokio::sync::watch::channel(0).0,
+            first_prompt: Mutex::new(HashMap::new()),
         })
     }
 
@@ -364,8 +372,21 @@ impl Instances {
             chat_ui: input.chat_ui.unwrap_or(matches!(self.backend, Backend::Tmux(_))),
         };
         Self::validate_opts(&row, &mut opts)?;
+        let prompt = input.prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        if let Some(p) = &prompt {
+            if p.chars().count() > PROMPT_MAX {
+                return Err(LocalError::invalid("prompt", "too_long"));
+            }
+            if !matches!(row.launch.as_str(), "shell" | "claude" | "codex" | "opencode") {
+                return Err(LocalError::invalid("prompt", "invalid"));
+            }
+        }
         self.store.insert_instance(&row)?;
         self.store.set(&opts_key(&row.id), &opts)?;
+        // 只有会话保持（tmux）时才在建会话时用上；直接运行模式下忽略
+        if let (Some(p), Backend::Tmux(_)) = (prompt, &self.backend) {
+            lock(&self.first_prompt).insert(row.id.clone(), p);
+        }
         self.bump();
         Ok(self.view(row, None))
     }
@@ -424,6 +445,7 @@ impl Instances {
         self.bump();
         let _ = self.store.remove(&opts_key(id));
         lock(&self.health).remove(id);
+        lock(&self.first_prompt).remove(id);
         let _ = std::fs::remove_file(self.paths.instance_log(id));
         // 附件目录（粘贴的截图、“发给 AI”的文件）随终端一起删掉
         let _ = std::fs::remove_dir_all(self.paths.attach_dir(id));
@@ -633,8 +655,23 @@ impl Instances {
     /// 在终端选用的 shell 里运行启动命令（普通终端只打开 shell）。认不出的 shell 没法通过参数传命令：
     /// 返回打开 shell 的命令行，外加要在会话建好后输入的命令（未加模型服务商环境，输入前再按实际的 shell 加）。
     fn program_for(&self, row: &InstanceRow) -> Result<(Vec<String>, Option<String>), LocalError> {
+        self.program_with(row, None)
+    }
+
+    /// 同 [`Instances::program_for`]，带上新建时的第一句话：AI 工具接在启动命令后面作为参数
+    /// （`claude '…'`、`codex '…'`、`opencode --prompt '…'`，都会以这句话开始一次交互式会话），普通终端把它当作启动后运行的命令。
+    fn program_with(&self, row: &InstanceRow, prompt: Option<&str>) -> Result<(Vec<String>, Option<String>), LocalError> {
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
-        Ok(match self.launch_command(row).filter(|c| !c.trim().is_empty()) {
+        let launch = match prompt {
+            None => self.launch_command(row),
+            Some(p) => match row.launch.as_str() {
+                "shell" => Some(p.to_string()),
+                "opencode" => self.launch_command(row).map(|c| format!("{c} --prompt {}", crate::shells::quote_arg(p, shell.family))),
+                "claude" | "codex" => self.launch_command(row).map(|c| format!("{c} {}", crate::shells::quote_arg(p, shell.family))),
+                _ => self.launch_command(row),
+            },
+        };
+        Ok(match launch.filter(|c| !c.trim().is_empty()) {
             None => (shell.interactive(), None),
             Some(cmd) => match shell.run(&self.model_wrap(row, &cmd, shell.family)) {
                 Some(v) => (v, None),
@@ -756,7 +793,9 @@ impl Instances {
         if self.tmux(&["has-session", "-t", &exact(&name)]).await?.status.success() {
             return Ok(());
         }
-        let (program, typed) = self.program_for(row)?;
+        // 第一句话只用一次：取出来，建会话失败也不再用（用户重新启动时就是普通启动）
+        let prompt = lock(&self.first_prompt).remove(&row.id);
+        let (program, typed) = self.program_with(row, prompt.as_deref())?;
         let mut args: Vec<String> = ["new-session", "-d", "-s", &name, "-c", &row.workdir, "-x", "120", "-y", "36"].map(String::from).to_vec();
         args.extend(self.session_env_args(row));
         args.push("--".into());
@@ -1306,6 +1345,37 @@ mod tests {
         // 停止才结束会话
         inst.stop(&id).await.unwrap();
         assert!(inst.recent_output(&id).await.is_none());
+        let _ = inst.tmux(&["kill-server"]).await;
+    }
+
+    /// 第一句话只在第一次建会话时用：普通终端把它当作启动后运行的命令，会话重建后不会再运行。
+    /// 需要能用的 tmux（随包的或系统的），默认不跑：`cargo test -- --ignored`。
+    #[tokio::test]
+    #[ignore]
+    async fn first_prompt_runs_once() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let inst = Instances::new(Arc::new(Store::memory().unwrap()), paths);
+        assert!(matches!(inst.backend, Backend::Tmux(_)), "没有 tmux");
+        let input = Input {
+            workdir: Some(home.path().display().to_string()),
+            launch: Some("shell".into()),
+            shell: Some("bash".into()),
+            prompt: Some("echo \"first-$((40+2))\" 'it'\\''s'".into()),
+            ..Default::default()
+        };
+        let id = inst.create(input).await.unwrap().row.id;
+        let row = inst.store.instance(&id).unwrap().unwrap();
+        inst.ensure_session(&row).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let out = inst.recent_output(&id).await.expect("会话应该在");
+        assert!(out.contains("first-42 it's"), "第一句话没有运行：{out}");
+        let name = exact(&Instances::session_name(&id));
+        inst.tmux(&["kill-session", "-t", &name]).await.unwrap();
+        inst.ensure_session(&row).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        let out = inst.recent_output(&id).await.expect("会话应该在");
+        assert!(!out.contains("first-42"), "会话重建后又运行了第一句话：{out}");
         let _ = inst.tmux(&["kill-server"]).await;
     }
 

@@ -1,7 +1,9 @@
-// 看看客户端管理台。未登录时只显示登录页；登录后左侧菜单（手机为抽屉）：终端、文件、SSH 主机、本机网页、系统、设置、账户。
-// 终端页 /t/{id} 占满整个窗口。界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, Bot, Bug, ExternalLink, FolderOpen, Globe, LogOut, Menu, Server, Settings as SettingsIcon, SquareTerminal, UserRound, X } from 'lucide-react';
-import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
+// 看看客户端管理台。未登录时只显示登录页；登录后左侧栏（手机为抽屉）：用户菜单、新会话、工具（文件、SSH 主机、本机网页、
+// AI、系统、设置，可收成一行图标）、项目和会话。电脑上侧栏能整条收成图标栏。
+// 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
+// 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
+import { Activity, Bot, Bug, ChevronDown, ExternalLink, FolderOpen, Globe, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, UserRound, X } from 'lucide-react';
+import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Account from './pages/Account.jsx';
@@ -12,12 +14,14 @@ import Pages from './pages/Pages.jsx';
 import Settings from './pages/Settings.jsx';
 import SshHosts from './pages/SshHosts.jsx';
 import System from './pages/System.jsx';
-import Terminals from './pages/Terminals.jsx';
+import { opensInPage, SessionHome, SessionList, SessionStage, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
 import TerminalView from './pages/TerminalView.jsx';
 import { api, selectedDevice } from './shared/api.js';
 import { configureDirect, probeDirect } from './shared/direct.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
-import { Link, Router, useCanonicalPath } from './shared/router.jsx';
+import { Link, Router, useCanonicalPath, useRouter } from './shared/router.jsx';
+import PopMenu from './shared/PopMenu.jsx';
+import { sessionState, SessionsProvider, useSessions } from './shared/sessions.jsx';
 import { daysLeft, formatTime } from './shared/time.js';
 import { BrandMark, Button, FoldNote, LangSwitch, Note, Skeleton, useConfirm, useToast } from './shared/ui.jsx';
 import { errorText } from './shared/i18n.js';
@@ -68,20 +72,41 @@ export function SafetyNote({ full = false }) {
   );
 }
 
-const NAV = [
-  { to: '/', icon: SquareTerminal, key: 'nav.terminals' },
+// 侧栏“工具”里的页面（会话在侧栏下面，账户在用户菜单里）
+const TOOLS = [
   { to: '/files', icon: FolderOpen, key: 'nav.files' },
   { to: '/ssh', icon: Server, key: 'nav.ssh' },
   { to: '/pages', icon: Globe, key: 'nav.pages' },
   { to: '/ai', icon: Bot, key: 'nav.ai' },
   { to: '/system', icon: Activity, key: 'nav.system', meta: 'cpu' },
   { to: '/settings', icon: SettingsIcon, key: 'nav.settings', badge: 'update' },
-  { to: '/account', icon: UserRound, key: 'nav.account' },
 ];
-// 按电脑的页面：多台电脑时顶栏显示电脑切换（终端页合并显示所有电脑，账户页不分电脑）
+// 按电脑的页面：多台电脑时顶栏显示电脑切换（会话合并显示所有电脑，账户页不分电脑）
 const DEVICE_PAGES = ['/files', '/ssh', '/pages', '/ai', '/system', '/settings'];
 const TERM = /^\/t\/([a-z2-7]{8})$/;
-const isKnown = (p) => NAV.some((x) => x.to === p) || TERM.test(p);
+const SESS = /^\/s\/([a-z2-7]{8})$/;
+const PAGES = ['/', '/new', '/account', ...TOOLS.map((x) => x.to)];
+const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
+// 会话相关的页面铺满主区域（不限宽度）
+const isWide = (p) => p === '/' || p === '/new' || SESS.test(p);
+const RAIL_KEY = 'looklook.rail';
+const TOOLS_KEY = 'looklook.tools';
+
+function readFlag(key, fallback) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === '1';
+  } catch {
+    return fallback;
+  }
+}
+function writeFlag(key, v) {
+  try {
+    localStorage.setItem(key, v ? '1' : '0');
+  } catch {
+    /* 无痕模式等：只是不记住 */
+  }
+}
 
 export function Initial({ name, large }) {
   return <span className={`avatar ${large ? 'avatar-lg' : ''}`}>{(name || '?').trim().slice(0, 1).toUpperCase()}</span>;
@@ -215,68 +240,156 @@ function GateBanner() {
   return null;
 }
 
-function SideNav({ open, onClose }) {
+/** 用户卡片的菜单：账户、报告问题、打开看看网页、退出登录。 */
+function useUserMenu() {
   const { t } = useTranslation();
   const { status } = useStatus();
+  const { navigate } = useRouter();
   const logout = useLogout();
   const openReport = useReportDialog();
+  return [
+    { icon: UserRound, label: t('nav.account'), onClick: () => navigate('/account') },
+    { icon: Bug, label: t('report.title'), onClick: openReport },
+    { icon: ExternalLink, label: t('nav.web'), onClick: () => window.open(webUrl(status, '/'), '_blank', 'noopener') },
+    { icon: LogOut, label: t('nav.logout'), onClick: logout, danger: true },
+  ];
+}
+
+function ToolMeta({ x }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  if (x.badge === 'update' && shouldRemind(status.update)) {
+    return (
+      <span className="nav-badge" title={t('update.badge')}>
+        {t('update.badge')}
+      </span>
+    );
+  }
+  if (x.meta === 'cpu' && status.metrics) {
+    return (
+      <span className="nav-meta" title={t('system.cpu')}>
+        {Math.round(status.metrics.cpu)}%
+      </span>
+    );
+  }
+  return null;
+}
+
+/** 工具：收起时一行图标（更新红点照样显示），展开时是列表。 */
+function ToolGroup({ path }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const [open, setOpen] = useState(() => readFlag(TOOLS_KEY, false));
+  const toggle = () => {
+    writeFlag(TOOLS_KEY, !open);
+    setOpen(!open);
+  };
+  return (
+    <div className="side-tools">
+      <button type="button" className="side-group-head" onClick={toggle} aria-expanded={open} title={t(open ? 'sess.tools_fold' : 'sess.tools_unfold')}>
+        <ChevronDown size={14} aria-hidden="true" />
+        {t('sess.tools')}
+      </button>
+      {open ? (
+        <nav className="side-group" aria-label={t('sess.tools')}>
+          {TOOLS.map((x) => (
+            <Link key={x.to} to={x.to} className="side-link">
+              <x.icon size={18} aria-hidden="true" />
+              {t(x.key)}
+              <ToolMeta x={x} />
+            </Link>
+          ))}
+        </nav>
+      ) : (
+        <nav className="tool-strip" aria-label={t('sess.tools')}>
+          {TOOLS.map((x) => (
+            <Link key={x.to} to={x.to} className={`btn btn-plain btn-icon tool-ico ${path === x.to ? 'active' : ''}`} aria-label={t(x.key)} title={t(x.key)}>
+              <x.icon size={18} aria-hidden="true" />
+              {x.badge === 'update' && shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
+            </Link>
+          ))}
+        </nav>
+      )}
+    </div>
+  );
+}
+
+function SideNav({ open, onClose, rail, onRail, path }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const ui = useSessionUi();
+  const sessions = useSessions();
+  const userMenu = useUserMenu();
   const s = status.account.session;
   const left = daysLeft(s.membership_expires_at);
+  const allowed = status.account.allowed;
+  const current = path.match(SESS)?.[1];
   useEffect(() => {
     if (!open) return undefined;
     const onKey = (e) => e.key === 'Escape' && onClose();
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [open]);
+  if (rail) {
+    const attn = sessions.items.filter((i) => sessionState(i) === 'attn');
+    return (
+      <aside className="side side-rail" id="side-nav" aria-label={t('nav.main')}>
+        <button type="button" className="btn btn-plain btn-icon" onClick={() => onRail(false)} aria-label={t('sess.expand_side')} title={`${t('sess.expand_side')} (Ctrl+Shift+S)`}>
+          <PanelLeftOpen size={18} />
+        </button>
+        <PopMenu items={userMenu} className="btn btn-plain btn-icon" label={s.user.nickname}>
+          <Initial name={s.user.nickname} />
+        </PopMenu>
+        <button type="button" className="btn btn-icon rail-new" onClick={() => ui.newSession()} disabled={!allowed} aria-label={t('sess.new')} title={`${t('sess.new')} (Ctrl+Shift+O)`}>
+          <Plus size={18} />
+        </button>
+        <button
+          type="button"
+          className="btn btn-plain btn-icon rail-sessions"
+          onClick={() => (attn.length ? ui.openSession(attn[0].id) : onRail(false))}
+          aria-label={attn.length ? t('sess.rail_attn', { count: attn.length }) : t('sess.expand_side')}
+          title={attn.length ? t('sess.rail_attn', { count: attn.length }) : t('sess.expand_side')}
+        >
+          <MessageSquare size={18} />
+          {attn.length > 0 && <span className="rail-count">{attn.length}</span>}
+        </button>
+        <span className="rail-sep" aria-hidden="true" />
+        {TOOLS.map((x) => (
+          <Link key={x.to} to={x.to} className={`btn btn-plain btn-icon tool-ico ${path === x.to ? 'active' : ''}`} aria-label={t(x.key)} title={t(x.key)}>
+            <x.icon size={18} aria-hidden="true" />
+            {x.badge === 'update' && shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
+          </Link>
+        ))}
+      </aside>
+    );
+  }
   return (
     <>
       {open && <div className="side-backdrop" onClick={onClose} aria-hidden="true" />}
       <aside className={`side ${open ? 'open' : ''}`} id="side-nav" aria-label={t('nav.main')}>
         <div className="side-head">
-          <Link to="/account" className="side-me">
+          <PopMenu items={userMenu} className="side-me" label={s.user.nickname}>
             <Initial name={s.user.nickname} />
             <span className="grow">
               <b className="ellipsis">{s.user.nickname}</b>
               <span className={`small ${left > 30 ? 'muted' : 'warn-text'}`}>{left > 0 ? t('account.days_left', { n: left }) : t('account.expired')}</span>
             </span>
-          </Link>
+          </PopMenu>
+          <button type="button" className="btn btn-plain btn-icon side-collapse" onClick={() => onRail(true)} aria-label={t('sess.collapse_side')} title={`${t('sess.collapse_side')} (Ctrl+Shift+S)`}>
+            <PanelLeftClose size={18} />
+          </button>
           <button type="button" className="btn btn-plain btn-icon side-close" onClick={onClose} aria-label={t('nav.close_menu')}>
             <X size={20} />
           </button>
         </div>
-        <nav className="side-groups">
-          <div className="side-group">
-            {NAV.map((x) => (
-              <Link key={x.to} to={x.to} className="side-link">
-                <x.icon size={19} aria-hidden="true" />
-                {t(x.key)}
-                {x.badge === 'update' && shouldRemind(status.update) && (
-                  <span className="nav-badge" title={t('update.badge')}>
-                    {t('update.badge')}
-                  </span>
-                )}
-                {x.meta === 'cpu' && status.metrics && (
-                  <span className="nav-meta" title={t('system.cpu')}>
-                    {Math.round(status.metrics.cpu)}%
-                  </span>
-                )}
-              </Link>
-            ))}
-          </div>
-        </nav>
-        <div className="side-foot">
-          <button type="button" className="side-link" onClick={openReport}>
-            <Bug size={19} aria-hidden="true" />
-            {t('report.title')}
-          </button>
-          <a className="side-link" href={webUrl(status, '/')} target="_blank" rel="noopener noreferrer">
-            <ExternalLink size={19} aria-hidden="true" />
-            {t('nav.web')}
-          </a>
-          <button type="button" className="side-link" onClick={logout}>
-            <LogOut size={19} aria-hidden="true" />
-            {t('nav.logout')}
-          </button>
+        <button type="button" className="side-new" onClick={() => ui.newSession()} disabled={!allowed}>
+          <Plus size={18} aria-hidden="true" />
+          {t('sess.new')}
+          <kbd className="side-kbd">Ctrl ⇧ O</kbd>
+        </button>
+        <ToolGroup path={path} />
+        <div className="side-sessions">
+          <SessionList currentId={current} />
         </div>
       </aside>
     </>
@@ -287,11 +400,37 @@ function ConsoleLayout({ path, stale, children }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const devices = useDevices();
+  const ui = useSessionUi();
   const switcher = devices.multi && DEVICE_PAGES.includes(path);
   const [open, setOpen] = useState(false);
+  const [rail, setRailState] = useState(() => readFlag(RAIL_KEY, false));
+  const setRail = (v) => {
+    writeFlag(RAIL_KEY, v);
+    setRailState(v);
+  };
+  const railRef = useRef(rail);
+  railRef.current = rail;
   useEffect(() => setOpen(false), [path]);
+  // Ctrl+Shift+O 新会话，Ctrl+Shift+S 收起 / 展开侧栏（焦点在终端里时由终端自己处理按键）
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
+      const k = e.key.toLowerCase();
+      if (k === 'o') {
+        e.preventDefault();
+        ui.newSession();
+      } else if (k === 's' && window.innerWidth >= 900) {
+        e.preventDefault();
+        setRail(!railRef.current);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [ui]);
   const s = status.account.session;
   const lanPage = useLanPage();
+  const wide = isWide(path);
+  const sess = path.match(SESS)?.[1] ?? null;
   return (
     <>
       <header className="topbar">
@@ -306,7 +445,7 @@ function ConsoleLayout({ path, stale, children }) {
           </Link>
         </span>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
-          {devices.multi && <DeviceSwitcher perDevice={switcher} helpUrl={webUrl(status, '/docs/faq')} />}
+          {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
           {status.access === 'remote' && <RemoteBadge narrow={devices.multi} />}
           {status.access !== 'remote' && !lanPage && <RelayPill />}
           {lanPage && (
@@ -326,18 +465,22 @@ function ConsoleLayout({ path, stale, children }) {
       <UpdateBanner />
       <JustUpdatedBanner />
       <RelayHint />
-      <div className="console">
-        <SideNav open={open} onClose={() => setOpen(false)} />
-        <main className="shell console-main" key={switcher ? devices.selected : 'all'}>
+      <div className={`console ${rail ? 'console-rail' : ''}`}>
+        <SideNav open={open} onClose={() => setOpen(false)} rail={rail && !open} onRail={setRail} path={path} />
+        <main className={`console-main ${wide ? 'console-wide' : 'shell'} ${sess ? 'console-session' : ''}`}>
           {/* 刚切换电脑、新电脑的状态还没拿到时先不渲染页面，免得页面用上一台电脑的设置初始化 */}
-          {switcher && stale ? (
-            <div className="stack">
-              <Skeleton height={60} />
-              <Skeleton height={180} />
-            </div>
-          ) : (
-            children
-          )}
+          <Fragment key={switcher ? devices.selected : 'all'}>
+            {switcher && stale ? (
+              <div className="stack">
+                <Skeleton height={60} />
+                <Skeleton height={180} />
+              </div>
+            ) : (
+              children
+            )}
+          </Fragment>
+          {/* 打开过的会话一直挂着（不在会话页时隐藏），切回来不用重新连 */}
+          <SessionStage activeId={sess} />
         </main>
       </div>
     </>
@@ -453,11 +596,16 @@ function Shell() {
     // 换了登录（退出后重新登录）时重置终端页。远程打开时状态来自选中的那台电脑，选中的电脑一变 device_id 就变，
     // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
     const login = remote ? 'remote' : status.account.session?.device_id;
-    const page = { '/': <Terminals key={login} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
+    const home = opensInPage() ? <StartPane key={`start:${login}`} /> : <SessionHome />;
+    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
     body = (
-      <ConsoleLayout path={path} stale={devices.multi && statusDevice !== devices.selected}>
-        {page}
-      </ConsoleLayout>
+      <SessionsProvider key={login} enabled>
+        <SessionUiProvider>
+          <ConsoleLayout path={path} stale={devices.multi && statusDevice !== devices.selected}>
+            {page}
+          </ConsoleLayout>
+        </SessionUiProvider>
+      </SessionsProvider>
     );
   }
   return (

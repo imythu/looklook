@@ -127,8 +127,6 @@
     }
   },
   "terminals": {
-    "title": "My sessions",
-    "new": "New session",
     "remote_title": "Open from a phone or another computer",
     "remote_body": "Use it away from home: scan the code or enter your personal address, then sign in to your Looklook account. Wherever you are, data travels through an encrypted channel.",
     "remote_paused": "Remote access is temporarily unavailable; see the notice at the top of the page.",
@@ -139,9 +137,6 @@
       "linux": "The built-in background-session component couldn't start on this computer, so programs in a terminal end when you close its page. Reinstall Looklook, or install tmux (e.g. sudo apt install tmux) as an alternative, then reopen Looklook.",
       "short": "Closing a terminal page ends what's running in it"
     },
-    "empty_title": "No terminals yet",
-    "empty_body": "Create a terminal to run Codex, Claude Code, OpenCode or any command on this computer. Closing the page won't stop it.",
-    "pages_tip": "Have a web page running on this computer and want to see it from outside? Try",
     "remote_open": "Open in a new tab",
     "remote_qr_show": "Show QR code",
     "remote_qr_hide": "Hide QR code",
@@ -190,7 +185,6 @@
       "paused": "Running in background",
       "stopped": "Stopped"
     },
-    "open": "Open",
     "start_open": "Start and open",
     "stop": "Stop",
     "edit": "Edit",
@@ -226,21 +220,11 @@
     "logs_title": "Logs of \"{{name}}\"",
     "logs_hint": "If the terminal misbehaves, this can help find the cause.",
     "logs_empty": "No logs yet",
-    "open_here": "Open here",
-    "open_here_hint": "Open in this page’s workspace (switch between cards, list and workspace at the top right)",
     "history_state": "Current state:",
     "history_started": "started {{when}}",
     "history_output": "Recent terminal output",
     "history_output_empty": "(No output yet, or this mode doesn't keep output)",
-    "history_service": "Terminal service log",
-    "open_page_hint": "Open the terminal full screen with the key bar"
-  },
-  "created": {
-    "title": "\"{{name}}\" is ready",
-    "body": "Open it now?",
-    "here": "Open in this page",
-    "new_tab": "Open in new tab",
-    "later": "Not now"
+    "history_service": "Terminal service log"
   },
   "form": {
     "new_title": "New session",
@@ -553,13 +537,6 @@
     "slow": "Taking longer than usual — wait a bit, or click Reload to retry.",
     "retry": "Reload"
   },
-  "guide": {
-    "title": "First time? Three steps to get started",
-    "s1": "Pick the tool you want (plain terminal, Codex, Claude Code, OpenCode or DSH) and click \"New terminal\".",
-    "s2": "Type commands in the terminal as usual; closing the page won't stop the task.",
-    "s3": "Want to continue on your phone? Open the personal address at the top of the page and sign in to the same account.",
-    "dismiss": "Got it"
-  },
   "keybar": {
     "more": "More keys",
     "less": "Hide",
@@ -826,7 +803,6 @@
     "auto": "Automatic (recommended)",
     "auto_hint": "This computer tests the routes regularly and uses the one with the lowest latency. It only switches when no terminal is open, and moves to another route if one fails",
     "auto_now": "Currently using {{name}}",
-    "line": "Route {{name}}",
     "in_use": "In use",
     "ms": "{{ms}} ms",
     "speed": {
@@ -855,8 +831,6 @@
     "hint_dismiss": "Got it, don't remind me for now"
   },
   "dsh": {
-    "open": "Open DSH",
-    "open_hint": "Opens DSH's web page; the same address works on this computer and from anywhere",
     "output": "View DSH's output",
     "starting": "DSH is still starting; refresh the page in a moment if it doesn't load",
     "form_note": "DSH runs as a web page, one per computer. Looklook picks a free port and adds a local page for it, so opening DSH (here or remotely) opens that page.",
@@ -1223,42 +1197,6 @@
       }
     }
   },
-  "view": {
-    "label": "How to show sessions",
-    "grid": "Cards",
-    "list": "List",
-    "workspace": "Workspace",
-    "grid_hint": "Cards: one card per session with its buttons in view",
-    "list_hint": "List: one row per session — easier to scan when you have many",
-    "workspace_hint": "Workspace: open terminals as tabs on the left, all sessions listed on the right, like a terminal app",
-    "search": "Search sessions",
-    "no_match": "No matching sessions"
-  },
-  "ws": {
-    "tabs": "Open terminals",
-    "list": "Sessions",
-    "close_tab": "Close the “{{name}}” tab (the terminal keeps running)",
-    "hide_list": "Hide the session list",
-    "show_list": "Show the session list",
-    "empty_title": "No terminal open yet",
-    "empty_body": "Click a session in the list on the right to open it here. Open several and switch between the tabs above (Alt+1…9).",
-    "empty_none": "Create a session first.",
-    "missing_body": "This terminal has been deleted. You can close this tab.",
-    "group_label": "Group the session list",
-    "by_project": "By project",
-    "by_project_hint": "Terminals in the same folder are grouped together; click + on a project to start a new one there",
-    "by_device": "By computer",
-    "by_none": "All",
-    "new_project": "New project",
-    "new_project_hint": "Pick a folder and start a terminal or AI session in one click",
-    "new_in_project": "New in “{{name}}”",
-    "quick_title": "New project",
-    "quick_title_in": "New in “{{name}}”",
-    "quick_folder_hint": "The terminal starts in this folder; it is created if it doesn't exist.",
-    "quick_launch": "Click one to create and open it",
-    "quick_install": "Not installed yet, click to install",
-    "quick_more": "More options…"
-  },
   "ai": {
     "title": "AI tools & access",
     "intro": "AI assistants such as Claude Code and Codex use Looklook through its MCP interface. Set the interface up here and see and control what they can do.",
@@ -1495,5 +1433,71 @@
     "drag_split": "Drag to resize the terminal",
     "term_drawer": "Terminal (same Claude Code session)",
     "term_full": "Show the terminal full page"
+  },
+  "sess": {
+    "new": "New session",
+    "undo": "Undo",
+    "quick_done": "Created “{{name}}”",
+    "state": {
+      "attn": "Needs you",
+      "working": "Working",
+      "idle": "Running",
+      "paused": "Running in background",
+      "stopped": "Stopped",
+      "error": "Failed to start"
+    },
+    "new_type": "New {{type}}",
+    "new_type_in": "New {{type}} in “{{name}}”",
+    "more_options": "More options…",
+    "remove_project": "Remove from list",
+    "project_menu": "Project actions",
+    "offline_note": "This computer is offline. Its sessions come back when it reconnects ({{count}} last seen).",
+    "search": "Search sessions and projects",
+    "dev_filter": "Show one computer",
+    "all_devices": "All computers",
+    "attention": "Needs you",
+    "projects": "Projects",
+    "group_label": "Group projects by",
+    "by_project": "Project",
+    "by_device": "Computer",
+    "fold_all": "Collapse all",
+    "unfold_all": "Expand all",
+    "empty": "No sessions yet. Click “New session” above and pick a folder to start.",
+    "new_project": "New project",
+    "new_project_hint": "New project: pick a folder on a computer and start a session in it",
+    "pick_project": "Choose a project",
+    "pick_other": "Choose another folder…",
+    "ph_claude": "What should Claude Code do? Press Enter to start, or leave it empty",
+    "ph_codex": "What should Codex do? Press Enter to start, or leave it empty",
+    "ph_opencode": "What should OpenCode do? Press Enter to start, or leave it empty",
+    "ph_shell": "Command to run after it starts, e.g. npm run dev (optional)",
+    "ph_dsh": "DSH is a web app. Press Enter to open it in a new window",
+    "ph_custom": "Command to run (required), e.g. npm run dev",
+    "ph_dsh_open": "DSH is already set up on this computer. Press Enter to open it in a new window",
+    "start_title": "Start a new session",
+    "start_in": "Start in {{name}}",
+    "not_installed": "Not installed",
+    "advanced": "Advanced",
+    "install_first": "{{tool}} isn't installed yet. Use the button on the right to install it",
+    "start": "Start",
+    "start_hint": "Start (Enter)",
+    "name_ph": "Leave empty to use your first message",
+    "adv_remember": "These options are remembered per project",
+    "device_offline": "This computer is offline. Pick another project or wait for it to reconnect.",
+    "tools": "Tools",
+    "tools_fold": "Show as a row of icons",
+    "tools_unfold": "Show as a list",
+    "expand_side": "Expand sidebar",
+    "collapse_side": "Collapse sidebar",
+    "rail_attn": "{{count}} sessions need you",
+    "missing_body": "This session has been deleted.",
+    "no_match": "No matching sessions",
+    "ago": {
+      "now": "now",
+      "m": "{{n}}m",
+      "h": "{{n}}h",
+      "d": "{{n}}d"
+    },
+    "back": "Sessions"
   }
 }

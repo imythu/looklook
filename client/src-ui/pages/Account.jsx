@@ -69,7 +69,7 @@ export default function Account() {
             <>
               <dt>{t('relays.title')}</dt>
               <dd>
-                {status.relay_check?.current ? t('relays.line', { name: status.relay_check.current }) : '—'}
+                {status.relay_check?.current || '—'}
                 {' · '}
                 <Link to={`/settings#${RELAYS_ANCHOR}`}>{t('relays.change_in_settings')}</Link>
               </dd>
