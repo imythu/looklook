@@ -10,6 +10,7 @@
 
 pub mod bridge;
 pub mod frame;
+pub mod outbound;
 pub mod peer;
 
 use std::collections::HashMap;

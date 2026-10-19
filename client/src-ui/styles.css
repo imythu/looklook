@@ -303,7 +303,6 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .badge-ok { background: var(--ok-soft); color: var(--ok); }
 .badge-warn { background: var(--warn-soft); color: var(--warn); }
 .badge-danger { background: var(--danger-soft); color: var(--danger); }
-.remote-badge { white-space: nowrap; font-variant-numeric: tabular-nums; }
 
 
 .toasts { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 60; display: grid; gap: 8px; width: min(92vw, 380px); pointer-events: none; }
@@ -361,25 +360,56 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
    看看客户端专用
    ===================================================================== */
 .topbar .status { font-size: 13px; color: var(--muted); }
-/* 右上角的远程通道状态 */
+/* 右上角的连接胶囊（本机 / 局域网 / 远程同一个位置，shared/RelayStatus.jsx 的 ConnChip） */
 .relay-pill-wrap { position: relative; display: inline-flex; }
-.relay-pill {
-  display: inline-flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 12px 0 10px; border: 1px solid var(--line); border-radius: 999px;
-  background: var(--panel); color: var(--muted); font: 600 13px/1 var(--font); cursor: pointer; white-space: nowrap;
+.conn-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 0 12px 0 10px; border: 1px solid var(--line); border-radius: 999px;
+  background: var(--panel); color: var(--text); font: 600 13px/1 var(--font); cursor: pointer; white-space: nowrap; font-variant-numeric: tabular-nums;
 }
-.relay-pill:hover { color: var(--text); border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); }
-.relay-pill-failed { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: var(--danger-soft); }
-.relay-pill-blocked { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
-.relay-pill .dot.wait { background: var(--warn); animation: blink 1.2s infinite ease-in-out; }
+.conn-chip:hover { border-color: color-mix(in srgb, var(--muted) 40%, var(--line)); }
+.conn-sub { color: var(--muted); font-weight: 500; }
+.conn-warn { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
+.conn-bad { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: var(--danger-soft); }
+.conn-chip .dot.wait { background: var(--warn); animation: blink 1.2s infinite ease-in-out; }
 @keyframes blink { 50% { opacity: .35; } }
+.conn-pop-title { font-size: 14px; }
+.conn-kv { font-size: 13px; gap: 4px 14px; }
+.conn-kv dd { display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.ok-text { color: var(--ok); }
 .relay-pop {
   position: absolute; top: calc(100% + 8px); right: 0; z-index: 60; width: min(360px, calc(100vw - 24px)); display: grid; gap: 10px; padding: 14px;
   border: 1px solid var(--line); border-radius: 16px; background: var(--panel); color: var(--text); box-shadow: var(--shadow-lg); animation: rise .15s ease-out; white-space: normal;
 }
 .relay-pop .relay-status { margin: 0; }
 .relay-pop-actions { display: flex; gap: 8px; }
-@media (max-width: 520px) { .relay-pill-label { display: none; } .relay-pill { padding: 0 10px; } }
-@media (prefers-reduced-motion: reduce) { .relay-pill .dot.wait { animation: none; } }
+@media (max-width: 520px) { .conn-sub { display: none; } .conn-chip { padding: 0 10px; } }
+@media (prefers-reduced-motion: reduce) { .conn-chip .dot.wait { animation: none; } }
+
+/* 用户菜单的分隔线 */
+.menu-pop-sep { height: 1px; margin: 4px 8px; background: var(--line); }
+
+/* 账户页面（电脑、会员与邀请、账户与安全） */
+.src-tag { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; background: var(--panel-2); color: var(--muted); font-size: 12px; white-space: nowrap; }
+.src-tag.warn { background: var(--warn-soft); color: var(--warn); }
+.badge-brand { background: var(--brand-soft); color: var(--brand); }
+.meter { height: 6px; border-radius: 999px; background: var(--panel-2); overflow: hidden; margin: 0 0 14px; }
+.meter i { display: block; height: 100%; border-radius: inherit; background: var(--brand); }
+.computers { list-style: none; margin: 0 0 16px; padding: 0; display: grid; gap: 8px; }
+.computer { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); }
+.computer.current { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
+.computer-text { min-width: 0; display: grid; gap: 2px; }
+.computer-title { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; min-width: 0; }
+.computer-actions { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+.btn.disabled { opacity: .45; pointer-events: none; }
+@media (max-width: 560px) {
+  .computer { flex-wrap: wrap; }
+  .computer-actions { width: 100%; justify-content: flex-end; }
+}
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin: 0 0 12px; }
+.stat { display: grid; gap: 2px; padding: 10px 12px; border-radius: var(--radius-sm); background: var(--panel-2); }
+.stat b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.sub-title { font-size: 14px; margin: 16px 0 6px; }
+.stack-sm { display: grid; gap: 8px; margin-top: 12px; }
 .banner { display: flex; align-items: center; gap: 10px; padding: 12px 16px; font-size: 14px; border-bottom: 1px solid var(--line); }
 .banner .grow { min-width: 0; }
 .banner .btn { min-height: 36px; padding: 0 14px; }

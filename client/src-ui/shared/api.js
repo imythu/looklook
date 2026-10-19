@@ -60,10 +60,11 @@ async function deviceFor(path, options) {
   return routing.selected;
 }
 
-/** 远程入口自己应答的设备列表 `{items:[{id,name,os,online}], default, max}`；拿不到（旧服务端、网络）时为 null。 */
+/** 设备列表 `{items:[{id,name,os,online}], default, max}`：远程打开时由启动页所在的平台应答，本机 App 由这台电脑向平台取
+ *  （default 是本机）；拿不到（旧服务端、网络）时为 null。 */
 export async function fetchDevices() {
   try {
-    const res = await fetch('/_ll/devices', { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
+    const res = await fetch(rtcMode ? '/_ll/devices' : '/api/rtc/devices', { headers: { Accept: 'application/json' }, credentials: 'same-origin' });
     if (!res.ok) return null;
     const d = await res.json();
     if (!Array.isArray(d?.items)) return null;

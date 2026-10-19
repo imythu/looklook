@@ -5,7 +5,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 /**
- * items：[{ icon, label, onClick, danger, disabled, hint, checked }]，假值会被跳过。
+ * items：[{ icon, label, onClick, danger, disabled, hint, checked }]，假值会被跳过，'sep' 是一条分隔线。
  * className：按钮的样式（默认幽灵按钮）；icon：按钮图标；onPointerDown：例如手机终端里按住不抢键盘焦点。
  * text：按钮上除了图标还显示的文字（下拉选择，例如对话里切换模型）；disabled：按钮不可用。
  * children：按钮里的内容换成这个（例如侧栏的用户卡片）。
@@ -79,7 +79,10 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
       </button>
       {open && (
         <ul ref={list} className="menu-pop-list menu-pop-fixed" role="menu" style={pos ?? { visibility: 'hidden', top: 0, left: 0 }}>
-          {shown.map((x) => (
+          {shown.map((x, i) =>
+            x === 'sep' ? (
+              <li key={`sep-${i}`} className="menu-pop-sep" role="separator" />
+            ) : (
             <li key={x.label}>
               <button
                 type="button"
@@ -107,7 +110,8 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
                 </span>
               </button>
             </li>
-          ))}
+            ),
+          )}
         </ul>
       )}
     </>

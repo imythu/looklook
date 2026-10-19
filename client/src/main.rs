@@ -454,6 +454,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         direct: Default::default(),
         lan: Default::default(),
         rtc: Default::default(),
+        outbound: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     if let Err(e) = chat.publish(ui_addr) {
@@ -475,6 +476,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(relay_watch.run(shutdown.clone())),
         tokio::spawn(transfers.run(store.clone())),
         tokio::spawn(app.rtc.clone().watch(account.clone())),
+        tokio::spawn(app.outbound.clone().watch(account.clone())),
         {
             let app = app.clone();
             tokio::spawn(app.resolved.clone().run(move || app.access()))

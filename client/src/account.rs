@@ -865,6 +865,30 @@ impl Account {
         Ok(r)
     }
 
+    /// 管理台的账户页面（电脑、会员、邀请、账户与安全）：签名转发到平台的 `/web/*`，原样返回状态码与 JSON。
+    pub async fn web(&self, method: &str, path_and_query: &str, body: Option<Vec<u8>>) -> PResult<(u16, bytes::Bytes)> {
+        let (s, key) = self.creds().ok_or_else(|| api("NOT_LOGGED_IN"))?;
+        let r = self
+            .platform()
+            .call_raw(method, &format!("/web/{path_and_query}"), Signer { device: &s.device_id, key_id: &s.key_id, key: &key }, &|_| body.clone())
+            .await;
+        if let Err(e) = &r {
+            self.on_error(e);
+        }
+        r
+    }
+
+    /// 同一账户的电脑（含在线状态、终端路由表）与 ICE 服务器（本机 App 连其他电脑用，服务端 docs/06 §14）。
+    pub async fn rtc_devices(&self) -> PResult<looklook_protocol::dto::RemoteDevices> {
+        self.signed("GET", looklook_protocol::rtc::CLIENT_DEVICES_PATH, None::<&()>).await
+    }
+
+    /// 把 offer 交给平台转给另一台电脑，换回它签过名的 answer。
+    pub async fn rtc_connect(&self, dev: &str, offer: String) -> PResult<looklook_protocol::rtc::ClientConnectResponse> {
+        let req = looklook_protocol::rtc::ConnectRequest { dev: dev.to_string(), offer };
+        self.signed("POST", looklook_protocol::rtc::CLIENT_CONNECT_PATH, Some(&req)).await
+    }
+
     pub async fn tunnels(&self) -> PResult<TunnelList> {
         self.signed("GET", "/tunnels", None::<&()>).await
     }
@@ -1144,6 +1168,67 @@ mod tests {
         (url, seen)
     }
 
+    /// 本机 App 连另一台电脑（服务端 docs/06 §14）：经假平台取设备列表、交换 offer / answer（那台电脑是真的应答方），
+    /// 然后请求经 WebRTC 通道到那台电脑的路由。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn outbound_links_through_platform() {
+        use looklook_protocol::dto::{RemoteDevice, RemoteDevices};
+        use looklook_protocol::rtc::{ClientConnectResponse, ConnectRequest};
+
+        use crate::rtc::outbound::{self, LinkError, Outbound};
+        use crate::rtc::{bridge, peer::Pc};
+
+        let target = axum::Router::new().route("/api/hi", axum::routing::get(|| async { "from devb" }));
+        let app = axum::Router::new().fallback(move |uri: Uri, headers: HeaderMap, body: Bytes| {
+            let target = target.clone();
+            async move {
+                let path = uri.path().to_string();
+                let dev = |id: &str, t: &[&str]| RemoteDevice { id: id.into(), name: id.into(), os: "linux".into(), online: true, terminals: t.iter().map(|s| s.to_string()).collect() };
+                let (status, out) = if path.ends_with("/rtc/devices") {
+                    let d = RemoteDevices { items: vec![dev("dev1", &[]), dev("devb", &["tb1"])], default: Some("dev1".into()), max: 7, ice_servers: vec![] };
+                    (StatusCode::OK, serde_json::to_vec(&d).unwrap())
+                } else if path.ends_with("/rtc/connect") {
+                    let req: ConnectRequest = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(req.dev, "devb");
+                    let mut pc = Pc::answer(&[], &req.offer).unwrap();
+                    let answer = pc.local_answer(Duration::from_secs(3)).await.unwrap();
+                    let ctx = bridge::Ctx { router: target, host: "alice.looklook.test".into(), origin: "http://alice.looklook.test".into(), sid: "s".into(), device: "devb".into() };
+                    tokio::spawn(async move {
+                        while let Some(ch) = pc.incoming.recv().await {
+                            tokio::spawn(bridge::serve(ctx.clone(), ch));
+                        }
+                        // 整个连接留到这里（闭包只按字段捕获的话，连接在应答后就被释放了）
+                        drop(pc);
+                    });
+                    let r = ClientConnectResponse { answer, host: "alice.looklook.test".into(), origin: "http://alice.looklook.test".into() };
+                    (StatusCode::OK, serde_json::to_vec(&r).unwrap())
+                } else {
+                    (StatusCode::NO_CONTENT, vec![])
+                };
+                let nonce = headers.get(HDR_NONCE).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+                let sig = signing::sign(&platform_key(), &response_canonical(&nonce, status.as_u16(), &out));
+                (status, [(HDR_PLATFORM_KEY, "p1".to_string()), (HDR_PLATFORM_SIGNATURE, sig), ("content-type", "application/json".to_string())], out).into_response()
+            }
+        });
+        let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
+
+        let dir = tempfile::tempdir().unwrap();
+        let a = account(dir.path(), &url);
+        let ob = Outbound::default();
+        assert_eq!(ob.devices(&a, false).await.unwrap().items.len(), 2);
+        assert_eq!(ob.owner("tb1").as_deref(), Some("devb"), "终端路由表");
+        let link = ob.link(&a, "devb").await.unwrap();
+        let req = axum::http::Request::get("/api/hi").body(axum::body::Body::empty()).unwrap();
+        let r = outbound::http(link.clone(), req, "/api/hi".into()).await;
+        assert_eq!(r.status(), StatusCode::OK);
+        use http_body_util::BodyExt;
+        assert_eq!(r.into_body().collect().await.unwrap().to_bytes(), "from devb");
+        assert!(Arc::ptr_eq(&link, &ob.link(&a, "devb").await.unwrap()), "复用同一条连接");
+        assert!(matches!(ob.link(&a, "nope").await, Err(LinkError::Offline)));
+    }
+
     #[test]
     fn terminal_id_rules() {
         assert!(valid_terminal_id("abcd2345"));
@@ -1173,6 +1258,19 @@ mod tests {
         assert_eq!(seen[0].2["terminals"], json!(["aaaa2222", "bbbb3333"]));
         assert_eq!((seen[1].0.as_str(), seen[1].1.as_str()), ("PUT", "/api/client/v1/terminals"));
         assert_eq!(seen[1].2, json!({ "ids": ["aaaa2222", "bbbb3333"] }));
+    }
+
+    /// 管理台的账户页面：原样签名转发到平台的 /web/*（方法、路径、请求体）。
+    #[tokio::test]
+    async fn web_forwards_signed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (url, seen) = fake_platform().await;
+        let a = account(dir.path(), &url);
+        let (status, _) = a.web("PATCH", "devices/abc", Some(r#"{"name":"书房"}"#.as_bytes().to_vec())).await.unwrap();
+        assert_eq!(status, 204);
+        let seen = seen.lock().unwrap().clone();
+        assert_eq!((seen[0].0.as_str(), seen[0].1.as_str()), ("PATCH", "/api/client/v1/web/devices/abc"));
+        assert_eq!(seen[0].2, json!({ "name": "书房" }));
     }
 
     #[tokio::test]

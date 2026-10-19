@@ -34,6 +34,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/auth/reconnect", post(reconnect))
         .route("/server", put(set_server))
         .route("/account", get(account))
+        .route("/rtc/devices", get(rtc_devices))
+        .route("/platform/{*rest}", get(platform_web).post(platform_web).put(platform_web).patch(platform_web).delete(platform_web))
         .route("/instances", get(list_instances).post(create_instance))
         .route("/instances/{id}", get(get_instance).patch(update_instance).delete(delete_instance))
         .route("/instances/{id}/start", post(start_instance))
@@ -141,7 +143,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers" | "platform") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -325,6 +327,45 @@ async fn account(State(app): State<App>) -> R<Json<Value>> {
         "device_id": s.device_id,
         "fresh": fresh.is_some(),
     })))
+}
+
+/// 同一账户的电脑（本机 App 的电脑切换与会话列表用，`rtc::outbound`）：只有本机打开的管理台才连得到其他电脑，
+/// 其他方式打开时返回空列表，界面就按单台电脑显示。
+async fn rtc_devices(State(app): State<App>, req: Request) -> R<Json<Value>> {
+    if req.extensions().get::<Peer>() != Some(&Peer::Local) || app.account.session().is_none() {
+        return Ok(Json(json!({ "items": [], "default": null, "max": 0 })));
+    }
+    let mut d = app.outbound.devices(&app.account, false).await?;
+    // ICE 凭证只给本机用，不交给页面
+    d.ice_servers.clear();
+    Ok(Json(serde_json::to_value(d).unwrap_or_default()))
+}
+
+/// 账户页面（`/api/platform/*`）：本机或局域网打开管理台时，由这台电脑签名转发到平台（服务端 `/api/client/v1/web/*`）。
+/// 远程打开时管理台直接请求用户站的 `/_ll/web/*`，不经过这里。
+async fn platform_web(State(app): State<App>, Path(rest): Path<String>, req: Request) -> Response {
+    const LIMIT: usize = 64 * 1024;
+    let method = req.method().as_str().to_string();
+    let query = req.uri().query().map(|q| format!("?{q}")).unwrap_or_default();
+    // 路径只允许平台接口用到的字符，免得拼出别的路径
+    if !rest.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_/".contains(&b)) || rest.contains("//") {
+        return LocalError::not_found().into_response();
+    }
+    let body = match axum::body::to_bytes(req.into_body(), LIMIT).await {
+        Ok(b) if b.is_empty() => None,
+        Ok(b) => Some(b.to_vec()),
+        Err(_) => return LocalError::new("VALIDATION_FAILED").into_response(),
+    };
+    match app.account.web(&method, &format!("{rest}{query}"), body).await {
+        Ok((204, _)) => StatusCode::NO_CONTENT.into_response(),
+        Ok((status, bytes)) => (
+            StatusCode::from_u16(status).unwrap_or(StatusCode::OK),
+            [(axum::http::header::CONTENT_TYPE, "application/json")],
+            bytes,
+        )
+            .into_response(),
+        Err(e) => LocalError::from(e).into_response(),
+    }
 }
 
 // ---------------- 终端 ----------------

@@ -75,7 +75,7 @@ impl DataChannelHandler for DcHandler {
     }
 }
 
-/// 浏览器开的一条 DataChannel。释放它就关闭通道（libdatachannel 先发完已排队的数据）。
+/// 一条 DataChannel（浏览器开的，或者本机作为发起方开的）。释放它就关闭通道（libdatachannel 先发完已排队的数据）。
 pub struct Channel {
     dc: Box<RtcDataChannel<DcHandler>>,
     rx: mpsc::UnboundedReceiver<DcEvent>,
@@ -101,6 +101,20 @@ impl Channel {
             }
             ev => ev,
         }
+    }
+
+    /// 等通道打开（本机开的通道）；先关闭或超时都算失败。
+    pub async fn opened(&mut self, limit: Duration) -> Result<()> {
+        let wait = async {
+            loop {
+                match self.rx.recv().await {
+                    Some(DcEvent::Open) => return Ok(()),
+                    Some(DcEvent::Closed) | None => bail!("通道没能打开"),
+                    Some(_) => {}
+                }
+            }
+        };
+        tokio::time::timeout(limit, wait).await.map_err(|_| anyhow!("通道打开超时"))?
     }
 
     /// 下一条消息（跳过其他事件）；通道关闭后为 None。
@@ -156,7 +170,7 @@ impl PeerConnectionHandler for PcHandler {
     }
 }
 
-/// 一条 PeerConnection（应答方）。
+/// 一条 PeerConnection（应答方：浏览器连进来；发起方：本机 App 连同一账户的其他电脑，见 `super::outbound`）。
 pub struct Pc {
     pc: Box<RtcPeerConnection<PcHandler>>,
     pub state: watch::Receiver<PcState>,
@@ -181,9 +195,46 @@ impl Pc {
         Ok(Self { pc, state, gathered, reflexive, incoming })
     }
 
+    /// 作为发起方建立连接：开一条 `ctl` 通道（libdatachannel 随即生成 offer 并开始收集候选）。
+    pub fn offer(ice: &[IceServer]) -> Result<(Self, Channel)> {
+        let cfg = RtcConfig::new(&ice_urls(ice));
+        let (state_tx, state) = watch::channel(PcState::New);
+        let (gathered_tx, gathered) = watch::channel(false);
+        let (reflexive_tx, reflexive) = watch::channel(0);
+        let (incoming_tx, incoming) = mpsc::unbounded_channel();
+        let h = PcHandler { incoming: incoming_tx, pending: None, state: state_tx, gathered: gathered_tx, reflexive: reflexive_tx };
+        let pc = RtcPeerConnection::new(&cfg, h).map_err(|e| anyhow!("创建 PeerConnection 失败：{e:?}"))?;
+        let mut me = Self { pc, state, gathered, reflexive, incoming };
+        let ctl = me.channel("ctl")?;
+        Ok((me, ctl))
+    }
+
+    /// 本机开一条通道（发起方）。
+    pub fn channel(&mut self, label: &str) -> Result<Channel> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let mut dc = self.pc.create_data_channel(label, DcHandler(tx)).map_err(|e| anyhow!("创建 DataChannel 失败：{e:?}"))?;
+        let _ = dc.set_buffered_amount_low_threshold(LOW_WATER);
+        Ok(Channel { dc, rx, label: label.to_string() })
+    }
+
+    /// 发起方：设置对端的 answer。
+    pub fn set_answer(&mut self, sdp: &str) -> Result<()> {
+        let answer: SessionDescription = serde_json::from_value(serde_json::json!({ "type": "answer", "sdp": sdp })).map_err(|e| anyhow!("answer 无法解析：{e}"))?;
+        self.pc.set_remote_description(&answer).map_err(|e| anyhow!("设置 answer 失败：{e:?}"))
+    }
+
+    /// 发起方：等候选收集完，返回 offer SDP（规则同 [`Self::local_answer`]）。
+    pub async fn local_offer(&mut self, limit: Duration) -> Result<String> {
+        self.local_sdp("offer", limit).await
+    }
+
     /// 等候选收集完（不用 trickle），返回 answer SDP：收集结束、或者有了 srflx / relay 候选再等 [`REFLEXIVE_GRACE`]，
     /// 最多 `limit`。
     pub async fn local_answer(&mut self, limit: Duration) -> Result<String> {
+        self.local_sdp("answer", limit).await
+    }
+
+    async fn local_sdp(&mut self, kind: &str, limit: Duration) -> Result<String> {
         let (mut gathered, mut reflexive) = (self.gathered.clone(), self.reflexive.clone());
         let enough = async move {
             tokio::select! {
@@ -192,12 +243,12 @@ impl Pc {
             }
         };
         let _ = tokio::time::timeout(limit, enough).await;
-        let d = self.pc.local_description().ok_or_else(|| anyhow!("没有生成 answer"))?;
+        let d = self.pc.local_description().ok_or_else(|| anyhow!("没有生成 {kind}"))?;
         let v = serde_json::to_value(&d)?;
-        if v["type"] != "answer" {
-            bail!("本地描述不是 answer：{}", v["type"]);
+        if v["type"] != kind {
+            bail!("本地描述不是 {kind}：{}", v["type"]);
         }
-        v["sdp"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("answer 缺少 sdp"))
+        v["sdp"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("{kind} 缺少 sdp"))
     }
 }
 

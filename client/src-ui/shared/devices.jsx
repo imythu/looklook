@@ -1,6 +1,7 @@
 // 多设备（服务端 docs/05 §9）：远程打开时，同一个账户可能有好几台电脑在线。
 // 终端页合并显示所有电脑的终端；本机网页、设置、系统等按电脑的页面用顶栏的“电脑”切换，选择记在 sessionStorage。
-// 本机/局域网打开不请求设备列表，只有一台电脑时界面与单设备完全一样。
+// 本机 App 也一样：列表由这台电脑向平台取，发给其他电脑的请求经它转过去（客户端 rtc/outbound.rs）。
+// 局域网打开时列表为空，只有一台电脑时界面与单设备完全一样。
 import { Check, ChevronDown, HelpCircle, Monitor, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -17,7 +18,16 @@ export function useDevices() {
   return useContext(Ctx);
 }
 
+/** 记住的电脑；地址带 ?d={id}（“电脑”页、看看网页上指定了某台电脑的链接）时用它，并从地址里去掉。 */
 function stored() {
+  const u = new URL(window.location.href);
+  const want = u.searchParams.get('d');
+  if (want) {
+    store(want);
+    u.searchParams.delete('d');
+    window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
+    return want;
+  }
   try {
     return sessionStorage.getItem(KEY);
   } catch {
@@ -43,7 +53,7 @@ export function pickSelected(items, def, want) {
 }
 
 /**
- * 远程打开时加载并定时刷新设备列表（`remote` 为假时什么也不做）。
+ * 登录后加载并定时刷新设备列表（`remote` 为假时什么也不做）。
  * `onSelect`：切换电脑后调用（刷新客户端状态）。
  */
 export function useDeviceState(remote, onSelect) {

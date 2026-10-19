@@ -194,6 +194,19 @@ pub struct ConnectResponse {
     pub answer: String,
 }
 
+/// 本机客户端作为发起方连到同一账户的其他电脑（docs/06 §14）：客户端接口（`/api/client/v1`）下的相对路径，
+/// 设备签名。`devices` 应答 [`crate::dto::RemoteDevices`]（`default` 是发起的这台），`connect` 收 [`ConnectRequest`]。
+pub const CLIENT_DEVICES_PATH: &str = "/rtc/devices";
+pub const CLIENT_CONNECT_PATH: &str = "/rtc/connect";
+
+/// 主服务 → 发起的客户端：`host`、`origin` 是授权票据里的用户站地址，经通道发的请求以它们为 Host 与 Origin。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClientConnectResponse {
+    pub answer: String,
+    pub host: String,
+    pub origin: String,
+}
+
 /// 主服务 → 设备。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferRequest {

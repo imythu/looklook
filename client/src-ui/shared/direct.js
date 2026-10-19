@@ -10,7 +10,7 @@
 // 既探测不了也嵌不进 iframe。
 import { useEffect, useState } from 'react';
 
-import { deviceApi, rtcMode, selectedDevice, terminalDevice } from './api.js';
+import { deviceApi, selectedDevice, terminalDevice } from './api.js';
 import i18n from './i18n.js';
 import { isTouch } from './KeyBar.jsx';
 
@@ -145,8 +145,8 @@ function build(id, r) {
     const hash = new URLSearchParams({ 'll-parent': location.origin, 'll-files': '1', 'll-lang': i18n.language || '' });
     return { src: `${r.base}/i/${id}/#${hash}`, direct: true };
   }
-  // WebRTC 模式：告诉启动页这个终端在哪台电脑（__lldev，启动页自己去掉；ttyd 的 WebSocket 地址也会带上它）
-  const device = rtcMode ? deviceOf(id) : null;
+  // 多台电脑：告诉启动页（WebRTC 模式）或本机客户端（App）这个终端在哪台电脑（__lldev，它们自己去掉；ttyd 的 WebSocket 地址也会带上它）
+  const device = deviceOf(id);
   return { src: device ? `/i/${id}/?__lldev=${encodeURIComponent(device)}` : `/i/${id}/`, direct: false };
 }
 

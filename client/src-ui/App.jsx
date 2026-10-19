@@ -1,22 +1,26 @@
 // 看看客户端管理台。未登录时只显示登录页；登录后左侧栏（手机为抽屉）：用户菜单、新会话、工具（文件、SSH 主机、本机网页、
 // AI、系统、设置，可收成一行图标）、项目和会话。电脑上侧栏能整条收成图标栏。
+// 账户的事（电脑、会员与邀请、账户与安全）也在这里，放在用户菜单里，数据来自看看平台（shared/platform.js）。
+// 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, Bot, Bug, ChevronDown, ExternalLink, FolderOpen, Globe, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, UserRound, X } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, House, Laptop, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Account from './pages/Account.jsx';
 import AiPage from './pages/Ai.jsx';
+import Computers from './pages/Computers.jsx';
 import Files from './pages/Files.jsx';
 import Login from './pages/Login.jsx';
+import Membership from './pages/Membership.jsx';
 import Pages from './pages/Pages.jsx';
 import Settings from './pages/Settings.jsx';
 import SshHosts from './pages/SshHosts.jsx';
 import System from './pages/System.jsx';
 import { opensInPage, SessionHome, SessionList, SessionStage, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
 import TerminalView from './pages/TerminalView.jsx';
-import { api, selectedDevice } from './shared/api.js';
+import { api, rtcMode, selectedDevice } from './shared/api.js';
 import { configureDirect, probeDirect } from './shared/direct.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
 import { Link, Router, useCanonicalPath, useRouter } from './shared/router.jsx';
@@ -27,8 +31,8 @@ import { BrandMark, Button, FoldNote, LangSwitch, Note, Skeleton, useConfirm, us
 import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
-import { RelayPill } from './shared/RelayStatus.jsx';
-import { LanBanner, LanFallback, useLanPage } from './shared/lan.jsx';
+import { ConnChip } from './shared/RelayStatus.jsx';
+import { LanBanner, LanFallback } from './shared/lan.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
 
 const StatusCtx = createContext({ status: null, reload: () => {} });
@@ -85,7 +89,11 @@ const TOOLS = [
 const DEVICE_PAGES = ['/files', '/ssh', '/pages', '/ai', '/system', '/settings'];
 const TERM = /^\/t\/([a-z2-7]{8})$/;
 const SESS = /^\/s\/([a-z2-7]{8})$/;
-const PAGES = ['/', '/new', '/account', ...TOOLS.map((x) => x.to)];
+// 用户菜单里的账户页面
+const ACCOUNT_PAGES = ['/devices', '/membership', '/account'];
+const PAGES = ['/', '/new', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
+// 开源仓库（MIT）
+export const SOURCE_URL = 'https://github.com/imythu/looklook';
 const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
 // 会话相关的页面铺满主区域（不限宽度）
 const isWide = (p) => p === '/' || p === '/new' || SESS.test(p);
@@ -137,61 +145,6 @@ export function useLogout() {
   };
 }
 
-/** 往返时间（毫秒）：每 10 秒经中转请求一次这台电脑的 /api/ping，取最近 3 次的中位数，免得一次抖动就跳。 */
-function useRemoteLatency(enabled) {
-  const [ms, setMs] = useState(null);
-  useEffect(() => {
-    if (!enabled) return undefined;
-    const samples = [];
-    let alive = true;
-    const once = async () => {
-      if (document.hidden) return;
-      const t0 = performance.now();
-      try {
-        await api.get('/ping');
-      } catch (e) {
-        if (e.status === 0 || e.status >= 500) {
-          if (alive) setMs(null);
-          return;
-        }
-        // 旧版客户端没有这个接口（404）也是一次完整的往返
-      }
-      samples.push(performance.now() - t0);
-      if (samples.length > 3) samples.shift();
-      const sorted = [...samples].sort((a, b) => a - b);
-      if (alive) setMs(Math.round(sorted[Math.floor(sorted.length / 2)]));
-    };
-    once();
-    const id = setInterval(once, 10000);
-    window.addEventListener('focus', once);
-    return () => {
-      alive = false;
-      clearInterval(id);
-      window.removeEventListener('focus', once);
-    };
-  }, [enabled]);
-  return ms;
-}
-
-const SLOW_MS = 150;
-const VERY_SLOW_MS = 400;
-
-/** 顶栏的“远程访问中 · 86 ms”。 */
-function RemoteBadge({ narrow }) {
-  const { t } = useTranslation();
-  const ms = useRemoteLatency(true);
-  const kind = ms === null ? 'badge-ok' : ms >= VERY_SLOW_MS ? 'badge-danger' : ms >= SLOW_MS ? 'badge-warn' : 'badge-ok';
-  return (
-    <span className={`badge ${kind} remote-badge`} title={ms === null ? t('nav.remote') : t('nav.remote_latency_hint', { ms })}>
-      <span className={narrow ? 'hide-narrow' : undefined}>
-        {t('nav.remote')}
-        {ms !== null && <span aria-hidden="true"> · </span>}
-      </span>
-      {ms !== null && <span>{t('nav.remote_ms', { ms })}</span>}
-    </span>
-  );
-}
-
 function GateBanner() {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
@@ -207,9 +160,9 @@ function GateBanner() {
       <div className="banner banner-error" role="alert">
         <span className="grow">{t(`gate.${acc.reason}`, { defaultValue: t('gate.other') })}</span>
         {expired && (
-          <a className="btn btn-danger" href={webUrl(status, '/membership')} target="_blank" rel="noopener noreferrer">
+          <Link to="/membership" className="btn btn-danger">
             {t('gate.renew')}
-          </a>
+          </Link>
         )}
         {acc.reason === 'OFFLINE_TOO_LONG' && (
           <Button variant="danger" onClick={reconnect}>
@@ -240,17 +193,26 @@ function GateBanner() {
   return null;
 }
 
-/** 用户卡片的菜单：账户、报告问题、打开看看网页、退出登录。 */
+/** 用户卡片的菜单：电脑、会员与邀请、账户与安全；报告问题；看看主页、帮助文档、GitHub；退出登录。
+ *  外部链接在 App 里由系统浏览器打开（desktop.rs 拦截新窗口）。 */
 function useUserMenu() {
   const { t } = useTranslation();
   const { status } = useStatus();
   const { navigate } = useRouter();
   const logout = useLogout();
   const openReport = useReportDialog();
+  const open = (url) => () => window.open(url, '_blank', 'noopener');
+  const left = daysLeft(status.account.session?.membership_expires_at);
   return [
-    { icon: UserRound, label: t('nav.account'), onClick: () => navigate('/account') },
+    { icon: Laptop, label: t('acct.computers'), onClick: () => navigate('/devices') },
+    { icon: CalendarClock, label: t('acct.membership'), hint: left > 0 ? t('account.days_left', { n: left }) : t('account.expired'), onClick: () => navigate('/membership') },
+    { icon: ShieldCheck, label: t('acct.account'), onClick: () => navigate('/account') },
+    'sep',
     { icon: Bug, label: t('report.title'), onClick: openReport },
-    { icon: ExternalLink, label: t('nav.web'), onClick: () => window.open(webUrl(status, '/'), '_blank', 'noopener') },
+    { icon: House, label: t('nav.home_page'), onClick: open(webUrl(status, '/')) },
+    { icon: BookOpen, label: t('nav.docs'), onClick: open(webUrl(status, '/docs')) },
+    { icon: Github, label: t('nav.github'), onClick: open(SOURCE_URL) },
+    'sep',
     { icon: LogOut, label: t('nav.logout'), onClick: logout, danger: true },
   ];
 }
@@ -428,7 +390,6 @@ function ConsoleLayout({ path, stale, children }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [ui]);
   const s = status.account.session;
-  const lanPage = useLanPage();
   const wide = isWide(path);
   const sess = path.match(SESS)?.[1] ?? null;
   return (
@@ -446,13 +407,7 @@ function ConsoleLayout({ path, stale, children }) {
         </span>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
           {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
-          {status.access === 'remote' && <RemoteBadge narrow={devices.multi} />}
-          {status.access !== 'remote' && !lanPage && <RelayPill />}
-          {lanPage && (
-            <span className="badge badge-ok" title={t('lan.badge_hint')}>
-              {t('lan.badge')}
-            </span>
-          )}
+          <ConnChip />
           <LangSwitch />
           <Link to="/account" aria-label={t('nav.account')}>
             <Initial name={s.user.nickname} />
@@ -548,12 +503,13 @@ function Shell() {
         setDown(true);
       });
   }, []);
-  const devices = useDeviceState(status?.access === 'remote');
+  // 远程打开（启动页给的列表）和本机 App（本机客户端连其他电脑，服务端 docs/06 §14）都能切换电脑
+  const devices = useDeviceState(Boolean(status?.account?.logged_in));
   devRef.current = devices;
   // 远程打开时在后台探测能不能直连本机（终端走最快的路，见 shared/direct.js）
   const remote = status?.access === 'remote';
   const directKey = devices.multi ? devices.items.map((d) => `${d.id}:${d.os}:${d.online}`).join(',') : status?.capabilities?.os;
-  if (status && devices.ready) configureDirect({ remote, os: status.capabilities?.os, devices: devices.multi ? devices.items : null });
+  if (status && devices.ready) configureDirect({ remote: rtcMode, os: status.capabilities?.os, devices: devices.multi ? devices.items : null });
   useEffect(() => {
     if (status && devices.ready) probeDirect(devices.multi ? devices.items : null);
   }, [remote, devices.ready, devices.multi, directKey]);
@@ -595,9 +551,10 @@ function Shell() {
   } else {
     // 换了登录（退出后重新登录）时重置终端页。远程打开时状态来自选中的那台电脑，选中的电脑一变 device_id 就变，
     // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
-    const login = remote ? 'remote' : status.account.session?.device_id;
+    // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
+    const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
     const home = opensInPage() ? <StartPane key={`start:${login}`} /> : <SessionHome />;
-    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account /> }[path];
+    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[path];
     body = (
       <SessionsProvider key={login} enabled>
         <SessionUiProvider>

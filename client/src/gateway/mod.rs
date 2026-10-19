@@ -86,6 +86,8 @@ pub struct Inner {
     pub lan: lan::Lan,
     /// 管理台经 WebRTC 的连接（src/rtc）
     pub rtc: Arc<crate::rtc::Rtc>,
+    /// 本机 App 连同一账户其他电脑的连接（src/rtc/outbound.rs）
+    pub outbound: Arc<crate::rtc::outbound::Outbound>,
 }
 
 impl Inner {
@@ -356,7 +358,47 @@ pub async fn serve(listener: tokio::net::TcpListener, app: axum::Router, shutdow
 }
 
 pub fn local_app(app: App) -> Router {
-    router(app.clone()).layer(middleware::from_fn_with_state(app, local_guard))
+    router(app.clone())
+        .layer(middleware::from_fn_with_state(app.clone(), to_peer))
+        .layer(middleware::from_fn_with_state(app, local_guard))
+}
+
+/// 本机管理台发给另一台电脑的请求（服务端 docs/06 §14）：带 `X-LL-Device`（不是本机），或者是那台电脑上的终端
+/// （`/i/{id}…`、`/api/instances/{id}…`，按终端路由表与地址上的 `__lldev`），经 WebRTC 转给它（`rtc::outbound`）。
+/// 只转发这台电脑自己（`Peer::Local`）打开的管理台的请求；写请求与 WebSocket 先在这里做和本机接口一样的来源检查，
+/// 那台电脑那边不再看来源。
+async fn to_peer(State(app): State<App>, req: Request, next: Next) -> Response {
+    use crate::rtc::outbound;
+    if req.extensions().get::<access::Peer>() != Some(&access::Peer::Local) {
+        return next.run(req).await;
+    }
+    let Some(session) = app.account.session() else { return next.run(req).await };
+    let own = session.device_id;
+    let pq = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
+    let (path, hint) = outbound::take_device_hint(&pq);
+    let terminal = outbound::terminal_of(req.uri().path()).map(str::to_owned);
+    if let (Some(t), Some(d)) = (&terminal, &hint) {
+        app.outbound.remember(t, d);
+    }
+    let header_dev = req.headers().get(looklook_protocol::DEVICE_HEADER).and_then(|v| v.to_str().ok()).map(str::to_owned);
+    let target = header_dev.or(hint).or_else(|| terminal.as_deref().and_then(|t| app.outbound.owner(t)));
+    let Some(dev) = target.filter(|d| *d != own) else { return next.run(req).await };
+    let ws = req.headers().get(header::UPGRADE).and_then(|v| v.to_str().ok()).is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+    if ws || !matches!(*req.method(), Method::GET | Method::HEAD) {
+        let marked = ws || req.headers().get(CLIENT_HEADER).and_then(|v| v.to_str().ok()) == Some("1");
+        if !marked || !origin_matches(req.headers(), &Access::Local) {
+            return LocalError::new("CSRF_FAILED").into_response();
+        }
+    }
+    let link = match app.outbound.link(&app.account, &dev).await {
+        Ok(l) => l,
+        Err(e) => return e.response(),
+    };
+    if ws {
+        outbound::websocket(link, req, path).await
+    } else {
+        outbound::http(link, req, path).await
+    }
 }
 
 pub fn relay_app(app: App) -> Router {
