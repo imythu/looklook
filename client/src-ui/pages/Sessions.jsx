@@ -836,7 +836,7 @@ export function SessionStage({ activeId }) {
   }, [activeId]);
   // 被删掉的会话：拿到了它所在电脑的列表、里面却没有（电脑离线、还没加载时不算）
   const missing = (id) => {
-    if (s.loading || s.byId(id)) return false;
+    if (s.loading || s.error || s.byId(id)) return false;
     if (!devices.multi) return true;
     const dev = terminalDevice(id);
     return Boolean(dev && s.groups?.[dev] && !s.groups[dev].error);

@@ -32,8 +32,8 @@
   function fromParent(e) { return e.source === window.parent && e.origin === PARENT && e.data && typeof e.data === 'object'; }
   // 与管理台共用语言设置（同源 localStorage）；英文未翻译时回退中文。
   var TEXT = {
-    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', copy_offer: '复制选中的文字', connecting: '正在连接终端…', lost: '连接断开了，正在自动重连…', back: '已重新连接', reload: '立即重连' },
-    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', copy_offer: 'Copy the selected text', connecting: 'Connecting to the terminal…', lost: 'Connection lost. Reconnecting automatically…', back: 'Reconnected', reload: 'Reconnect now' }
+    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', copy_offer: '复制选中的文字', connecting: '正在连接终端…', lost: '正在重新连接…', lost_slow: '暂时连不上电脑，正在重试…', ended: '终端连接已断开', back: '已重新连接', reload: '立即重试', reopen: '重新连接' },
+    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', copy_offer: 'Copy the selected text', connecting: 'Connecting to the terminal…', lost: 'Reconnecting…', lost_slow: 'Cannot reach your computer, still retrying…', ended: 'The terminal disconnected', back: 'Reconnected', reload: 'Retry now', reopen: 'Reconnect' }
   };
   function tr(key) {
     var lang = 'zh-CN';
@@ -41,15 +41,26 @@
     return (TEXT[lang] && TEXT[lang][key]) || TEXT['zh-CN'][key];
   }
 
-  // 连接状态提示：首次连接时盖一层“正在连接”，断线后顶部给一条“正在重连”并带按钮，重连成功短暂提示。
-  // 在 ttyd 创建 WebSocket 之前包一层，只观察 /ws 连接的开闭，不改变它的行为。
+  // 连接状态提示：首次连接时盖一层“正在连接”；断线后由这里负责重连（见 watchSocket）：顶部一枚小提示，
+  // 1 秒内连回来就不打扰，连不上时退避重试，回到前台、网络恢复、点“立即重试”时马上再试；重连成功短暂提示。
+  // 在 ttyd 创建 WebSocket 之前包一层，只观察 /ws 连接的开闭。
   var overlay = null, banner = null, everOpen = false, socket = null;
+  var lostAt = 0, failures = 0, retryAt = 0, wake = null, bannerTimer = 0, ended = false;
   var css = document.createElement('style');
   css.textContent =
     '@keyframes llb{0%,80%,100%{transform:scale(.6);opacity:.5}40%{transform:scale(1);opacity:1}}' +
     '.ll-dots{display:inline-flex;gap:5px;vertical-align:middle;margin-right:8px}' +
     '.ll-dots i{width:8px;height:8px;border-radius:50%;background:#8b93ff;animation:llb 1.2s infinite ease-in-out}' +
     '.ll-dots i:nth-child(2){animation-delay:.15s}.ll-dots i:nth-child(3){animation-delay:.3s}' +
+    '.ll-pill{position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:99;display:flex;align-items:center;gap:10px;max-width:calc(100% - 24px);' +
+    'padding:6px 6px 6px 14px;border-radius:999px;background:rgba(24,26,36,.92);color:#e6e8ef;font:13px/1.5 system-ui,sans-serif;' +
+    'box-shadow:0 4px 18px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);transition:opacity .2s;white-space:nowrap}' +
+    '.ll-pill span{overflow:hidden;text-overflow:ellipsis}' +
+    '.ll-pill .ll-dots{margin-right:2px;gap:4px}.ll-pill .ll-dots i{width:6px;height:6px;background:#f5b14c}' +
+    '.ll-pill button{flex:none;border:0;border-radius:999px;padding:4px 12px;background:rgba(255,255,255,.12);color:#fff;font:inherit;cursor:pointer}' +
+    '.ll-pill button:active{background:rgba(255,255,255,.22)}' +
+    // 断开后不显示 ttyd 的“Press ⏎ to Reconnect / Reconnecting...”，由上面的提示代替（它的提示框是 .xterm 下圆角 15px 的 div）
+    'html.ll-down .xterm>div[style*="border-radius: 15px"]{display:none!important}' +
     '@media(prefers-reduced-motion:reduce){.ll-dots i{animation:none}}';
   document.documentElement.appendChild(css);
   var DOTS = '<span class="ll-dots"><i></i><i></i><i></i></span>';
@@ -61,25 +72,78 @@
     overlay.innerHTML = '<div>' + DOTS + tr('connecting') + '</div>';
   }
   function hideConnecting() { if (overlay) { overlay.remove(); overlay = null; } }
-  function showLost() {
-    hideConnecting();
-    if (banner) return;
-    banner = mount(document.createElement('div'));
-    banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99;display:flex;justify-content:center;align-items:center;gap:12px;padding:8px 12px;background:rgba(180,83,9,.95);color:#fff;font:14px/1.5 system-ui,sans-serif';
-    banner.innerHTML = '<span>' + DOTS + tr('lost') + '</span>';
+  function hideBanner() {
+    clearTimeout(bannerTimer);
+    if (banner) { banner.remove(); banner = null; }
+  }
+  function renderBanner() {
+    if (!banner) banner = mount(document.createElement('div'));
+    banner.className = 'll-pill';
+    banner.setAttribute('role', 'status');
+    var slow = !ended && Date.now() - lostAt > 15000;
+    banner.innerHTML = (ended ? '' : DOTS) + '<span></span>';
+    banner.querySelector('span').textContent = tr(ended ? 'ended' : slow ? 'lost_slow' : 'lost');
     var b = document.createElement('button');
-    b.textContent = tr('reload');
-    b.style.cssText = 'border:0;border-radius:999px;padding:3px 12px;background:#fff;color:#92400e;font:inherit;cursor:pointer';
-    b.onclick = function () { location.reload(); };
+    b.type = 'button';
+    b.textContent = tr(ended ? 'reopen' : 'reload');
+    b.onclick = retryNow;
     banner.appendChild(b);
+    // 过了 15 秒换成“暂时连不上”
+    if (!ended && !slow) { clearTimeout(bannerTimer); bannerTimer = setTimeout(renderBanner, 15000 - (Date.now() - lostAt) + 50); }
+  }
+  /** `clean`：终端正常结束（关闭码 1000，比如程序退出了），ttyd 不会自己重连，等用户点。 */
+  function showLost(clean) {
+    hideConnecting();
+    if (!lostAt) lostAt = Date.now();
+    ended = clean;
+    document.documentElement.classList.add('ll-down');
+    clearTimeout(bannerTimer);
+    if (banner || clean) renderBanner();
+    else bannerTimer = setTimeout(renderBanner, 1000);
   }
   function onOpen() {
     var was = Boolean(banner);
     everOpen = true;
+    lostAt = 0; failures = 0; retryAt = 0; ended = false;
+    document.documentElement.classList.remove('ll-down');
     hideConnecting();
-    if (banner) { banner.remove(); banner = null; }
+    hideBanner();
     if (was && document.body) toast(tr('back'));
   }
+  /** 下一次重连前要等多久：0.5、1、2、4、8 秒，之后每 10 秒。 */
+  function scheduleRetry() {
+    retryAt = Date.now() + Math.min(500 * Math.pow(2, failures), 10000);
+    failures++;
+  }
+  function backoff() {
+    var ms = retryAt - Date.now();
+    if (ms <= 0) return Promise.resolve();
+    return new Promise(function (resolve) {
+      var t = setTimeout(done, ms);
+      function done() { clearTimeout(t); if (wake === done) wake = null; resolve(); }
+      wake = done;
+    });
+  }
+  function kick() { retryAt = 0; if (wake) wake(); }
+  function retryNow() {
+    // 正常结束、或者 ttyd 没在等重连（不在退避中）时整页重开
+    if (ended || !wake) return void location.reload();
+    kick();
+  }
+  document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'visible' && lostAt) kick(); });
+  window.addEventListener('online', function () { if (lostAt) kick(); });
+  // ttyd 重连前先取 /token（refreshToken），在这里退避；取 token 失败它也会接着连，连不上再回到这里
+  (function wrapFetch() {
+    var fetch0 = window.fetch;
+    if (!fetch0) return;
+    window.fetch = function (input) {
+      var args = arguments;
+      var url = typeof input === 'string' ? input : input && input.url;
+      if (!lostAt || !/\/token(\?|$)/.test(String(url || ''))) return fetch0.apply(this, args);
+      var self = this;
+      return backoff().then(function () { return fetch0.apply(self, args); });
+    };
+  })();
   // 启动页提供的 WebRTC 通道（同源的顶层窗口；本机直连等跨源嵌入时读不到，返回 null）。
   function rtcBridge() {
     try {
@@ -177,7 +241,17 @@
       if (/\/ws(\?|$)/.test(String(url))) {
         if (!everOpen) showConnecting();
         ws.addEventListener('open', onOpen);
-        ws.addEventListener('close', showLost);
+        ws.addEventListener('close', function (e) {
+          var clean = e.code === 1000;
+          if (!clean) scheduleRetry();
+          showLost(clean);
+        });
+        // ttyd 收到 error 就不再自动重连，只显示“Press ⏎ to Reconnect”：断线一律由它照常重连，节奏由上面的退避控制
+        var add = ws.addEventListener;
+        ws.addEventListener = function (type) {
+          if (type === 'error') return;
+          return add.apply(ws, arguments);
+        };
         ws.addEventListener('message', function (e) { if (e.data instanceof ArrayBuffer) watchTransfer(e.data); });
         transferTail = '';
         socket = ws;

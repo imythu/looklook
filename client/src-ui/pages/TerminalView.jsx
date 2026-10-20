@@ -453,7 +453,13 @@ export default function TerminalView({ id }) {
   const [loaded, setLoaded] = useState(false);
   const link = useTermSrc(id, reloadKey);
   const lanPage = useLanPage();
-  const [inst, error, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
+  const [loadedInst, loadError, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
+  // 连不上电脑（重连中、网络断了）时轮询会失败：沿用上一次的终端信息，不把终端换成错误页（那样会关掉终端、要点“返回”）
+  const last = useRef(null);
+  if (loadedInst) last.current = { id, inst: loadedInst };
+  const transient = Boolean(loadError) && (!loadError.status || loadError.status >= 500);
+  const inst = loadedInst ?? (transient && last.current?.id === id ? last.current.inst : null);
+  const error = transient ? null : loadError;
   const chat = inst ? hasChat(inst) : undefined;
   const [tab, setTab] = useTab(id, chat);
   const drawer = useTermDrawer(frame, tab === 'chat', () => setTab('term'));
@@ -520,7 +526,9 @@ export default function TerminalView({ id }) {
   const newWindow = () => window.open(`/t/${id}`, '_blank', 'noopener');
 
   let body;
-  if (error) {
+  if (!inst && transient) {
+    body = <TermConnecting onRetry={reload} />;
+  } else if (error) {
     body = (
       <div className="term-empty">
         <Card title={t('term.missing_title')}>

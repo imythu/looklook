@@ -177,7 +177,7 @@ function loadInject({ files = true, touch = false } = {}) {
   };
   const ctx = {
     window: win,
-    document: { createElement: el, documentElement: el(), fonts: { load: async () => {} } },
+    document: { createElement: el, documentElement: el(), fonts: { load: async () => {} }, addEventListener() {} },
     location: { origin: 'http://x' },
     localStorage: { getItem: () => null },
     navigator: {},
