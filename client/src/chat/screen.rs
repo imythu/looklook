@@ -34,7 +34,7 @@ fn is_rule(line: &str) -> bool {
 }
 
 /// `capture-pane -p -e` 的输出（带 SGR 转义）：去掉转义，同时记下哪些字符是“暗淡”（推荐提示）的。
-fn strip(line: &str) -> (String, String) {
+pub(super) fn strip(line: &str) -> (String, String) {
     let mut plain = String::new();
     let mut bright = String::new();
     let mut dim = false;
@@ -325,9 +325,9 @@ fn numbered(t: &str) -> Option<&str> {
 }
 
 /// 行首的光标、滚动箭头去掉
-fn unmark(t: &str) -> (bool, &str) {
+fn unmark(t: &str, cursor: char) -> (bool, &str) {
     let t = t.trim_start();
-    if let Some(r) = t.strip_prefix('❯') {
+    if let Some(r) = t.strip_prefix(cursor) {
         return (true, r.trim_start());
     }
     (false, t.trim_start_matches(['↑', '↓', ' ']))
@@ -350,21 +350,26 @@ fn is_frame(t: &str) -> bool {
 
 /// 读屏幕上的选择框；没有 `❯` 光标（读不出选项）时为 None，界面只给“取消”。
 pub fn dialog(capture: &str) -> Option<Dialog> {
+    dialog_with(capture, '❯')
+}
+
+/// 同 [`dialog`]，选项光标是 `cursor`（Codex 用 `›`）
+pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
     let lines: Vec<String> = capture.lines().map(|l| strip(l).0.trim_end().to_string()).collect();
-    let sel = lines.iter().rposition(|l| l.trim_start().starts_with('❯'))?;
-    let (_, sel_text) = unmark(&lines[sel]);
+    let sel = lines.iter().rposition(|l| l.trim_start().starts_with(cursor))?;
+    let (_, sel_text) = unmark(&lines[sel], cursor);
     let is_num = numbered(sel_text).is_some();
     // 选项：编号的就找所有带编号的行；不带编号的找和光标那一行文字对齐（缩进相同）、连在一起的行
     let text_col = lines[sel].chars().count() - sel_text.chars().count();
     let is_opt = |l: &str| -> bool {
-        let (cursor, t) = unmark(l);
+        let (on, t) = unmark(l, cursor);
         if t.is_empty() {
             return false;
         }
         if is_num {
             numbered(t).is_some()
         } else {
-            cursor || l.chars().take_while(|c| *c == ' ').count() == text_col
+            on || l.chars().take_while(|c| *c == ' ').count() == text_col
         }
     };
     let mut first = sel;
@@ -383,7 +388,7 @@ pub fn dialog(capture: &str) -> Option<Dialog> {
         if i == sel {
             out.selected = out.options.len();
         }
-        let (_, t) = unmark(l);
+        let (_, t) = unmark(l, cursor);
         let t = if is_num { numbered(t).unwrap_or(t) } else { t };
         let (mut label, hint) = split_hint(t);
         let current = label.ends_with('✔');

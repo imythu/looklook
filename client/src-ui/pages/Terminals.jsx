@@ -54,6 +54,7 @@ import {
   useLoad,
   useToast,
 } from "../shared/ui.jsx";
+import { CHAT_LAUNCHES } from "../shared/chat.js";
 
 const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
 // 能一键安装的 AI 工具（没装时提示安装）；能以全部权限启动的
@@ -930,7 +931,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const isRoot = Boolean(status.capabilities?.root);
   const canFull = FULL_ACCESS.includes(launch);
   // 对话界面要靠会话保持（tmux）往同一个 Claude Code 里送输入
-  const canChat = launch === "claude" && Boolean(status.capabilities?.persistent);
+  const canChat = CHAT_LAUNCHES.includes(launch) && Boolean(status.capabilities?.persistent);
   // DSH 带着自己的端口和网页映射，编辑时不能和别的启动方式互换
   const launches = editing
     ? LAUNCHES.filter((l) => (l === "dsh") === (initial.launch === "dsh"))
@@ -1164,7 +1165,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
             <span>
               <b style={{ fontSize: 14 }}>{t("form.chat_ui")}</b>
               <span className="field-hint" style={{ display: "block" }}>
-                {t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
+                {launch === "codex" ? t("form.chat_ui_hint_codex") : t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
               </span>
             </span>
           </label>

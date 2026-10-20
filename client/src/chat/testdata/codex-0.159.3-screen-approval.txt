@@ -1,0 +1,36 @@
+[0;2m│ [0mSee [0;4;38;2;99;168;248mhttps://github.com/openai/codex[0m for installation options.[0;2m │[0m
+[0;2m│                                                               │[0m
+[0;2m│ [0mSee full release notes:[0;2m                                       │[0m
+[0;2m│ [0;4;38;2;99;168;248mhttps://github.com/openai/codex/releases/latest[0;2m               │[0m
+[0;2m╰───────────────────────────────────────────────────────────────╯[0m
+[0m
+[0m
+[0m  [0;38;2;99;168;248m>_ [0;1mOpenAI Codex[0;2m (v0.159.3)[0m
+[0m     [0;2m~\AppData\Local\Temp\claude\proj\work\…\cap\work-1792318910612[0m
+[0m
+[0m  [0;38;2;99;168;248mThere’s a perfectly good prompt with your name on it.[0m
+[0m
+[0m
+[0;2m› [0mRun one shell command that creates s1.txt containing hi, requesting escalated permissions outside the read-only[0m
+[0m  sandbox. Then reply OK.[0m
+[0m
+[0m
+[0;2m• [0mI’ll create [0;38;2;166;227;161ms1.txt[0m with [0;38;2;166;227;161mhi[0m, requesting the required permission to write outside the read-only sandbox.[0m
+[0m
+[0;1;38;2;128;128;128m•[0m [0;1mRunning[0m [0;38;2;137;180;250mSet-Content [0;38;2;147;153;178m-[0;38;2;235;160;172mLiteralPath [0;38;2;166;227;161m's1.txt' [0;38;2;147;153;178m-[0;38;2;235;160;172mValue [0;38;2;166;227;161m'hi'[0m
+[0m
+[0m
+[0m  [0;1mWould you like to run the following command?[0m
+[0m
+[0m  Environment: [0;1mlocal[0m
+[0m
+[0m  Reason: [0;3mAllow creating s1.txt containing hi outside the read-only sandbox?[0m
+[0m
+[0m  $ [0;38;2;137;180;250mSet-Content [0;38;2;147;153;178m-[0;38;2;235;160;172mLiteralPath [0;38;2;166;227;161m's1.txt' [0;38;2;147;153;178m-[0;38;2;235;160;172mValue [0;38;2;166;227;161m'hi'[0m
+[0m
+[0m
+[0;1;7m› 1. Yes, proceed (y)[0m
+[0m  2. Yes, and don't ask again for commands that start with `Set-Content -LiteralPath s1.txt -Value hi` ([0;1mp[0m)[0m
+[0m  3. No, and tell Codex what to do differently ([0;1mesc[0m)[0m
+[0m
+[0m  [0;2mPress [0;1menter[0;2m to confirm or [0;1mesc[0;2m to cancel[0m

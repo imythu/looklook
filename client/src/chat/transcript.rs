@@ -122,6 +122,8 @@ pub struct Transcript {
     partial: Vec<u8>,
     recs: Vec<Rec>,
     by_uuid: HashMap<String, usize>,
+    /// 每个 `message.id` 的第一行记录：同一次回复被工具结果隔开、拆成几条显示时，后面几条的 key 要另加后缀
+    first_of_msg: HashMap<String, usize>,
     /// 显示的条目：每条是一组 (记录序号, 条目序号)，assistant 合并多行时有多个
     display: Vec<Vec<(usize, usize)>>,
     pub version: Option<String>,
@@ -169,9 +171,33 @@ pub struct ToolCall<'a> {
     pub result: Option<&'a Item>,
 }
 
+/// 从显示用的条目里配出每次工具调用和它的结果（别的工具的记录文件用，例如 Codex 的 rollout）
+pub fn tool_calls_in(items: &[Item]) -> Vec<ToolCall<'_>> {
+    let results: HashMap<&str, &Item> = items
+        .iter()
+        .filter_map(|i| match &i.body {
+            Body::ToolResult { tool_use_id, .. } => Some((tool_use_id.as_str(), i)),
+            _ => None,
+        })
+        .collect();
+    items
+        .iter()
+        .flat_map(|i| match &i.body {
+            Body::Assistant { blocks, .. } => blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::ToolUse { id, name, input, .. } => Some(ToolCall { ts: i.ts.as_deref(), id, name, input, result: results.get(id.as_str()).copied() }),
+                    _ => None,
+                })
+                .collect(),
+            _ => vec![],
+        })
+        .collect()
+}
+
 impl Transcript {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false }
+        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), first_of_msg: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false }
     }
 
     /// 子代理的 transcript
@@ -266,6 +292,9 @@ impl Transcript {
                         if let Some(u) = &rec.uuid {
                             self.by_uuid.insert(u.clone(), self.recs.len());
                         }
+                        if let Some(m) = rec.message_id.as_ref().filter(|_| !rec.items.is_empty()) {
+                            self.first_of_msg.entry(m.clone()).or_insert(self.recs.len());
+                        }
                         self.recs.push(rec);
                         added = true;
                     }
@@ -308,6 +337,11 @@ impl Transcript {
         let (r0, i0) = parts[0];
         let mut item = self.recs[r0].items[i0].clone();
         if let Body::Assistant { blocks, .. } = &mut item.body {
+            // 同一次回复中间夹了工具结果会拆成几条，key 都是 `a:<message.id>`；前端按 key 渲染，重复会把卡片越画越多
+            let rec = &self.recs[r0];
+            if rec.message_id.as_ref().and_then(|m| self.first_of_msg.get(m)) != Some(&r0) {
+                item.key = format!("{}:{}", item.key, rec.uuid.as_deref().unwrap_or(""));
+            }
             for (r, i) in &parts[1..] {
                 if let Body::Assistant { blocks: more, .. } = &self.recs[*r].items[*i].body {
                     blocks.extend(more.iter().cloned());
@@ -331,6 +365,7 @@ impl Transcript {
             cur = self.recs[i].parent.as_ref().and_then(|p| self.by_uuid.get(p)).copied();
         }
         chain.reverse();
+        let chain = self.with_parallel_results(chain);
         let mut out: Vec<Vec<(usize, usize)>> = vec![];
         let mut last_msg: Option<&str> = None;
         for r in chain {
@@ -348,6 +383,37 @@ impl Transcript {
             }
         }
         out
+    }
+
+    /// 并行的工具调用：Claude Code 把第一个调用的结果挂在第一个调用下面，和第二个调用是兄弟，
+    /// 沿父节点往回走的那条链上没有它（实测：两个 WebSearch 并行，只显示得出后一个的结果，前一张卡片一直在转）。
+    /// 把这种“只有工具结果、父节点在链上、答的是链上还没有结果的调用”的兄弟记录接回链上，放在父节点后面。
+    /// `/rewind` 丢掉的分支不会被带回来：那些分支里是用户消息和回复，不是单纯的工具结果。
+    fn with_parallel_results(&self, chain: Vec<usize>) -> Vec<usize> {
+        let on_chain: HashSet<usize> = chain.iter().copied().collect();
+        let items = || chain.iter().flat_map(|&r| self.recs[r].items.iter());
+        let uses: HashSet<&str> = items()
+            .flat_map(|i| match &i.body {
+                Body::Assistant { blocks, .. } => blocks.iter().filter_map(|b| if let Block::ToolUse { id, .. } = b { Some(id.as_str()) } else { None }).collect(),
+                _ => vec![],
+            })
+            .collect();
+        let answered: HashSet<&str> = items().filter_map(|i| if let Body::ToolResult { tool_use_id, .. } = &i.body { Some(tool_use_id.as_str()) } else { None }).collect();
+        let mut extra: HashMap<usize, Vec<usize>> = HashMap::new();
+        for (n, rec) in self.recs.iter().enumerate() {
+            if on_chain.contains(&n) || rec.items.is_empty() {
+                continue;
+            }
+            let only_missing_results = rec.items.iter().all(|i| matches!(&i.body, Body::ToolResult { tool_use_id, .. } if uses.contains(tool_use_id.as_str()) && !answered.contains(tool_use_id.as_str())));
+            let parent = rec.parent.as_ref().and_then(|p| self.by_uuid.get(p)).copied();
+            if let (true, Some(p)) = (only_missing_results, parent.filter(|p| on_chain.contains(p))) {
+                extra.entry(p).or_default().push(n);
+            }
+        }
+        if extra.is_empty() {
+            return chain;
+        }
+        chain.into_iter().flat_map(|r| std::iter::once(r).chain(extra.remove(&r).unwrap_or_default())).collect()
     }
 
     fn parse(&mut self, v: &Value) -> Option<Rec> {
@@ -580,7 +646,7 @@ fn join_text(content: &Value) -> (String, u32, bool) {
     (text, images, truncated)
 }
 
-fn truncate(s: &str, limit: usize) -> (String, bool) {
+pub(super) fn truncate(s: &str, limit: usize) -> (String, bool) {
     if s.len() <= limit {
         return (s.to_string(), false);
     }
@@ -702,6 +768,48 @@ mod tests {
         assert_eq!(last.body, Body::Task { tool_use_id: "toolu_1".into(), status: "completed".into(), summary: "Task \"sleep\" completed".into() });
         let calls = t.tool_calls();
         assert_eq!(calls.iter().map(|c| (c.id, c.result.is_some())).collect::<Vec<_>>(), [("toolu_1", true), ("toolu_2", false)]);
+    }
+
+    #[test]
+    fn reply_split_by_tool_result_gets_distinct_keys() {
+        // 一次回复：思考、Write、（Write 的结果）、Artifact —— 结果夹在中间，显示成两条，key 不能一样
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("做个网页"));
+        s += &assistant("a1", "u1", "msg_1", json!({"type":"thinking","thinking":"","signature":"x"}));
+        s += &assistant("a2", "a1", "msg_1", json!({"type":"tool_use","id":"t1","name":"Write","input":{"file_path":"/a.html"}}));
+        s += &line(json!({"type":"user","uuid":"r1","parentUuid":"a2","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}));
+        s += &assistant("a3", "r1", "msg_1", json!({"type":"tool_use","id":"t2","name":"Artifact","input":{}}));
+        t.feed(s.as_bytes());
+        assert_eq!(kinds(&t), ["user", "assistant", "tool_result", "assistant"]);
+        let items = t.items(0, t.len());
+        assert_eq!(items[1].key, "a:msg_1");
+        assert_eq!(items[3].key, "a:msg_1:a3");
+        // 后面那条再多一个内容块，key 不变
+        let Change::Upsert { start, items } = t.feed(assistant("a4", "a3", "msg_1", json!({"type":"text","text":"好了"})).as_bytes()) else { panic!() };
+        assert_eq!((start, items[0].key.as_str()), (3, "a:msg_1:a3"));
+    }
+
+    #[test]
+    fn parallel_tool_results_on_sibling_records() {
+        // 实测的结构：两个并行的 WebSearch，第一个的结果挂在第一个调用下面（和第二个调用是兄弟）
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("查一下"));
+        s += &assistant("a1", "u1", "msg_1", json!({"type":"tool_use","id":"s1","name":"WebSearch","input":{"query":"a"}}));
+        s += &assistant("a2", "a1", "msg_1", json!({"type":"tool_use","id":"s2","name":"WebSearch","input":{"query":"b"}}));
+        s += &line(json!({"type":"user","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"s1","content":"A"}]}}));
+        s += &line(json!({"type":"user","uuid":"r2","parentUuid":"a2","message":{"content":[{"type":"tool_result","tool_use_id":"s2","content":"B"}]}}));
+        s += &assistant("a3", "r2", "msg_2", json!({"type":"text","text":"好了"}));
+        t.feed(s.as_bytes());
+        let results: Vec<String> = t.items(0, t.len()).into_iter().filter_map(|i| if let Body::ToolResult { tool_use_id, .. } = i.body { Some(tool_use_id) } else { None }).collect();
+        assert_eq!(results, ["s1", "s2"], "两个结果都要有");
+        assert_eq!(kinds(&t).last().map(String::as_str), Some("assistant"));
+        // /rewind 丢掉的分支（用户消息）不接回来
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("第一版"));
+        s += &assistant("a1", "u1", "msg_1", json!({"type":"text","text":"x"}));
+        s += &user("u2", Some("u1"), json!("改过的问题"));
+        t.feed(s.as_bytes());
+        assert_eq!(kinds(&t), ["user", "user"], "被丢掉的回复不接回来");
     }
 
     #[test]
