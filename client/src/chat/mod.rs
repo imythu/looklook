@@ -10,6 +10,7 @@
 
 pub mod commands;
 pub mod hooks;
+pub mod models;
 pub mod screen;
 pub mod transcript;
 
@@ -122,6 +123,16 @@ struct State {
     live: screen::Live,
     /// 正在替界面按键（切换模型时的确认框、后台任务列表）：这段时间里屏幕上的对话框不算“要到终端里操作”
     hold: Option<Instant>,
+    /// 最近一条回复实际用的模型、那条回复的 message.id
+    actual_model: Option<String>,
+    model_msg: Option<String>,
+    /// 在界面上选模型时最近一条回复是哪条：之后有了新回复，选的模型才算生效
+    model_set_at: Option<Option<String>>,
+    /// 最近一条回复时上下文里的 token 数
+    context: Option<u64>,
+    title: Option<String>,
+    /// TUI 上的选择框（phase 为 tui 时）
+    dialog: Option<screen::Dialog>,
 }
 
 /// 推给界面的事件
@@ -212,6 +223,12 @@ impl Chat {
                         stats: Default::default(),
                         live: Default::default(),
                         hold: None,
+                        actual_model: None,
+                        model_msg: None,
+                        model_set_at: None,
+                        context: None,
+                        title: None,
+                        dialog: None,
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
@@ -251,6 +268,14 @@ impl Chat {
             "tool": st.tool,
             "mode": st.mode,
             "model": st.model,
+            "actual_model": st.actual_model,
+            // 在界面上选了模型、还没有新的回复：模型按钮上显示选的那个
+            "model_pending": st.model_set_at.as_ref().is_some_and(|at| *at == st.model_msg),
+            // 模型是在界面上选的（之后回复用的模型和它对不上时，界面上提示）
+            "model_chosen": st.model_set_at.is_some(),
+            "context": st.context,
+            "title": st.title,
+            "dialog": st.dialog,
             "effort": st.effort,
             "background": st.background.iter().map(|(n, kind)| json!({ "n": n, "kind": kind })).collect::<Vec<_>>(),
             "agents": st.agents.len(),
@@ -282,6 +307,9 @@ impl Chat {
                 st.tool = None;
                 st.live = Default::default();
             }
+            if phase != Phase::Tui {
+                st.dialog = None;
+            }
             Self::emit_status(inst, st);
         }
     }
@@ -304,6 +332,7 @@ impl Chat {
             }
             if let Some(m) = ev["model"].as_str() {
                 st.model = Some(m.to_string());
+                st.model_set_at = None;
             }
             if let Some(e) = ev["effort"].as_str().or_else(|| ev["effort"]["level"].as_str()) {
                 st.effort = Some(e.to_string());
@@ -456,12 +485,20 @@ impl Chat {
         }
         let t = tr.as_mut().expect("transcript");
         let change = tokio::task::block_in_place(|| t.poll());
-        let (version, stats) = (t.version.clone(), t.stats);
+        let (version, stats, title) = (t.version.clone(), t.stats, t.title.clone());
+        let (model, model_msg) = (t.model.clone(), t.model_msg.clone());
+        let context = t.usage.as_ref().map(|u| ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().map(|k| u[*k].as_u64().unwrap_or(0)).sum::<u64>());
         drop(tr);
         {
             let mut st = lock(&inst.st);
-            if st.version != version {
+            if st.version != version || st.title != title || st.model_msg != model_msg || st.context != context {
                 st.version = version;
+                st.title = title;
+                if model_msg.is_some() {
+                    st.actual_model = model;
+                }
+                st.model_msg = model_msg;
+                st.context = context;
                 Self::emit_status(inst, &st);
             }
             st.stats = stats;
@@ -589,6 +626,14 @@ impl Chat {
                     (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),
                     (Phase::Running, Screen::Input { .. }) => {}
                     (_, Screen::Input { busy, .. }) => Self::set_phase(inst, &mut st, if busy { Phase::Running } else { Phase::Idle }, None),
+                }
+                // 选择框：读出来给界面显示成弹窗
+                if st.phase == Phase::Tui {
+                    let d = capture.as_deref().and_then(screen::dialog);
+                    if d != st.dialog {
+                        st.dialog = d;
+                        Self::emit_status(inst, &st);
+                    }
                 }
                 // 状态栏：权限模式、思考强度（hook 要等下一个事件才带）、后台任务个数（只有屏幕上有）
                 if let Some(f) = capture.as_deref().and_then(screen::footer) {
@@ -818,22 +863,29 @@ impl Chat {
     }
 
     /// 计划审批：hook 批准不了（实测），只能在 TUI 的确认框里按数字键。先抓屏核对确认框还在、选项和预期一致。
-    pub async fn plan(&self, id: &str, choice: u8) -> Result<(), LocalError> {
+    /// 3 是“告诉 Claude 要改什么”：按 3 后光标停在这一项的输入框里，打字、回车，Claude 照着改计划（实测 2.1.304）。
+    pub async fn plan(&self, id: &str, choice: u8, feedback: Option<&str>) -> Result<(), LocalError> {
         self.require(id)?;
+        let feedback = feedback.map(|f| f.replace(['\r', '\n'], " ")).map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
         let expect = match choice {
             1 => "1. Yes",
             2 => "2. Yes",
+            3 if feedback.is_some() => "3. ",
             _ => return Err(LocalError::invalid("choice", "invalid")),
         };
         let shown = self.instances.screen(id).await.unwrap_or_default();
         let plain = shown.lines().map(screen_plain).collect::<Vec<_>>().join("\n");
         if !(plain.contains("ready to execute") || plain.contains("Would you like to proceed")) || !plain.contains(expect) {
-            let inst = self.inst(id);
-            let mut st = lock(&inst.st);
-            Self::set_phase(&inst, &mut st, Phase::Tui, None);
             return Err(LocalError::new("CHAT_SCREEN_CHANGED"));
         }
-        self.instances.send_keys(id, &[&choice.to_string()]).await
+        self.instances.send_keys(id, &[&choice.to_string()]).await?;
+        if let Some(text) = feedback {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            self.type_text(id, &text.chars().take(2000).collect::<String>()).await?;
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            self.instances.send_keys(id, &["Enter"]).await?;
+        }
+        Ok(())
     }
 
     /// 面板里是 shell（claude 已退出，或是没带 hooks 启动后退出了）：以对话模式接着上次的会话启动。
@@ -895,6 +947,7 @@ impl Chat {
                 let mut st = lock(&inst.st);
                 if kind == "model" {
                     st.model = Some(value.to_string());
+                    st.model_set_at = Some(st.model_msg.clone());
                 } else {
                     st.effort = Some(value.to_string());
                 }
@@ -949,6 +1002,130 @@ impl Chat {
         }
         settle().await;
         Ok(())
+    }
+
+    // ---------------- 模型、用量、改动 ----------------
+
+    /// 读模型菜单要用的上下文：claude 进程的环境变量（读得到时）和 settings 里的 `env`
+    async fn model_ctx<'a>(&self, id: &str, workdir: &'a Path) -> models::Ctx<'a> {
+        let env = match self.instances.pane(id).await {
+            Some(p) if !is_shell(&p.command) => tokio::task::block_in_place(|| models::claude_env(p.pid)),
+            _ => HashMap::new(),
+        };
+        let mut ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir, env };
+        models::merge_settings_env(&mut ctx);
+        ctx
+    }
+
+    /// 模型菜单：Claude Code 的选项（`/model` 里的那些），加上第三方接口自己列出的模型。
+    pub async fn models(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let workdir = PathBuf::from(&row.workdir);
+        let ctx = self.model_ctx(id, &workdir).await;
+        let mut options = tokio::task::block_in_place(|| models::options(&ctx));
+        // 第三方接口：claude 进程环境里的地址（看看配置的服务商也是这样传进去的）；读不到进程环境时用看看的设置
+        let choice = crate::model::choice(&self.store, crate::model::ModelAgent::Claude);
+        let base = ctx.env.get("ANTHROPIC_BASE_URL").cloned().or_else(|| choice.as_ref().filter(|_| crate::model::launch_env(&self.store, &self.paths.home, "claude").is_some()).map(|c| c.base_url.clone()));
+        let mut provider = Value::Null;
+        if let Some(base) = base.filter(|b| !b.contains("api.anthropic.com")) {
+            let ours = choice.as_ref().filter(|c| c.base_url.trim_end_matches('/') == base.trim_end_matches('/'));
+            let token = ctx.env.get("ANTHROPIC_AUTH_TOKEN").or_else(|| ctx.env.get("ANTHROPIC_API_KEY")).cloned().or_else(|| {
+                ours.and_then(|_| std::fs::read_to_string(crate::model::key_path(&self.paths.home, crate::model::ModelAgent::Claude)).ok()).map(|k| k.trim().to_string())
+            });
+            if let Some(token) = token.filter(|t| !t.is_empty()) {
+                let ids = models::provider_models(&base, &token).await;
+                options.extend(models::provider_options(&options, &ids));
+            }
+            provider = json!({ "name": ours.map(|c| c.name.clone()) });
+        }
+        let inst = self.inst(id);
+        let st = lock(&inst.st);
+        Ok(json!({ "options": options, "provider": provider, "model": st.model, "actual_model": st.actual_model, "effort": st.effort }))
+    }
+
+    /// 用量：上下文、这个会话累计的 token、订阅的 5 小时 / 7 天用量
+    pub async fn usage(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let workdir = PathBuf::from(&row.workdir);
+        let inst = self.inst(id);
+        self.poll(&inst).await;
+        let totals = inst.tr.lock().await.as_ref().map(|t| t.totals).unwrap_or_default();
+        let (model, context, version) = {
+            let st = lock(&inst.st);
+            (st.actual_model.clone(), st.context, st.version.clone())
+        };
+        let ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir: &workdir, env: HashMap::new() };
+        let (window, limits) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
+        Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
+    }
+
+    /// 权限规则和 MCP 服务器（只读）
+    pub fn config(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let workdir = PathBuf::from(&row.workdir);
+        let ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir: &workdir, env: HashMap::new() };
+        Ok(tokio::task::block_in_place(|| models::config(&ctx)))
+    }
+
+    /// 这个会话改过的文件：每个文件的增删行数（成功的 Edit / MultiEdit / Write）
+    pub async fn changes(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        self.poll(&inst).await;
+        let tr = inst.tr.lock().await;
+        let Some(t) = tr.as_ref() else { return Ok(json!({ "files": [] })) };
+        let mut files: Vec<(String, u64, u64, String)> = vec![];
+        for c in t.tool_calls() {
+            if !matches!(c.name, "Edit" | "MultiEdit" | "Write") {
+                continue;
+            }
+            let Some(transcript::Body::ToolResult { is_error: false, extra, .. }) = c.result.map(|r| &r.body) else { continue };
+            let Some(path) = c.input["file_path"].as_str() else { continue };
+            let (add, del) = diff_stat(c.name, c.input, extra.as_ref());
+            match files.iter_mut().find(|f| f.0 == path) {
+                Some(f) => {
+                    f.1 += add;
+                    f.2 += del;
+                    f.3 = c.ts.unwrap_or("").to_string();
+                }
+                None => files.push((path.to_string(), add, del, c.ts.unwrap_or("").to_string())),
+            }
+        }
+        Ok(json!({ "files": files.iter().map(|(path, add, del, ts)| json!({ "path": path, "add": add, "del": del, "ts": ts })).collect::<Vec<_>>() }))
+    }
+
+    // ---------------- TUI 上的选择框 ----------------
+
+    /// 在界面上选了选择框的第 `index` 项：再抓一次屏，标题和选项数都对得上才按方向键移过去、回车。
+    pub async fn dialog_choose(&self, id: &str, title: &str, index: usize) -> Result<(), LocalError> {
+        self.require(id)?;
+        let d = self.instances.screen(id).await.as_deref().and_then(screen::dialog).ok_or_else(|| LocalError::new("CHAT_SCREEN_CHANGED"))?;
+        if d.title != title || index >= d.options.len() {
+            return Err(LocalError::new("CHAT_SCREEN_CHANGED"));
+        }
+        let key = if index > d.selected { "Down" } else { "Up" };
+        let n = index.abs_diff(d.selected);
+        let mut keys = vec![key; n];
+        keys.push("Enter");
+        for k in keys {
+            self.instances.send_keys(id, &[k]).await?;
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+        let inst = self.inst(id);
+        lock(&inst.st).last_hook = None;
+        Ok(())
+    }
+
+    /// 关掉选择框（Esc）
+    pub async fn dialog_cancel(&self, id: &str) -> Result<(), LocalError> {
+        self.require(id)?;
+        if lock(&self.inst(id).st).phase != Phase::Tui {
+            return Err(LocalError::new("CHAT_STALE"));
+        }
+        self.instances.send_keys(id, &["Escape"]).await
     }
 
     // ---------------- 后台任务和子代理 ----------------
@@ -1265,6 +1442,27 @@ fn valid_transcript_path(p: &Path) -> bool {
         && p.extension().is_some_and(|e| e == "jsonl")
         && p.parent().and_then(|d| d.parent()).and_then(|d| d.file_name()).is_some_and(|n| n == "projects")
         && !p.components().any(|c| matches!(c, std::path::Component::ParentDir))
+}
+
+/// 一次改动的增删行数：有 Claude Code 给的 structuredPatch 就数它，没有就按参数估
+fn diff_stat(name: &str, input: &Value, extra: Option<&Value>) -> (u64, u64) {
+    let lines = |s: &str| if s.is_empty() { 0 } else { s.lines().count() as u64 };
+    if let Some(hunks) = extra.and_then(|e| e["structuredPatch"].as_array()).filter(|h| !h.is_empty()) {
+        let (mut add, mut del) = (0, 0);
+        for l in hunks.iter().flat_map(|h| h["lines"].as_array().into_iter().flatten()).filter_map(Value::as_str) {
+            if l.starts_with('+') {
+                add += 1;
+            } else if l.starts_with('-') {
+                del += 1;
+            }
+        }
+        return (add, del);
+    }
+    match name {
+        "Write" => (lines(input["content"].as_str().unwrap_or("")), 0),
+        "Edit" => (lines(input["new_string"].as_str().unwrap_or("")), lines(input["old_string"].as_str().unwrap_or(""))),
+        _ => input["edits"].as_array().into_iter().flatten().fold((0, 0), |(a, d), e| (a + lines(e["new_string"].as_str().unwrap_or("")), d + lines(e["old_string"].as_str().unwrap_or("")))),
+    }
 }
 
 /// 面板前台是 shell：claude 没在运行。

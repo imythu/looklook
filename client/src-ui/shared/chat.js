@@ -160,31 +160,39 @@ export function latestTodos(items) {
   return null;
 }
 
-// 会打开 TUI 交互界面（选择器、设置、登录……）的斜杠命令：送出后自动展开终端。
-// 只影响“要不要自动展开终端”，命令照样能用；清单过时也不会坏事（另有抓屏检测）。
-export const TUI_COMMANDS = ['/model', '/config', '/settings', '/login', '/logout', '/resume', '/permissions', '/mcp', '/agents', '/hooks', '/memory', '/rewind', '/status', '/doctor', '/plugin', '/plugins', '/theme', '/output-style', '/vim', '/terminal-setup', '/ide', '/install-github-app', '/export', '/add-dir', '/bashes', '/tasks', '/usage', '/upgrade', '/statusline'];
-
-export function opensTui(text) {
-  const cmd = String(text ?? '').trim().split(/\s/)[0].toLowerCase();
-  return TUI_COMMANDS.includes(cmd);
-}
-
-/** 内置的常用命令（输入 / 时提示）；tui：会打开终端 */
+/**
+ * 输入 / 时列出的内置命令。`action`：界面自己处理、不送进 Claude Code 的——
+ * `model` 打开模型菜单，`history` 打开“以前的对话”页，`usage` / `tasks` / `config` 打开右侧面板的那一栏。
+ * 其余照原样送进去；会打开选择框的（/rewind 之类）由界面显示成弹窗。
+ */
 export const COMMANDS = [
-  ['/compact', false],
-  ['/clear', false],
-  ['/cost', false],
-  ['/context', false],
-  ['/review', false],
-  ['/init', false],
-  ['/model', true],
-  ['/resume', true],
-  ['/rewind', true],
-  ['/permissions', true],
-  ['/mcp', true],
-  ['/config', true],
-  ['/login', true],
+  ['/compact'],
+  ['/clear'],
+  ['/model', 'model'],
+  ['/resume', 'history'],
+  ['/rewind'],
+  ['/context', 'usage'],
+  ['/cost', 'usage'],
+  ['/usage', 'usage'],
+  ['/status', 'usage'],
+  ['/tasks', 'tasks'],
+  ['/permissions', 'config'],
+  ['/mcp', 'config'],
+  ['/review'],
+  ['/init'],
 ];
+
+/** 只和终端外观有关的命令：不在菜单里列出（自己打出来照样送进去） */
+export const TERMINAL_ONLY = ['/theme', '/vim', '/terminal-setup', '/statusline', '/ide'];
+
+/** 送出的文字是不是界面自己处理的命令：返回 action，否则 null */
+export function slashAction(text) {
+  const s = String(text ?? '').trim();
+  const cmd = s.split(/\s/)[0].toLowerCase();
+  // 带参数的照常送（例如 /model sonnet）
+  if (s !== cmd) return null;
+  return COMMANDS.find(([c]) => c === cmd)?.[1] ?? null;
+}
 
 /** AskUserQuestion 的答案：{ 问题原文: 选项 label }；多选用 ", " 连起来，自己填的文字直接作为答案。 */
 export function questionAnswers(questions, picked) {
@@ -306,8 +314,61 @@ export function modelFamily(model) {
   return String(model ?? '').match(/opus|sonnet|haiku|fable/i)?.[0].toLowerCase() ?? '';
 }
 
-/** 快捷切换的模型（`/model <名字>`），完整的列表在终端里 `/model` */
-export const MODEL_CHOICES = ['default', 'opus', 'sonnet', 'fable', 'haiku'];
+/** 模型 ID 去掉日期和上下文后缀，用来比较：`claude-haiku-4-5-20251001[1m]` → `claude-haiku-4-5` */
+export function baseModel(id) {
+  const s = String(id ?? '').trim().toLowerCase().split('[')[0];
+  return s.replace(/-\d{8}$/, '');
+}
+
+const ALIASES = ['opus', 'sonnet', 'haiku', 'fable'];
+
+/** 选项是否就是这个模型（选项值、对应的模型 ID、或者别名对上家族） */
+function optionIs(o, model) {
+  const m = String(model ?? '').toLowerCase();
+  if (!m) return false;
+  if (o.value.toLowerCase() === m) return true;
+  if (ALIASES.includes(m)) return o.value === m || (!o.model && modelFamily(o.value) === m);
+  return Boolean(o.model) && baseModel(o.model) === baseModel(m) && o.value !== 'default';
+}
+
+/**
+ * 模型按钮和菜单要显示的：
+ * - checked：菜单里勾选哪一项的 value；
+ * - label：按钮上的名字（最近一条回复实际用的模型；刚在界面上选了、还没有新回复时显示选的）；
+ * - pending：选了还没生效；
+ * - mismatch：在界面上选的模型和回复实际用的对不上（例如服务商把请求转给了别的模型），值是实际模型的名字。
+ * status：对话状态（model、actual_model、model_pending、model_chosen）；options：/chat/models 的选项。
+ */
+export function modelView(status, options = []) {
+  const sel = status?.model ?? null;
+  const act = status?.actual_model ?? null;
+  const pending = Boolean(status?.model_pending);
+  const name = (m) => options.find((o) => o.value !== 'default' && optionIs(o, m))?.label ?? modelLabel(m);
+  // 选的那项指向的就是回复用的模型（或者还没有回复）：勾选的那项；否则（在终端里切过）按回复用的模型找
+  const selOpt = sel ? options.find((o) => o.value === sel) ?? options.find((o) => optionIs(o, sel)) : null;
+  const selIsAct = selOpt && act && (selOpt.model ? baseModel(selOpt.model) === baseModel(act) : modelFamily(selOpt.value) === modelFamily(act));
+  let checked = null;
+  if (selOpt && (pending || !act || selIsAct)) checked = selOpt.value;
+  else if (act) checked = options.find((o) => optionIs(o, act))?.value ?? null;
+  const label = pending || !act ? (sel === 'default' ? options.find((o) => o.value === 'default')?.description || 'Default' : sel ? name(sel) : '') : name(act);
+  let mismatch = null;
+  if (status?.model_chosen && !pending && sel && act && sel !== 'default') {
+    const o = options.find((x) => x.value === sel);
+    const want = o?.model || sel;
+    const same = ALIASES.includes(want.toLowerCase()) ? modelFamily(act) === want.toLowerCase() : baseModel(want) === baseModel(act);
+    if (!same) mismatch = name(act);
+  }
+  return { checked, label, pending, mismatch };
+}
+
+/** token 数的简短写法：`950`、`12.3k`、`1.2M` */
+export function tokens(n) {
+  const v = Number(n) || 0;
+  if (v < 1000) return String(v);
+  if (v < 1e6) return `${(v / 1000).toFixed(v < 1e4 ? 1 : 0)}k`;
+  return `${(v / 1e6).toFixed(1)}M`;
+}
+
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 /** Shift+Tab 能轮换到的权限模式（自动模式、全部权限要启动时开启才有） */
 export const MODE_CHOICES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'];

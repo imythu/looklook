@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, backgroundCounts, chatRows, diffLines, diffStat, EMPTY, latestTodos, lineDiff, modelFamily, modelLabel, opensTui, questionAnswers, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, backgroundCounts, chatRows, diffLines, diffStat, EMPTY, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, questionAnswers, slashAction, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -41,11 +41,15 @@ test('diffs', () => {
   assert.equal(diffLines('Write', { content: 'x\ny' }).length, 2);
 });
 
-test('todos, tui commands, answers', () => {
+test('todos, slash commands, answers', () => {
   const items = [{ k: 'assistant', blocks: [{ t: 'tool_use', name: 'TodoWrite', input: { todos: [{ content: '1', status: 'pending' }] } }] }];
   assert.equal(latestTodos(items).length, 1);
   assert.equal(latestTodos([]), null);
-  assert.ok(opensTui('/model') && opensTui(' /resume abc') && !opensTui('/compact') && !opensTui('model'));
+  assert.equal(slashAction('/model'), 'model');
+  assert.equal(slashAction(' /resume '), 'history');
+  assert.equal(slashAction('/model sonnet'), null, '带参数的照常送进去');
+  assert.equal(slashAction('/compact'), null);
+  assert.equal(slashAction('model'), null);
   const qs = [{ question: '颜色？' }, { question: '水果？' }, { question: '空的' }];
   assert.deepEqual(questionAnswers(qs, { 0: { labels: ['红'] }, 1: { labels: ['苹果'], other: '梨' } }), { '颜色？': '红', '水果？': '苹果, 梨' });
 });
@@ -84,6 +88,34 @@ test('model labels', () => {
   assert.equal(modelLabel('opusplan'), 'opusplan');
   assert.equal(modelFamily('claude-opus-5-5'), 'opus');
   assert.equal(modelFamily('default'), '');
+  assert.equal(baseModel('claude-haiku-4-5-20251001[1m]'), 'claude-haiku-4-5');
+  assert.equal(tokens(950), '950');
+  assert.equal(tokens(12345), '12k');
+  assert.equal(tokens(1234), '1.2k');
+  assert.equal(tokens(1_500_000), '1.5M');
+});
+
+test('model button follows the real model', () => {
+  const options = [
+    { value: 'default', label: 'Default', description: 'Opus 5.5', model: 'claude-opus-5-5' },
+    { value: 'claude-opus-5-5', label: 'Opus 5.5', model: 'claude-opus-5-5' },
+    { value: 'claude-sonnet-5-5', label: 'Sonnet 5.5', model: 'claude-sonnet-5-5' },
+    { value: 'sonnet', label: 'GLM 4.6', model: 'glm-4.6' },
+  ];
+  // 终端里切过模型：按最近一条回复显示
+  assert.deepEqual(modelView({ model: 'claude-opus-5-5', actual_model: 'claude-sonnet-5-5' }, options), { checked: 'claude-sonnet-5-5', label: 'Sonnet 5.5', pending: false, mismatch: null });
+  // 刚在界面上选了，还没有回复
+  assert.deepEqual(modelView({ model: 'claude-sonnet-5-5', actual_model: 'claude-opus-5-5', model_pending: true, model_chosen: true }, options), { checked: 'claude-sonnet-5-5', label: 'Sonnet 5.5', pending: true, mismatch: null });
+  // 默认
+  assert.equal(modelView({ model: 'default', actual_model: 'claude-opus-5-5' }, options).checked, 'default');
+  assert.equal(modelView({ model: 'default', actual_model: 'claude-opus-5-5' }, options).label, 'Opus 5.5');
+  // 别名指到服务商的模型，回复也是它
+  assert.deepEqual(modelView({ model: 'sonnet', actual_model: 'glm-4.6', model_chosen: true }, options), { checked: 'sonnet', label: 'GLM 4.6', pending: false, mismatch: null });
+  // 选的和实际的对不上
+  assert.equal(modelView({ model: 'claude-sonnet-5-5', actual_model: 'claude-haiku-5-5', model_chosen: true }, options).mismatch, 'Haiku 5.5');
+  // 没有目录时的别名
+  assert.equal(modelView({ model: 'opus', actual_model: 'claude-opus-5-5', model_chosen: true }, [{ value: 'opus', label: 'Opus', model: '' }]).mismatch, null);
+  assert.equal(modelView(null, []).label, '');
 });
 
 test('background counts', () => {

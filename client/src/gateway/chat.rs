@@ -149,11 +149,13 @@ pub async fn permission(State(app): State<App>, Path(id): Path<String>, Json(req
 #[derive(Deserialize)]
 pub struct PlanReq {
     choice: u8,
+    /// choice 为 3 时：要 Claude 怎么改
+    feedback: Option<String>,
 }
 
 pub async fn plan(State(app): State<App>, Path(id): Path<String>, Json(req): Json<PlanReq>) -> R<StatusCode> {
     require_allowed(&app)?;
-    app.chat.plan(&id, req.choice).await?;
+    app.chat.plan(&id, req.choice, req.feedback.as_deref()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -173,6 +175,44 @@ pub struct SettingReq {
 pub async fn setting(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SettingReq>) -> R<StatusCode> {
     require_allowed(&app)?;
     app.chat.setting(&id, &req.kind, &req.value).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// 模型菜单
+pub async fn models(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.models(&id).await?))
+}
+
+/// 上下文、token、订阅用量
+pub async fn usage(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.usage(&id).await?))
+}
+
+/// 权限规则和 MCP 服务器
+pub async fn config(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.config(&id)?))
+}
+
+/// 这个会话改过的文件
+pub async fn changes(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.changes(&id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct DialogReq {
+    /// 选第几项；没有时是取消（Esc）
+    index: Option<usize>,
+    #[serde(default)]
+    title: String,
+}
+
+/// TUI 上的选择框：选一项或取消
+pub async fn dialog(State(app): State<App>, Path(id): Path<String>, Json(req): Json<DialogReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    match req.index {
+        Some(i) => app.chat.dialog_choose(&id, &req.title, i).await?,
+        None => app.chat.dialog_cancel(&id).await?,
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

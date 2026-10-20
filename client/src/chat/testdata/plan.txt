@@ -1,0 +1,40 @@
+
+[38;5;246m  ⎿  /plan to preview[39m
+[38;5;153m▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+
+[39m  [38;5;73m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+   [1m[38;5;153mReady to code?[0m
+
+   Here is Claude's plan:
+  [38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[39m
+   [1;3;4mPlan: Create hello.txt[0m
+
+   [1mContext[0m
+
+   The user wants a file [38;5;153mhello.txt[39m containing [38;5;153mhi[39m in the working directory
+   ([38;5;153m/home/user/proj[39m).
+
+   [1mSteps[0m
+
+   1. Use the Write tool to create [38;5;153mhello.txt[39m in the working directory with the content [38;5;153mhi[39m.
+   2. Verify by reading [38;5;153mhello.txt[39m back (Read tool) and confirming it contains [38;5;153mhi[39m.
+  [38;5;239m╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌[39m
+
+
+
+
+
+
+
+
+
+
+
+
+  [38;5;73m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────[39m
+   [38;5;246mClaude has written up a plan and is ready to execute. Would you like to proceed?[39m
+
+   [38;5;153m❯[39m [38;5;246m1. [38;5;153mYes, and use auto mode[39m
+     [38;5;246m2. [39mYes, manually approve edits
+     [38;5;246m3. Tell Claude what to change[39m
+        [38;5;246mshift+tab to approve with this feedback[39m

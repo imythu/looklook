@@ -296,6 +296,122 @@ pub fn live(capture: &str) -> Live {
     out
 }
 
+// ---------------- 选择框 ----------------
+
+/// TUI 上的选择框（信任文件夹、切换模型的确认、没被我们接住的权限确认……），读出来在界面上显示成原生的弹窗。
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
+pub struct Dialog {
+    pub title: String,
+    pub body: Vec<String>,
+    pub options: Vec<DialogOption>,
+    /// 选项光标（`❯`）现在在第几项
+    pub selected: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct DialogOption {
+    pub label: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub hint: String,
+    /// 带着 ✔：当前的设置
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub current: bool,
+}
+
+/// 选项前面的编号（`1. `、`12.  `）：返回编号后面的文字
+fn numbered(t: &str) -> Option<&str> {
+    let (n, rest) = t.split_once('.')?;
+    (!n.is_empty() && n.len() <= 2 && n.chars().all(|c| c.is_ascii_digit()) && rest.starts_with(' ')).then(|| rest.trim_start())
+}
+
+/// 行首的光标、滚动箭头去掉
+fn unmark(t: &str) -> (bool, &str) {
+    let t = t.trim_start();
+    if let Some(r) = t.strip_prefix('❯') {
+        return (true, r.trim_start());
+    }
+    (false, t.trim_start_matches(['↑', '↓', ' ']))
+}
+
+/// 两个以上空格分开的是选项名和说明
+fn split_hint(t: &str) -> (String, String) {
+    match t.find("  ") {
+        Some(i) => (t[..i].trim().to_string(), t[i..].trim().trim_start_matches('·').trim().to_string()),
+        None => (t.trim().to_string(), String::new()),
+    }
+}
+
+fn is_frame(t: &str) -> bool {
+    let frame = |c: char| matches!(c, '▔' | '▁' | '─' | '━' | '═' | '╭' | '╮' | '╰' | '╯' | '│');
+    let n = t.chars().filter(|c| frame(*c)).count();
+    let all = t.chars().filter(|c| !c.is_whitespace()).count();
+    all > 0 && (n == all || (n >= 20 && n * 10 >= all * 8))
+}
+
+/// 读屏幕上的选择框；没有 `❯` 光标（读不出选项）时为 None，界面只给“取消”。
+pub fn dialog(capture: &str) -> Option<Dialog> {
+    let lines: Vec<String> = capture.lines().map(|l| strip(l).0.trim_end().to_string()).collect();
+    let sel = lines.iter().rposition(|l| l.trim_start().starts_with('❯'))?;
+    let (_, sel_text) = unmark(&lines[sel]);
+    let is_num = numbered(sel_text).is_some();
+    // 选项：编号的就找所有带编号的行；不带编号的找和光标那一行文字对齐（缩进相同）、连在一起的行
+    let text_col = lines[sel].chars().count() - sel_text.chars().count();
+    let is_opt = |l: &str| -> bool {
+        let (cursor, t) = unmark(l);
+        if t.is_empty() {
+            return false;
+        }
+        if is_num {
+            numbered(t).is_some()
+        } else {
+            cursor || l.chars().take_while(|c| *c == ' ').count() == text_col
+        }
+    };
+    let mut first = sel;
+    while first > 0 && (is_opt(&lines[first - 1]) || (is_num && lines[first - 1].trim().is_empty() && first >= 2 && is_opt(&lines[first - 2]))) {
+        first -= 1;
+    }
+    let mut last = sel;
+    while last + 1 < lines.len() && (is_opt(&lines[last + 1]) || (is_num && lines[last + 1].trim().is_empty() && last + 2 < lines.len() && is_opt(&lines[last + 2]))) {
+        last += 1;
+    }
+    let mut out = Dialog::default();
+    for (i, l) in lines.iter().enumerate().take(last + 1).skip(first) {
+        if !is_opt(l) {
+            continue;
+        }
+        if i == sel {
+            out.selected = out.options.len();
+        }
+        let (_, t) = unmark(l);
+        let t = if is_num { numbered(t).unwrap_or(t) } else { t };
+        let (mut label, hint) = split_hint(t);
+        let current = label.ends_with('✔');
+        if current {
+            label = label.trim_end_matches('✔').trim_end().to_string();
+        }
+        out.options.push(DialogOption { label, hint, current });
+    }
+    if out.options.is_empty() || out.options.len() > 30 {
+        return None;
+    }
+    // 选项上面到最近的横线（最多 16 行）：第一行是标题，其余是说明
+    let top = lines[..first].iter().rposition(|l| is_frame(l)).map_or(first.saturating_sub(16), |t| t + 1).max(first.saturating_sub(16));
+    let mut text: Vec<String> = lines[top..first].iter().map(|l| l.trim().to_string()).collect();
+    while text.first().is_some_and(String::is_empty) {
+        text.remove(0);
+    }
+    while text.last().is_some_and(String::is_empty) {
+        text.pop();
+    }
+    let mut text = text.into_iter();
+    out.title = text.next().unwrap_or_default().trim_start_matches(['☐', '☒', '✔', ' ']).to_string();
+    out.body = text.collect();
+    // 连续的空行只留一个
+    out.body.dedup_by(|a, b| a.is_empty() && b.is_empty());
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -409,4 +525,54 @@ mod tests {
         assert_eq!(classify(resume), Screen::Modal);
         assert_eq!(classify("root@host:/tmp/proj# "), Screen::Modal);
     }
+
+    #[test]
+    fn dialogs_parsed() {
+        let permission = format!("● Creating empty file\n  ⎿  $ touch x\n{RULE}\n Bash command\n\n   touch x\n   Create file\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again for touch commands in /tmp\n   3. No\n\n Esc to cancel · Tab to amend\n");
+        let d = dialog(&permission).unwrap();
+        assert_eq!(d.title, "Bash command");
+        assert_eq!(d.body, ["", "touch x", "Create file", "", "Do you want to proceed?"]);
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Yes", "Yes, and don't ask again for touch commands in /tmp", "No"]);
+        assert_eq!(d.selected, 0);
+
+        let trust = format!("{RULE}\n Accessing workspace:\n\n /tmp/proj\n\n Quick safety check: Is this a project you created or one you trust?\n\n ❯ 1. Yes, I trust this folder\n   2. No, exit\n\n Enter to confirm · Esc to cancel\n");
+        let d = dialog(&trust).unwrap();
+        assert_eq!(d.title, "Accessing workspace:");
+        assert_eq!(d.options.len(), 2);
+
+        let unnumbered = format!("{RULE}\n Accessing workspace:\n\n /tmp/proj\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n");
+        let d = dialog(&unnumbered).unwrap();
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["No, exit", "Yes, I trust this folder"]);
+
+        let switch = "   Switch model?\n   This conversation is cached for Opus 5.5. Switching will re-read it.\n\n   ❯ 1. Yes, switch to Sonnet 5.5\n     2. No, keep Opus 5.5\n";
+        let d = dialog(switch).unwrap();
+        assert_eq!(d.title, "Switch model?");
+        assert_eq!(d.selected, 0);
+    }
+
+    #[test]
+    fn model_picker_parsed() {
+        let d = dialog(include_str!("testdata/model.txt")).unwrap();
+        assert_eq!(d.title, "Select model");
+        assert_eq!(d.options[0].label, "Default (recommended)");
+        assert_eq!(d.options[0].hint, "Opus 5.5 · Best for everyday, complex tasks");
+        assert_eq!(d.options[4].label, "Haiku 5.5");
+        assert!(d.options[4].current);
+        assert_eq!(d.selected, 4);
+        assert_eq!(d.options.len(), 9);
+    }
+
+
+    #[test]
+    fn real_dialogs_parsed() {
+        let d = dialog(include_str!("testdata/trust.txt")).unwrap();
+        assert_eq!(d.title, "Accessing workspace:");
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["No, exit", "Yes, I trust this folder"]);
+        assert_eq!(d.selected, 0);
+        assert_eq!(classify(include_str!("testdata/trust.txt")), Screen::Modal);
+        let d = dialog(include_str!("testdata/plan.txt")).unwrap();
+        assert_eq!(d.title, "Claude has written up a plan and is ready to execute. Would you like to proceed?");
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Yes, and use auto mode", "Yes, manually approve edits", "Tell Claude what to change"]);
+    }
+
 }

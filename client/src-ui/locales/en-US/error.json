@@ -193,12 +193,12 @@
   "SSH_AI_DISABLED": "SSH access for AI assistants is turned off (turn it on on the AI assistants page).",
   "CHAT_UNAVAILABLE": "The chat view isn't turned on for this terminal",
   "CHAT_NOT_RUNNING": "Claude Code isn't running",
-  "CHAT_BUSY": "Claude Code is showing a dialog in the terminal; finish it there first",
-  "CHAT_STALE": "This was already answered in the terminal",
-  "CHAT_SCREEN_CHANGED": "The terminal isn't showing what was expected. Please do this in the terminal",
-  "CHAT_CLAUDE_RUNNING": "Claude Code is still running; exit it in the terminal first",
+  "CHAT_BUSY": "Claude Code is waiting for your choice; finish that first",
+  "CHAT_STALE": "This was already handled",
+  "CHAT_SCREEN_CHANGED": "Claude Code's screen changed; try again",
+  "CHAT_CLAUDE_RUNNING": "Claude Code is still running",
   "CHAT_RUNNING": "Claude is working. Switch after this turn finishes",
-  "CHAT_INPUT_NOT_EMPTY": "The terminal's input box has unsent text. Clear it in the terminal first",
+  "CHAT_INPUT_NOT_EMPTY": "Claude Code's input box has unsent text (maybe typed in another window); send or clear it, then try again",
   "CHAT_MODE_UNAVAILABLE": "This mode isn't available (it wasn't enabled when Claude Code started)",
   "RESUME_NEEDS_PERSISTENT": "Session persistence is off on this computer, so earlier conversations can't be continued"
 }

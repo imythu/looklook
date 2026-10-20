@@ -130,6 +130,24 @@ pub struct Transcript {
     sidechain: bool,
     /// 后台任务结束的通知，按工具调用 id。在终端里停掉的任务只有排队记录（`queue-operation`），不在对话链上，所以单独记
     pub notes: HashMap<String, Note>,
+    /// 最近一条回复实际用的模型（API 返回的 `message.model`）
+    pub model: Option<String>,
+    /// 最近一条回复的 token 用量（`message.usage`，原样）和它的 `message.id`
+    pub usage: Option<Value>,
+    pub model_msg: Option<String>,
+    /// 这个会话累计的 token：输入（含写缓存）、读缓存、输出。同一条回复拆成多行，每行带着到那时为止的用量，按 message.id 取最后一行的
+    pub totals: Totals,
+    per_msg: HashMap<String, Totals>,
+    /// 会话标题：`/rename` 起的（`custom-title`），没有就用 Claude Code 生成的（`ai-title`）
+    pub title: Option<String>,
+    custom_title: bool,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
+pub struct Totals {
+    pub input: u64,
+    pub cache_read: u64,
+    pub output: u64,
 }
 
 /// 后台任务结束的通知
@@ -153,7 +171,7 @@ pub struct ToolCall<'a> {
 
 impl Transcript {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new() }
+        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false }
     }
 
     /// 子代理的 transcript
@@ -342,6 +360,16 @@ impl Transcript {
                 self.version = Some(ver.to_string());
             }
         }
+        match ty {
+            "custom-title" => {
+                if let Some(t) = v["customTitle"].as_str().filter(|t| !t.trim().is_empty()) {
+                    self.title = Some(t.trim().to_string());
+                    self.custom_title = true;
+                }
+            }
+            "ai-title" if !self.custom_title => self.title = v["aiTitle"].as_str().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
+            _ => {}
+        }
         let uuid = v["uuid"].as_str().map(String::from);
         // 链上的每条记录都要留着（附件、元信息也在链里），哪怕它本身不显示
         let mut rec = Rec {
@@ -357,8 +385,25 @@ impl Transcript {
                 let m = &v["message"];
                 rec.message_id = m["id"].as_str().map(String::from).or_else(|| uuid.clone());
                 let blocks = assistant_blocks(&m["content"]);
+                // `<synthetic>`：Claude Code 自己写的提示（出错、停止），不是模型的回复
+                let model = m["model"].as_str().filter(|s| !s.starts_with('<')).map(String::from);
+                if model.is_some() {
+                    self.model.clone_from(&model);
+                    self.model_msg.clone_from(&rec.message_id);
+                    let u = &m["usage"];
+                    if u.is_object() {
+                        self.usage = Some(u.clone());
+                        if let Some(id) = &rec.message_id {
+                            let n = |k: &str| u[k].as_u64().unwrap_or(0);
+                            let now = Totals { input: n("input_tokens") + n("cache_creation_input_tokens"), cache_read: n("cache_read_input_tokens"), output: n("output_tokens") };
+                            let old = self.per_msg.insert(id.clone(), now).unwrap_or_default();
+                            self.totals.input = self.totals.input + now.input - old.input.min(self.totals.input);
+                            self.totals.cache_read = self.totals.cache_read + now.cache_read - old.cache_read.min(self.totals.cache_read);
+                            self.totals.output = self.totals.output + now.output - old.output.min(self.totals.output);
+                        }
+                    }
+                }
                 if !blocks.is_empty() {
-                    let model = m["model"].as_str().filter(|s| !s.starts_with('<')).map(String::from);
                     rec.items.push(Item { key: format!("a:{}", rec.message_id.as_deref().unwrap_or("")), ts, body: Body::Assistant { model, blocks } });
                 }
             }
