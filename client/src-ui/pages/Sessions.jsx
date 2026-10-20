@@ -2,7 +2,7 @@
 // 像 ChatGPT：点“新会话”进开始页，选好类型和项目、写一句话（可以不写），回车就启动并打开；项目上的 + 一下就新建。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderPlus, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderPlus, History, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -16,6 +16,7 @@ import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { baseName, lastUsed, sessionState, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
+import { PrevConversations } from './History.jsx';
 import { BackendNote, FolderPicker, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
 
@@ -115,9 +116,37 @@ export function SessionUiProvider({ children }) {
       toast(errorText(t, e), 'error');
     }
   };
+  /**
+   * 接着以前的对话（History.jsx）：已经开在某个看看会话里的直接打开；否则新建一个会话接着它，
+   * 名字用对话标题，全部权限等选项用这个项目上次的。`fork` 为复制一份接着，原来的不动。
+   */
+  const continueConv = async (device, c, fork = false) => {
+    if (c.instance_id && !fork) {
+      openSession(c.instance_id);
+      return;
+    }
+    const p = s.projects.find((x) => x.device === device && x.workdir === c.workdir);
+    const r = await deviceApi(device).post('/instances', {
+      name: c.title.replace(/…$/, '').slice(0, 40),
+      workdir: c.workdir,
+      launch: c.agent,
+      command: '',
+      shell: p?.shell ?? '',
+      auto_start: Boolean(p?.auto_start),
+      full_access: FULL_ACCESS.includes(c.agent) && Boolean(p?.full_access),
+      resume: { id: c.id, fork },
+      start: true,
+    });
+    if (device && r.id) rememberTerminals(device, [r]);
+    s.touchProject(device, c.workdir, { launch: c.agent });
+    s.reload();
+    openSession(r.id);
+    toast(t(fork ? 'hist.forked' : 'hist.continued', { name: r.name }), 'ok');
+  };
   const value = {
     openSession,
     newSession,
+    continueConv,
     quickCreate,
     start,
     edit: (inst) => setDialog({ initial: inst }),
@@ -220,6 +249,7 @@ function ProjectRow({ p, open, onToggle, showDevice }) {
   const launchName = t(`launch.${p.launch}.title`);
   const menu = [
     ...QUICK_LAUNCHES.map((l) => ({ icon: () => <LaunchIcon launch={l} size={16} />, label: t('sess.new_type', { type: t(`launch.${l}.title`) }), onClick: () => ui.quickCreate(p, l), disabled: !allowed })),
+    { icon: History, label: t('hist.menu'), onClick: () => ui.newSession({ device: p.device, workdir: p.workdir, launch: AI_TOOLS.includes(p.launch) && p.launch !== 'dsh' ? p.launch : 'claude', prev: true }), disabled: !allowed },
     { icon: SlidersHorizontal, label: t('sess.more_options'), onClick: () => ui.newSession({ device: p.device, workdir: p.workdir }), disabled: !allowed },
     p.items.length === 0 && { icon: Trash2, label: t('sess.remove_project'), onClick: () => s.removeProject(p.device, p.workdir), danger: true },
   ];
@@ -289,6 +319,7 @@ function matcher(q, t) {
 /** 项目和会话列表（左侧栏、手机首页共用）。 */
 export function SessionList({ currentId }) {
   const { t } = useTranslation();
+  const { navigate } = useRouter();
   const devices = useDevices();
   const s = useSessions();
   const [query, setQueryState] = useState(() => readStore(sessionStorage, QUERY_KEY, ''));
@@ -422,6 +453,12 @@ export function SessionList({ currentId }) {
       </div>
       {body}
       {!s.loading && match && projects.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
+      {match && (
+        <button type="button" className="btn btn-plain slist-hist" onClick={() => navigate(`/history?q=${encodeURIComponent(query.trim())}`)}>
+          <History size={14} aria-hidden="true" />
+          <span className="ellipsis">{t('hist.search_in', { q: query.trim() })}</span>
+        </button>
+      )}
       {!s.loading && !match && s.projects.length === 0 && <p className="slist-note">{t('sess.empty')}</p>}
     </div>
   );
@@ -746,6 +783,7 @@ function StartForm() {
           {t('tools.recheck')}
         </button>
       )}
+      <PrevConversations device={device} workdir={workdir} launch={launch} focus={Boolean(want.prev)} />
       <RecentProjects current={project?.key} onPick={pickProject} />
       <div className="start-foot">
         <BackendNote />

@@ -1613,5 +1613,33 @@
     "latency": "Latency",
     "remote_note": "Tries to reach that computer directly and falls back to the route as a relay, which only sees encrypted data.",
     "lan_title": "Directly on the local network with {{name}}"
+  },
+  "hist": {
+    "title": "Earlier conversations",
+    "lead": "Conversations you had with Claude Code, Codex and OpenCode on this computer. Click one to continue it in Looklook.",
+    "menu": "Continue an earlier conversation…",
+    "in_project": "Continue an earlier conversation in {{name}}",
+    "all_link": "All earlier conversations →",
+    "all": "All",
+    "by_tool": "Filter by tool",
+    "you": "You",
+    "continue": "Continue",
+    "fork": "Continue in a copy",
+    "continue_anyway": "Continue anyway",
+    "open_session": "Open this session",
+    "in_looklook": "Open in Looklook",
+    "live_badge": "May be running elsewhere",
+    "live": "This conversation got new messages in the last two minutes, so it may be open in another terminal. Continuing it here means both places write to it.",
+    "live_fork": "This conversation got new messages in the last two minutes, so it may be open in another terminal. Continuing in a copy leaves that one untouched.",
+    "continued": "Continuing “{{name}}”",
+    "forked": "Continuing a copy of “{{name}}”",
+    "more": "Show {{count}} more",
+    "none_for": "No {{tool}} conversations in this folder yet",
+    "search": "Search titles, messages, folders",
+    "search_in": "Search earlier conversations for “{{q}}”",
+    "no_match": "No matching conversations",
+    "empty": "No earlier conversations yet. They show up here after you use Claude Code, Codex or OpenCode.",
+    "new_folder": "Not a project yet",
+    "needs_persistent": "Session persistence is off on this computer, so earlier conversations can't be continued."
   }
 }

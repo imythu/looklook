@@ -110,6 +110,21 @@ pub struct Instances {
     changed: tokio::sync::watch::Sender<u64>,
     /// 新建时填的“第一句话”：只在第一次建会话时用一次（重启、开机自启不会再发），见 [`Instances::ensure_session`]
     first_prompt: Mutex<HashMap<String, String>>,
+    /// 新建时要接着的以前的对话：同第一句话，只在第一次建会话时用一次
+    first_resume: Mutex<HashMap<String, Resume>>,
+}
+
+/// 接着以前的对话（会话页的“以前的对话”，见 history.rs）：`fork` 为复制一份接着，原来的不动
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Resume {
+    pub id: String,
+    #[serde(default)]
+    pub fork: bool,
+}
+
+/// 这个终端接着的是哪个对话（`instance_resume.{id}`），以前的对话列表据此标出“已在看看里”
+pub fn resume_key(id: &str) -> String {
+    format!("instance_resume.{id}")
 }
 
 #[derive(Debug, Serialize)]
@@ -172,6 +187,8 @@ pub struct Input {
     pub chat_ui: Option<bool>,
     /// 第一句话（会话页开始页的输入框）：AI 工具作为启动参数交给它，普通终端当作启动后运行的命令。只在新建时有效
     pub prompt: Option<String>,
+    /// 接着以前的对话（只在新建时有效，和第一句话不能同时用）
+    pub resume: Option<Resume>,
     /// DSH 网页界面的端口（只在新建时由网关填写，不接受请求里的值）
     #[serde(skip)]
     pub web_port: Option<u16>,
@@ -198,6 +215,7 @@ impl Instances {
             op: tokio::sync::Mutex::new(()),
             changed: tokio::sync::watch::channel(0).0,
             first_prompt: Mutex::new(HashMap::new()),
+            first_resume: Mutex::new(HashMap::new()),
         })
     }
 
@@ -381,8 +399,26 @@ impl Instances {
                 return Err(LocalError::invalid("prompt", "invalid"));
             }
         }
+        if let Some(r) = &input.resume {
+            if !crate::history::valid_id(&r.id) || !crate::history::AGENTS.contains(&row.launch.as_str()) || prompt.is_some() {
+                return Err(LocalError::invalid("resume", "invalid"));
+            }
+            if r.fork && row.launch == "opencode" {
+                return Err(LocalError::invalid("resume", "invalid"));
+            }
+            // 直接运行模式下命令在每次打开终端时运行，没法只接着一次
+            if !matches!(self.backend, Backend::Tmux(_)) {
+                return Err(LocalError::new("RESUME_NEEDS_PERSISTENT"));
+            }
+        }
         self.store.insert_instance(&row)?;
         self.store.set(&opts_key(&row.id), &opts)?;
+        if let Some(r) = input.resume {
+            if !r.fork {
+                self.store.set(&resume_key(&row.id), &r.id)?;
+            }
+            lock(&self.first_resume).insert(row.id.clone(), r);
+        }
         // 只有会话保持（tmux）时才在建会话时用上；直接运行模式下忽略
         if let (Some(p), Backend::Tmux(_)) = (prompt, &self.backend) {
             lock(&self.first_prompt).insert(row.id.clone(), p);
@@ -444,8 +480,10 @@ impl Instances {
         self.store.delete_instance(id)?;
         self.bump();
         let _ = self.store.remove(&opts_key(id));
+        let _ = self.store.remove(&resume_key(id));
         lock(&self.health).remove(id);
         lock(&self.first_prompt).remove(id);
+        lock(&self.first_resume).remove(id);
         let _ = std::fs::remove_file(self.paths.instance_log(id));
         // 附件目录（粘贴的截图、“发给 AI”的文件）随终端一起删掉
         let _ = std::fs::remove_dir_all(self.paths.attach_dir(id));
@@ -655,14 +693,16 @@ impl Instances {
     /// 在终端选用的 shell 里运行启动命令（普通终端只打开 shell）。认不出的 shell 没法通过参数传命令：
     /// 返回打开 shell 的命令行，外加要在会话建好后输入的命令（未加模型服务商环境，输入前再按实际的 shell 加）。
     fn program_for(&self, row: &InstanceRow) -> Result<(Vec<String>, Option<String>), LocalError> {
-        self.program_with(row, None)
+        self.program_with(row, None, None)
     }
 
     /// 同 [`Instances::program_for`]，带上新建时的第一句话：AI 工具接在启动命令后面作为参数
     /// （`claude '…'`、`codex '…'`、`opencode --prompt '…'`，都会以这句话开始一次交互式会话），普通终端把它当作启动后运行的命令。
-    fn program_with(&self, row: &InstanceRow, prompt: Option<&str>) -> Result<(Vec<String>, Option<String>), LocalError> {
+    /// 要接着以前的对话时换成各工具接着的命令（[`Instances::resume_command`]）。
+    fn program_with(&self, row: &InstanceRow, prompt: Option<&str>, resume: Option<&Resume>) -> Result<(Vec<String>, Option<String>), LocalError> {
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
         let launch = match prompt {
+            None if resume.is_some() => resume.and_then(|r| self.resume_command(row, r)),
             None => self.launch_command(row),
             Some(p) => match row.launch.as_str() {
                 "shell" => Some(p.to_string()),
@@ -694,6 +734,26 @@ impl Instances {
         match self.chat_settings(row) {
             Some(settings) => Some(with_chat_hooks(&cmd, &row.id, &settings, None)),
             None => Some(cmd),
+        }
+    }
+
+    /// 接着以前的对话的命令（含“全部权限”参数）：`claude --resume <id> [--fork-session]`、
+    /// `codex resume|fork <id>`、`opencode --session <id>`。
+    fn resume_command(&self, row: &InstanceRow, r: &Resume) -> Option<String> {
+        let base = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
+        let fork = if r.fork { " --fork-session" } else { "" };
+        match row.launch.as_str() {
+            "claude" => Some(match self.chat_settings(row) {
+                Some(settings) => format!("{}{fork}", with_chat_hooks(&base, &row.id, &settings, Some(&r.id))),
+                None => format!("{base} --resume {}{fork}", r.id),
+            }),
+            "codex" => {
+                let flags = base.strip_prefix("codex").unwrap_or("").trim();
+                let sub = if r.fork { "fork" } else { "resume" };
+                Some(format!("codex {sub}{}{} {}", if flags.is_empty() { "" } else { " " }, flags, r.id))
+            }
+            "opencode" => Some(format!("{base} --session {}", r.id)),
+            _ => None,
         }
     }
 
@@ -795,7 +855,8 @@ impl Instances {
         }
         // 第一句话只用一次：取出来，建会话失败也不再用（用户重新启动时就是普通启动）
         let prompt = lock(&self.first_prompt).remove(&row.id);
-        let (program, typed) = self.program_with(row, prompt.as_deref())?;
+        let resume = lock(&self.first_resume).remove(&row.id);
+        let (program, typed) = self.program_with(row, prompt.as_deref(), resume.as_ref())?;
         let mut args: Vec<String> = ["new-session", "-d", "-s", &name, "-c", &row.workdir, "-x", "120", "-y", "36"].map(String::from).to_vec();
         args.extend(self.session_env_args(row));
         args.push("--".into());
@@ -1377,6 +1438,45 @@ mod tests {
         let out = inst.recent_output(&id).await.expect("会话应该在");
         assert!(!out.contains("first-42"), "会话重建后又运行了第一句话：{out}");
         let _ = inst.tmux(&["kill-server"]).await;
+    }
+
+    #[tokio::test]
+    async fn resume_commands() {
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let inst = Instances::new(Arc::new(Store::memory().unwrap()), paths);
+        if !matches!(inst.backend, Backend::Tmux(_)) {
+            return;
+        }
+        let id = "019a-x_1";
+        let mk = |launch: &str, full: bool, fork: bool| Input {
+            workdir: Some(home.path().display().to_string()),
+            launch: Some(launch.into()),
+            full_access: Some(full),
+            root_confirmed: Some(true),
+            chat_ui: Some(false),
+            resume: Some(Resume { id: id.into(), fork }),
+            ..Default::default()
+        };
+        let cmd = |v: View, fork: bool| inst.resume_command(&v.row, &Resume { id: id.into(), fork }).unwrap();
+        let v = inst.create(mk("codex", true, false)).await.unwrap();
+        assert_eq!(cmd(v, false), "codex resume --yolo 019a-x_1");
+        let v = inst.create(mk("codex", false, true)).await.unwrap();
+        assert_eq!(cmd(v, true), "codex fork 019a-x_1");
+        let v = inst.create(mk("claude", false, true)).await.unwrap();
+        assert_eq!(inst.store.get::<String>(&resume_key(&v.row.id)).unwrap(), None, "复制的一份不算接着原来的");
+        assert_eq!(cmd(v, true), "claude --resume 019a-x_1 --fork-session");
+        let v = inst.create(mk("opencode", false, false)).await.unwrap();
+        assert_eq!(inst.store.get::<String>(&resume_key(&v.row.id)).unwrap().as_deref(), Some(id));
+        assert_eq!(cmd(v, false), "opencode --session 019a-x_1");
+        assert!(inst.create(mk("opencode", false, true)).await.is_err(), "OpenCode 不能复制一份");
+        assert!(inst.create(mk("shell", false, false)).await.is_err());
+        let mut bad = mk("claude", false, false);
+        bad.resume = Some(Resume { id: "x; rm -rf ~".into(), fork: false });
+        assert!(inst.create(bad).await.is_err());
+        let mut both = mk("claude", false, false);
+        both.prompt = Some("hi".into());
+        assert!(inst.create(both).await.is_err());
     }
 
     #[test]

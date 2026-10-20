@@ -31,6 +31,7 @@ mod error;
 mod fsops;
 mod gateway;
 mod git;
+mod history;
 mod hardening;
 mod instances;
 mod listen;

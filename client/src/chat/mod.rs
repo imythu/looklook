@@ -69,6 +69,11 @@ fn binding_key(id: &str) -> String {
     format!("chat.{id}")
 }
 
+/// 对话界面记下的这个终端当前的 Claude Code 会话（`/clear`、`/resume` 后会换）。
+pub fn binding(store: &crate::store::Store, id: &str) -> Option<Binding> {
+    store.get(&binding_key(id)).ok().flatten()
+}
+
 struct Pending {
     id: u64,
     at: Instant,

@@ -4,7 +4,7 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, House, Laptop, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -18,6 +18,7 @@ import Pages from './pages/Pages.jsx';
 import Settings from './pages/Settings.jsx';
 import SshHosts from './pages/SshHosts.jsx';
 import System from './pages/System.jsx';
+import { HistoryPage } from './pages/History.jsx';
 import { opensInPage, SessionHome, SessionList, SessionStage, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
 import TerminalView from './pages/TerminalView.jsx';
 import { api, rtcMode, selectedDevice } from './shared/api.js';
@@ -91,7 +92,7 @@ const TERM = /^\/t\/([a-z2-7]{8})$/;
 const SESS = /^\/s\/([a-z2-7]{8})$/;
 // 用户菜单里的账户页面
 const ACCOUNT_PAGES = ['/devices', '/membership', '/account'];
-const PAGES = ['/', '/new', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
+const PAGES = ['/', '/new', '/history', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
 // 开源仓库（MIT）
 export const SOURCE_URL = 'https://github.com/imythu/looklook';
 const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
@@ -307,6 +308,9 @@ function SideNav({ open, onClose, rail, onRail, path }) {
         <button type="button" className="btn btn-icon rail-new" onClick={() => ui.newSession()} disabled={!allowed} aria-label={t('sess.new')} title={`${t('sess.new')} (Ctrl+Shift+O)`}>
           <Plus size={18} />
         </button>
+        <Link to="/history" className="btn btn-plain btn-icon" aria-label={t('hist.title')} title={t('hist.title')}>
+          <History size={18} aria-hidden="true" />
+        </Link>
         <button
           type="button"
           className="btn btn-plain btn-icon rail-sessions"
@@ -346,11 +350,16 @@ function SideNav({ open, onClose, rail, onRail, path }) {
             <X size={20} />
           </button>
         </div>
-        <button type="button" className="side-new" onClick={() => ui.newSession()} disabled={!allowed}>
-          <Plus size={18} aria-hidden="true" />
-          {t('sess.new')}
-          <kbd className="side-kbd">Ctrl ⇧ O</kbd>
-        </button>
+        <div className="side-new-row">
+          <button type="button" className="side-new" onClick={() => ui.newSession()} disabled={!allowed}>
+            <Plus size={18} aria-hidden="true" />
+            {t('sess.new')}
+            <kbd className="side-kbd">Ctrl ⇧ O</kbd>
+          </button>
+          <Link to="/history" className="btn side-hist" aria-label={t('hist.title')} title={t('hist.title')}>
+            <History size={18} aria-hidden="true" />
+          </Link>
+        </div>
         <ToolGroup path={path} />
         <div className="side-sessions">
           <SessionList currentId={current} />
@@ -561,7 +570,7 @@ function Shell() {
     // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
     const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
     const home = opensInPage() ? <StartPane key={`start:${login}`} /> : <SessionHome />;
-    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[path];
+    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/history': <HistoryPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[path];
     body = (
       <SessionsProvider key={login} enabled>
         <SessionUiProvider>

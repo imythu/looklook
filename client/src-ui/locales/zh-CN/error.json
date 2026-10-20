@@ -149,7 +149,8 @@
     "jump_user": "跳板机用户名",
     "jump_auth": "跳板机登录方式",
     "jump_key_path": "跳板机私钥文件",
-    "jump_key_text": "跳板机私钥"
+    "jump_key_text": "跳板机私钥",
+    "resume": "要接着的对话"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "会员已到期",
@@ -198,5 +199,6 @@
   "CHAT_CLAUDE_RUNNING": "Claude Code 还在运行，请先在终端里退出它",
   "CHAT_RUNNING": "Claude 正在处理，等这一轮做完再切换",
   "CHAT_INPUT_NOT_EMPTY": "终端的输入框里还有没发出去的文字，请先在终端里清空",
-  "CHAT_MODE_UNAVAILABLE": "这个模式现在用不了（启动 Claude Code 时没有开启）"
+  "CHAT_MODE_UNAVAILABLE": "这个模式现在用不了（启动 Claude Code 时没有开启）",
+  "RESUME_NEEDS_PERSISTENT": "这台电脑没有开启会话保持，不能接着以前的对话"
 }

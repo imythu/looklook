@@ -1613,5 +1613,33 @@
     "latency": "延迟",
     "remote_note": "先尝试直连那台电脑，连不上时经线路中转；中转只能看到加密后的数据。",
     "lan_title": "局域网直连 {{name}}"
+  },
+  "hist": {
+    "title": "所有以前的对话",
+    "lead": "在这台电脑上用 Claude Code、Codex、OpenCode 聊过的对话，点一下在看看里接着聊。",
+    "menu": "继续以前的对话…",
+    "in_project": "接着 {{name}} 里以前的对话",
+    "all_link": "所有以前的对话 →",
+    "all": "全部",
+    "by_tool": "按工具筛选",
+    "you": "你",
+    "continue": "继续",
+    "fork": "复制一份继续",
+    "continue_anyway": "仍然继续",
+    "open_session": "打开这个会话",
+    "in_looklook": "已在看看里",
+    "live_badge": "可能在别处运行",
+    "live": "这个对话两分钟内还有新消息，可能正开在别的终端里。接着聊会和那边各写各的。",
+    "live_fork": "这个对话两分钟内还有新消息，可能正开在别的终端里。复制一份继续不会影响那边。",
+    "continued": "已接着“{{name}}”",
+    "forked": "已复制一份并接着“{{name}}”",
+    "more": "再显示 {{count}} 个",
+    "none_for": "这个文件夹里还没有 {{tool}} 的对话",
+    "search": "搜标题、内容、文件夹",
+    "search_in": "在以前的对话里搜“{{q}}”",
+    "no_match": "没有找到符合的对话",
+    "empty": "还没有找到以前的对话。用 Claude Code、Codex、OpenCode 聊过之后会出现在这里。",
+    "new_folder": "还不是项目",
+    "needs_persistent": "这台电脑没有开启会话保持，不能接着以前的对话。"
   }
 }

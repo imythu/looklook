@@ -99,6 +99,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tunnels/{id}/shares/{share}", delete(delete_page_share))
         .route("/settings", get(get_settings).put(put_settings))
         .route("/projects", get(get_projects).put(put_projects))
+        .route("/history", get(list_history))
+        .route("/history/{agent}/{id}", get(history_preview))
         .route("/device/name", put(put_device_name))
         .route("/direct", post(direct))
         .route("/lan", get(lan_info))
@@ -1264,6 +1266,36 @@ async fn put_projects(State(app): State<App>, Json(req): Json<Projects>) -> R<Js
     let items = normalize_projects(req.items)?;
     app.store.set(PROJECTS_KEY, &items)?;
     Ok(Json(Projects { items }))
+}
+
+// ---------------- 以前的对话（history.rs） ----------------
+
+/// 以前的对话。正开在某个看看会话里的标上 `instance_id`（界面上直接打开它，不再开第二个）：
+/// 按这个会话接着的对话号，Claude Code 对话界面还按 hooks 记下的当前会话号。
+async fn list_history(State(app): State<App>, Query(q): Query<crate::history::Query>) -> R<Json<Value>> {
+    let mut items = crate::history::list(q).await;
+    let mut open: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for v in app.instances.list().await? {
+        if !v.running || v.task_alive == Some(false) {
+            continue;
+        }
+        let id = &v.row.id;
+        if let Ok(Some(conv)) = app.store.get::<String>(&crate::instances::resume_key(id)) {
+            open.insert(conv, id.clone());
+        }
+        if let Some(b) = crate::chat::binding(&app.store, id) {
+            open.insert(b.session_id, id.clone());
+        }
+    }
+    for c in &mut items {
+        c.instance_id = open.get(&c.id).cloned();
+    }
+    Ok(Json(json!({ "items": items, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
+}
+
+async fn history_preview(Path((agent, id)): Path<(String, String)>) -> R<Json<Value>> {
+    let msgs = crate::history::preview(agent, id).await.ok_or_else(LocalError::not_found)?;
+    Ok(Json(json!({ "items": msgs })))
 }
 
 async fn get_settings(State(app): State<App>) -> Json<Settings> {

@@ -149,7 +149,8 @@
     "jump_user": "Jump host user",
     "jump_auth": "Jump host sign-in",
     "jump_key_path": "Jump host key file",
-    "jump_key_text": "Jump host key"
+    "jump_key_text": "Jump host key",
+    "resume": "conversation to continue"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "membership expired",
@@ -198,5 +199,6 @@
   "CHAT_CLAUDE_RUNNING": "Claude Code is still running; exit it in the terminal first",
   "CHAT_RUNNING": "Claude is working. Switch after this turn finishes",
   "CHAT_INPUT_NOT_EMPTY": "The terminal's input box has unsent text. Clear it in the terminal first",
-  "CHAT_MODE_UNAVAILABLE": "This mode isn't available (it wasn't enabled when Claude Code started)"
+  "CHAT_MODE_UNAVAILABLE": "This mode isn't available (it wasn't enabled when Claude Code started)",
+  "RESUME_NEEDS_PERSISTENT": "Session persistence is off on this computer, so earlier conversations can't be continued"
 }
