@@ -75,9 +75,19 @@ export const MAIN_ROWS = [
 /** 收起后只留一行：Esc / Tab / Ctrl、方向键、键盘开关和回车；“更多”在展开后的两行里（向上滑把手）。 */
 export const COMPACT_ROW = ['esc', 'tab', 'ctrl', 'left', 'up', 'down', 'right', 'ime', 'enter'];
 
+/**
+ * 终端里跑的是 AI 编程助手（Claude Code / Codex / OpenCode）时：两行里的 Alt、一行里的 Ctrl 换成“换行”（nl，Ctrl+J），
+ * 手机上点一下就能在输入框里换行（这些工具里很少用 Alt，打断用 Esc）。Alt / Ctrl 还在“更多”面板里。
+ */
+export const AI_MAIN_ROWS = [MAIN_ROWS[0].map((id) => (id === 'alt' ? 'nl' : id)), MAIN_ROWS[1]];
+export const AI_COMPACT_ROW = COMPACT_ROW.map((id) => (id === 'ctrl' ? 'nl' : id));
+/** 用这套按键的终端（instance.launch）。 */
+export const AI_LAUNCHES = ['codex', 'claude', 'opencode'];
+
 export const KEYS = {
   ...K,
   ctrl_c: combo('^C', '\x03', 'ctrl_c'),
+  nl: { id: 'nl', label: '', seq: fixed('\n'), raw: true },
 };
 
 // 各系统常用的组合键（分类之间可以重复，方便用户在自己习惯的分类里一次找全）。

@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { DeviceTag } from '../shared/brands.jsx';
-import { useDevices } from '../shared/devices.jsx';
+import { LocalOnlyToggle, useDevices } from '../shared/devices.jsx';
 import { api } from '../shared/api.js';
 import AccessCard from './Access.jsx';
 import { AttachmentsCard } from '../shared/Attachments.jsx';
@@ -221,6 +221,11 @@ export default function Settings() {
     ai: <ModelProvidersCard />,
     network: (
       <>
+        {(devices.localOnly || (devices.canLocalOnly && (!devices.multi || devices.selected === devices.def))) && (
+          <Card title={t('devices.mine')}>
+            <LocalOnlyToggle menu={false} />
+          </Card>
+        )}
         <RelayPicker />
         <div id="access" className="anchor">
           <AccessCard />

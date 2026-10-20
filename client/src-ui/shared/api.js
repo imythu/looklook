@@ -69,7 +69,8 @@ export async function fetchDevices() {
     const d = await res.json();
     if (!Array.isArray(d?.items)) return null;
     const items = d.items.filter((x) => x && typeof x.id === 'string').map((x) => ({ id: x.id, name: x.name || '', os: x.os || '', online: x.online !== false }));
-    return { items, default: d.default ?? null, max: d.max ?? null };
+    // local_only：本机 App 的“只看本机”（远程打开时没有这个字段）
+    return { items, default: d.default ?? null, max: d.max ?? null, localOnly: typeof d.local_only === 'boolean' ? d.local_only : null };
   } catch {
     return null;
   }
@@ -196,6 +197,8 @@ function client(device) {
 }
 
 export const api = client();
+/** 只发给本机、不按选中的电脑转发的接口（“只看本机”开关）。 */
+export const localApi = client(null);
 
 /** 发给指定电脑的接口（多设备时；device 为空时同 `api`）。 */
 export function deviceApi(device) {

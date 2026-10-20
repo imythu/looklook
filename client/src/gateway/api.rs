@@ -35,6 +35,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/server", put(set_server))
         .route("/account", get(account))
         .route("/rtc/devices", get(rtc_devices))
+        .route("/rtc/local-only", put(put_local_only))
         .route("/platform/{*rest}", get(platform_web).post(platform_web).put(platform_web).patch(platform_web).delete(platform_web))
         .route("/instances", get(list_instances).post(create_instance))
         .route("/instances/{id}", get(get_instance).patch(update_instance).delete(delete_instance))
@@ -338,14 +339,43 @@ async fn account(State(app): State<App>) -> R<Json<Value>> {
 
 /// 同一账户的电脑（本机 App 的电脑切换与会话列表用，`rtc::outbound`）：只有本机打开的管理台才连得到其他电脑，
 /// 其他方式打开时返回空列表，界面就按单台电脑显示。
+/// “只看本机”时也返回空列表（`local_only: true`），不向平台取，也就不会连其他电脑。
 async fn rtc_devices(State(app): State<App>, req: Request) -> R<Json<Value>> {
     if req.extensions().get::<Peer>() != Some(&Peer::Local) || app.account.session().is_none() {
         return Ok(Json(json!({ "items": [], "default": null, "max": 0 })));
     }
+    if local_only(&app) {
+        return Ok(Json(json!({ "items": [], "default": null, "max": 0, "local_only": true })));
+    }
     let mut d = app.outbound.devices(&app.account, false).await?;
     // ICE 凭证只给本机用，不交给页面
     d.ice_servers.clear();
-    Ok(Json(serde_json::to_value(d).unwrap_or_default()))
+    let mut v = serde_json::to_value(d).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("local_only".into(), false.into());
+    }
+    Ok(Json(v))
+}
+
+const LOCAL_ONLY_KEY: &str = "local_only";
+
+/// 本机 App 的“只看本机”：不显示同一账户的其他电脑，所有请求都留在本机（不经平台、不建 WebRTC）。
+pub fn local_only(app: &App) -> bool {
+    app.store.get::<bool>(LOCAL_ONLY_KEY).ok().flatten().unwrap_or(false)
+}
+
+#[derive(Deserialize)]
+struct LocalOnlyReq {
+    on: bool,
+}
+
+/// 只有这台电脑自己打开的管理台能改（局域网、远程打开时看不到其他电脑的列表，也就没有这个开关）。
+async fn put_local_only(State(app): State<App>, peer: Option<Extension<Peer>>, Json(req): Json<LocalOnlyReq>) -> R<Json<Value>> {
+    if peer.map(|p| p.0) != Some(Peer::Local) {
+        return Err(LocalError::new("REMOTE_FORBIDDEN"));
+    }
+    app.store.set(LOCAL_ONLY_KEY, &req.on)?;
+    Ok(Json(json!({ "local_only": req.on })))
 }
 
 /// 账户页面（`/api/platform/*`）：本机或局域网打开管理台时，由这台电脑签名转发到平台（服务端 `/api/client/v1/web/*`）。

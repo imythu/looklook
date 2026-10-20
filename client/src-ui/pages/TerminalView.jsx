@@ -12,6 +12,7 @@ import { api, terminalDevice } from '../shared/api.js';
 import { LanButton, LanFallback, useLanPage } from '../shared/lan.jsx';
 import { termFit, termFocus, termPaste, useFocusWhenReady, useLatency, useRefitOnReturn, useTermSrc } from '../shared/direct.js';
 import { errorText } from '../shared/i18n.js';
+import { AI_LAUNCHES } from '../shared/keys.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -75,10 +76,9 @@ function LinkBadge({ id, direct }) {
 }
 const SLOW_MS = 150;
 // AI 编程助手的输入框：⇧↵ 换行（term-inject.js 把它改成 Ctrl+J）。电脑上在顶栏空位里小字提示，手机上看按键条。
-const NEWLINE_LAUNCHES = ['codex', 'claude', 'opencode'];
 function NewlineHint({ inst, touch }) {
   const { t } = useTranslation();
-  if (touch || !inst?.running || !NEWLINE_LAUNCHES.includes(inst.launch)) return null;
+  if (touch || !inst?.running || !AI_LAUNCHES.includes(inst.launch)) return null;
   return (
     <span className="term-hint" title={t('term.newline_title')}>
       <kbd>⇧</kbd>
@@ -570,7 +570,7 @@ export default function TerminalView({ id }) {
           </div>
         )}
       </div>
-      {keybarShown && !selecting && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} />}
+      {keybarShown && !selecting && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} ai={AI_LAUNCHES.includes(inst?.launch)} />}
       {tabbarShown && <TermTabBar tab={tab} onChange={setTab} chat={chat} />}
     </div>
   );

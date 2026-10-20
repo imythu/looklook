@@ -15,7 +15,7 @@ import { ChevronDown, ClipboardPaste, CornerDownLeft, Ellipsis, Keyboard, Keyboa
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { anyMod, COMPACT_ROW, GROUPS, hostProfile, KEYS, MAIN_ROWS, MODS, nextMod, NO_MODS, orderedGroups, releaseOnce } from './keys.js';
+import { AI_COMPACT_ROW, AI_MAIN_ROWS, anyMod, COMPACT_ROW, GROUPS, hostProfile, KEYS, MAIN_ROWS, MODS, nextMod, NO_MODS, orderedGroups, releaseOnce } from './keys.js';
 import { useToast } from './ui.jsx';
 
 const PREF = 'll_keybar';
@@ -156,7 +156,8 @@ function buzz() {
  * frame：终端 iframe 的 ref（同源 /i/{id}/，由 term-inject.js 提供 looklookSend / looklookIme）；os：终端所在电脑的系统；
  * ime、tight：来自 useTouchTerminal。
  */
-export default function KeyBar({ frame, os, ime, tight }) {
+/** `ai`：终端里跑的是 AI 编程助手，常驻按键里有“换行”键（见 keys.js 的 AI_MAIN_ROWS）。 */
+export default function KeyBar({ frame, os, ime, tight, ai = false }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [mods, setMods] = useState(NO_MODS);
@@ -342,6 +343,13 @@ export default function KeyBar({ frame, os, ime, tight }) {
         </button>
       );
     }
+    if (id === 'nl') {
+      return (
+        <button key={id} type="button" className="key key-newline" aria-label={t('keybar.newline')} title={t('keybar.hint.newline')} {...handlers(KEYS.nl)}>
+          <span>{t('keybar.newline')}</span>
+        </button>
+      );
+    }
     if (id === 'enter') {
       return (
         // 按着 ⇧ 时回车键变成“换行”，顺便告诉用户 ⇧↵ 可以换行
@@ -417,7 +425,7 @@ export default function KeyBar({ frame, os, ime, tight }) {
         </p>
       )}
       {/* 竖屏两行 × 7（方向键成倒 T）；横屏合成一行 × 14，给终端留出高度；收起时只留一行 × 9 */}
-      {compact ? <div className="keybar-grid keybar-row">{COMPACT_ROW.map(cell)}</div> : <div className="keybar-grid keybar-main">{MAIN_ROWS.flat().map(cell)}</div>}
+      {compact ? <div className="keybar-grid keybar-row">{(ai ? AI_COMPACT_ROW : COMPACT_ROW).map(cell)}</div> : <div className="keybar-grid keybar-main">{(ai ? AI_MAIN_ROWS : MAIN_ROWS).flat().map(cell)}</div>}
     </div>
   );
 }

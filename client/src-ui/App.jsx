@@ -254,7 +254,7 @@ function ToolGroup({ path }) {
         <ChevronDown size={14} aria-hidden="true" />
         {t('sess.tools')}
       </button>
-      {devices.multi && <DeviceSwitcher perDevice side helpUrl={webUrl(status, '/docs/faq')} />}
+      {(devices.multi || devices.localOnly) && <DeviceSwitcher perDevice side helpUrl={webUrl(status, '/docs/faq')} />}
       {open ? (
         <nav className="side-group" aria-label={t('sess.tools')}>
           {TOOLS.map((x) => (
@@ -374,7 +374,7 @@ function ConsoleLayout({ path, stale, children }) {
   const { status } = useStatus();
   const devices = useDevices();
   const ui = useSessionUi();
-  const switcher = devices.multi && DEVICE_PAGES.includes(path);
+  const switcher = (devices.multi || devices.localOnly) && DEVICE_PAGES.includes(path);
   const [open, setOpen] = useState(false);
   const [rail, setRailState] = useState(() => readFlag(RAIL_KEY, false));
   const setRail = (v) => {
@@ -531,8 +531,8 @@ function Shell() {
   }, [remote, devices.ready, devices.multi, directKey]);
   // 设备列表加载后、切换电脑后，取选中那台电脑的状态
   useEffect(() => {
-    if (devices.multi) reload();
-  }, [devices.multi, devices.selected, reload]);
+    if (devices.multi || devices.localOnly) reload();
+  }, [devices.multi, devices.selected, devices.localOnly, reload]);
   useEffect(() => {
     reload();
     // 远程通道还在连接或连接失败时刷新得勤一点，好尽快看到“已连接”。

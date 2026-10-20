@@ -373,6 +373,10 @@ async fn to_peer(State(app): State<App>, req: Request, next: Next) -> Response {
         return next.run(req).await;
     }
     let Some(session) = app.account.session() else { return next.run(req).await };
+    // 只看本机：一律在本机处理（页面也不会再指定别的电脑）
+    if api::local_only(&app) {
+        return next.run(req).await;
+    }
     let own = session.device_id;
     let pq = req.uri().path_and_query().map(|p| p.as_str()).unwrap_or("/").to_string();
     let (path, hint) = outbound::take_device_hint(&pq);

@@ -736,7 +736,13 @@
     "tip_list": "You're signed in on {{count}} computers. See them here",
     "default": "default",
     "help": "How do several computers work?",
-    "tools_on": "Tools apply to this computer"
+    "tools_on": "Tools apply to this computer",
+    "local_only": "This computer only",
+    "local_only_hint": "Hide your other computers and connect straight to this one, without the platform or relay",
+    "local_only_hint_on": "Other computers are hidden and everything connects straight to this one. Turn off to show them again",
+    "local_only_on": "Showing this computer only",
+    "local_only_off": "Showing all computers again",
+    "this_computer": "This computer"
   },
   "files": {
     "button": "Upload",

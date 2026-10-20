@@ -6,12 +6,12 @@ import { Check, ChevronDown, HelpCircle, Monitor, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { configureDevices, deviceApi, fetchDevices } from './api.js';
+import { configureDevices, deviceApi, fetchDevices, localApi } from './api.js';
 import { DeviceAvatar } from './brands.jsx';
-import { Button, ErrorNote, Field, Modal, useAction, useToast } from './ui.jsx';
+import { Button, ErrorNote, Field, Modal, Switch, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
-const NONE = { ready: true, multi: false, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
+const NONE = { ready: true, multi: false, localOnly: false, canLocalOnly: false, setLocalOnly: async () => {}, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
 const Ctx = createContext(NONE);
 
 export function useDevices() {
@@ -77,6 +77,18 @@ export function useDeviceState(remote, onSelect) {
     return NONE;
   }
   if (!list) return { ...NONE, ready: false };
+  // 只看本机（本机 App，客户端 /api/rtc/local-only）：列表为空，界面按单台电脑显示，所有请求都在本机处理。
+  const setLocalOnly = async (on) => {
+    await localApi.put('/rtc/local-only', { on });
+    store(null);
+    setWant(null);
+    await load();
+    onSelect?.();
+  };
+  if (list.localOnly) {
+    configureDevices({ multi: false });
+    return { ...NONE, localOnly: true, canLocalOnly: true, setLocalOnly, reload: load };
+  }
   const items = list.items;
   const multi = items.length > 1;
   const selected = multi ? pickSelected(items, list.default, want) : null;
@@ -88,7 +100,8 @@ export function useDeviceState(remote, onSelect) {
     configureDevices({ multi, selected: pickSelected(items, list.default, id), devices: items });
     onSelect?.();
   };
-  return { ready: true, multi, items, def: list.default, selected, max: list.max, select, byId: (id) => items.find((d) => d.id === id) ?? null, reload: load };
+  const canLocalOnly = list.localOnly === false;
+  return { ready: true, multi, localOnly: false, canLocalOnly, setLocalOnly, items, def: list.default, selected, max: list.max, select, byId: (id) => items.find((d) => d.id === id) ?? null, reload: load };
 }
 
 export function DevicesProvider({ value, children }) {
@@ -148,7 +161,8 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
       document.removeEventListener('keydown', close);
     };
   }, [open]);
-  if (!d.multi) return null;
+  if (!d.multi && !d.localOnly) return null;
+  if (d.localOnly) return <LocalOnlySwitcher side={side} />;
   const current = d.byId(d.selected);
   const online = d.items.filter((x) => x.online).length;
   const dismissTip = () => {
@@ -229,12 +243,79 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
               </button>
             );
           })}
+          {d.canLocalOnly && <LocalOnlyToggle />}
           {helpUrl && (
             <a className="device-menu-foot small" href={helpUrl} target="_blank" rel="noopener noreferrer">
               <HelpCircle size={14} aria-hidden="true" />
               {t('devices.help')}
             </a>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 电脑菜单底部的“只看本机”开关（本机 App）。 */
+export function LocalOnlyToggle({ menu = true }) {
+  const { t } = useTranslation();
+  const d = useDevices();
+  const toast = useToast();
+  const { busy, error, run } = useAction();
+  const set = async (on) => {
+    const r = await run(() => d.setLocalOnly(on).then(() => true));
+    if (r) toast(t(on ? 'devices.local_only_on' : 'devices.local_only_off'));
+  };
+  return (
+    <div className={menu ? 'device-local-only' : 'stack'} style={menu ? undefined : { gap: 6 }}>
+      <div className="between" style={{ flexWrap: 'nowrap', gap: 12 }}>
+        <span>
+          <b>{t('devices.local_only')}</b>
+          <span className="small muted" style={{ display: 'block' }}>
+            {t(d.localOnly ? 'devices.local_only_hint_on' : 'devices.local_only_hint')}
+          </span>
+        </span>
+        <Switch checked={d.localOnly} disabled={busy} onChange={set} label={t('devices.local_only')} />
+      </div>
+      <ErrorNote error={error} />
+    </div>
+  );
+}
+
+/** 只看本机时的电脑按钮：写着“本机 · 只看本机”，点开只有那个开关，随时可以关掉。 */
+function LocalOnlySwitcher({ side }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const close = (e) => {
+      if (e.type === 'keydown' ? e.key === 'Escape' : !ref.current?.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', close);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', close);
+    };
+  }, [open]);
+  return (
+    <div className={`device-switch${side ? ' device-switch-side' : ''}`} ref={ref}>
+      <button type="button" className="device-pill" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={t('devices.local_only_hint_on')}>
+        <Monitor size={side ? 20 : 16} aria-hidden="true" />
+        {side ? (
+          <span className="device-pill-text">
+            <span className="ellipsis">{t('devices.this_computer')}</span>
+            <span className="small muted ellipsis">{t('devices.local_only')}</span>
+          </span>
+        ) : (
+          <span className="ellipsis">{t('devices.local_only')}</span>
+        )}
+        <ChevronDown size={15} aria-hidden="true" className="device-chev" />
+      </button>
+      {open && (
+        <div className="device-menu" role="menu" aria-label={t('devices.local_only')}>
+          <LocalOnlyToggle />
         </div>
       )}
     </div>

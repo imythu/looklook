@@ -701,12 +701,14 @@ function StartForm() {
             rows={3}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            // 手机上没有 Shift+回车：回车换行，点“开始”发出去（同对话页的输入框）
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isTouch()) {
                 e.preventDefault();
                 go();
               }
             }}
+            enterKeyHint={isTouch() ? 'enter' : 'send'}
             placeholder={placeholder}
             aria-label={placeholder}
             spellCheck={false}

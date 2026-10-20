@@ -736,7 +736,13 @@
     "tip_list": "你登录了 {{count}} 台电脑，点这里查看",
     "default": "默认",
     "help": "多台电脑怎么用？",
-    "tools_on": "工具作用于这台电脑"
+    "tools_on": "工具作用于这台电脑",
+    "local_only": "只看本机",
+    "local_only_hint": "隐藏其他电脑，终端和接口都直接连这台电脑，不经过平台和中转",
+    "local_only_hint_on": "其他电脑已隐藏，全部直连这台电脑。关掉后恢复显示",
+    "local_only_on": "已切换为只看本机",
+    "local_only_off": "已恢复显示所有电脑",
+    "this_computer": "本机"
   },
   "files": {
     "button": "上传",
