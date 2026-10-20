@@ -742,7 +742,11 @@
     "local_only_hint_on": "其他电脑已隐藏，全部直连这台电脑。关掉后恢复显示",
     "local_only_on": "已切换为只看本机",
     "local_only_off": "已恢复显示所有电脑",
-    "this_computer": "本机"
+    "this_computer": "本机",
+    "lan_title": "同一局域网",
+    "lan_hint": "在浏览器里经局域网直接打开，不经过平台和中转",
+    "lan_same": "同一网络",
+    "lan_open": "直接打开"
   },
   "files": {
     "button": "上传",

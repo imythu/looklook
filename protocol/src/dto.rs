@@ -177,6 +177,10 @@ pub struct RemoteDevice {
     /// 这台设备上的终端 id（终端路由表）：WebRTC 启动页按它把 `/i/{id}…` 转给终端所在的设备（docs/06 §6.1）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<String>,
+    /// 只在本机客户端取的列表（`GET /api/client/v1/rtc/devices`）里有：这台电脑最近一次心跳的公网 IP
+    /// 与发起请求的电脑相同（IPv6 比较 /64），多半在同一个局域网。不下发 IP 本身。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub same_network: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

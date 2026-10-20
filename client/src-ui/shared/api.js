@@ -70,7 +70,9 @@ export async function fetchDevices() {
     if (!Array.isArray(d?.items)) return null;
     const items = d.items.filter((x) => x && typeof x.id === 'string').map((x) => ({ id: x.id, name: x.name || '', os: x.os || '', online: x.online !== false }));
     // local_only：本机 App 的“只看本机”（远程打开时没有这个字段）
-    return { items, default: d.default ?? null, max: d.max ?? null, localOnly: typeof d.local_only === 'boolean' ? d.local_only : null };
+    return { items, default: d.default ?? null, max: d.max ?? null, localOnly: typeof d.local_only === 'boolean' ? d.local_only : null,
+      // 只看本机时同一局域网里在线的其他电脑（点“直接打开”才连）
+      lan: Array.isArray(d.lan) ? d.lan.filter((x) => x && typeof x.id === 'string').map((x) => ({ id: x.id, name: x.name || '', os: x.os || '', online: true })) : [] };
   } catch {
     return null;
   }

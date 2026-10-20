@@ -8,10 +8,11 @@ import { useTranslation } from 'react-i18next';
 
 import { configureDevices, deviceApi, fetchDevices, localApi } from './api.js';
 import { DeviceAvatar } from './brands.jsx';
+import { errorText } from './i18n.js';
 import { Button, ErrorNote, Field, Modal, Switch, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
-const NONE = { ready: true, multi: false, localOnly: false, canLocalOnly: false, setLocalOnly: async () => {}, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
+const NONE = { ready: true, multi: false, localOnly: false, lan: [], canLocalOnly: false, setLocalOnly: async () => {}, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
 const Ctx = createContext(NONE);
 
 export function useDevices() {
@@ -87,7 +88,7 @@ export function useDeviceState(remote, onSelect) {
   };
   if (list.localOnly) {
     configureDevices({ multi: false });
-    return { ...NONE, localOnly: true, canLocalOnly: true, setLocalOnly, reload: load };
+    return { ...NONE, localOnly: true, canLocalOnly: true, setLocalOnly, lan: list.lan ?? [], reload: load };
   }
   const items = list.items;
   const multi = items.length > 1;
@@ -282,9 +283,57 @@ export function LocalOnlyToggle({ menu = true }) {
   );
 }
 
+/**
+ * 只看本机时，同一局域网里在线的其他电脑（平台按公网 IP 判断）。“直接打开”：这台电脑向它要一张局域网票据，
+ * 在浏览器里打开它的局域网地址，之后直接连它，不经过平台和中转（客户端 /api/rtc/lan-open，见 gateway/lan.rs）。
+ */
+function LanDevices({ items }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [busy, setBusy] = useState(null);
+  const open = async (x) => {
+    // 普通浏览器要在点击时同步开窗口，不然会被拦；桌面应用里外部地址交给系统浏览器，直接开
+    const desktop = Boolean(window.__LOOKLOOK_DESKTOP__);
+    const win = desktop ? null : window.open('about:blank', '_blank');
+    if (win) win.opener = null;
+    setBusy(x.id);
+    try {
+      const r = await localApi.post('/rtc/lan-open', { device: x.id });
+      if (win) win.location.href = r.url;
+      else window.open(r.url, '_blank', 'noopener');
+    } catch (e) {
+      win?.close();
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(null);
+    }
+  };
+  return (
+    <div className="device-lan">
+      <div className="device-menu-head">
+        <b>{t('devices.lan_title')}</b>
+        <span className="small muted">{t('devices.lan_hint')}</span>
+      </div>
+      {items.map((x) => (
+        <div key={x.id} className="device-item">
+          <DeviceAvatar device={x} size={26} dot />
+          <span className="device-item-text">
+            <span className="ellipsis">{deviceName(t, x)}</span>
+            <span className="small muted">{[osLabel(x.os), t('devices.lan_same')].filter(Boolean).join(' · ')}</span>
+          </span>
+          <Button variant="ghost" busy={busy === x.id} disabled={busy !== null} onClick={() => open(x)}>
+            {t('devices.lan_open')}
+          </Button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** 只看本机时的电脑按钮：写着“本机 · 只看本机”，点开只有那个开关，随时可以关掉。 */
 function LocalOnlySwitcher({ side }) {
   const { t } = useTranslation();
+  const d = useDevices();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -315,6 +364,7 @@ function LocalOnlySwitcher({ side }) {
       </button>
       {open && (
         <div className="device-menu" role="menu" aria-label={t('devices.local_only')}>
+          {d.lan.length > 0 && <LanDevices items={d.lan} />}
           <LocalOnlyToggle />
         </div>
       )}

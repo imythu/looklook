@@ -1183,7 +1183,7 @@ mod tests {
             let target = target.clone();
             async move {
                 let path = uri.path().to_string();
-                let dev = |id: &str, t: &[&str]| RemoteDevice { id: id.into(), name: id.into(), os: "linux".into(), online: true, terminals: t.iter().map(|s| s.to_string()).collect() };
+                let dev = |id: &str, t: &[&str]| RemoteDevice { id: id.into(), name: id.into(), os: "linux".into(), online: true, terminals: t.iter().map(|s| s.to_string()).collect(), same_network: None };
                 let (status, out) = if path.ends_with("/rtc/devices") {
                     let d = RemoteDevices { items: vec![dev("dev1", &[]), dev("devb", &["tb1"])], default: Some("dev1".into()), max: 7, ice_servers: vec![] };
                     (StatusCode::OK, serde_json::to_vec(&d).unwrap())

@@ -36,6 +36,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/account", get(account))
         .route("/rtc/devices", get(rtc_devices))
         .route("/rtc/local-only", put(put_local_only))
+        .route("/rtc/lan-open", post(lan_open))
         .route("/platform/{*rest}", get(platform_web).post(platform_web).put(platform_web).patch(platform_web).delete(platform_web))
         .route("/instances", get(list_instances).post(create_instance))
         .route("/instances/{id}", get(get_instance).patch(update_instance).delete(delete_instance))
@@ -345,7 +346,18 @@ async fn rtc_devices(State(app): State<App>, req: Request) -> R<Json<Value>> {
         return Ok(Json(json!({ "items": [], "default": null, "max": 0 })));
     }
     if local_only(&app) {
-        return Ok(Json(json!({ "items": [], "default": null, "max": 0, "local_only": true })));
+        // 同一局域网里在线的其他电脑（平台按公网 IP 判断）：只列出来，点了才连（`lan_open`）。取不到就不列。
+        let own = app.account.session().map(|s| s.device_id).unwrap_or_default();
+        let lan: Vec<Value> = match app.outbound.devices(&app.account, false).await {
+            Ok(d) => d
+                .items
+                .into_iter()
+                .filter(|x| x.online && x.same_network == Some(true) && x.id != own)
+                .map(|x| json!({ "id": x.id, "name": x.name, "os": x.os }))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        return Ok(Json(json!({ "items": [], "default": null, "max": 0, "local_only": true, "lan": lan })));
     }
     let mut d = app.outbound.devices(&app.account, false).await?;
     // ICE 凭证只给本机用，不交给页面
@@ -367,6 +379,77 @@ pub fn local_only(app: &App) -> bool {
 #[derive(Deserialize)]
 struct LocalOnlyReq {
     on: bool,
+}
+
+#[derive(Deserialize)]
+struct LanOpenReq {
+    device: String,
+}
+
+/// 只看本机时“直接打开”同一局域网的另一台电脑：经 WebRTC 向它要一张局域网票据（与远程页面“改用局域网”相同，
+/// 见 gateway/lan.rs），返回 `http://{它的局域网IP}:{端口}/__looklook/lan?t=…` 让界面在浏览器里打开。
+/// 之后浏览器直接连那台电脑，不经过平台、中转和这台电脑。
+async fn lan_open(State(app): State<App>, peer: Option<Extension<Peer>>, Json(req): Json<LanOpenReq>) -> Response {
+    use crate::rtc::outbound;
+    if peer.map(|p| p.0) != Some(Peer::Local) || app.account.session().is_none() {
+        return LocalError::new("REMOTE_FORBIDDEN").into_response();
+    }
+    let link = match app.outbound.link(&app.account, &req.device).await {
+        Ok(l) => l,
+        Err(e) => return e.response(),
+    };
+    let path = "/api/lan/ticket";
+    let fwd = Request::builder()
+        .method(Method::POST)
+        .uri(path)
+        .header(CLIENT_HEADER, "1")
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from("{}"))
+        .expect("request");
+    let resp = outbound::http(link, fwd, path.into()).await;
+    let status = resp.status();
+    let Ok(bytes) = axum::body::to_bytes(resp.into_body(), 64 * 1024).await else {
+        return LocalError::new("RTC_FAILED").into_response();
+    };
+    if !status.is_success() {
+        // 那台电脑的错误（例如 LAN_SWITCH_OFF：它关了局域网切换，或只监听本机）原样交给界面
+        return (status, [(axum::http::header::CONTENT_TYPE, "application/json")], bytes).into_response();
+    }
+    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else { return LocalError::new("RTC_FAILED").into_response() };
+    let urls: Vec<&str> = v.get("urls").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    let (Some(ticket), Some(redeem), Some(base)) = (v.get("ticket").and_then(Value::as_str), v.get("path").and_then(Value::as_str), pick_lan_url(&urls, &app.lan_ips)) else {
+        return LocalError::new("LAN_SWITCH_OFF").into_response();
+    };
+    // 票据是 base64url，不用转义
+    let url = format!("{base}{redeem}?t={ticket}&to=%2F");
+    Json(json!({ "url": url })).into_response()
+}
+
+#[cfg(test)]
+mod lan_url_tests {
+    #[test]
+    fn picks_same_subnet() {
+        let own = ["10.0.0.5".parse().unwrap(), "192.168.1.20".parse().unwrap()];
+        let urls = ["http://172.17.0.1:1234", "http://192.168.1.31:1234", "http://[fe80::1]:1234"];
+        assert_eq!(super::pick_lan_url(&urls, &own), Some("http://192.168.1.31:1234"));
+        assert_eq!(super::pick_lan_url(&urls[..1], &own), Some("http://172.17.0.1:1234"));
+        assert_eq!(super::pick_lan_url(&[], &own), None);
+    }
+}
+
+/// 那台电脑的几个局域网地址里，挑和这台电脑在同一网段的（IPv4 /24、IPv6 /64），否则第一个。
+fn pick_lan_url<'a>(urls: &[&'a str], own: &[std::net::IpAddr]) -> Option<&'a str> {
+    use std::net::IpAddr;
+    let host = |u: &str| -> Option<IpAddr> {
+        let h = u.strip_prefix("http://")?.rsplit_once(':')?.0;
+        h.trim_start_matches('[').trim_end_matches(']').parse().ok()
+    };
+    let near = |a: IpAddr, b: IpAddr| match (a, b) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[..3] == b.octets()[..3],
+        (IpAddr::V6(a), IpAddr::V6(b)) => a.segments()[..4] == b.segments()[..4],
+        _ => false,
+    };
+    urls.iter().copied().find(|u| host(u).is_some_and(|h| own.iter().any(|o| near(h, *o)))).or_else(|| urls.first().copied())
 }
 
 /// 只有这台电脑自己打开的管理台能改（局域网、远程打开时看不到其他电脑的列表，也就没有这个开关）。
