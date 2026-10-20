@@ -7,7 +7,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from './api.js';
-import { frameOrigin } from './direct.js';
+import { frameOrigin } from './termFrame.js';
 import { useToast } from './ui.jsx';
 
 /** 没有 tmux 会话时读终端自己的缓冲区：同源直接调用，本机直连（跨源）时发消息要。 */

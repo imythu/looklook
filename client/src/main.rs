@@ -27,6 +27,7 @@ mod agents;
 mod chat;
 mod clock;
 mod diag;
+mod docker;
 mod error;
 mod fsops;
 mod gateway;
@@ -128,6 +129,8 @@ enum Cmd {
     },
     /// 查看状态 / Show status
     Status,
+    /// 重启客户端，终端里的任务不受影响 / Restart the client; running tasks keep running
+    Restart,
     /// 检查并安装新版本，终端里的任务不受影响 / Check for and install a new version; running tasks keep running
     #[command(visible_alias = "upgrade")]
     Update {
@@ -151,7 +154,12 @@ enum Cmd {
 #[derive(Subcommand)]
 enum AccessCmd {
     /// 允许 / 不允许局域网设备打开管理台 / Allow or block LAN devices
-    Lan { state: OnOff },
+    Lan {
+        state: OnOff,
+        /// 安装脚本用：只在第一次安装（还没有数据）时设置 / For installers: only applies on a fresh install
+        #[arg(long, hide = true)]
+        initial: bool,
+    },
     /// 访问码：on 开启、off 关闭、new 换新的 / Access code: on, off, or new
     Code { action: CodeAction },
     /// 把 IP、网段或域名加入白名单 / Add an IP, range or domain to the whitelist (e.g. 203.0.113.0/24, home.example.com)
@@ -210,6 +218,20 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Some(Cmd::Access { action: Some(AccessCmd::Lan { state, initial: true }) }) => {
+            // 安装脚本在启动服务之前调用：客户端还没运行，直接写数据库
+            let paths = Paths::discover(cli.home)?;
+            if paths.db().exists() {
+                println!("unchanged");
+                return Ok(());
+            }
+            let store = Store::open(&paths.db())?;
+            let mut cfg = gateway::access::AccessConfig::load(&store);
+            cfg.allow_lan = matches!(state, OnOff::On);
+            cfg.save(&store)?;
+            println!("{}", if cfg.allow_lan { "enabled" } else { "disabled" });
+            Ok(())
+        }
         Some(Cmd::Access { action }) => rt.block_on(cli_access(&cli.home, cli_listen, action)),
         Some(Cmd::Login) => rt.block_on(cli_login(&cli.home, cli_listen)),
         Some(Cmd::Logout { force }) => {
@@ -219,10 +241,26 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Status) => {
             let v = rt.block_on(call(&cli.home, cli_listen, "GET", "/api/status", None))?;
+            println!("看看客户端 / Looklook client: {}（运行中 / running）", v["version"].as_str().unwrap_or("-"));
             print_status(&v["account"]);
+            if v["account"]["logged_in"].as_bool() == Some(true) {
+                let r = &v["relay"];
+                let state = match r["state"].as_str().unwrap_or("") {
+                    "connected" => "已连接 / connected".to_string(),
+                    "connecting" => "连接中 / connecting".to_string(),
+                    "failed" => format!("连不上 / failed（{}）", r["reason"].as_str().or(r["detail"].as_str()).unwrap_or("-")),
+                    other => other.to_string(),
+                };
+                println!("远程访问 / Remote access: {state}");
+            }
             println!("终端方式 / Terminal backend: {}", v["capabilities"]["backend"].as_str().unwrap_or("-"));
+            println!("本机地址 / Local URL: {}", local_url(&cli.home, cli_listen).unwrap_or_else(|_| "-".into()));
+            if let Ok(a) = rt.block_on(call(&cli.home, cli_listen, "GET", "/api/access", None)) {
+                print_access(&a);
+            }
             Ok(())
         }
+        Some(Cmd::Restart) => rt.block_on(cli_restart(&cli.home, cli_listen)),
         Some(Cmd::Update { check }) => rt.block_on(cli_update(&cli.home, cli_listen, check)),
         Some(Cmd::Ssh { host, command }) => {
             let paths = Paths::discover(cli.home)?;
@@ -423,7 +461,6 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     instances.recover().await;
     let relay = tokio::net::TcpListener::bind(("127.0.0.1", 0)).await?;
     // 监听 0.0.0.0 时，本机命令行和浏览器仍然用 127.0.0.1 连。
-    let ui_bind_ip = ui.local_addr()?.ip();
     let ui_addr = match ui.local_addr()? {
         a if a.ip().is_unspecified() => SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), a.port()),
         a => a,
@@ -444,7 +481,6 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         store: store.clone(),
         paths: paths.clone(),
         ui_addr,
-        ui_bind_ip,
         relay_addr,
         http: gateway::proxy_client(),
         access: std::sync::RwLock::new(access),
@@ -452,8 +488,6 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         resolved: Default::default(),
         lan_ips: gateway::access::own_lan_ips(),
         remote: Default::default(),
-        direct: Default::default(),
-        lan: Default::default(),
         rtc: Default::default(),
         outbound: Default::default(),
     });
@@ -707,7 +741,7 @@ fn qr_text(url: &str) -> Option<String> {
 async fn cli_access(home: &Option<PathBuf>, listen: SocketAddr, action: Option<AccessCmd>) -> Result<()> {
     let body = match action {
         None => None,
-        Some(AccessCmd::Lan { state }) => Some(json!({ "allow_lan": matches!(state, OnOff::On) })),
+        Some(AccessCmd::Lan { state, .. }) => Some(json!({ "allow_lan": matches!(state, OnOff::On) })),
         Some(AccessCmd::Code { action: CodeAction::On }) => Some(json!({ "code_enabled": true })),
         Some(AccessCmd::Code { action: CodeAction::Off }) => Some(json!({ "code_enabled": false })),
         Some(AccessCmd::Code { action: CodeAction::New }) => Some(json!({ "new_code": true })),
@@ -718,8 +752,14 @@ async fn cli_access(home: &Option<PathBuf>, listen: SocketAddr, action: Option<A
         Some(b) => call(home, listen, "PUT", "/api/access", Some(b)).await?,
         None => call(home, listen, "GET", "/api/access", None).await?,
     };
-    let on = |k: &str| if v[k].as_bool() == Some(true) { "开启 / on" } else { "关闭 / off" };
     println!("这台电脑自己 / This computer: 总是可以打开，不需要访问码 / always allowed, no code needed");
+    print_access(&v);
+    Ok(())
+}
+
+/// 局域网访问、白名单、访问码三行（`looklook access` 和 `looklook status` 共用）。
+fn print_access(v: &Value) {
+    let on = |k: &str| if v[k].as_bool() == Some(true) { "开启 / on" } else { "关闭 / off" };
     match v["lan_ips"][0].as_str() {
         Some(ip) => println!("局域网访问 / LAN access: {}（http://{ip}:{}/）", on("allow_lan"), v["port"]),
         None => println!("局域网访问 / LAN access: {}", on("allow_lan")),
@@ -738,7 +778,23 @@ async fn cli_access(home: &Option<PathBuf>, listen: SocketAddr, action: Option<A
     if !ips.is_empty() && v["code_enabled"].as_bool() != Some(true) {
         println!("提示：已添加白名单，建议开启访问码 / Tip: with a whitelist, turn on the access code: looklook access code on");
     }
-    Ok(())
+}
+
+/// `looklook restart`：让正在运行的客户端重启（和更新后的重启一样，由系统服务或它自己拉起新进程），等新进程起来。
+async fn cli_restart(home: &Option<PathBuf>, listen: SocketAddr) -> Result<()> {
+    let old = call(home, listen, "POST", "/api/restart", Some(json!({}))).await?;
+    let old_pid = old["pid"].as_u64();
+    println!("正在重启 / Restarting…");
+    // 系统服务在退出 5 秒后才拉起新进程，最多等 60 秒
+    for _ in 0..120 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let Ok(s) = call(home, listen, "GET", "/api/status", None).await else { continue };
+        if s["pid"].as_u64().is_some_and(|p| Some(p) != old_pid) {
+            println!("已重启 / Restarted: {}", s["version"].as_str().unwrap_or("-"));
+            return Ok(());
+        }
+    }
+    bail!("等了 60 秒还没起来，运行 looklook status 查看；装成服务时可以看日志：journalctl --user -u looklook\nNot back after 60 seconds; run looklook status, or check the service log: journalctl --user -u looklook")
 }
 
 fn cli_error(code: &str, params: &Value) -> String {

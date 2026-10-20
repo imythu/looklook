@@ -13,7 +13,11 @@
    `patches/libjuice-ice-role-tiebreaker-zero.patch`）。Chrome 经 TURN/TCP 连进来时 ICE-CONTROLLING 的平决值是 0，
    libjuice 用“值为 0”表示“没有这个属性”，于是把请求当成缺少角色属性、回 400，DTLS 握手一直超时。
    改成单独记录属性是否存在。上游 issue：libjuice#355。
-2. **构建**（`build.rs`，`patches/datachannel-sys-build.patch`）：
+2. **libjuice：本机候选地址**（`libdatachannel/deps/libjuice/src/udp.c`，`patches/libjuice-host-candidates.patch`）。
+   本机候选地址最多 9 个，装了 Docker、虚拟机或开着 Clash/mihomo TUN 的电脑上，虚拟网卡占满了名额，真正的局域网地址被挤掉，
+   同一局域网的两台设备只能绕公网或中转。改成跳过虚拟网卡（docker、br-、veth、utun/tun/tap、Meta、clash 等）和
+   Clash 的 fake-ip / TUN 地址（198.18.0.0/15），并把私有 IPv4 排在最前。
+3. **构建**（`build.rs`，`patches/datachannel-sys-build.patch`）：
    - 交叉编译时关掉 CMake 的 pkg-config 查找，否则会用宿主机的 `openssl.pc`，链接时多出 `-lz`；
    - 目标是 Windows 时补链接静态 OpenSSL 和 libjuice 需要的系统库（按 `CARGO_CFG_TARGET_OS` 判断，不能用 `cfg!`）；
    - 打开 `NO_TESTS`，因为下面删掉了测试目录。
@@ -27,4 +31,4 @@
 ## 升级
 
 拿新版 datachannel-sys 重新做一份副本，按上面的列表删目录，再打 `patches/` 里的补丁；上游已经修复的就删掉对应补丁。
-两个补丁都合进上游后，删掉这个目录和 `[patch.crates-io]` 里的那一行。
+补丁都合进上游后，删掉这个目录和 `[patch.crates-io]` 里的那一行。

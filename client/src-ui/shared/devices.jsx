@@ -6,13 +6,13 @@ import { Check, ChevronDown, HelpCircle, Monitor, X } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { configureDevices, deviceApi, fetchDevices, localApi } from './api.js';
+import { configureDevices, deviceApi, fetchDevices, localApi, rtcMode } from './api.js';
 import { DeviceAvatar } from './brands.jsx';
-import { errorText } from './i18n.js';
+import { PathDot } from './paths.jsx';
 import { Button, ErrorNote, Field, Modal, Switch, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
-const NONE = { ready: true, multi: false, localOnly: false, lan: [], canLocalOnly: false, setLocalOnly: async () => {}, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
+const NONE = { ready: true, multi: false, localOnly: false, pinned: null, canLocalOnly: false, setLocalOnly: async () => {}, items: [], def: null, selected: null, max: null, select: () => {}, byId: () => null };
 const Ctx = createContext(NONE);
 
 export function useDevices() {
@@ -53,6 +53,24 @@ export function pickSelected(items, def, want) {
   return online[0]?.id ?? items[0]?.id ?? null;
 }
 
+// 网页的“只看这台电脑”：记在这个浏览器里（公司电脑上开着，家里的手机照常看到全部）。
+const PIN_KEY = 'looklook.only-device';
+function readPin() {
+  try {
+    return localStorage.getItem(PIN_KEY);
+  } catch {
+    return null;
+  }
+}
+function writePin(id) {
+  try {
+    if (id) localStorage.setItem(PIN_KEY, id);
+    else localStorage.removeItem(PIN_KEY);
+  } catch {
+    /* 无痕模式：不记住 */
+  }
+}
+
 /**
  * 登录后加载并定时刷新设备列表（`remote` 为假时什么也不做）。
  * `onSelect`：切换电脑后调用（刷新客户端状态）。
@@ -60,6 +78,7 @@ export function pickSelected(items, def, want) {
 export function useDeviceState(remote, onSelect) {
   const [list, setList] = useState(null); // null = 还没加载
   const [want, setWant] = useState(stored);
+  const [pin, setPin] = useState(() => (rtcMode ? readPin() : null));
   // 一次没拿到（网络抖动、中转重启）时保留上一次的列表：清空会让页面在“单台/多台”之间来回切换，
   // 整个页面重新挂载，打开着的终端小窗也就没了。只有第一次拿不到时才当作没有设备。
   const load = useCallback(() => fetchDevices().then((d) => setList((prev) => d ?? prev ?? { items: [], default: null, max: null })), []);
@@ -79,7 +98,13 @@ export function useDeviceState(remote, onSelect) {
   }
   if (!list) return { ...NONE, ready: false };
   // 只看本机（本机 App，客户端 /api/rtc/local-only）：列表为空，界面按单台电脑显示，所有请求都在本机处理。
-  const setLocalOnly = async (on) => {
+  // 网页（WebRTC）里是“只看这台电脑”：只留当前选中的那台，界面按单台显示，请求仍然指定发给它。
+  const setLocalOnly = async (on, current) => {
+    if (rtcMode) {
+      writePin(on ? current : null);
+      setPin(on ? current : null);
+      return;
+    }
     await localApi.put('/rtc/local-only', { on });
     store(null);
     setWant(null);
@@ -88,7 +113,13 @@ export function useDeviceState(remote, onSelect) {
   };
   if (list.localOnly) {
     configureDevices({ multi: false });
-    return { ...NONE, localOnly: true, canLocalOnly: true, setLocalOnly, lan: list.lan ?? [], reload: load };
+    return { ...NONE, localOnly: true, canLocalOnly: true, setLocalOnly, reload: load };
+  }
+  const pinned = pin && list.items.find((d) => d.id === pin);
+  if (pinned) {
+    // 只有一台，但不一定是入口的默认电脑：路由仍按多台处理，请求都带上它
+    configureDevices({ multi: true, selected: pinned.id, devices: [pinned] });
+    return { ...NONE, localOnly: true, canLocalOnly: true, setLocalOnly, pinned: pinned.id, items: [pinned], def: pinned.id, selected: pinned.id, byId: (id) => (id === pinned.id ? pinned : null), reload: load };
   }
   const items = list.items;
   const multi = items.length > 1;
@@ -101,7 +132,8 @@ export function useDeviceState(remote, onSelect) {
     configureDevices({ multi, selected: pickSelected(items, list.default, id), devices: items });
     onSelect?.();
   };
-  const canLocalOnly = list.localOnly === false;
+  // 本机 App（客户端会回 local_only）和网页（WebRTC）都能只看一台；局域网打开时没有其他电脑
+  const canLocalOnly = list.localOnly === false || (rtcMode && multi);
   return { ready: true, multi, localOnly: false, canLocalOnly, setLocalOnly, items, def: list.default, selected, max: list.max, select, byId: (id) => items.find((d) => d.id === id) ?? null, reload: load };
 }
 
@@ -240,7 +272,8 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
                     {[osLabel(x.os), t(x.online ? 'devices.online' : 'devices.offline'), x.id === d.def ? t('devices.default') : null].filter(Boolean).join(' · ')}
                   </span>
                 </span>
-                {selected && <Check size={16} aria-hidden="true" />}
+                {x.online && <PathDot device={x.id} self={!rtcMode && x.id === d.def} />}
+                {selected ? <Check size={16} aria-hidden="true" /> : <span className="device-check-gap" aria-hidden="true" />}
               </button>
             );
           })}
@@ -263,69 +296,24 @@ export function LocalOnlyToggle({ menu = true }) {
   const d = useDevices();
   const toast = useToast();
   const { busy, error, run } = useAction();
+  const web = Boolean(d.pinned) || rtcMode;
+  const label = t(web ? 'devices.only_this' : 'devices.local_only');
   const set = async (on) => {
-    const r = await run(() => d.setLocalOnly(on).then(() => true));
-    if (r) toast(t(on ? 'devices.local_only_on' : 'devices.local_only_off'));
+    const r = await run(() => d.setLocalOnly(on, d.selected).then(() => true));
+    if (r) toast(t(on ? (web ? 'devices.only_this_on' : 'devices.local_only_on') : 'devices.local_only_off'));
   };
   return (
     <div className={menu ? 'device-local-only' : 'stack'} style={menu ? undefined : { gap: 6 }}>
       <div className="between" style={{ flexWrap: 'nowrap', gap: 12 }}>
         <span>
-          <b>{t('devices.local_only')}</b>
+          <b>{label}</b>
           <span className="small muted" style={{ display: 'block' }}>
-            {t(d.localOnly ? 'devices.local_only_hint_on' : 'devices.local_only_hint')}
+            {t(web ? (d.localOnly ? 'devices.only_this_hint_on' : 'devices.only_this_hint') : d.localOnly ? 'devices.local_only_hint_on' : 'devices.local_only_hint')}
           </span>
         </span>
-        <Switch checked={d.localOnly} disabled={busy} onChange={set} label={t('devices.local_only')} />
+        <Switch checked={d.localOnly} disabled={busy} onChange={set} label={label} />
       </div>
       <ErrorNote error={error} />
-    </div>
-  );
-}
-
-/**
- * 只看本机时，同一局域网里在线的其他电脑（平台按公网 IP 判断）。“直接打开”：这台电脑向它要一张局域网票据，
- * 在浏览器里打开它的局域网地址，之后直接连它，不经过平台和中转（客户端 /api/rtc/lan-open，见 gateway/lan.rs）。
- */
-function LanDevices({ items }) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const [busy, setBusy] = useState(null);
-  const open = async (x) => {
-    // 普通浏览器要在点击时同步开窗口，不然会被拦；桌面应用里外部地址交给系统浏览器，直接开
-    const desktop = Boolean(window.__LOOKLOOK_DESKTOP__);
-    const win = desktop ? null : window.open('about:blank', '_blank');
-    if (win) win.opener = null;
-    setBusy(x.id);
-    try {
-      const r = await localApi.post('/rtc/lan-open', { device: x.id });
-      if (win) win.location.href = r.url;
-      else window.open(r.url, '_blank', 'noopener');
-    } catch (e) {
-      win?.close();
-      toast(errorText(t, e), 'error');
-    } finally {
-      setBusy(null);
-    }
-  };
-  return (
-    <div className="device-lan">
-      <div className="device-menu-head">
-        <b>{t('devices.lan_title')}</b>
-        <span className="small muted">{t('devices.lan_hint')}</span>
-      </div>
-      {items.map((x) => (
-        <div key={x.id} className="device-item">
-          <DeviceAvatar device={x} size={26} dot />
-          <span className="device-item-text">
-            <span className="ellipsis">{deviceName(t, x)}</span>
-            <span className="small muted">{[osLabel(x.os), t('devices.lan_same')].filter(Boolean).join(' · ')}</span>
-          </span>
-          <Button variant="ghost" busy={busy === x.id} disabled={busy !== null} onClick={() => open(x)}>
-            {t('devices.lan_open')}
-          </Button>
-        </div>
-      ))}
     </div>
   );
 }
@@ -334,6 +322,7 @@ function LanDevices({ items }) {
 function LocalOnlySwitcher({ side }) {
   const { t } = useTranslation();
   const d = useDevices();
+  const pinned = d.pinned ? d.byId(d.pinned) : null;
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -350,21 +339,21 @@ function LocalOnlySwitcher({ side }) {
   }, [open]);
   return (
     <div className={`device-switch${side ? ' device-switch-side' : ''}`} ref={ref}>
-      <button type="button" className="device-pill" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={t('devices.local_only_hint_on')}>
-        <Monitor size={side ? 20 : 16} aria-hidden="true" />
+      <button type="button" className="device-pill" aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)} title={t(pinned ? 'devices.only_this_hint_on' : 'devices.local_only_hint_on')}>
+        {pinned ? <DeviceAvatar device={pinned} size={side ? 24 : 20} dot /> : <Monitor size={side ? 20 : 16} aria-hidden="true" />}
         {side ? (
           <span className="device-pill-text">
-            <span className="ellipsis">{t('devices.this_computer')}</span>
-            <span className="small muted ellipsis">{t('devices.local_only')}</span>
+            <span className="ellipsis">{pinned ? deviceName(t, pinned) : t('devices.this_computer')}</span>
+            <span className="small muted ellipsis">{t(pinned ? 'devices.only_this_short' : 'devices.local_only')}</span>
           </span>
         ) : (
-          <span className="ellipsis">{t('devices.local_only')}</span>
+          <span className="ellipsis">{pinned ? deviceName(t, pinned) : t('devices.local_only')}</span>
         )}
+        {pinned && <PathDot device={pinned.id} />}
         <ChevronDown size={15} aria-hidden="true" className="device-chev" />
       </button>
       {open && (
         <div className="device-menu" role="menu" aria-label={t('devices.local_only')}>
-          {d.lan.length > 0 && <LanDevices items={d.lan} />}
           <LocalOnlyToggle />
         </div>
       )}

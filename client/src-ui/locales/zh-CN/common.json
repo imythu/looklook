@@ -287,10 +287,6 @@
     "locked_title": "暂时不能打开终端",
     "stopped_title": "这个终端还没有启动",
     "stopped_body": "启动后就可以使用。",
-    "direct": "直连",
-    "direct_hint": "浏览器就在这台电脑上：终端直接连本机，不经过中转（往返约 {{ms}} 毫秒，经中转约 {{relay}} 毫秒）。",
-    "relay_ms": "{{ms}} ms",
-    "relay_hint": "经远程线路连接，往返约 {{ms}} 毫秒。打字的延迟主要来自网络距离：在“设置 → 网络与访问”里换一条离你和电脑都近的线路会更快；在这台电脑本机打开则会自动直连。",
     "newline_hint": "换行",
     "newline_title": "按 Shift+Enter 在输入框里换行，Enter 发送"
   },
@@ -493,9 +489,7 @@
     "fw_lan": "要让家里的其他设备打开：只勾选“专用网络”，然后点“允许访问”。不要勾选“公用网络”（咖啡馆、机场等）。",
     "fw_profile": "允许了还是连不上：到 Windows“设置 → 网络和 Internet → Wi‑Fi（或以太网）→ 你连着的网络”，把“网络配置文件类型”改成“专用网络”。",
     "fw_fix": "当时点错了、想改：打开“控制面板 → Windows Defender 防火墙 → 允许应用通过 Windows 防火墙 → 更改设置”，找到 looklook，只勾“专用”。也可以用“以管理员身份运行”的 PowerShell 执行：",
-    "fw_never": "完全不想看到这个提示：设置环境变量 LOOKLOOK_LISTEN=127.0.0.1:1234 后重新打开看看。这样只能在这台电脑上打开管理台，局域网访问也就用不了了。",
-    "lan_switch": "远程打开时可以一键改走局域网",
-    "lan_switch_hint": "用看看账号远程打开、又恰好和这台电脑在同一个网络里时（例如在家用手机打开），页面会提示改用局域网直接连接，更快。只有登录了你的账号的浏览器能切换，不需要打开上面的“允许局域网”，也不需要访问码。"
+    "fw_never": "完全不想看到这个提示：设置环境变量 LOOKLOOK_LISTEN=127.0.0.1:1234 后重新打开看看。这样只能在这台电脑上打开管理台，局域网访问也就用不了了。"
   },
   "relay": {
     "state": {
@@ -744,10 +738,11 @@
     "local_only_on": "已切换为只看本机",
     "local_only_off": "已恢复显示所有电脑",
     "this_computer": "本机",
-    "lan_title": "同一局域网",
-    "lan_hint": "在浏览器里经局域网直接打开，不经过平台和中转",
-    "lan_same": "同一网络",
-    "lan_open": "直接打开"
+    "only_this": "只看这台电脑",
+    "only_this_short": "只看这台",
+    "only_this_hint": "隐藏其他电脑，只在这个浏览器里生效",
+    "only_this_hint_on": "其他电脑已隐藏，只在这个浏览器里生效",
+    "only_this_on": "已切换为只看这台电脑"
   },
   "files": {
     "button": "上传",
@@ -893,18 +888,6 @@
     "uploaded": "已上传 {{n}} 个文件",
     "drop": "松开上传到 {{dir}}",
     "tab_git": "Git"
-  },
-  "lan": {
-    "hint": "你和这台电脑在同一个网络里。改用局域网直接连接，不绕远程线路，打字更跟手。",
-    "auto": "以后在这个浏览器里自动切换",
-    "open": "改用局域网",
-    "dismiss": "这次不用",
-    "open_term": "在新标签页里经局域网打开这个终端（更快）",
-    "open_term_unsure": "经局域网打开这个终端（需要和这台电脑在同一个网络里）",
-    "badge": "局域网",
-    "badge_hint": "正在经局域网直接连接这台电脑，不经过远程线路。离开这个网络后会提示你回到远程地址。",
-    "lost": "连不上这台电脑了，可能离开了它所在的网络。终端还在运行，回到远程地址继续用。",
-    "back_remote": "回到远程地址"
   },
   "model": {
     "title": "模型服务商",
@@ -1559,7 +1542,27 @@
       "h": "{{n}} 小时",
       "d": "{{n}} 天"
     },
-    "back": "会话"
+    "back": "会话",
+    "my_name": "我起的名字：{{name}}",
+    "docker_pick": "Docker 容器",
+    "docker_search": "搜容器名、镜像",
+    "docker_err": {
+      "DOCKER_NOT_FOUND": "这台电脑上没找到 docker 命令",
+      "DOCKER_FAILED": "读不到容器列表，Docker 可能没在运行"
+    },
+    "docker_none": "没有运行中的容器",
+    "container_dir": "容器里的目录",
+    "container_note": "容器里的会话暂不支持对话界面，只有终端。",
+    "container_root": "容器里是 root 用户，会加上 IS_SANDBOX=1。",
+    "container_missing": "容器里没有安装 {{tool}}",
+    "in_container": "容器 {{name}}",
+    "tabs": "打开的会话",
+    "tabs_all": "所有打开的会话",
+    "tabs_search": "搜打开的会话",
+    "tab_close": "关闭标签（终端继续运行）",
+    "tabs_close_all": "全部关闭",
+    "tabs_close_others": "关闭其他",
+    "tabs_close_right": "关闭右侧"
   },
   "acct": {
     "computers": "电脑",
@@ -1669,8 +1672,7 @@
     "secure": "加密",
     "e2e": "端到端，电脑签名已校验",
     "latency": "延迟",
-    "remote_note": "先尝试直连那台电脑，连不上时经线路中转；中转只能看到加密后的数据。",
-    "lan_title": "局域网直连 {{name}}"
+    "remote_note": "先尝试直连那台电脑，连不上时经线路中转；中转只能看到加密后的数据。"
   },
   "hist": {
     "title": "所有以前的对话",
@@ -1698,6 +1700,61 @@
     "no_match": "没有找到符合的对话",
     "empty": "还没有找到以前的对话。用 Claude Code、Codex、OpenCode 聊过之后会出现在这里。",
     "new_folder": "还不是项目",
-    "needs_persistent": "这台电脑没有开启会话保持，不能接着以前的对话。"
+    "needs_persistent": "这台电脑没有开启会话保持，不能接着以前的对话。",
+    "f_search": "搜…",
+    "starred": "已收藏",
+    "star": "收藏",
+    "unstar": "取消收藏",
+    "hide": "隐藏",
+    "unhide": "取消隐藏",
+    "started": "开始于 {{when}}",
+    "close_preview": "关闭预览",
+    "no_preview": "没有可以显示的内容",
+    "hidden_done": "已隐藏这个对话",
+    "filters": "筛选",
+    "clear": "清除筛选",
+    "f_agent": "工具",
+    "f_device": "电脑",
+    "f_project": "项目",
+    "f_branch": "分支",
+    "f_state": "状态",
+    "f_time": "时间",
+    "f_mark": "我的标记",
+    "time_today": "今天",
+    "time_week": "最近 7 天",
+    "time_month": "最近 30 天",
+    "time_all": "全部",
+    "show_hidden": "已隐藏的",
+    "search2": "搜标题、内容、文件夹（回车搜全文）",
+    "group_by": "分组",
+    "group_time": "按时间",
+    "group_project": "按项目",
+    "group_device": "按电脑",
+    "deep_on": "正在显示全文搜索“{{q}}”的结果",
+    "deep_hint": "按回车在对话全文里搜",
+    "lead2": "共 {{count}} 个对话，点一下查看，可以接着聊",
+    "when_today": "今天",
+    "when_yesterday": "昨天",
+    "when_week": "本周",
+    "when_month": "本月",
+    "when_earlier": "更早",
+    "this_computer": "这台电脑",
+    "load_more": "加载更早的对话",
+    "state_open": "已在看看里打开",
+    "state_live": "可能在别处运行",
+    "state_ended": "已结束",
+    "search_here": "在这个项目里搜"
+  },
+  "path": {
+    "label": "路径",
+    "lan": "局域网直连",
+    "p2p": "公网直连",
+    "relay": "中转",
+    "none": "未连接，用到时才连",
+    "self": "本机"
+  },
+  "pull": {
+    "pull": "下拉刷新",
+    "release": "松开刷新"
   }
 }

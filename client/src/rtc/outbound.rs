@@ -66,6 +66,32 @@ impl Link {
     fn alive(&self) -> bool {
         !self.closed.is_cancelled()
     }
+
+    fn path(&self) -> Option<super::peer::PathInfo> {
+        lock(&self.pc).as_ref()?.path()
+    }
+
+    /// 往返时间：开一条通道（不计入）后请求那台电脑的 `/api/ping`，到收到响应头为止。旧版电脑也支持。
+    async fn rtt(self: Arc<Self>) -> Option<Duration> {
+        let mut ch = self.channel("r").ok()?;
+        ch.opened(OPEN_LIMIT).await.ok()?;
+        let t0 = Instant::now();
+        ch.send(&frame::ctl(&json!({ "t": "req", "m": "GET", "p": "/api/ping", "h": [] }))).ok()?;
+        ch.send(&frame::ctl(&json!({ "t": "end" }))).ok()?;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while let Some(m) = ch.recv().await {
+                if let Some(Frame::Ctl(v)) = frame::parse(&m) {
+                    if frame::kind(&v) == "res" {
+                        return Some(t0.elapsed());
+                    }
+                }
+            }
+            None
+        })
+        .await
+        .ok()
+        .flatten()
+    }
 }
 
 impl Drop for Link {
@@ -190,6 +216,30 @@ impl Outbound {
         Ok(l)
     }
 
+    /// 已经连着的电脑走的路与往返时间（`GET /api/rtc/paths`）。没连着的不去连。
+    pub async fn paths(&self) -> HashMap<String, Value> {
+        let links: Vec<(String, Arc<Link>)> = {
+            let slots: Vec<_> = lock(&self.slots).iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            let mut out = Vec::new();
+            for (dev, slot) in slots {
+                // 正在建连的槽被锁着：跳过，不等
+                if let Ok(g) = slot.try_lock() {
+                    if let Some(l) = g.as_ref().filter(|l| l.alive()) {
+                        out.push((dev, l.clone()));
+                    }
+                }
+            }
+            out
+        };
+        let measured = futures_util::future::join_all(links.into_iter().map(|(dev, l)| async move {
+            let path = l.path();
+            let rtt = l.rtt().await;
+            (dev, json!({ "kind": path.as_ref().map(|p| p.kind), "local": path.as_ref().map(|p| &p.local), "remote": path.as_ref().map(|p| &p.remote), "rtt_ms": rtt.map(|d| d.as_millis() as u64) }))
+        }))
+        .await;
+        measured.into_iter().collect()
+    }
+
     async fn connect(&self, account: &Arc<Account>, dev: &str) -> Result<Arc<Link>, LinkError> {
         let mut devices = self.devices(account, false).await.map_err(LinkError::Platform)?;
         if !devices.items.iter().any(|d| d.id == dev && d.online) {
@@ -223,7 +273,8 @@ impl Outbound {
         if hello.get("dev").and_then(Value::as_str) != Some(dev) {
             return Err(LinkError::Failed(anyhow!("对端不是要连的电脑")));
         }
-        tracing::info!(dev, "已连上另一台电脑");
+        let path = pc.path();
+        tracing::info!(dev, kind = ?path.as_ref().map(|p| p.kind), local = path.as_ref().map(|p| p.local.as_str()), remote = path.as_ref().map(|p| p.remote.as_str()), "已连上另一台电脑");
         let link = Arc::new(Link { closed: CancellationToken::new(), ctl: Mutex::new(Some(ctl)), pc: Mutex::new(Some(pc)) });
         tokio::spawn(watch_link(link.closed.clone(), state, dev.to_string()));
         Ok(link)

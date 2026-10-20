@@ -11,7 +11,9 @@
 //    外层在地址的 # 后面带上自己的来源（ll-parent=…），消息只发给、只收自这个来源的父窗口；
 //    能嵌入这里的来源已由本机的 CSP frame-ancestors 限定，所以写错了来源只会收不到消息。
 // 9. ⇧↵ 换行（发 Ctrl+J）；Windows / Linux 上 Ctrl+V 只粘贴、不再把 ^V 发给程序。见 setupKeys。
-// 10. 快速复制：终端里选中文字后旁边出现“复制”小按钮；Windows / Linux 上 Ctrl+Shift+C 复制选中的文字。见 setupCopy。
+// 10. 复制：⌘C（macOS）/ Ctrl+Shift+C（Windows / Linux）复制选中的文字。见 setupCopy。
+//     链接：⌘ / Ctrl + 点击直接打开；普通点击在旁边弹出“打开 / 复制链接”。见 setupLinks。
+// 15. 连接状态告诉管理台（looklook:conn）；连不上、正在连接时手机上可以下拉刷新整页。见 setupPullRefresh。
 // 11. 切到别的窗口再回来时重新适配、整屏重画，免得只画了一部分。见 refitOnReturn。
 // 12. 选择文字：手机上长按终端时通知管理台打开“选择文字”（用浏览器自己的选择，见 src-ui/shared/TextSelect.jsx）；
 //     提供 window.looklookText() 读出终端缓冲区的文字（没有 tmux 时用）。tmux 里拖选后浏览器不让直接写剪贴板时给一个“复制”按钮。
@@ -32,8 +34,8 @@
   function fromParent(e) { return e.source === window.parent && e.origin === PARENT && e.data && typeof e.data === 'object'; }
   // 与管理台共用语言设置（同源 localStorage）；英文未翻译时回退中文。
   var TEXT = {
-    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', copy_offer: '复制选中的文字', connecting: '正在连接终端…', lost: '正在重新连接…', lost_slow: '暂时连不上电脑，正在重试…', ended: '终端连接已断开', back: '已重新连接', reload: '立即重试', reopen: '重新连接' },
-    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', copy_offer: 'Copy the selected text', connecting: 'Connecting to the terminal…', lost: 'Reconnecting…', lost_slow: 'Cannot reach your computer, still retrying…', ended: 'The terminal disconnected', back: 'Reconnected', reload: 'Retry now', reopen: 'Reconnect' }
+    'zh-CN': { copy: '复制', copy_hint: '复制选中的文字', copy_failed: '浏览器不允许复制', copied: '已复制', copy_offer: '复制选中的文字', link_open: '打开', link_copy: '复制链接', link_hint: '⌘ / Ctrl + 点击直接打开', pull: '下拉刷新', release: '松开刷新', connecting: '正在连接终端…', lost: '正在重新连接…', lost_slow: '暂时连不上电脑，正在重试…', ended: '终端连接已断开', back: '已重新连接', reload: '立即重试', reopen: '重新连接' },
+    'en-US': { copy: 'Copy', copy_hint: 'Copy the selected text', copy_failed: 'The browser blocked copying', copied: 'Copied', copy_offer: 'Copy the selected text', link_open: 'Open', link_copy: 'Copy link', link_hint: '⌘ / Ctrl + click opens directly', pull: 'Pull to refresh', release: 'Release to refresh', connecting: 'Connecting to the terminal…', lost: 'Reconnecting…', lost_slow: 'Cannot reach your computer, still retrying…', ended: 'The terminal disconnected', back: 'Reconnected', reload: 'Retry now', reopen: 'Reconnect' }
   };
   function tr(key) {
     var lang = 'zh-CN';
@@ -65,6 +67,12 @@
   document.documentElement.appendChild(css);
   var DOTS = '<span class="ll-dots"><i></i><i></i><i></i></span>';
   function mount(el) { document.documentElement.appendChild(el); return el; }
+  // 终端连得正常吗：告诉管理台，也决定手机上能不能下拉刷新（正常时下拉是翻看终端）
+  var connOk = false;
+  function connState(ok) {
+    connOk = ok;
+    try { if (window.parent !== window) window.parent.postMessage({ type: 'looklook:conn', ok: ok }, PARENT); } catch (e) { /* 忽略 */ }
+  }
   function showConnecting() {
     if (overlay || everOpen) return;
     overlay = mount(document.createElement('div'));
@@ -94,6 +102,7 @@
   /** `clean`：终端正常结束（关闭码 1000，比如程序退出了），ttyd 不会自己重连，等用户点。 */
   function showLost(clean) {
     hideConnecting();
+    connState(false);
     if (!lostAt) lostAt = Date.now();
     ended = clean;
     document.documentElement.classList.add('ll-down');
@@ -104,6 +113,7 @@
   function onOpen() {
     var was = Boolean(banner);
     everOpen = true;
+    connState(true);
     lostAt = 0; failures = 0; retryAt = 0; ended = false;
     document.documentElement.classList.remove('ll-down');
     hideConnecting();
@@ -723,49 +733,118 @@
     return out.join('\n');
   }
 
+  // 选中文字后不再弹“复制”小按钮（不显眼、在 iframe 里点了也常常写不进剪贴板）：用 ⌘C / Ctrl+Shift+C（见 setupKeys）。
   function setupCopy(term) {
-    if (typeof term.onSelectionChange !== 'function' || typeof term.getSelection !== 'function') return;
-    var chip = null, at = null, timer = 0;
-    function hide() { clearTimeout(timer); if (chip) { chip.remove(); chip = null; } }
-    function show() {
-      hide();
-      var text = term.getSelection();
-      if (!text || !text.trim() || !at) return;
-      chip = document.createElement('button');
-      chip.type = 'button';
-      chip.textContent = tr('copy');
-      chip.title = tr('copy_hint') + (MAC ? ' (⌘C)' : ' (Ctrl+Shift+C)');
-      var x = Math.min(Math.max(8, at.x + 8), window.innerWidth - 72), y = Math.min(Math.max(8, at.y - 38), window.innerHeight - 40);
-      chip.style.cssText = 'position:fixed;left:' + x + 'px;top:' + y + 'px;z-index:97;padding:5px 12px;border:1px solid #59627a;border-radius:9px;' +
-        'background:#262a36;color:#e3e6ee;font:600 13px/1.4 system-ui,sans-serif;cursor:pointer;box-shadow:0 6px 18px rgba(0,0,0,.45)';
-      // 按下时不让 xterm 拿到事件（否则选择被清掉）
-      chip.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
-      chip.addEventListener('click', function (e) {
-        e.preventDefault();
-        copyText(term.getSelection() || text);
-        term.clearSelection();
-        hide();
-        term.focus();
-      });
-      document.body.appendChild(chip);
-    }
-    document.addEventListener('mouseup', function (e) {
-      if (e.button !== 0 || (chip && chip.contains(e.target))) return;
-      at = { x: e.clientX, y: e.clientY };
-      clearTimeout(timer);
-      timer = setTimeout(show, 0); // 等 xterm 处理完这次 mouseup（双击选词、三击选行）
-    }, true);
-    term.onSelectionChange(function () { if (!term.hasSelection || !term.hasSelection()) hide(); });
-    document.addEventListener('keydown', function (e) { if (chip && !(e.ctrlKey && e.shiftKey)) hide(); }, true);
-    window.addEventListener('blur', hide);
+    if (typeof term.getSelection !== 'function') return;
     window.looklookCopySelection = function () {
       var text = term.getSelection && term.getSelection();
       if (!text) return false;
       copyText(text);
-      hide();
       return true;
     };
   }
+
+  // 链接（xterm.js 的网址识别、OSC 8 超链接）：它们最后都调 window.open（网址识别是先开空白窗口再设地址，
+  // OSC 8 先 confirm 一下）。⌘ / Ctrl + 点击直接打开；普通点击在鼠标旁边弹出“打开 / 复制链接”，免得点一下终端就跳走。
+  function setupLinks() {
+    var nativeOpen = window.open, nativeConfirm = window.confirm;
+    var press = { t: 0, x: 0, y: 0, mod: false };
+    document.addEventListener('mouseup', function (e) {
+      press = { t: Date.now(), x: e.clientX, y: e.clientY, mod: e.metaKey || e.ctrlKey };
+    }, true);
+    var pop = null;
+    function hidePop() { if (pop) { pop.remove(); pop = null; } }
+    document.addEventListener('mousedown', function (e) { if (pop && !pop.contains(e.target)) hidePop(); }, true);
+    document.addEventListener('keydown', function (e) { if (pop && e.key === 'Escape') hidePop(); }, true);
+    window.addEventListener('blur', hidePop);
+    function openUrl(url) { nativeOpen.call(window, url, '_blank', 'noopener'); }
+    function offer(url) {
+      hidePop();
+      var p = pop = mount(document.createElement('div'));
+      p.style.cssText = 'position:fixed;z-index:99;display:flex;align-items:center;gap:6px;max-width:min(460px,calc(100% - 16px));padding:6px 6px 6px 10px;' +
+        'border:1px solid #59627a;border-radius:10px;background:#262a36;color:#e3e6ee;font:13px/1.4 system-ui,sans-serif;box-shadow:0 6px 18px rgba(0,0,0,.45)';
+      var u = document.createElement('span');
+      u.textContent = url;
+      u.title = tr('link_hint');
+      u.style.cssText = 'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9fb0ff';
+      p.appendChild(u);
+      [['link_open', function () { openUrl(url); }], ['link_copy', function () { copyText(url); }]].forEach(function (a, i) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = tr(a[0]);
+        b.style.cssText = 'flex:none;border:0;border-radius:7px;padding:4px 10px;cursor:pointer;font:600 12.5px/1.4 system-ui,sans-serif;' +
+          (i === 0 ? 'background:#8b93ff;color:#11131a' : 'background:rgba(255,255,255,.12);color:#fff');
+        b.addEventListener('mousedown', function (e) { e.preventDefault(); e.stopPropagation(); }, true);
+        b.addEventListener('click', function () { a[1](); hidePop(); });
+        p.appendChild(b);
+      });
+      var w = p.offsetWidth, h = p.offsetHeight;
+      p.style.left = Math.max(8, Math.min(press.x - 12, window.innerWidth - w - 8)) + 'px';
+      p.style.top = (press.y + 14 + h < window.innerHeight ? press.y + 14 : Math.max(8, press.y - h - 14)) + 'px';
+    }
+    // 是不是刚才那一下点击打开的链接（触屏上照常打开，没有悬停和修饰键）
+    function fromClick() { return Date.now() - press.t < 800 && !touch; }
+    function handle(url) {
+      if (!/^(https?|ftp|mailto):/i.test(url)) return false;
+      if (press.mod) openUrl(url);
+      else offer(url);
+      return true;
+    }
+    window.open = function (url) {
+      if (!fromClick()) return nativeOpen.apply(window, arguments);
+      if (url === undefined || url === null || url === '' || url === 'about:blank') {
+        // 网址识别：先 window.open() 拿空白窗口，再 opener = null、location.href = 网址
+        var fake = { opener: null, closed: false, close: function () {}, focus: function () {}, location: {} };
+        Object.defineProperty(fake.location, 'href', { set: function (u) { if (!handle(String(u))) openUrl(String(u)); }, get: function () { return ''; } });
+        return fake;
+      }
+      if (handle(String(url))) return null;
+      return nativeOpen.apply(window, arguments);
+    };
+    // OSC 8 链接：xterm 先 confirm“确定要打开…”，我们的气泡就是确认
+    window.confirm = function (msg) {
+      if (fromClick() && /navigate to|https?:\/\//i.test(String(msg || ''))) return true;
+      return nativeConfirm.apply(window, arguments);
+    };
+  }
+
+  // 手机上：终端连不上、正在连接时，从顶部往下拉刷新整个页面（让管理台刷新）；终端正常时下拉是翻看终端，不处理。
+  function setupPullRefresh() {
+    if (!touch) return;
+    var start = null, ind = null, dist = 0;
+    var LIMIT = 72;
+    function render() {
+      if (!ind) {
+        ind = mount(document.createElement('div'));
+        ind.style.cssText = 'position:fixed;left:50%;top:6px;z-index:100;transform:translateX(-50%);padding:5px 14px;border-radius:999px;' +
+          'background:rgba(24,26,36,.94);color:#e6e8ef;font:13px/1.5 system-ui,sans-serif;border:1px solid rgba(255,255,255,.12);pointer-events:none';
+      }
+      ind.textContent = (dist >= LIMIT ? '↻ ' : '↓ ') + tr(dist >= LIMIT ? 'release' : 'pull');
+      ind.style.opacity = String(Math.min(1, dist / LIMIT));
+      ind.style.marginTop = Math.min(dist, LIMIT) / 2 + 'px';
+    }
+    function reset() { start = null; dist = 0; if (ind) { ind.remove(); ind = null; } }
+    document.addEventListener('touchstart', function (e) {
+      if (connOk || e.touches.length !== 1) return reset();
+      start = e.touches[0].clientY;
+    }, { capture: true, passive: true });
+    document.addEventListener('touchmove', function (e) {
+      if (start === null) return;
+      dist = Math.max(0, e.touches[0].clientY - start);
+      if (dist > 8) render();
+    }, { capture: true, passive: true });
+    document.addEventListener('touchend', function () {
+      var go = start !== null && dist >= LIMIT;
+      reset();
+      if (!go) return;
+      if (window.parent !== window) {
+        try { window.parent.postMessage({ type: 'looklook:pull-refresh' }, PARENT); return; } catch (e) { /* 忽略 */ }
+      }
+      location.reload();
+    }, { capture: true, passive: true });
+    document.addEventListener('touchcancel', reset, { capture: true, passive: true });
+  }
+  setupPullRefresh();
 
   // 在捕获阶段拦下几个键，不替换 ttyd 自己的按键处理。输入法正在组字时不管。
   // - ⇧↵ 换行：xterm.js 把 Shift+Enter 也当回车（\r）发出去，AI 编程助手就直接提交了。
@@ -836,6 +915,7 @@
     setupTouchScroll(term);
     setupKeys(term);
     setupCopy(term);
+    setupLinks();
     // opts.focus === false：按键条发送时不聚焦终端，免得手机键盘被弹出来。
     window.looklookSend = function (data, opts) { send(term, data); if (!opts || opts.focus !== false) term.focus(); };
     // 管理台上传完成后填路径：term.paste 会在程序开启 bracketed paste 时自动包上 ESC[200~ … ESC[201~。

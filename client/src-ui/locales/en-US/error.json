@@ -98,7 +98,6 @@
     "jump_missing": "no longer exists",
     "jump_depth": "nests too many jump hosts"
   },
-  "LAN_SWITCH_OFF": "Switching to the local network is turned off (Settings → Network & access)",
   "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
   "CLIENT_UNREACHABLE": "Can't reach Looklook on this computer; it may have quit",
   "RTC_RELAY_UDP": "Can't reach this computer: neither this browser nor the computer can reach the UDP ports of the current route, so they can only connect directly on the same local network. The relay server may not allow UDP (3478 and 49160–49999); try switching routes in Looklook on that computer",
@@ -200,5 +199,8 @@
   "CHAT_RUNNING": "Claude is working. Switch after this turn finishes",
   "CHAT_INPUT_NOT_EMPTY": "Claude Code's input box has unsent text (maybe typed in another window); send or clear it, then try again",
   "CHAT_MODE_UNAVAILABLE": "This mode isn't available (it wasn't enabled when Claude Code started)",
-  "RESUME_NEEDS_PERSISTENT": "Session persistence is off on this computer, so earlier conversations can't be continued"
+  "RESUME_NEEDS_PERSISTENT": "Session persistence is off on this computer, so earlier conversations can't be continued",
+  "DOCKER_NOT_FOUND": "The docker command was not found on this computer",
+  "DOCKER_FAILED": "Docker failed: {{detail}}",
+  "TOOL_NOT_IN_CONTAINER": "{{tool}} is not installed in container {{container}}"
 }

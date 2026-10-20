@@ -215,6 +215,8 @@ fn window<'a>(app: &'a AppHandle, label: &str, console: Url, url: Url) -> Webvie
         // 管理台据此知道自己在桌面应用里（例如 DSH 改由系统浏览器打开）
         .initialization_script("window.__LOOKLOOK_DESKTOP__ = true;")
         .title(tr("看看", "Looklook"))
+        // macOS：窗口在后台时点一下就生效（例如直接切到侧栏里的会话），不用先点一下把窗口叫到前面
+        .accept_first_mouse(true)
         .on_document_title_changed(|w, title| {
             let _ = w.set_title(&title);
         })

@@ -1,6 +1,8 @@
 // 会话数据：所有电脑上的会话（终端）和项目，侧栏、开始页、会话页共用，每 5 秒刷新一次。
-// 项目 = 某台电脑上的一个文件夹：那台电脑上记着的（GET/PUT /api/projects，上次用的类型和“高级”选项）
-// 加上从会话的文件夹推出来的。最近用过的排前面。离线的电脑拿不到列表，用上一次看到的（记在浏览器里）灰着显示。
+// 项目 = 某台电脑上的一个文件夹（或某个 Docker 容器里的目录）：那台电脑上记着的（GET/PUT /api/projects，上次用的类型和“高级”选项）
+// 加上从会话的文件夹推出来的。离线的电脑拿不到列表，用上一次看到的（记在浏览器里）灰着显示。
+// 顺序：有会话在运行的在前，再按启动时间从新到旧——不按最后输出的时间，否则 agent 一输出列表就跳。
+// 打开的会话在顶部排成标签（tabs，按打开的先后，可以拖动），最近看过的几个在后台保持连接（recent）。
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
 
 import { api, ApiError, deviceApi, rememberTerminals, terminalDevice } from './api.js';
@@ -15,6 +17,9 @@ export function useSessions() {
 const GROUP_TIMEOUT_MS = 10000;
 const POLL_MS = 5000;
 const RECENT_KEY = 'looklook.recent';
+const TABS_KEY = 'looklook.tabs';
+// 顶部最多几个标签（再多就把最早打开的收起）
+export const TABS_MAX = 40;
 const CACHE_KEY = 'looklook.devcache';
 // 后台保持连接的会话最多几个（每个都连着终端，太多会拖慢页面）
 export const RECENT_MAX = 8;
@@ -44,6 +49,20 @@ export const projectKey = (device, workdir) => `${device ?? ''}\n${workdir}`;
 const ts = (s) => Date.parse(s || '') || 0;
 /** 会话最近一次有动静的时间（毫秒）。 */
 export const lastUsed = (i) => Math.max(ts(i.last_activity_at), ts(i.started_at), ts(i.created_at));
+/** 会话启动的时间（毫秒），排序用：运行时不会变。 */
+export const startedAt = (i) => ts(i.started_at) || ts(i.created_at);
+/** 会话在运行（终端或后台任务还在）。 */
+export const isActive = (i) => Boolean(i.running || i.task_alive);
+/** 会话列表的顺序：运行中的在前，再按启动时间从新到旧。 */
+export const bySessionOrder = (a, b) => isActive(b) - isActive(a) || startedAt(b) - startedAt(a);
+/** 会话显示的名字：agent 自己的会话名为主，没有时用会话名。 */
+export const sessionTitle = (i) => i?.agent_title || i?.name || '';
+/** 用户自己起的名字（和 agent 的会话名不一样时作为次要信息显示）。 */
+export const customName = (i) => (i?.agent_title && i.name_custom && i.name !== i.agent_title ? i.name : null);
+/** 会话的目录：容器里的会话是容器里的目录。 */
+export const sessionDir = (i) => i?.container?.dir ?? i?.workdir ?? '';
+/** 项目用的“文件夹”键：容器里的目录带上容器名，和电脑上同名的文件夹分开。 */
+const dirKey = (i) => (i.container ? `docker://${i.container.name}${i.container.dir}` : i.workdir);
 
 /** 会话现在的状态：等你处理 / 正在干活 / 运行中 / 后台运行中 / 已停止。 */
 export function sessionState(i) {
@@ -172,16 +191,17 @@ function mergeProjects({ devIds, store, items, multi, cache, onlineIds }) {
   }
   for (const i of items) {
     const dev = multi ? terminalDevice(i.id) : null;
-    const p = add(dev, i.workdir, { launch: i.launch });
+    const p = add(dev, dirKey(i), i.container ? { launch: i.launch, container: i.container, name: baseName(i.container.dir) || i.container.dir } : { launch: i.launch });
     p.items.push(i);
   }
   const list = [...map.values()];
   for (const p of list) {
-    p.items.sort((a, b) => lastUsed(b) - lastUsed(a));
-    p.used = Math.max(p.used, ...p.items.map(lastUsed), 0);
+    p.items.sort(bySessionOrder);
+    p.active = p.items.some(isActive);
+    p.used = Math.max(p.used, ...p.items.map(startedAt), 0);
     if (!p.launch) p.launch = p.items[0]?.launch ?? 'claude';
   }
-  return list.sort((a, b) => b.used - a.used || a.name.localeCompare(b.name));
+  return list.sort((a, b) => b.active - a.active || b.used - a.used || a.name.localeCompare(b.name));
 }
 
 export function SessionsProvider({ enabled, children }) {
@@ -243,6 +263,28 @@ export function SessionsProvider({ enabled, children }) {
   const openRecent = (id) => setRecent((r) => [id, ...r.filter((x) => x !== id)].slice(0, RECENT_MAX));
   const closeRecent = (id) => setRecent((r) => r.filter((x) => x !== id));
 
+  // 顶部标签：按打开的先后排，新打开的放最后；关掉只是收起，终端照常运行
+  const [tabs, setTabs] = useState(() => {
+    const v = readJson(TABS_KEY, null) ?? readJson(RECENT_KEY, []);
+    return Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(0, TABS_MAX) : [];
+  });
+  useEffect(() => writeJson(TABS_KEY, tabs), [tabs]);
+  const openTab = (id) => setTabs((t) => (t.includes(id) ? t : [...t, id].slice(-TABS_MAX)));
+  const closeTabs = (ids) => {
+    const gone = new Set(ids);
+    setTabs((t) => t.filter((x) => !gone.has(x)));
+    setRecent((r) => r.filter((x) => !gone.has(x)));
+  };
+  const moveTab = (id, to) =>
+    setTabs((t) => {
+      const rest = t.filter((x) => x !== id);
+      rest.splice(Math.max(0, Math.min(to, rest.length)), 0, id);
+      return rest;
+    });
+  // 电脑上点会话 / 标签后要把焦点交给它的输入框（终端或对话输入框）；同一个会话再点也要，所以带个计数
+  const [focusReq, setFocusReq] = useState({ id: null, n: 0 });
+  const requestFocus = (id) => setFocusReq((f) => ({ id, n: f.n + 1 }));
+
   const value = {
     multi,
     items,
@@ -256,6 +298,12 @@ export function SessionsProvider({ enabled, children }) {
     recent,
     openRecent,
     closeRecent,
+    tabs,
+    openTab,
+    closeTabs,
+    moveTab,
+    focusReq,
+    requestFocus,
     byId: (id) => items.find((i) => i.id === id) ?? null,
     projectOf: (i) => projects.find((p) => p.items.includes(i)) ?? null,
   };

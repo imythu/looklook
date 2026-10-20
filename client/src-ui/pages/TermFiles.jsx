@@ -7,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
 import { baseName, isImageName, PastedTray } from '../shared/Attachments.jsx';
-import { frameOrigin, termFocus, termPaste, termSend } from '../shared/direct.js';
+import { frameOrigin, termFocus, termPaste, termSend } from '../shared/termFrame.js';
 import { errorText } from '../shared/i18n.js';
 import { uploadStore } from '../shared/uploader.js';
 import { CopyButton, useToast } from '../shared/ui.jsx';

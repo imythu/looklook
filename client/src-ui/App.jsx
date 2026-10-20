@@ -19,10 +19,10 @@ import Settings from './pages/Settings.jsx';
 import SshHosts from './pages/SshHosts.jsx';
 import System from './pages/System.jsx';
 import { HistoryPage } from './pages/History.jsx';
-import { opensInPage, SessionHome, SessionList, SessionStage, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
+import PullRefresh from './shared/pull.jsx';
+import { opensInPage, SessionHome, SessionList, SessionStage, SessionTabs, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
 import TerminalView from './pages/TerminalView.jsx';
 import { api, rtcMode, selectedDevice } from './shared/api.js';
-import { configureDirect, probeDirect } from './shared/direct.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
 import { Link, Router, useCanonicalPath, useRouter } from './shared/router.jsx';
 import PopMenu from './shared/PopMenu.jsx';
@@ -33,7 +33,6 @@ import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
 import { ConnChip } from './shared/RelayStatus.jsx';
-import { LanBanner, LanFallback } from './shared/lan.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
 
 const StatusCtx = createContext({ status: null, reload: () => {} });
@@ -97,7 +96,7 @@ const PAGES = ['/', '/new', '/history', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.
 export const SOURCE_URL = 'https://github.com/imythu/looklook';
 const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
 // 会话相关的页面铺满主区域（不限宽度）
-const isWide = (p) => p === '/' || p === '/new' || SESS.test(p);
+const isWide = (p) => p === '/' || p === '/new' || p === '/history' || SESS.test(p);
 const RAIL_KEY = 'looklook.rail';
 const TOOLS_KEY = 'looklook.tools';
 
@@ -431,14 +430,14 @@ function ConsoleLayout({ path, stale, children }) {
         </span>
       </header>
       <GateBanner />
-      <LanFallback />
-      {status.access === 'remote' && <LanBanner device={devices.multi ? devices.selected : undefined} />}
       <UpdateBanner />
       <JustUpdatedBanner />
       <RelayHint />
       <div className={`console ${rail ? 'console-rail' : ''}`}>
         <SideNav open={open} onClose={() => setOpen(false)} rail={rail && !open} onRail={setRail} path={path} />
         <main className={`console-main ${wide ? 'console-wide' : 'shell'} ${sess ? 'console-session' : ''}`}>
+          {/* 打开的会话排成顶部标签（电脑上，开始页和会话页） */}
+          {(sess || path === '/') && <SessionTabs activeId={sess} />}
           {/* 刚切换电脑、新电脑的状态还没拿到时先不渲染页面，免得页面用上一台电脑的设置初始化 */}
           <Fragment key={switcher ? devices.selected : 'all'}>
             {switcher && stale ? (
@@ -522,13 +521,6 @@ function Shell() {
   // 远程打开（启动页给的列表）和本机 App（本机客户端连其他电脑，服务端 docs/06 §14）都能切换电脑
   const devices = useDeviceState(Boolean(status?.account?.logged_in));
   devRef.current = devices;
-  // 远程打开时在后台探测能不能直连本机（终端走最快的路，见 shared/direct.js）
-  const remote = status?.access === 'remote';
-  const directKey = devices.multi ? devices.items.map((d) => `${d.id}:${d.os}:${d.online}`).join(',') : status?.capabilities?.os;
-  if (status && devices.ready) configureDirect({ remote: rtcMode, os: status.capabilities?.os, devices: devices.multi ? devices.items : null });
-  useEffect(() => {
-    if (status && devices.ready) probeDirect(devices.multi ? devices.items : null);
-  }, [remote, devices.ready, devices.multi, directKey]);
   // 设备列表加载后、切换电脑后，取选中那台电脑的状态
   useEffect(() => {
     if (devices.multi || devices.localOnly) reload();
@@ -585,7 +577,10 @@ function Shell() {
     <StatusCtx.Provider value={{ status, reload }}>
       <DevicesProvider value={devices}>
         <UpdateProvider>
-          <ReportProvider>{body}</ReportProvider>
+          <ReportProvider>
+            {body}
+            <PullRefresh />
+          </ReportProvider>
         </UpdateProvider>
       </DevicesProvider>
     </StatusCtx.Provider>

@@ -55,6 +55,11 @@ cp "$SRC/uninstall.sh" "$PREFIX/uninstall.sh" 2>/dev/null || true
 cp "$SRC/stop.sh" "$PREFIX/stop.sh" 2>/dev/null && chmod 0755 "$PREFIX/stop.sh" || true
 ln -sf "$PREFIX/looklook" "$BIN/looklook"
 
+# 第一次安装时默认允许局域网访问：服务器、NAS 往往没有屏幕，同一网络里的手机、电脑可以直接打开管理台。
+# 已经装过的不改（保留用户自己的选择）。容器里不开：端口映射后来源地址都像局域网。
+LAN_ON=0
+if [ "$CONTAINER" != 1 ] && [ "$("$PREFIX/looklook" access lan on --initial 2>/dev/null)" = enabled ]; then LAN_ON=1; fi
+
 UNIT='[Unit]
 Description=看看客户端（Looklook）
 After=network-online.target
@@ -112,8 +117,18 @@ say ""
 cmd() { printf '  %s %-8s %s\n' "$LL" "$1" "$2"; }
 cmd login "登录，在手机或任意浏览器上批准 / Sign in, approve on your phone or any browser"
 cmd status "查看状态 / Show status"
+cmd restart "重启，终端里的任务不受影响 / Restart; running tasks keep running"
+cmd access "局域网访问、白名单 / LAN access and whitelist"
 cmd upgrade "升级到最新版本 / Upgrade to the latest version"
 cmd -h "全部命令 / All commands"
 say ""
 say "  通过 SSH 打开管理台 / Open the console over SSH:"
 say "    ssh -L 1234:127.0.0.1:1234 <server>  →  http://127.0.0.1:1234/"
+if [ $LAN_ON = 1 ]; then
+  IP=$(hostname -I 2>/dev/null | awk '{print $1}')
+  say ""
+  say "  已开启局域网访问：同一网络里的手机、电脑可以直接打开 http://${IP:-<这台电脑的IP>}:1234/"
+  say "  方便没有屏幕的服务器和 NAS 使用。不需要的话运行：$LL access lan off"
+  say "  LAN access is on: phones and computers on the same network can open http://${IP:-<this-computer-IP>}:1234/"
+  say "  Handy for headless servers and NAS. To turn it off: $LL access lan off"
+fi

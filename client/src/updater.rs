@@ -355,6 +355,22 @@ impl Updater {
         self.start_install_as(false)
     }
 
+    /// 手动重启（`looklook restart`）：和更新后的重启走同一条路，终端里的任务继续运行。
+    pub fn restart(self: &Arc<Self>) -> Result<(), LocalError> {
+        if self.busy() {
+            return Err(LocalError::new("UPDATE_BUSY"));
+        }
+        tracing::info!("收到重启请求，正在重启");
+        request_restart();
+        let me = self.clone();
+        tokio::spawn(async move {
+            // 先让请求的响应发出去
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            me.shutdown.cancel();
+        });
+        Ok(())
+    }
+
     fn start_install_as(self: &Arc<Self>, auto: bool) -> Result<(), LocalError> {
         if self.busy() {
             return Err(LocalError::new("UPDATE_BUSY"));

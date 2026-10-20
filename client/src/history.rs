@@ -48,6 +48,11 @@ pub struct Conv {
     pub live: bool,
     /// 正在某个看看会话里（见 gateway 里的 `list_history`）
     pub instance_id: Option<String>,
+    /// 对话开始的时间（记录里的第一条）
+    pub started_at: Option<String>,
+    /// 搜对话全文时命中的那一段
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snippet: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -62,6 +67,10 @@ pub struct Query {
     pub agent: Option<String>,
     pub q: Option<String>,
     pub limit: Option<usize>,
+    /// 搜对话全文（`q` 不只匹配标题、你说的话和文件夹，还在整份记录里找）
+    pub deep: Option<bool>,
+    /// 只要这个时间（毫秒）之前有消息的：往后翻页
+    pub before: Option<i64>,
 }
 
 /// 能接着的工具
@@ -119,6 +128,8 @@ fn list_blocking(q: &Query) -> Vec<Conv> {
     let titles = if want("codex") { codex_titles() } else { HashMap::new() };
     let now = SystemTime::now();
     let mut out = vec![];
+    let text = q.q.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+    let deep = text.as_deref().filter(|_| q.deep == Some(true));
     {
         let mut guard = CACHE.lock().unwrap_or_else(|e| e.into_inner());
         let cache = guard.get_or_insert_with(HashMap::new);
@@ -142,7 +153,15 @@ fn list_blocking(q: &Query) -> Vec<Conv> {
                 if let Some(t) = titles.get(&c.id) {
                     c.title = t.clone();
                 }
-                out.push(c.clone());
+                let mut c = c.clone();
+                if let Some(w) = deep {
+                    match find_in_file(&path, w) {
+                        Some(snip) => c.snippet = Some(snip),
+                        None if !matches_text(&c, w) => continue,
+                        None => {}
+                    }
+                }
+                out.push(c);
             }
         }
         // 文件没了的记录不再留着
@@ -156,14 +175,42 @@ fn list_blocking(q: &Query) -> Vec<Conv> {
     if let Some(w) = workdir {
         out.retain(|c| same_dir(&c.workdir, w));
     }
-    if let Some(text) = q.q.as_deref().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()) {
-        out.retain(|c| {
-            c.title.to_lowercase().contains(&text) || c.last.as_deref().unwrap_or("").to_lowercase().contains(&text) || c.workdir.to_lowercase().contains(&text)
-        });
+    if let Some(text) = &text {
+        out.retain(|c| c.snippet.is_some() || matches_text(c, text));
+    }
+    if let Some(b) = q.before {
+        out.retain(|c| c.updated_ms < b);
     }
     out.sort_by_key(|c| std::cmp::Reverse(c.updated_ms));
     out.truncate(q.limit.unwrap_or(50).clamp(1, 500));
     out
+}
+
+/// 标题、你最后说的话、文件夹、分支里有没有这段文字（已转成小写）。
+fn matches_text(c: &Conv, text: &str) -> bool {
+    [Some(c.title.as_str()), c.last.as_deref(), Some(c.workdir.as_str()), c.branch.as_deref()].into_iter().flatten().any(|s| s.to_lowercase().contains(text))
+}
+
+/// 搜对话全文：整份记录（最多读 32 MB）里找这段文字，返回命中处前后的一段（去掉 JSON 的转义）。
+fn find_in_file(path: &Path, text: &str) -> Option<String> {
+    const MAX: u64 = 32 << 20;
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX {
+        return None;
+    }
+    let raw = std::fs::read_to_string(path).ok()?;
+    let lower = raw.to_lowercase();
+    // 转成小写后长度可能变（少数字符），按字符位置对回原文
+    let at = lower.find(text)?;
+    let start_c = lower[..at].chars().count();
+    let len_c = text.chars().count();
+    let chars: Vec<char> = raw.chars().collect();
+    let from = start_c.saturating_sub(50);
+    let to = (start_c + len_c + 70).min(chars.len());
+    let mut s: String = chars[from.min(chars.len())..to].iter().collect();
+    s = s.replace("\\n", " ").replace("\\\"", "\"").replace("\\t", " ");
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    Some(format!("{}{}{}", if from > 0 { "…" } else { "" }, s, if to < chars.len() { "…" } else { "" }))
 }
 
 /// 两个目录是不是同一个：去掉末尾的分隔符；Windows 上不分大小写、`/` 和 `\` 一样。
@@ -369,6 +416,8 @@ fn parse_claude(path: &Path) -> Option<Conv> {
         updated_ms,
         live: false,
         instance_id: None,
+        started_at: head.iter().find_map(|v| v["timestamp"].as_str()).map(String::from),
+        snippet: None,
     })
 }
 
@@ -425,6 +474,8 @@ fn parse_codex(path: &Path) -> Option<Conv> {
         updated_ms,
         live: false,
         instance_id: None,
+        started_at: p["timestamp"].as_str().or_else(|| meta["timestamp"].as_str()).map(String::from),
+        snippet: None,
     })
 }
 
@@ -451,6 +502,8 @@ fn opencode_conv(id: &str, title: &str, dir: &str, updated_ms: i64) -> Option<Co
         updated_ms,
         live: now - updated_ms < (LIVE_SECS * 1000) as i64,
         instance_id: None,
+        started_at: None,
+        snippet: None,
     })
 }
 
@@ -506,11 +559,17 @@ fn opencode_db(db: &Path) -> Option<Vec<Conv>> {
 // ---------------- 预览 ----------------
 
 /// 对话最后几条消息（展开预览用）。找不到返回 None。
-pub async fn preview(agent: String, id: String) -> Option<Vec<Message>> {
-    tokio::task::spawn_blocking(move || preview_blocking(&agent, &id)).await.ok().flatten()
+/// 历史页右边的完整预览：读最后多少字节、最多几条、每条最多多少个字符
+const FULL_BYTES: u64 = 4 << 20;
+const FULL_COUNT: usize = 200;
+const FULL_MAX: usize = 4000;
+
+/// `full`：历史页右边看完整的对话（最近 200 条）；否则是展开一行时看的最后几句。
+pub async fn preview(agent: String, id: String, full: bool) -> Option<Vec<Message>> {
+    tokio::task::spawn_blocking(move || preview_blocking(&agent, &id, full)).await.ok().flatten()
 }
 
-fn preview_blocking(agent: &str, id: &str) -> Option<Vec<Message>> {
+fn preview_blocking(agent: &str, id: &str, full: bool) -> Option<Vec<Message>> {
     if !valid_id(id) {
         return None;
     }
@@ -529,8 +588,9 @@ fn preview_blocking(agent: &str, id: &str) -> Option<Vec<Message>> {
         "opencode" => return Some(vec![]),
         _ => return None,
     };
-    let msgs: Vec<Message> = tail_lines(&path, PREVIEW_BYTES, want).iter().filter_map(parse).map(|(role, t)| Message { role, text: clip_block(&t, PREVIEW_MAX) }).collect();
-    let skip = msgs.len().saturating_sub(6);
+    let (bytes, count, max) = if full { (FULL_BYTES, FULL_COUNT, FULL_MAX) } else { (PREVIEW_BYTES, 6, PREVIEW_MAX) };
+    let msgs: Vec<Message> = tail_lines(&path, bytes, want).iter().filter_map(parse).map(|(role, t)| Message { role, text: clip_block(&t, max) }).collect();
+    let skip = msgs.len().saturating_sub(count);
     Some(msgs.into_iter().skip(skip).collect())
 }
 

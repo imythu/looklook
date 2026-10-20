@@ -2,7 +2,7 @@
 // 像 ChatGPT：点“新会话”进开始页，选好类型和项目、写一句话（可以不写），回车就启动并打开；项目上的 + 一下就新建。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderPlus, History, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, Container, X, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderPlus, History, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -14,7 +14,7 @@ import { errorText } from '../shared/i18n.js';
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { baseName, lastUsed, sessionState, useSessions } from '../shared/sessions.jsx';
+import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { PrevConversations } from './History.jsx';
 import { BackendNote, FolderPicker, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
@@ -72,7 +72,9 @@ export function SessionUiProvider({ children }) {
   const [start, setStart] = useState({ nonce: 0 });
   const openSession = (id) => {
     if (!opensInPage()) return navigate(`/t/${id}`);
+    s.openTab(id);
     s.openRecent(id);
+    s.requestFocus(id);
     if (path !== `/s/${id}`) navigate(`/s/${id}`);
   };
   const newSession = (want = {}) => {
@@ -83,14 +85,15 @@ export function SessionUiProvider({ children }) {
   const quickCreate = async (p, launch = p.launch || 'claude') => {
     const client = deviceApi(p.device);
     try {
-      const tools = AI_TOOLS.includes(launch) ? await client.get('/tools').catch(() => null) : null;
+      const tools = AI_TOOLS.includes(launch) && !p.container ? await client.get('/tools').catch(() => null) : null;
       if (tools && !tools.tools?.[launch]) {
         newSession({ device: p.device, workdir: p.workdir, launch });
         return;
       }
       const r = await client.post('/instances', {
         name: '',
-        workdir: p.workdir,
+        workdir: p.container ? '' : p.workdir,
+        container: p.container ? { name: p.container.name, dir: p.container.dir } : undefined,
         launch,
         command: '',
         shell: p.shell ?? '',
@@ -99,7 +102,7 @@ export function SessionUiProvider({ children }) {
         start: true,
       });
       if (p.device && r.id) rememberTerminals(p.device, [r]);
-      s.touchProject(p.device, p.workdir, { launch });
+      if (!p.container) s.touchProject(p.device, p.workdir, { launch });
       s.reload();
       if (launch === 'dsh') openDsh(r, t, toast);
       else openSession(r.id);
@@ -173,6 +176,27 @@ export function SessionUiProvider({ children }) {
   );
 }
 
+/**
+ * 鼠标按下就切换，不等 click：macOS App（WKWebView）里触控板“轻点”时按下和松开几乎同时到达，焦点正从终端 iframe
+ * 回到管理台，click 有时被吞掉（要点两下或用力按）。按下时已切过的，随后的 click 不再切；键盘回车只有 click，照常切换。
+ * 按下时不让按钮拿走焦点，好把焦点交给会话的输入框。
+ */
+export function usePressActivate(fn, disabled) {
+  const downAt = useRef(0);
+  return {
+    onPointerDown: (e) => {
+      if (e.pointerType !== 'mouse' || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || disabled) return;
+      downAt.current = Date.now();
+      fn();
+    },
+    onMouseDown: (e) => e.button === 0 && e.preventDefault(),
+    onClick: () => {
+      if (Date.now() - downAt.current < 1500) return;
+      fn();
+    },
+  };
+}
+
 /** 一个会话行 / 会话顶栏的操作（打开、更多菜单）。 */
 function useActions(inst) {
   const s = useSessions();
@@ -208,15 +232,20 @@ function SessionRow({ inst, current, attn }) {
   const p = attn ? s.projectOf(inst) : null;
   const dev = attn && devices.multi ? devices.byId(terminalDevice(inst.id)) : null;
   const when = lastUsed(inst);
+  const press = usePressActivate(a.primary, a.busy || !a.allowed);
+  const title = sessionTitle(inst);
+  const mine = customName(inst);
+  const dir = sessionDir(inst);
+  const tip = [title, mine && t('sess.my_name', { name: mine }), inst.container ? `${inst.container.name}:${dir}` : dir].filter(Boolean).join('\n');
   return (
     <div className={`srow ${attn ? 'srow-attn' : ''} ${current ? 'current' : ''}`}>
-      <button type="button" className="srow-main" onClick={a.primary} disabled={a.busy || !a.allowed} aria-current={current ? 'page' : undefined} title={`${inst.name}${inst.workdir ? `\n${inst.workdir}` : ''}`}>
+      <button type="button" className="srow-main" {...press} disabled={a.busy || !a.allowed} aria-current={current ? 'page' : undefined} title={tip}>
         <LaunchIcon launch={inst.launch} size={16} className="srow-icon" />
         <span className="srow-text">
-          <span className="ellipsis">{inst.name}</span>
+          <span className="ellipsis">{title}</span>
           {attn && (
             <span className="srow-sub">
-              <span className="ellipsis">{p?.name ?? baseName(inst.workdir)}</span>
+              <span className="ellipsis">{p?.name ?? baseName(dir)}</span>
               {dev && <DeviceTag device={dev} />}
             </span>
           )}
@@ -255,9 +284,9 @@ function ProjectRow({ p, open, onToggle, showDevice }) {
   ];
   return (
     <div className={`prow ${p.offline ? 'offline' : ''}`} style={dev ? { '--dc': deviceColor(devices, dev.id) } : undefined}>
-      <button type="button" className="prow-main" onClick={onToggle} aria-expanded={open} title={`${p.workdir}${dev ? ` · ${deviceName(t, dev)}` : ''}`}>
+      <button type="button" className="prow-main" onClick={onToggle} aria-expanded={open} title={`${p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}${dev ? ` · ${deviceName(t, dev)}` : ''}`}>
         <ChevronDown size={14} className="prow-chev" aria-hidden="true" />
-        <Folder size={15} className="prow-folder" aria-hidden="true" />
+        {p.container ? <Container size={15} className="prow-folder" aria-label={t('sess.in_container', { name: p.container.name })} /> : <Folder size={15} className="prow-folder" aria-hidden="true" />}
         <span className="ellipsis grow">{p.name}</span>
         {attn && <span className="sdot sdot-attn" aria-label={t('sess.state.attn')} role="img" />}
         {showDevice && dev && <DeviceTag device={dev} />}
@@ -311,7 +340,7 @@ function matcher(q, t) {
   const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
   if (!words.length) return null;
   return (i) => {
-    const hay = [i.name, i.workdir, i.command, i.launch, t(`launch.${i.launch}.title`)].filter(Boolean).join(' ').toLowerCase();
+    const hay = [i.agent_title, i.name, i.workdir, i.container?.name, i.container?.dir, i.command, i.launch, t(`launch.${i.launch}.title`)].filter(Boolean).join(' ').toLowerCase();
     return words.every((w) => hay.includes(w));
   };
 }
@@ -493,8 +522,68 @@ export function SessionHome() {
 
 // ---------------- 开始页（新会话） ----------------
 
-/** 选项目：按电脑列出最近的项目，最下面“选择其他文件夹”。 */
-function ProjectPicker({ projects, device, workdir, onPick, onClose }) {
+/**
+ * Docker 容器：点开后列出这台电脑上运行中的容器（docker ps），可以搜；选中后探测容器里的用户、默认目录和装了的工具。
+ * 容器里的会话只有终端，没有对话界面。
+ */
+function DockerPick({ device, onPick }) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState(null);
+  const [list] = useLoad(() => (open ? deviceApi(device).get('/docker/containers').catch(() => ({ items: [], error: 'DOCKER_FAILED' })) : Promise.resolve(null)), [open, device]);
+  const pick = async (c) => {
+    setBusy(c.name);
+    setError(null);
+    try {
+      const p = await deviceApi(device).get(`/docker/containers/${encodeURIComponent(c.name)}`);
+      onPick({ name: c.name, image: c.image, dir: p.workdir || '/', root: Boolean(p.root), user: p.user, tools: p.tools ?? [] });
+    } catch (e) {
+      setError(e);
+    } finally {
+      setBusy(null);
+    }
+  };
+  if (!open) {
+    return (
+      <button type="button" className="ppick-item ppick-other" onClick={() => setOpen(true)}>
+        <Container size={15} aria-hidden="true" />
+        <span className="grow">{t('sess.docker_pick')}</span>
+        <ChevronDown size={14} aria-hidden="true" />
+      </button>
+    );
+  }
+  const words = q.trim().toLowerCase();
+  const items = (list?.items ?? []).filter((c) => !words || `${c.name} ${c.image} ${c.id}`.toLowerCase().includes(words));
+  return (
+    <div className="ppick-docker">
+      <label className="slist-search ppick-search">
+        <Search size={14} aria-hidden="true" />
+        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('sess.docker_search')} aria-label={t('sess.docker_search')} spellCheck={false} autoFocus={!isTouch()} />
+      </label>
+      {!list ? (
+        <div className="ppick-note"><Spinner size={14} /></div>
+      ) : list.error ? (
+        <p className="ppick-note">{t(`sess.docker_err.${list.error}`, { defaultValue: t('sess.docker_err.DOCKER_FAILED') })}</p>
+      ) : items.length === 0 ? (
+        <p className="ppick-note">{words ? t('sess.no_match') : t('sess.docker_none')}</p>
+      ) : (
+        items.map((c) => (
+          <button key={c.id || c.name} type="button" className="ppick-item" onClick={() => pick(c)} disabled={Boolean(busy)} title={c.status}>
+            {busy === c.name ? <Spinner size={15} /> : <Container size={15} aria-hidden="true" />}
+            <span className="ellipsis grow">{c.name}</span>
+            <span className="ppick-path mono ellipsis">{c.image}</span>
+          </button>
+        ))
+      )}
+      {error && <p className="ppick-note warn-text">{errorText(t, error)}</p>}
+    </div>
+  );
+}
+
+/** 选项目：按电脑列出最近的项目，再下面“选择其他文件夹”“Docker 容器”。 */
+function ProjectPicker({ projects, device, workdir, container, onPick, onClose }) {
   const { t } = useTranslation();
   const devices = useDevices();
   const ref = useRef(null);
@@ -524,16 +613,23 @@ function ProjectPicker({ projects, device, workdir, onPick, onClose }) {
               </div>
             )}
             {ps.map((p) => (
-              <button key={p.key} type="button" className="ppick-item" aria-pressed={p.device === device && p.workdir === workdir} onClick={() => onPick(p.device, p.workdir)}>
-                <Folder size={15} aria-hidden="true" />
+              <button
+                key={p.key}
+                type="button"
+                className="ppick-item"
+                aria-pressed={p.device === device && (p.container ? container?.name === p.container.name && container?.dir === p.container.dir : !container && p.workdir === workdir)}
+                onClick={() => onPick(p.device, p.container ? '' : p.workdir, p.container ?? null)}
+              >
+                {p.container ? <Container size={15} aria-hidden="true" /> : <Folder size={15} aria-hidden="true" />}
                 <span className="ellipsis grow">{p.name}</span>
-                <span className="ppick-path mono ellipsis">{p.workdir}</span>
+                <span className="ppick-path mono ellipsis">{p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}</span>
               </button>
             ))}
             <button type="button" className="ppick-item ppick-other" onClick={() => setBrowse(d?.id ?? null)}>
               <FolderPlus size={15} aria-hidden="true" />
               <span className="grow">{t('sess.pick_other')}</span>
             </button>
+            <DockerPick device={d?.id ?? null} onPick={(c) => onPick(d?.id ?? null, '', c)} />
           </div>
         );
       })}
@@ -542,7 +638,7 @@ function ProjectPicker({ projects, device, workdir, onPick, onClose }) {
         initial={browse === device ? workdir : ''}
         client={deviceApi(browse)}
         onClose={() => setBrowse(null)}
-        onPick={(path) => onPick(browse, path)}
+        onPick={(path) => onPick(browse, path, null)}
       />
     </div>
   );
@@ -572,6 +668,8 @@ function StartForm() {
   const [device, setDevice] = useState(initDevice);
   const [workdir, setWorkdir] = useState(want.workdir ?? (want.device === undefined && firstProject ? firstProject.workdir : ''));
   const project = s.projects.find((p) => p.device === device && p.workdir === workdir);
+  // Docker 容器（{ name, dir, root, tools }）：选了时会话在容器里运行，只有终端
+  const [container, setContainer] = useState(want.container ?? null);
   const [launch, setLaunch] = useState(want.launch ?? project?.launch ?? 'claude');
   const [text, setText] = useState('');
   const [picking, setPicking] = useState(Boolean(want.pick));
@@ -593,14 +691,21 @@ function StartForm() {
   useEffect(() => {
     if (!workdir && status?.settings?.default_workdir) setWorkdir(status.settings.default_workdir);
   }, [status?.settings?.default_workdir]);
+  // 手机上不主动聚焦（会弹出输入法）
   useEffect(() => {
-    if (!picking) input.current?.focus();
+    if (!picking && !isTouch()) input.current?.focus();
   }, [want.nonce, picking]);
   // 换了项目：类型和高级选项跟着这个项目上次的
-  const pickProject = (dev, dir) => {
+  const pickProject = (dev, dir, c = null) => {
     setDevice(dev);
-    setWorkdir(dir);
     setPicking(false);
+    setContainer(c);
+    if (c) {
+      if (launch === 'dsh') setLaunch('claude');
+      setTimeout(() => !isTouch() && input.current?.focus(), 0);
+      return;
+    }
+    setWorkdir(dir);
     const p = s.projects.find((x) => x.device === dev && x.workdir === dir);
     if (p) {
       setLaunch(p.launch || launch);
@@ -608,13 +713,13 @@ function StartForm() {
       setFullAccess(Boolean(p.full_access));
       setAutoStart(Boolean(p.auto_start));
     }
-    setTimeout(() => input.current?.focus(), 0);
+    setTimeout(() => !isTouch() && input.current?.focus(), 0);
   };
-  const missing = (l) => AI_TOOLS.includes(l) && tools && !tools.tools?.[l];
+  const missing = (l) => (container ? AI_TOOLS.includes(l) && Array.isArray(container.tools) && !container.tools.includes(l) : AI_TOOLS.includes(l) && tools && !tools.tools?.[l]);
   const dshRow = launch === 'dsh' ? s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device)) : null;
   const isRoot = Boolean(status.capabilities?.root);
   const canFull = FULL_ACCESS.includes(launch);
-  const needRoot = canFull && fullAccess && isRoot && !rootOk;
+  const needRoot = canFull && fullAccess && isRoot && !rootOk && !container;
   const allowed = selectedStatus.account.allowed;
   const devObj = devices.multi ? devices.byId(device) : null;
   const offline = devices.multi && !devObj?.online;
@@ -623,7 +728,7 @@ function StartForm() {
     if (busy || !allowed || offline) return;
     setError(null);
     if (missing(launch)) {
-      ui.install(launch, device, workdir);
+      if (!container) ui.install(launch, device, workdir);
       return;
     }
     if (dshRow) {
@@ -644,7 +749,9 @@ function StartForm() {
       const r = await client.post('/instances', {
         // 没填名称时用第一句话的开头（AI 工具），否则交给电脑取（文件夹 · 工具）
         name: (name.trim() || (prompt && launch !== 'shell' ? prompt.replace(/\s+/g, ' ').slice(0, 20) : '')).slice(0, 40),
-        workdir,
+        name_custom: Boolean(name.trim()),
+        workdir: container ? '' : workdir,
+        container: container ? { name: container.name, dir: container.dir.trim() || '/' } : undefined,
         launch,
         command: launch === 'custom' ? text.trim() : '',
         prompt: prompt || undefined,
@@ -655,7 +762,7 @@ function StartForm() {
         start: true,
       });
       if (device && r.id) rememberTerminals(device, [r]);
-      s.touchProject(device, r.workdir ?? workdir, { launch, shell: shell.trim(), full_access: canFull && fullAccess, auto_start: autoStart });
+      if (!container) s.touchProject(device, r.workdir ?? workdir, { launch, shell: shell.trim(), full_access: canFull && fullAccess, auto_start: autoStart });
       s.reload();
       setText('');
       setName('');
@@ -668,7 +775,8 @@ function StartForm() {
     }
   };
   const placeholder = dshRow ? t('sess.ph_dsh_open') : t(`sess.ph_${launch}`, { tool: t(`launch.${launch}.title`) });
-  const projName = baseName(workdir) || workdir || '…';
+  const projName = container ? container.name : baseName(workdir) || workdir || '…';
+  const launches = container ? START_LAUNCHES.filter((l) => l !== 'dsh') : START_LAUNCHES;
   return (
     <div className="start">
       {!opensInPage() && (
@@ -686,7 +794,7 @@ function StartForm() {
         }}
       >
         <div className="start-types" role="group" aria-label={t('form.launch')}>
-          {START_LAUNCHES.map((l) => (
+          {launches.map((l) => (
             <button key={l} type="button" className="start-type" aria-pressed={launch === l} onClick={() => setLaunch(l)} title={t(`launch.${l}.desc`)}>
               <LaunchIcon launch={l} size={16} />
               {t(`launch.${l}.title`)}
@@ -719,13 +827,14 @@ function StartForm() {
         )}
         <div className="start-bar">
           <span className="start-loc-wrap">
-            <button type="button" className="start-loc" onClick={() => setPicking(!picking)} aria-expanded={picking} title={workdir}>
-              {devObj ? <DeviceAvatar device={devObj} size={18} /> : <Folder size={15} aria-hidden="true" />}
+            <button type="button" className="start-loc" onClick={() => setPicking(!picking)} aria-expanded={picking} title={container ? `${container.name}:${container.dir}` : workdir}>
+              {devObj ? <DeviceAvatar device={devObj} size={18} /> : container ? <Container size={15} aria-hidden="true" /> : <Folder size={15} aria-hidden="true" />}
+              {devObj && container && <Container size={14} aria-hidden="true" className="muted" />}
               <span className="ellipsis">{projName}</span>
               {devObj && <span className="muted ellipsis start-loc-dev">{deviceName(t, devObj)}</span>}
               <ChevronDown size={14} aria-hidden="true" />
             </button>
-            {picking && <ProjectPicker projects={s.projects} device={device} workdir={workdir} onPick={pickProject} onClose={() => setPicking(false)} />}
+            {picking && <ProjectPicker projects={s.projects} device={device} workdir={workdir} container={container} onPick={pickProject} onClose={() => setPicking(false)} />}
           </span>
           {launch !== 'dsh' && (
             <button type="button" className="btn btn-plain start-adv" onClick={() => setAdv(!adv)} aria-expanded={adv}>
@@ -734,11 +843,23 @@ function StartForm() {
             </button>
           )}
           <span className="grow" />
-          {missing(launch) && <span className="small muted">{t('sess.install_first', { tool: t(`launch.${launch}.title`) })}</span>}
-          <button type="submit" className="start-go" disabled={busy || !allowed || offline || !workdir.trim()} aria-label={t('sess.start')} title={t('sess.start_hint')}>
+          {missing(launch) && <span className="small muted">{t(container ? 'sess.container_missing' : 'sess.install_first', { tool: t(`launch.${launch}.title`) })}</span>}
+          <button type="submit" className="start-go" disabled={busy || !allowed || offline || !(container ? container.dir.trim() : workdir.trim())} aria-label={t('sess.start')} title={t('sess.start_hint')}>
             {busy ? <Spinner size={18} /> : dshRow ? <ExternalLink size={18} /> : <ArrowUp size={20} />}
           </button>
         </div>
+        {container && (
+          <div className="start-container">
+            <label className="start-container-dir">
+              <span className="muted">{t('sess.container_dir')}</span>
+              <input className="mono" value={container.dir} onChange={(e) => setContainer({ ...container, dir: e.target.value })} spellCheck={false} aria-label={t('sess.container_dir')} />
+            </label>
+            <p className="small muted">
+              {t('sess.container_note')}
+              {container.root && canFull && fullAccess && launch === 'claude' ? ` ${t('sess.container_root')}` : ''}
+            </p>
+          </div>
+        )}
         {adv && launch !== 'dsh' && (
           <div className="start-advanced">
             <label className="field">
@@ -755,7 +876,7 @@ function StartForm() {
                 </span>
               </label>
             )}
-            {canFull && fullAccess && isRoot && (
+            {canFull && fullAccess && isRoot && !container && (
               <label className="start-check">
                 <input type="checkbox" checked={rootOk} onChange={(e) => setRootOk(e.target.checked)} />
                 <span>
@@ -780,12 +901,12 @@ function StartForm() {
       </form>
       <ErrorNote error={error} />
       {offline && <p className="small muted">{t('sess.device_offline')}</p>}
-      {missing(launch) && (
+      {missing(launch) && !container && (
         <button type="button" className="btn btn-plain small" onClick={reloadTools}>
           {t('tools.recheck')}
         </button>
       )}
-      <PrevConversations device={device} workdir={workdir} launch={launch} focus={Boolean(want.prev)} />
+      {!container && <PrevConversations device={device} workdir={workdir} launch={launch} focus={Boolean(want.prev)} />}
       <RecentProjects current={project?.key} onPick={pickProject} />
       <div className="start-foot">
         <BackendNote />
@@ -806,7 +927,7 @@ function RecentProjects({ current, onPick }) {
   return (
     <div className="start-recent">
       {list.map((p) => (
-        <button key={p.key} type="button" onClick={() => onPick(p.device, p.workdir)} title={p.workdir}>
+        <button key={p.key} type="button" onClick={() => onPick(p.device, p.container ? "" : p.workdir, p.container ?? null)} title={p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}>
           {devices.multi ? <DeviceAvatar device={devices.byId(p.device)} size={16} /> : <Folder size={14} aria-hidden="true" />}
           <span className="ellipsis">{p.name}</span>
         </button>
@@ -840,18 +961,25 @@ function useFillHeight(ref, enabled) {
   return h;
 }
 
-/** 会话顶栏左边：电脑、项目。 */
+/** 会话顶栏里名字后面的一行小字：电脑（颜色点 + 名字）/ 目录。不超过一行、不太宽，悬停看完整的。 */
 function SessionLead({ inst }) {
+  const { t } = useTranslation();
   const devices = useDevices();
-  const dev = devices.multi && inst ? devices.byId(terminalDevice(inst.id)) : null;
   if (!inst) return null;
+  const dev = devices.multi ? devices.byId(terminalDevice(inst.id)) : null;
+  const dir = sessionDir(inst);
+  const full = [dev && deviceName(t, dev), inst.container && t('sess.in_container', { name: inst.container.name }), dir].filter(Boolean).join(' · ');
   return (
-    <span className="slead">
-      {dev && <DeviceTag device={dev} />}
-      <span className="slead-proj ellipsis" title={inst.workdir}>
-        <Folder size={12} aria-hidden="true" />
-        {baseName(inst.workdir)}
-      </span>
+    <span className="slead" title={full}>
+      {dev && (
+        <>
+          <span className="slead-dot" style={{ background: deviceColor(devices, dev.id) }} aria-hidden="true" />
+          <span className="slead-dev ellipsis">{deviceName(t, dev)}</span>
+          <span className="slead-sep" aria-hidden="true">/</span>
+        </>
+      )}
+      {inst.container && <Container size={12} aria-hidden="true" />}
+      <span className="slead-proj ellipsis">{baseName(dir) || dir}</span>
     </span>
   );
 }
@@ -872,7 +1000,9 @@ export function SessionStage({ activeId }) {
   const height = useFillHeight(ref, Boolean(activeId));
   const ids = activeId && !s.recent.includes(activeId) ? [activeId, ...s.recent] : s.recent;
   useEffect(() => {
-    if (activeId) s.openRecent(activeId);
+    if (!activeId) return;
+    s.openTab(activeId);
+    s.openRecent(activeId);
   }, [activeId]);
   // 被删掉的会话：拿到了它所在电脑的列表、里面却没有（电脑离线、还没加载时不算）
   const missing = (id) => {
@@ -882,7 +1012,8 @@ export function SessionStage({ activeId }) {
     return Boolean(dev && s.groups?.[dev] && !s.groups[dev].error);
   };
   useEffect(() => {
-    for (const id of s.recent) if (id !== activeId && missing(id)) s.closeRecent(id);
+    const gone = [...new Set([...s.recent, ...s.tabs])].filter((id) => id !== activeId && missing(id));
+    if (gone.length) s.closeTabs(gone);
   });
   if (!ids.length) return null;
   return (
@@ -899,6 +1030,7 @@ export function SessionStage({ activeId }) {
             lead={inst && <LaunchIcon launch={inst.launch} size={16} />}
             sub={<SessionLead inst={inst} />}
             menu={inst && <SessionMenu inst={inst} />}
+            focusN={s.focusReq.id === id ? s.focusReq.n : 0}
             onStart={async () => {
               await deviceApi(terminalDevice(id)).post(`/instances/${id}/start`);
               s.reload();
@@ -906,6 +1038,203 @@ export function SessionStage({ activeId }) {
           />
         );
       })}
+    </div>
+  );
+}
+
+// ---------------- 顶部标签（打开的会话） ----------------
+
+/** 点到外面、按 Esc 时关掉弹出的东西。 */
+function useDismiss(ref, open, onClose) {
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => !ref.current?.contains(e.target) && onClose();
+    const key = (e) => e.key === 'Escape' && onClose();
+    document.addEventListener('pointerdown', down, true);
+    document.addEventListener('keydown', key);
+    window.addEventListener('blur', onClose);
+    return () => {
+      document.removeEventListener('pointerdown', down, true);
+      document.removeEventListener('keydown', key);
+      window.removeEventListener('blur', onClose);
+    };
+  }, [open]);
+}
+
+function TabState({ inst }) {
+  if (!inst) return null;
+  const state = inst.error && !inst.running ? 'error' : sessionState(inst);
+  return state === 'idle' || state === 'stopped' ? null : <StateDot state={state} />;
+}
+
+/**
+ * 顶部标签：打开过的会话按打开的先后排成一行（新打开的在最后，不会自己换位置），可以拖动调整；
+ * 中键或 × 关掉（只是收起，终端照常运行）；右键：关闭其他 / 右侧 / 全部。多了横向滚动，右边 ▾ 列出全部、可以搜。
+ * 只在电脑上显示（手机上会话整页打开）。
+ */
+export function SessionTabs({ activeId }) {
+  const { t } = useTranslation();
+  const s = useSessions();
+  const ui = useSessionUi();
+  const { navigate } = useRouter();
+  const devices = useDevices();
+  const bar = useRef(null);
+  const [drag, setDrag] = useState(null);
+  const [ctx, setCtx] = useState(null);
+  const [all, setAll] = useState(false);
+  const [q, setQ] = useState('');
+  const ctxRef = useRef(null);
+  const allRef = useRef(null);
+  useDismiss(ctxRef, Boolean(ctx), () => setCtx(null));
+  useDismiss(allRef, all, () => setAll(false));
+  useEffect(() => {
+    bar.current?.querySelector('.stab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }, [activeId, s.tabs.length]);
+  if (!opensInPage() || s.tabs.length === 0) return null;
+  const close = (ids) => {
+    setCtx(null);
+    s.closeTabs(ids);
+    if (!activeId || !ids.includes(activeId)) return;
+    // 关掉的是当前的：切到右边的，没有就左边的，都没有回开始页
+    const at = s.tabs.indexOf(activeId);
+    const keep = (x) => !ids.includes(x);
+    const next = s.tabs.slice(at + 1).find(keep) ?? s.tabs.slice(0, at).reverse().find(keep);
+    if (next) ui.openSession(next);
+    else navigate('/');
+  };
+  const tip = (inst) => {
+    if (!inst) return '';
+    const dev = devices.multi ? devices.byId(terminalDevice(inst.id)) : null;
+    return [sessionTitle(inst), customName(inst) && t('sess.my_name', { name: customName(inst) }), [dev && deviceName(t, dev), inst.container?.name, sessionDir(inst)].filter(Boolean).join(' · ')].filter(Boolean).join('\n');
+  };
+  const words = q.trim().toLowerCase();
+  const listed = s.tabs.filter((id) => {
+    if (!words) return true;
+    const i = s.byId(id);
+    return [sessionTitle(i), i?.name, sessionDir(i), i?.container?.name, i?.launch].filter(Boolean).join(' ').toLowerCase().includes(words);
+  });
+  const ctxAt = ctx ? s.tabs.indexOf(ctx.id) : -1;
+  return (
+    <div className="stabs" role="tablist" aria-label={t('sess.tabs')}>
+      <div className="stabs-scroll" ref={bar} onWheel={(e) => e.deltaY && bar.current && (bar.current.scrollLeft += e.deltaY)}>
+        {s.tabs.map((id, k) => (
+          <SessionTab
+            key={id}
+            id={id}
+            index={k}
+            active={id === activeId}
+            title={tip(s.byId(id))}
+            dragging={drag === id}
+            onDragStart={() => setDrag(id)}
+            onDragEnd={() => setDrag(null)}
+            onDrop={(to) => drag && s.moveTab(drag, to)}
+            onClose={() => close([id])}
+            onMenu={(x, y) => setCtx({ id, x, y })}
+          />
+        ))}
+      </div>
+      <div className="stabs-all-wrap" ref={allRef}>
+        <button type="button" className="btn btn-plain btn-icon stabs-more" onClick={() => setAll(!all)} aria-expanded={all} aria-label={t('sess.tabs_all')} title={t('sess.tabs_all')}>
+          <ChevronDown size={15} />
+          <span className="stabs-count">{s.tabs.length}</span>
+        </button>
+        {all && (
+          <div className="stabs-all" role="dialog" aria-label={t('sess.tabs_all')}>
+            <label className="slist-search">
+              <Search size={14} aria-hidden="true" />
+              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('sess.tabs_search')} aria-label={t('sess.tabs_search')} spellCheck={false} autoFocus />
+            </label>
+            <div className="stabs-list">
+              {listed.map((id) => {
+                const inst = s.byId(id);
+                return (
+                  <div key={id} className={`stabs-row ${id === activeId ? 'on' : ''}`}>
+                    <button
+                      type="button"
+                      className="stabs-row-main"
+                      onClick={() => {
+                        setAll(false);
+                        ui.openSession(id);
+                      }}
+                      title={tip(inst)}
+                    >
+                      <LaunchIcon launch={inst?.launch} size={15} />
+                      <span className="stabs-row-text">
+                        <span className="ellipsis">{inst ? sessionTitle(inst) : id}</span>
+                        {inst && <SessionLead inst={inst} />}
+                      </span>
+                      <TabState inst={inst} />
+                    </button>
+                    <button type="button" className="btn btn-plain btn-icon stab-x" onClick={() => close([id])} aria-label={t('sess.tab_close')} title={t('sess.tab_close')}>
+                      <X size={14} />
+                    </button>
+                  </div>
+                );
+              })}
+              {listed.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
+            </div>
+            <button type="button" className="btn btn-plain btn-sm stabs-close-all" onClick={() => { setAll(false); close([...s.tabs]); }}>
+              {t('sess.tabs_close_all')}
+            </button>
+          </div>
+        )}
+      </div>
+      {ctx && (
+        <div className="pop-menu stabs-ctx" ref={ctxRef} role="menu" style={{ left: ctx.x, top: ctx.y }}>
+          <button type="button" role="menuitem" onClick={() => close([ctx.id])}>{t('sess.tab_close')}</button>
+          <button type="button" role="menuitem" onClick={() => close(s.tabs.filter((x) => x !== ctx.id))} disabled={s.tabs.length < 2}>{t('sess.tabs_close_others')}</button>
+          <button type="button" role="menuitem" onClick={() => close(s.tabs.slice(ctxAt + 1))} disabled={ctxAt === s.tabs.length - 1}>{t('sess.tabs_close_right')}</button>
+          <button type="button" role="menuitem" onClick={() => close([...s.tabs])}>{t('sess.tabs_close_all')}</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SessionTab({ id, index, active, title, dragging, onDragStart, onDragEnd, onDrop, onClose, onMenu }) {
+  const { t } = useTranslation();
+  const s = useSessions();
+  const ui = useSessionUi();
+  const devices = useDevices();
+  const inst = s.byId(id);
+  const dev = devices.multi ? terminalDevice(id) : null;
+  // 按下就切换（见 usePressActivate）；要能拖动，所以按下时不拦默认行为，焦点之后交给输入框
+  const { onMouseDown: _keep, ...press } = usePressActivate(() => ui.openSession(id), false);
+  return (
+    <div
+      className={`stab ${active ? 'on' : ''} ${dragging ? 'dragging' : ''}`}
+      style={dev ? { '--dc': deviceColor(devices, dev) } : undefined}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', id);
+        onDragStart();
+      }}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => e.preventDefault()}
+      onDrop={(e) => {
+        e.preventDefault();
+        onDrop(index);
+      }}
+      onMouseDown={(e) => e.button === 1 && e.preventDefault()}
+      onAuxClick={(e) => {
+        if (e.button !== 1) return;
+        e.preventDefault();
+        onClose();
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        onMenu(e.clientX, e.clientY);
+      }}
+    >
+      <button type="button" role="tab" aria-selected={active} className="stab-main" {...press} title={title}>
+        <LaunchIcon launch={inst?.launch} size={14} />
+        <span className="ellipsis">{inst ? sessionTitle(inst) : '…'}</span>
+        <TabState inst={inst} />
+      </button>
+      <button type="button" className="stab-x" onClick={onClose} aria-label={t('sess.tab_close')} title={t('sess.tab_close')}>
+        <X size={13} />
+      </button>
     </div>
   );
 }

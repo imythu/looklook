@@ -119,6 +119,8 @@ pub struct Instances {
     first_prompt: Mutex<HashMap<String, String>>,
     /// 新建时要接着的以前的对话：同第一句话，只在第一次建会话时用一次
     first_resume: Mutex<HashMap<String, Resume>>,
+    /// agent 会话名（终端 ID → 名字）和算出来的时间
+    titles: Mutex<(Option<Instant>, HashMap<String, String>)>,
 }
 
 /// 接着以前的对话（会话页的“以前的对话”，见 history.rs）：`fork` 为复制一份接着，原来的不动
@@ -154,6 +156,12 @@ pub struct View {
     pub web_port: Option<u16>,
     /// Claude Code 带对话界面启动（docs/CLAUDE_UI.md）
     pub chat_ui: bool,
+    /// 名字是用户自己起的（新建时填了名称、之后改过名）；界面上 agent 的会话名为主，它为辅
+    pub name_custom: bool,
+    /// agent 自己的会话名：对话标题（/rename、自动标题），否则 agent 设置的终端标题（见 [`Instances::agent_titles`]）
+    pub agent_title: Option<String>,
+    /// 在 Docker 容器里运行（docker.rs）
+    pub container: Option<crate::docker::Container>,
 }
 
 /// 启动选项（不在 SQLite 的 instances 表里，单独存在 kv：`instance_opts.{id}`）。
@@ -169,6 +177,9 @@ pub struct Opts {
     /// Claude Code：注入 hooks 启动，管理台多一个“对话”视图（docs/CLAUDE_UI.md）
     #[serde(default)]
     pub chat_ui: bool,
+    /// 名字是用户自己起的
+    #[serde(default)]
+    pub name_custom: bool,
 }
 
 /// 第一句话最长多少个字符（太长的请在会话里粘贴）
@@ -180,6 +191,14 @@ const WEB_PORT_START: u16 = 3080;
 fn opts_key(id: &str) -> String {
     format!("instance_opts.{id}")
 }
+
+/// 会话所在的 Docker 容器（只在新建时设置）
+fn container_key(id: &str) -> String {
+    format!("instance_container.{id}")
+}
+
+/// agent 会话名多久重新算一次（要读对话记录、问 tmux）
+const TITLE_TTL: Duration = Duration::from_secs(10);
 
 /// Codex 也有对话界面了（docs/CODEX_UI.md）。之前 Codex 终端的 `chat_ui` 是被强制关掉的，不是用户选的，
 /// 所以升级后给已有的 Codex 终端打开一次（和新建时的默认一样），下次启动生效；之后用户关掉的不再动。
@@ -217,6 +236,16 @@ pub struct Input {
     /// DSH 网页界面的端口（只在新建时由网关填写，不接受请求里的值）
     #[serde(skip)]
     pub web_port: Option<u16>,
+    /// 名字是用户自己填的（不是按第一句话、对话标题取的）
+    pub name_custom: Option<bool>,
+    /// 在 Docker 容器里运行：容器名和容器里的目录（只在新建时有效）
+    pub container: Option<ContainerInput>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ContainerInput {
+    pub name: String,
+    pub dir: String,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -244,6 +273,7 @@ impl Instances {
             changed: tokio::sync::watch::channel(0).0,
             first_prompt: Mutex::new(HashMap::new()),
             first_resume: Mutex::new(HashMap::new()),
+            titles: Mutex::new((None, HashMap::new())),
         })
     }
 
@@ -269,7 +299,17 @@ impl Instances {
     pub async fn list(&self) -> Result<Vec<View>, LocalError> {
         let rows = self.store.instances()?;
         let sessions = self.tmux_sessions().await;
-        Ok(rows.into_iter().map(|r| self.view(r, sessions.as_ref())).collect())
+        let mut views: Vec<View> = rows.into_iter().map(|r| self.view(r, sessions.as_ref())).collect();
+        let stale = lock(&self.titles).0.is_none_or(|at| at.elapsed() >= TITLE_TTL);
+        if stale {
+            let titles = self.agent_titles(&views).await;
+            *lock(&self.titles) = (Some(Instant::now()), titles);
+            let cache = lock(&self.titles);
+            for v in &mut views {
+                v.agent_title = cache.1.get(&v.row.id).cloned();
+            }
+        }
+        Ok(views)
     }
 
     pub async fn get(&self, id: &str) -> Result<View, LocalError> {
@@ -288,6 +328,9 @@ impl Instances {
             root_confirmed: opts.root_confirmed,
             web_port: opts.web_port,
             chat_ui: opts.chat_ui,
+            name_custom: opts.name_custom,
+            agent_title: lock(&self.titles).1.get(&row.id).cloned(),
+            container: self.container(&row.id),
             running,
             task_alive: sessions.map(|_| sess.is_some()),
             started_at: sess.map(|(c, _)| ts(*c)),
@@ -296,6 +339,74 @@ impl Instances {
             url: format!("/i/{}/", row.id),
             row,
         }
+    }
+
+    pub fn container(&self, id: &str) -> Option<crate::docker::Container> {
+        self.store.get::<crate::docker::Container>(&container_key(id)).ok().flatten()
+    }
+
+    /// agent 的会话名（Claude Code / Codex / OpenCode 的终端，终端 ID → 名字）：
+    /// 1. 对话标题（history.rs：/rename > 自动标题 > 摘要 > 第一句话）。是哪个对话：对话界面 hooks 记下的会话号、
+    ///    接着以前的对话时的会话号；都没有时，同一文件夹里只有这一个该工具的终端在跑，就取它启动之后最新的那个对话。
+    /// 2. agent 设置的终端标题（tmux `pane_title`，例如 Claude Code 的“✳ 修登录页”），去掉前面的状态符号。
+    /// 容器里的会话拿不到对话记录，只用 2。
+    async fn agent_titles(&self, views: &[View]) -> HashMap<String, String> {
+        let live: Vec<&View> = views.iter().filter(|v| v.task_alive == Some(true) && crate::history::AGENTS.contains(&v.row.launch.as_str())).collect();
+        let mut out = HashMap::new();
+        if live.is_empty() {
+            return out;
+        }
+        let panes = self.pane_titles().await;
+        let local: Vec<&&View> = live.iter().filter(|v| v.container.is_none()).collect();
+        let mut convs = vec![];
+        for agent in crate::history::AGENTS {
+            if local.iter().any(|v| v.row.launch == agent) {
+                convs.extend(crate::history::list(crate::history::Query { agent: Some(agent.to_string()), limit: Some(500), ..Default::default() }).await);
+            }
+        }
+        let bound: HashMap<&str, String> = local
+            .iter()
+            .filter_map(|v| {
+                let id = v.row.id.as_str();
+                let conv = crate::chat::binding(&self.store, id).map(|b| b.session_id).or_else(|| self.store.get::<String>(&resume_key(id)).ok().flatten())?;
+                Some((id, conv))
+            })
+            .collect();
+        let taken: HashSet<&str> = bound.values().map(String::as_str).collect();
+        for v in &live {
+            let id = v.row.id.as_str();
+            let conv = if v.container.is_some() {
+                None
+            } else if let Some(c) = bound.get(id) {
+                convs.iter().find(|x| x.agent == v.row.launch && &x.id == c)
+            } else {
+                // 同一文件夹里同一工具没绑定的终端只有这一个时，取它启动之后最新的对话
+                let peers = local.iter().filter(|o| o.row.launch == v.row.launch && !bound.contains_key(o.row.id.as_str()) && crate::history::same_dir(&o.row.workdir, &v.row.workdir)).count();
+                let started = v.started_at.as_deref().and_then(crate::util::parse_time_ms).unwrap_or(i64::MAX);
+                (peers == 1)
+                    .then(|| convs.iter().filter(|x| x.agent == v.row.launch && !taken.contains(x.id.as_str()) && x.updated_ms >= started - 5000 && crate::history::same_dir(&x.workdir, &v.row.workdir)).max_by_key(|x| x.updated_ms))
+                    .flatten()
+            };
+            let title = conv.map(|c| c.title.clone()).filter(|t| !t.trim().is_empty()).or_else(|| panes.get(&Self::session_name(id)).cloned());
+            if let Some(t) = title {
+                out.insert(id.to_string(), clip_title(&t));
+            }
+        }
+        out
+    }
+
+    /// 每个 tmux 会话当前面板的标题（agent 用 OSC 设置的）。没设置过的（默认是主机名）、shell 的提示符标题不算。
+    async fn pane_titles(&self) -> HashMap<String, String> {
+        let Backend::Tmux(_) = self.backend else { return HashMap::new() };
+        let Ok(out) = self.tmux(&["list-sessions", "-F", "#{session_name}\t#{host}\t#{pane_title}"]).await else { return HashMap::new() };
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|l| {
+                let mut it = l.splitn(3, '\t');
+                let (name, host, title) = (it.next()?, it.next()?, it.next()?);
+                Some((name.to_string(), clean_pane_title(title, host)?))
+            })
+            .collect()
     }
 
     pub fn opts(&self, id: &str) -> Opts {
@@ -352,6 +463,26 @@ impl Instances {
         Ok(())
     }
 
+    /// 新建容器里的会话：容器名、目录合法，容器在运行，要用的 AI 工具容器里装了。
+    async fn check_container(c: &ContainerInput, launch: &str) -> Result<crate::docker::Container, LocalError> {
+        let (name, dir) = (c.name.trim(), c.dir.trim().trim_end_matches('/'));
+        let dir = if dir.is_empty() { "/" } else { dir };
+        if !crate::docker::valid_name(name) {
+            return Err(LocalError::invalid("container", "invalid"));
+        }
+        if !crate::docker::valid_dir(dir) {
+            return Err(LocalError::new("WORKDIR_NOT_FOUND").with("path", dir));
+        }
+        if !matches!(launch, "shell" | "claude" | "codex" | "opencode" | "custom") {
+            return Err(LocalError::invalid("launch", "invalid"));
+        }
+        let p = crate::docker::probe(name).await?;
+        if crate::history::AGENTS.contains(&launch) && !p.tools.iter().any(|t| t == launch) {
+            return Err(LocalError::new("TOOL_NOT_IN_CONTAINER").with("tool", launch).with("container", name));
+        }
+        Ok(crate::docker::Container { name: name.to_string(), dir: dir.to_string(), root: p.root })
+    }
+
     /// 全部权限选项：只对 Codex / Claude Code / OpenCode 有意义（DSH 的权限在它自己的网页里设置）；
     /// root 运行时必须确认。DSH 必须有网页端口。
     fn validate_opts(row: &InstanceRow, opts: &mut Opts) -> Result<(), LocalError> {
@@ -379,9 +510,14 @@ impl Instances {
     }
 
     pub async fn create(&self, input: Input) -> Result<View, LocalError> {
+        let launch = input.launch.clone().unwrap_or_else(|| "shell".into());
+        // 容器：先探测（最多几秒，不占着新建锁）
+        let container = match &input.container {
+            Some(c) => Some(Self::check_container(c, &launch).await?),
+            None => None,
+        };
         let _g = self.op.lock().await;
         let settings = Settings::load(&self.store);
-        let launch = input.launch.unwrap_or_else(|| "shell".into());
         let now = now_rfc3339();
         let mut row = InstanceRow {
             id: loop {
@@ -391,7 +527,7 @@ impl Instances {
                 }
             },
             name: input.name.unwrap_or_default(),
-            workdir: input.workdir.filter(|w| !w.trim().is_empty()).unwrap_or(settings.default_workdir),
+            workdir: input.workdir.filter(|w| !w.trim().is_empty()).unwrap_or(settings.default_workdir.clone()),
             launch,
             command: input.command.unwrap_or_default(),
             shell: input.shell.unwrap_or_default(),
@@ -401,10 +537,15 @@ impl Instances {
             created_at: now.clone(),
             updated_at: now,
         };
+        // 容器里的会话：tmux 在这台电脑上，工作目录用默认文件夹；容器里的目录交给 docker exec -w
+        if container.is_some() {
+            row.workdir = settings.default_workdir.clone();
+        }
+        let name_custom = input.name_custom.unwrap_or(false) && !row.name.trim().is_empty();
         if row.name.trim().is_empty() {
             let rows = self.store.instances()?;
             let taken: HashSet<&str> = rows.iter().map(|r| r.name.as_str()).collect();
-            row.name = default_name(&row.launch, &row.workdir, &taken);
+            row.name = default_name(&row.launch, container.as_ref().map_or(&row.workdir, |c| &c.dir), &taken);
         }
         self.validate(&mut row)?;
         if row.launch == "dsh" && self.dsh()?.is_some() {
@@ -416,7 +557,13 @@ impl Instances {
             web_port: input.web_port,
             // 新建的 Claude Code 终端默认带对话界面（需要会话保持）
             chat_ui: input.chat_ui.unwrap_or(matches!(self.backend, Backend::Tmux(_))),
+            name_custom,
         };
+        if container.is_some() {
+            // 容器里的 root 不是这台电脑的 root，不用确认；没有对话界面
+            opts.root_confirmed = opts.full_access;
+            opts.chat_ui = false;
+        }
         Self::validate_opts(&row, &mut opts)?;
         let prompt = input.prompt.map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
         if let Some(p) = &prompt {
@@ -428,6 +575,9 @@ impl Instances {
             }
         }
         if let Some(r) = &input.resume {
+            if container.is_some() {
+                return Err(LocalError::invalid("resume", "invalid"));
+            }
             if !crate::history::valid_id(&r.id) || !crate::history::AGENTS.contains(&row.launch.as_str()) || prompt.is_some() {
                 return Err(LocalError::invalid("resume", "invalid"));
             }
@@ -441,6 +591,9 @@ impl Instances {
         }
         self.store.insert_instance(&row)?;
         self.store.set(&opts_key(&row.id), &opts)?;
+        if let Some(c) = &container {
+            self.store.set(&container_key(&row.id), c)?;
+        }
         if let Some(r) = input.resume {
             if !r.fork {
                 self.store.set(&resume_key(&row.id), &r.id)?;
@@ -458,6 +611,7 @@ impl Instances {
     pub async fn update(&self, id: &str, input: Input) -> Result<View, LocalError> {
         let _g = self.op.lock().await;
         let mut row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let renamed = input.name.as_deref().is_some_and(|v| v.trim() != row.name);
         if let Some(v) = input.name {
             row.name = v;
         }
@@ -491,6 +645,13 @@ impl Instances {
         if let Some(v) = input.chat_ui {
             opts.chat_ui = v;
         }
+        if renamed {
+            opts.name_custom = true;
+        }
+        if self.container(id).is_some() {
+            opts.root_confirmed = opts.full_access;
+            opts.chat_ui = false;
+        }
         Self::validate_opts(&row, &mut opts)?;
         row.updated_at = now_rfc3339();
         self.store.update_instance(&row)?;
@@ -508,6 +669,7 @@ impl Instances {
         self.store.delete_instance(id)?;
         self.bump();
         let _ = self.store.remove(&opts_key(id));
+        let _ = self.store.remove(&container_key(id));
         let _ = self.store.remove(&resume_key(id));
         lock(&self.health).remove(id);
         lock(&self.first_prompt).remove(id);
@@ -729,6 +891,14 @@ impl Instances {
     /// 要接着以前的对话时换成各工具接着的命令（[`Instances::resume_command`]）。
     fn program_with(&self, row: &InstanceRow, prompt: Option<&str>, resume: Option<&Resume>) -> Result<(Vec<String>, Option<String>), LocalError> {
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell)?;
+        if let Some(c) = self.container(&row.id) {
+            let docker = crate::docker::binary().unwrap_or_else(|| "docker".into());
+            let cmd = crate::docker::exec_command(&docker, &c, self.container_inner(row, &c, prompt).as_deref(), shell.family);
+            return Ok(match shell.run(&cmd) {
+                Some(v) => (v, None),
+                None => (shell.interactive(), Some(cmd)),
+            });
+        }
         let launch = match prompt {
             None if resume.is_some() => resume.and_then(|r| self.resume_command(row, r)),
             None => self.launch_command(row),
@@ -748,8 +918,23 @@ impl Instances {
         })
     }
 
+    /// 容器里运行的命令（POSIX 写法）：工具的启动命令（按容器里是不是 root 决定加不加 `IS_SANDBOX=1`）加上第一句话；
+    /// 普通终端为 None（打开容器里的 shell，第一句话不用）。不注入 hooks、不加模型服务商环境（容器有自己的配置）。
+    fn container_inner(&self, row: &InstanceRow, c: &crate::docker::Container, prompt: Option<&str>) -> Option<String> {
+        let base = launch_command_line(row, self.opts(&row.id), c.root)?;
+        Some(match (prompt, row.launch.as_str()) {
+            (Some(p), "opencode") => format!("{base} --prompt {}", crate::docker::quote_inner(p)),
+            (Some(p), "claude" | "codex") => format!("{base} {}", crate::docker::quote_inner(p)),
+            _ => base,
+        })
+    }
+
     /// Claude Code / Codex 选了第三方模型服务商时，按 shell 的写法加上接口地址与 Key（见 model.rs）。
+    /// 容器里的会话不加（命令已经整个包在 docker exec 里）。
     fn model_wrap(&self, row: &InstanceRow, cmd: &str, family: crate::shells::Family) -> String {
+        if self.container(&row.id).is_some() {
+            return cmd.to_string();
+        }
         match crate::model::launch_env(&self.store, &self.paths.home, &row.launch) {
             Some(env) => env.wrap(cmd, family),
             None => cmd.to_string(),
@@ -1244,6 +1429,35 @@ pub fn with_chat_hooks(cmd: &str, id: &str, settings: &Path, resume: Option<&str
     format!("{}={id} {cmd} --settings \"{path}\"{resume}", crate::chat::hooks::INSTANCE_ENV)
 }
 
+/// agent 会话名最长多少个字符（太长的界面上也只显示一行）
+const TITLE_MAX: usize = 80;
+
+fn clip_title(t: &str) -> String {
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.chars().count() <= TITLE_MAX {
+        return t;
+    }
+    format!("{}…", t.chars().take(TITLE_MAX - 1).collect::<String>())
+}
+
+/// agent 设置的终端标题：去掉前面的状态符号（Claude Code 的 ✳、转圈的 ⠂ 等），OpenCode 的 `OC | ` 前缀；
+/// 没设置过的（tmux 默认是主机名）、只是工具名或 shell 名、像路径和 `用户@主机:目录` 的提示符标题都不算。
+fn clean_pane_title(title: &str, host: &str) -> Option<String> {
+    let raw = title.trim();
+    if raw.starts_with('/') || raw.starts_with('~') || (raw.contains('@') && raw.contains(':')) {
+        return None;
+    }
+    let t = raw.trim_start_matches(|c: char| !c.is_alphanumeric()).trim();
+    let t = t.strip_prefix("OC | ").unwrap_or(t).trim();
+    let lower = t.to_lowercase();
+    let host = host.trim().to_lowercase();
+    const GENERIC: [&str; 13] = ["claude code", "claude", "codex", "openai codex", "opencode", "bash", "zsh", "sh", "fish", "pwsh", "powershell", "tmux", "node"];
+    if t.is_empty() || lower == host || host.split('.').next() == Some(lower.as_str()) || GENERIC.contains(&lower.as_str()) {
+        return None;
+    }
+    Some(t.to_string())
+}
+
 /// 没填名字时的默认名：带上文件夹名，一眼看出是哪个项目——`my-app · Claude Code`，普通终端就是 `my-app`；
 /// 重名时加序号（`my-app · Claude Code 2`）。文件夹是主目录或根目录（名字说明不了什么）时用工具名加序号。
 fn default_name(launch: &str, workdir: &str, taken: &HashSet<&str>) -> String {
@@ -1439,6 +1653,17 @@ fn process_name(pid: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pane_titles_from_agents() {
+        assert_eq!(super::clean_pane_title("✳ 修登录页", "box").as_deref(), Some("修登录页"));
+        assert_eq!(super::clean_pane_title("⠂ Fix the login page", "box").as_deref(), Some("Fix the login page"));
+        assert_eq!(super::clean_pane_title("OC | 重构设置页", "box").as_deref(), Some("重构设置页"));
+        for t in ["box", "box.local", "✳ Claude Code", "codex", "~/w/app", "/home/a", "me@box:~/w", ""] {
+            assert_eq!(super::clean_pane_title(t, "box.local"), None, "{t}");
+        }
+        assert_eq!(super::clip_title(&"字".repeat(100)).chars().count(), 80);
+    }
+
     use super::*;
 
     #[test]
@@ -1625,7 +1850,7 @@ mod tests {
     #[test]
     fn full_access_flags() {
         let mut r = row();
-        let on = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false };
+        let on = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false, name_custom: false };
         assert_eq!(launch_command_line(&r, Opts::default(), false), None);
         r.launch = "codex".into();
         assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("codex"));
@@ -1645,19 +1870,19 @@ mod tests {
     #[test]
     fn opts_validation() {
         let mut r = row();
-        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false, name_custom: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(o == Opts::default(), "shell 终端忽略全部权限选项");
         r.launch = "claude".into();
-        let mut o = Opts { full_access: false, root_confirmed: true, web_port: None, chat_ui: false };
+        let mut o = Opts { full_access: false, root_confirmed: true, web_port: None, chat_ui: false, name_custom: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(!o.root_confirmed);
-        let mut o = Opts { full_access: true, root_confirmed: false, web_port: None, chat_ui: false };
+        let mut o = Opts { full_access: true, root_confirmed: false, web_port: None, chat_ui: false, name_custom: false };
         assert_eq!(Instances::validate_opts(&r, &mut o).is_err(), crate::platform::is_root());
         r.launch = "dsh".into();
-        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false, name_custom: false };
         assert!(Instances::validate_opts(&r, &mut o).is_err(), "DSH 必须有网页端口");
-        let mut o = Opts { full_access: true, root_confirmed: true, web_port: Some(3080), chat_ui: false };
+        let mut o = Opts { full_access: true, root_confirmed: true, web_port: Some(3080), chat_ui: false, name_custom: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(o == Opts { web_port: Some(3080), ..Opts::default() }, "DSH 没有全部权限选项");
     }

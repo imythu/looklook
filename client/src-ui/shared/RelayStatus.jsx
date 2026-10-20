@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { useStatus } from '../App.jsx';
 import { api } from './api.js';
 import { deviceName, useDevices } from './devices.jsx';
-import { useLanPage } from './lan.jsx';
+import { usePaths } from './paths.jsx';
 import { errorText } from './i18n.js';
 import { RELAYS_ANCHOR } from './RelayPicker.jsx';
 import { Link } from './router.jsx';
@@ -178,7 +178,7 @@ function LocalPop() {
 }
 
 /** 远程打开：连着哪台电脑、加密、延迟、线路。 */
-function RemotePop({ ms, name }) {
+function RemotePop({ ms, name, path }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   return (
@@ -191,6 +191,18 @@ function RemotePop({ ms, name }) {
         </dd>
         <dt>{t('conn.latency')}</dt>
         <dd>{ms === null ? '—' : t('nav.remote_ms', { ms })}</dd>
+        {path && (
+          <>
+            <dt>{t('path.label')}</dt>
+            <dd>
+              <span className={`dot path-${path.kind}`} aria-hidden="true" style={{ display: 'inline-block', width: 7, height: 7, marginRight: 6 }} />
+              {t(`path.${path.kind}`)}
+              <span className="muted small" style={{ display: 'block' }}>
+                {path.local} ⟷ {path.remote}
+              </span>
+            </dd>
+          </>
+        )}
         {status.relay_check?.current && (
           <>
             <dt>{t('conn.route_label')}</dt>
@@ -210,9 +222,11 @@ export function ConnChip() {
   const { t } = useTranslation();
   const { status } = useStatus();
   const devices = useDevices();
-  const lanPage = useLanPage();
   const { open, setOpen, ref } = usePop();
-  const mode = lanPage ? 'lan' : status.access === 'local' ? 'local' : 'remote';
+  const mode = status.access === 'local' ? 'local' : 'remote';
+  // 远程打开时按当前电脑实际走的路给色点上色（只有一台时就是唯一那条连接）
+  const paths = usePaths();
+  const path = mode === 'remote' ? (devices.selected ? paths[devices.selected] : Object.values(paths)[0]) ?? null : null;
   const ms = useRemoteLatency(mode === 'remote');
   const r = status.relay;
   if (mode === 'local' && (!r || r.state === 'off')) return null;
@@ -225,12 +239,10 @@ export function ConnChip() {
     kind = pill === 'connected' ? 'ok' : pill === 'failed' ? 'bad' : pill === 'blocked' ? 'warn' : 'wait';
     label = t('conn.local');
     sub = t(`relay.pill.${pill}`);
-  } else if (mode === 'remote') {
+  } else {
     kind = ms === null ? 'ok' : ms >= VERY_SLOW_MS ? 'bad' : ms >= SLOW_MS ? 'warn' : 'ok';
     label = t('conn.remote');
     sub = ms === null ? null : t('nav.remote_ms', { ms });
-  } else {
-    label = t('lan.badge');
   }
   return (
     <span className="relay-pill-wrap" ref={ref}>
@@ -240,22 +252,16 @@ export function ConnChip() {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={mode === 'remote' && ms !== null ? t('nav.remote_latency_hint', { ms }) : undefined}
+        title={mode === 'remote' ? [path ? t(`path.${path.kind}`) : null, ms !== null ? t('nav.remote_latency_hint', { ms }) : null].filter(Boolean).join(' · ') || undefined : undefined}
       >
-        <span className={`dot ${kind === 'ok' ? 'on' : kind}`} aria-hidden="true" />
+        <span className={`dot ${path ? `path-${path.kind}` : kind === 'ok' ? 'on' : kind}`} aria-hidden="true" />
         <span>{label}</span>
         {sub && <span className="conn-sub">· {sub}</span>}
       </button>
       {open && (
         <div className="relay-pop" role="dialog" aria-label={t('conn.title')}>
           {mode === 'local' && <LocalPop />}
-          {mode === 'remote' && <RemotePop ms={ms} name={name} />}
-          {mode === 'lan' && (
-            <>
-              <b className="conn-pop-title">{t('conn.lan_title', { name })}</b>
-              <p className="muted small" style={{ margin: 0 }}>{t('lan.badge_hint')}</p>
-            </>
-          )}
+          {mode === 'remote' && <RemotePop ms={ms} name={name} path={path} />}
         </div>
       )}
     </span>

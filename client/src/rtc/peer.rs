@@ -170,6 +170,56 @@ impl PeerConnectionHandler for PcHandler {
     }
 }
 
+/// 连接实际走的路（界面电脑菜单里的色点，见 src-ui/shared/paths.js）：两边都是内网地址为局域网直连，
+/// 有一边是中继为中转，其余（含两边都有公网 IPv6 直接连上）为公网直连。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PathKind {
+    Lan,
+    P2p,
+    Relay,
+}
+
+/// 选中的那对候选：路径类型与两边的“地址 类型”（日志与界面详情用）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PathInfo {
+    pub kind: PathKind,
+    pub local: String,
+    pub remote: String,
+}
+
+/// `candidate:1 1 UDP 2122317823 192.168.1.2 42009 typ host …` → (地址, 类型)。
+fn cand_parts(c: &str) -> Option<(&str, &str)> {
+    let t: Vec<&str> = c.trim().trim_start_matches("a=").split_whitespace().collect();
+    let typ = t.iter().position(|x| *x == "typ").and_then(|i| t.get(i + 1))?;
+    Some((t.get(4)?, typ))
+}
+
+/// 内网地址：RFC 1918、IPv6 ULA / 链路本地，以及浏览器隐藏真实 IP 用的 mDNS 名（`xxxx.local`）。
+fn private_addr(a: &str) -> bool {
+    if a.ends_with(".local") {
+        return true;
+    }
+    match a.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v)) => v.is_private(),
+        Ok(std::net::IpAddr::V6(v)) => (v.segments()[0] & 0xfe00) == 0xfc00 || (v.segments()[0] & 0xffc0) == 0xfe80,
+        Err(_) => false,
+    }
+}
+
+pub fn classify(local: &str, remote: &str) -> Option<PathInfo> {
+    let (la, lt) = cand_parts(local)?;
+    let (ra, rt) = cand_parts(remote)?;
+    let kind = if lt == "relay" || rt == "relay" {
+        PathKind::Relay
+    } else if private_addr(la) && private_addr(ra) {
+        PathKind::Lan
+    } else {
+        PathKind::P2p
+    };
+    Some(PathInfo { kind, local: format!("{la} {lt}"), remote: format!("{ra} {rt}") })
+}
+
 /// 一条 PeerConnection（应答方：浏览器连进来；发起方：本机 App 连同一账户的其他电脑，见 `super::outbound`）。
 pub struct Pc {
     pc: Box<RtcPeerConnection<PcHandler>>,
@@ -207,6 +257,12 @@ impl Pc {
         let mut me = Self { pc, state, gathered, reflexive, incoming };
         let ctl = me.channel("ctl")?;
         Ok((me, ctl))
+    }
+
+    /// 连上以后实际走的路；还没选出候选对时为 None。
+    pub fn path(&self) -> Option<PathInfo> {
+        let p = self.pc.selected_candidate_pair()?;
+        classify(&p.local, &p.remote)
     }
 
     /// 本机开一条通道（发起方）。
@@ -310,5 +366,27 @@ mod tests {
         // base64 密码里的 + / = 都要编码
         let p = s[1].credential.clone().unwrap();
         assert!(!urls[1].contains(&p) || !p.contains(['+', '/', '=']));
+    }
+
+    #[test]
+    fn path_kinds() {
+        let c = |a: &str, t: &str| format!("a=candidate:1 1 UDP 2122317823 {a} 42009 typ {t}");
+        let k = |l: String, r: String| classify(&l, &r).unwrap().kind;
+        assert_eq!(k(c("192.168.1.2", "host"), c("192.168.1.9", "prflx")), PathKind::Lan);
+        assert_eq!(k(c("10.0.0.2", "host"), c("3f1c-aa.local", "host")), PathKind::Lan);
+        assert_eq!(k(c("203.0.113.5", "srflx"), c("198.51.100.7", "srflx")), PathKind::P2p);
+        assert_eq!(k(c("2001:db8::1", "host"), c("2001:db8:1::2", "host")), PathKind::P2p);
+        assert_eq!(k(c("192.168.1.2", "host"), c("203.0.113.9", "relay")), PathKind::Relay);
+        assert!(classify("garbage", "x").is_none());
+    }
+
+    /// 本机候选地址不含 Clash/mihomo 的 TUN / fake-ip 地址（198.18.0.0/15），私有 IPv4 排在最前（third_party 的 libjuice 补丁）。
+    #[tokio::test]
+    async fn host_candidates_skip_tun() {
+        let (mut pc, _ch) = Pc::offer(&[]).unwrap();
+        let sdp = pc.local_offer(Duration::from_secs(5)).await.unwrap();
+        let hosts: Vec<&str> = sdp.lines().filter(|l| l.starts_with("a=candidate") && l.contains(" typ host")).collect();
+        eprintln!("{hosts:#?}");
+        assert!(!hosts.iter().any(|l| l.contains(" 198.18.") || l.contains(" 198.19.")), "{hosts:?}");
     }
 }

@@ -362,6 +362,53 @@ int udp_get_local_addr(socket_t sock, int family_hint, addr_record_t *record) {
 	return 0;
 }
 
+// looklook: host candidates are capped (MAX_HOST_CANDIDATES_COUNT, 9). On machines with Docker, VMs or a
+// Clash/mihomo TUN, virtual interfaces used to take those slots and the real LAN address was dropped, so two
+// computers on the same LAN never paired directly. Skip interfaces that never lead to another machine on the
+// LAN, skip Clash fake-ip / TUN addresses (198.18.0.0/15), and list private IPv4 addresses first.
+static bool looklook_skip_ifname(const char *name) {
+	static const char *prefixes[] = {"docker", "br-", "veth", "virbr", "vmnet", "vboxnet", "utun", "tun",
+	                                 "tap",    "Meta", "mihomo", "clash", "Clash", "bridge", "awdl", "llw",
+	                                 "anpi",   "cni",  "flannel", "kube", "lxc",  "lxdbr", "podman", NULL};
+	if (!name)
+		return false;
+	for (int i = 0; prefixes[i]; ++i)
+		if (strncmp(name, prefixes[i], strlen(prefixes[i])) == 0)
+			return true;
+	return false;
+}
+
+static bool looklook_skip_addr(const struct sockaddr *sa) {
+	if (sa->sa_family != AF_INET)
+		return false;
+	const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in *)sa)->sin_addr;
+	return b[0] == 198 && (b[1] == 18 || b[1] == 19);
+}
+
+// 0: private IPv4 (RFC 1918), 1: other IPv4, 2: IPv6
+static int looklook_rank(const addr_record_t *r) {
+	if (r->addr.ss_family != AF_INET)
+		return 2;
+	const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in *)&r->addr)->sin_addr;
+	if (b[0] == 10 || (b[0] == 172 && (b[1] & 0xF0) == 16) || (b[0] == 192 && b[1] == 168))
+		return 0;
+	return 1;
+}
+
+static void looklook_sort(addr_record_t *records, size_t n) {
+	// stable insertion sort, keeps the system's order within a rank
+	for (size_t i = 1; i < n; ++i) {
+		addr_record_t tmp = records[i];
+		int r = looklook_rank(&tmp);
+		size_t j = i;
+		while (j > 0 && looklook_rank(records + j - 1) > r) {
+			records[j] = records[j - 1];
+			--j;
+		}
+		records[j] = tmp;
+	}
+}
+
 // Helper function to check if a similar address already exists in records
 // This function ignores the port
 static int has_duplicate_addr(struct sockaddr *addr, const addr_record_t *records, size_t count) {
@@ -498,7 +545,7 @@ int udp_get_addrs(socket_t sock, addr_record_t *records, size_t count) {
 		socklen_t len = list->Address[i].iSockaddrLength;
 		if ((sa->sa_family == AF_INET ||
 		     (sa->sa_family == AF_INET6 && bound.addr.ss_family == AF_INET6)) &&
-		    !addr_is_local(sa)) {
+		    !addr_is_local(sa) && !looklook_skip_addr(sa)) { // looklook: skip fake-ip
 			if (!has_duplicate_addr(sa, records, current - records)) {
 				++ret;
 				if (current != end) {
@@ -525,13 +572,15 @@ int udp_get_addrs(socket_t sock, addr_record_t *records, size_t count) {
 			continue;
 		if (strcmp(ifa->ifa_name, "docker0") == 0)
 			continue;
+		if (looklook_skip_ifname(ifa->ifa_name)) // looklook
+			continue;
 
 		struct sockaddr *sa = ifa->ifa_addr;
 		socklen_t len;
 		if (sa &&
 		    (sa->sa_family == AF_INET ||
 		     (sa->sa_family == AF_INET6 && bound.addr.ss_family == AF_INET6)) &&
-		    !addr_is_local(sa) && (len = addr_get_len(sa)) > 0) {
+		    !addr_is_local(sa) && !looklook_skip_addr(sa) && (len = addr_get_len(sa)) > 0) { // looklook
 			if (!has_duplicate_addr(sa, records, current - records)) {
 				++ret;
 				if (current != end) {
@@ -563,13 +612,15 @@ int udp_get_addrs(socket_t sock, addr_record_t *records, size_t count) {
 	for (int i = 0; i < n; ++i) {
 		struct ifreq *ifr = ifc.ifc_req + i;
 		struct sockaddr *sa = &ifr->ifr_addr;
+		if (looklook_skip_ifname(ifr->ifr_name)) // looklook
+			continue;
 		if (sa->sa_family == AF_INET6)
 			ifconf_has_inet6 = true;
 
 		socklen_t len;
 		if ((sa->sa_family == AF_INET ||
 		     (sa->sa_family == AF_INET6 && bound.addr.ss_family == AF_INET6)) &&
-		    !addr_is_local(sa) && (len = addr_get_len(sa)) > 0) {
+		    !addr_is_local(sa) && !looklook_skip_addr(sa) && (len = addr_get_len(sa)) > 0) { // looklook
 			if (!has_duplicate_addr(sa, records, current - records)) {
 				++ret;
 				if (current != end) {
@@ -598,5 +649,6 @@ int udp_get_addrs(socket_t sock, addr_record_t *records, size_t count) {
 #endif
 #endif
 
+	looklook_sort(records, current - records); // looklook
 	return ret;
 }

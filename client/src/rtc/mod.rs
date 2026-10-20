@@ -214,7 +214,8 @@ async fn run_peer(app: App, id: u64, mut pc: peer::Pc, ctx: bridge::Ctx, cancel:
                 match st {
                     peer::PcState::Connected => {
                         if !connected {
-                            tracing::info!(sid = %ctx.sid, "WebRTC 已连接");
+                            let path = pc.path();
+                            tracing::info!(sid = %ctx.sid, kind = ?path.as_ref().map(|p| p.kind), local = path.as_ref().map(|p| p.local.as_str()), remote = path.as_ref().map(|p| p.remote.as_str()), "WebRTC 已连接");
                         }
                         connected = true;
                         deadline.as_mut().reset(tokio::time::Instant::now() + Duration::from_secs(86_400 * 365));

@@ -85,6 +85,8 @@ fn link_static_libdatachannel(out_dir: &str, profile: &str) {
 }
 
 fn main() {
+    // looklook: 只写了 rerun-if-env-changed 时 cargo 不再看源码，改了 libjuice / libdatachannel 的补丁不会重新编译
+    println!("cargo:rerun-if-changed=libdatachannel");
     let out_dir = env::var("OUT_DIR").unwrap();
 
     #[cfg(feature = "vendored-libdatachannel")]

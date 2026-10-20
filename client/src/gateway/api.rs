@@ -36,7 +36,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/account", get(account))
         .route("/rtc/devices", get(rtc_devices))
         .route("/rtc/local-only", put(put_local_only))
-        .route("/rtc/lan-open", post(lan_open))
+        .route("/rtc/paths", get(rtc_paths))
         .route("/platform/{*rest}", get(platform_web).post(platform_web).put(platform_web).patch(platform_web).delete(platform_web))
         .route("/instances", get(list_instances).post(create_instance))
         .route("/instances/{id}", get(get_instance).patch(update_instance).delete(delete_instance))
@@ -107,11 +107,11 @@ pub fn routes(app: App) -> Router<App> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/projects", get(get_projects).put(put_projects))
         .route("/history", get(list_history))
+        .route("/history/marks", put(put_history_mark))
+        .route("/docker/containers", get(docker_containers))
+        .route("/docker/containers/{name}", get(docker_probe))
         .route("/history/{agent}/{id}", get(history_preview))
         .route("/device/name", put(put_device_name))
-        .route("/direct", post(direct))
-        .route("/lan", get(lan_info))
-        .route("/lan/ticket", post(lan_ticket))
         .route("/access", get(get_access).put(put_access))
         .route("/mcp", get(get_mcp).put(put_mcp))
         .route("/mcp/install", post(mcp_install))
@@ -133,6 +133,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/update", get(update))
         .route("/update/install", post(update_install))
         .route("/update/dismiss", post(update_dismiss))
+        .route("/restart", post(restart))
         .route("/update/seen", post(update_seen))
         .fallback(|| async { LocalError::not_found() })
         .layer(middleware::from_fn_with_state(app.clone(), guard))
@@ -177,78 +178,6 @@ fn require_local(access: &Access) -> R<()> {
     }
 }
 
-/// 本机直连的口令（只在远程打开时，见 gateway/direct.rs）。写请求已由 `guard` 确认 `Origin` 就是这个子站。
-async fn direct(State(app): State<App>, Extension(access): Extension<Access>, headers: axum::http::HeaderMap) -> R<Json<Value>> {
-    if access.is_local() {
-        return Err(LocalError::not_found());
-    }
-    // 经 WebRTC 通道的请求没有 Origin（由 Service Worker 转来），用授权票据里的稳定地址源
-    let origin = match &access {
-        Access::Rtc { origin, .. } => origin.as_str(),
-        _ => headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok()).unwrap_or(""),
-    };
-    // 管理台只绑在某个局域网地址上时，127.0.0.1 连不到它。
-    let ip = app.ui_addr.ip();
-    if !super::direct::valid_origin(origin) || !(ip.is_unspecified() || ip.is_loopback()) {
-        return Ok(Json(json!({ "available": false })));
-    }
-    Ok(Json(json!({ "available": true, "port": app.ui_addr.port(), "nonce": app.direct.issue(origin) })))
-}
-
-// ---------------- 远程打开 → 改走局域网（gateway/lan.rs） ----------------
-
-/// 这台电脑的局域网地址（管理台只绑在回环地址上时没有）。
-fn lan_urls(app: &App) -> Vec<String> {
-    let ip = app.ui_bind_ip;
-    let ips: Vec<std::net::IpAddr> = if ip.is_unspecified() {
-        app.lan_ips.clone()
-    } else if access::is_lan(ip) {
-        vec![ip]
-    } else {
-        Vec::new()
-    };
-    let port = app.ui_addr.port();
-    ips.iter()
-        .map(|ip| match ip {
-            std::net::IpAddr::V6(v6) => format!("http://[{v6}]:{port}"),
-            v4 => format!("http://{v4}:{port}"),
-        })
-        .collect()
-}
-
-/// `GET /api/lan`（只限远程打开）：能不能改走局域网、浏览器看起来是不是在同一个网络。
-/// `same_network`：浏览器的公网 IP（中转转发的 `X-Forwarded-For`）与平台看到的这台电脑的公网 IP 相同；不知道时为 null。
-async fn lan_info(State(app): State<App>, Extension(access): Extension<Access>, headers: axum::http::HeaderMap) -> R<Json<Value>> {
-    if access.is_local() {
-        return Err(LocalError::not_found());
-    }
-    let urls = lan_urls(&app);
-    let enabled = app.access().lan_switch && !urls.is_empty();
-    let browser: Option<std::net::IpAddr> = headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .and_then(|v| v.trim().parse().ok());
-    tracing::debug!(?browser, own = ?app.account.public_ip(), "局域网：比较公网 IP");
-    let same = match (browser, app.account.public_ip()) {
-        (Some(b), Some(own)) => Some(super::lan::same_network(b, own)),
-        _ => None,
-    };
-    Ok(Json(json!({ "enabled": enabled, "same_network": same, "urls": urls })))
-}
-
-/// `POST /api/lan/ticket`（只限远程打开）：一次性票据，60 秒内在局域网地址上兑换。
-async fn lan_ticket(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
-    if access.is_local() {
-        return Err(LocalError::not_found());
-    }
-    let urls = lan_urls(&app);
-    if !app.access().lan_switch || urls.is_empty() {
-        return Err(LocalError::new("LAN_SWITCH_OFF"));
-    }
-    Ok(Json(json!({ "ticket": app.lan.issue(), "path": super::lan::REDEEM_PATH, "urls": urls })))
-}
-
 // ---------------- 状态与账户 ----------------
 
 async fn status(State(app): State<App>, Extension(access): Extension<Access>) -> Json<Value> {
@@ -264,6 +193,8 @@ async fn status(State(app): State<App>, Extension(access): Extension<Access>) ->
         "update": app.updater.view(),
         "metrics": app.metrics.brief(),
         "relay_check": app.relay_watch.view(),
+        // `looklook restart` 靠它判断已经换成新进程
+        "pid": access.is_local().then(std::process::id),
     }))
 }
 
@@ -346,18 +277,7 @@ async fn rtc_devices(State(app): State<App>, req: Request) -> R<Json<Value>> {
         return Ok(Json(json!({ "items": [], "default": null, "max": 0 })));
     }
     if local_only(&app) {
-        // 同一局域网里在线的其他电脑（平台按公网 IP 判断）：只列出来，点了才连（`lan_open`）。取不到就不列。
-        let own = app.account.session().map(|s| s.device_id).unwrap_or_default();
-        let lan: Vec<Value> = match app.outbound.devices(&app.account, false).await {
-            Ok(d) => d
-                .items
-                .into_iter()
-                .filter(|x| x.online && x.same_network == Some(true) && x.id != own)
-                .map(|x| json!({ "id": x.id, "name": x.name, "os": x.os }))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        return Ok(Json(json!({ "items": [], "default": null, "max": 0, "local_only": true, "lan": lan })));
+        return Ok(Json(json!({ "items": [], "default": null, "max": 0, "local_only": true })));
     }
     let mut d = app.outbound.devices(&app.account, false).await?;
     // ICE 凭证只给本机用，不交给页面
@@ -367,6 +287,14 @@ async fn rtc_devices(State(app): State<App>, req: Request) -> R<Json<Value>> {
         o.insert("local_only".into(), false.into());
     }
     Ok(Json(v))
+}
+
+/// 本机 App 连着的其他电脑走的路与往返时间（电脑菜单里的色点，`rtc::outbound`）。
+async fn rtc_paths(State(app): State<App>, peer: Option<Extension<Peer>>) -> Json<Value> {
+    if peer.map(|p| p.0) != Some(Peer::Local) {
+        return Json(json!({ "items": {} }));
+    }
+    Json(json!({ "items": app.outbound.paths().await }))
 }
 
 const LOCAL_ONLY_KEY: &str = "local_only";
@@ -379,77 +307,6 @@ pub fn local_only(app: &App) -> bool {
 #[derive(Deserialize)]
 struct LocalOnlyReq {
     on: bool,
-}
-
-#[derive(Deserialize)]
-struct LanOpenReq {
-    device: String,
-}
-
-/// 只看本机时“直接打开”同一局域网的另一台电脑：经 WebRTC 向它要一张局域网票据（与远程页面“改用局域网”相同，
-/// 见 gateway/lan.rs），返回 `http://{它的局域网IP}:{端口}/__looklook/lan?t=…` 让界面在浏览器里打开。
-/// 之后浏览器直接连那台电脑，不经过平台、中转和这台电脑。
-async fn lan_open(State(app): State<App>, peer: Option<Extension<Peer>>, Json(req): Json<LanOpenReq>) -> Response {
-    use crate::rtc::outbound;
-    if peer.map(|p| p.0) != Some(Peer::Local) || app.account.session().is_none() {
-        return LocalError::new("REMOTE_FORBIDDEN").into_response();
-    }
-    let link = match app.outbound.link(&app.account, &req.device).await {
-        Ok(l) => l,
-        Err(e) => return e.response(),
-    };
-    let path = "/api/lan/ticket";
-    let fwd = Request::builder()
-        .method(Method::POST)
-        .uri(path)
-        .header(CLIENT_HEADER, "1")
-        .header(axum::http::header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from("{}"))
-        .expect("request");
-    let resp = outbound::http(link, fwd, path.into()).await;
-    let status = resp.status();
-    let Ok(bytes) = axum::body::to_bytes(resp.into_body(), 64 * 1024).await else {
-        return LocalError::new("RTC_FAILED").into_response();
-    };
-    if !status.is_success() {
-        // 那台电脑的错误（例如 LAN_SWITCH_OFF：它关了局域网切换，或只监听本机）原样交给界面
-        return (status, [(axum::http::header::CONTENT_TYPE, "application/json")], bytes).into_response();
-    }
-    let Ok(v) = serde_json::from_slice::<Value>(&bytes) else { return LocalError::new("RTC_FAILED").into_response() };
-    let urls: Vec<&str> = v.get("urls").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
-    let (Some(ticket), Some(redeem), Some(base)) = (v.get("ticket").and_then(Value::as_str), v.get("path").and_then(Value::as_str), pick_lan_url(&urls, &app.lan_ips)) else {
-        return LocalError::new("LAN_SWITCH_OFF").into_response();
-    };
-    // 票据是 base64url，不用转义
-    let url = format!("{base}{redeem}?t={ticket}&to=%2F");
-    Json(json!({ "url": url })).into_response()
-}
-
-#[cfg(test)]
-mod lan_url_tests {
-    #[test]
-    fn picks_same_subnet() {
-        let own = ["10.0.0.5".parse().unwrap(), "192.168.1.20".parse().unwrap()];
-        let urls = ["http://172.17.0.1:1234", "http://192.168.1.31:1234", "http://[fe80::1]:1234"];
-        assert_eq!(super::pick_lan_url(&urls, &own), Some("http://192.168.1.31:1234"));
-        assert_eq!(super::pick_lan_url(&urls[..1], &own), Some("http://172.17.0.1:1234"));
-        assert_eq!(super::pick_lan_url(&[], &own), None);
-    }
-}
-
-/// 那台电脑的几个局域网地址里，挑和这台电脑在同一网段的（IPv4 /24、IPv6 /64），否则第一个。
-fn pick_lan_url<'a>(urls: &[&'a str], own: &[std::net::IpAddr]) -> Option<&'a str> {
-    use std::net::IpAddr;
-    let host = |u: &str| -> Option<IpAddr> {
-        let h = u.strip_prefix("http://")?.rsplit_once(':')?.0;
-        h.trim_start_matches('[').trim_end_matches(']').parse().ok()
-    };
-    let near = |a: IpAddr, b: IpAddr| match (a, b) {
-        (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[..3] == b.octets()[..3],
-        (IpAddr::V6(a), IpAddr::V6(b)) => a.segments()[..4] == b.segments()[..4],
-        _ => false,
-    };
-    urls.iter().copied().find(|u| host(u).is_some_and(|h| own.iter().any(|o| near(h, *o)))).or_else(|| urls.first().copied())
 }
 
 /// 只有这台电脑自己打开的管理台能改（局域网、远程打开时看不到其他电脑的列表，也就没有这个开关）。
@@ -1408,11 +1265,80 @@ async fn list_history(State(app): State<App>, Query(q): Query<crate::history::Qu
     for c in &mut items {
         c.instance_id = open.get(&c.id).cloned();
     }
-    Ok(Json(json!({ "items": items, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
+    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY).ok().flatten().unwrap_or_default();
+    Ok(Json(json!({ "items": items, "marks": marks, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
 }
 
-async fn history_preview(Path((agent, id)): Path<(String, String)>) -> R<Json<Value>> {
-    let msgs = crate::history::preview(agent, id).await.ok_or_else(LocalError::not_found)?;
+/// 以前的对话上的标记（收藏、隐藏），存在这台电脑上：`工具:会话号` → 标记。
+const HISTORY_MARKS_KEY: &str = "history_marks";
+type HistoryMarks = std::collections::BTreeMap<String, HistoryMark>;
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct HistoryMark {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    star: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    hide: bool,
+}
+
+#[derive(Deserialize)]
+struct HistoryMarkReq {
+    agent: String,
+    id: String,
+    star: Option<bool>,
+    hide: Option<bool>,
+}
+
+async fn put_history_mark(State(app): State<App>, Json(req): Json<HistoryMarkReq>) -> R<Json<Value>> {
+    if !crate::history::AGENTS.contains(&req.agent.as_str()) || !crate::history::valid_id(&req.id) {
+        return Err(LocalError::invalid("id", "invalid"));
+    }
+    let mut marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY)?.unwrap_or_default();
+    let key = format!("{}:{}", req.agent, req.id);
+    let mut m = marks.remove(&key).unwrap_or_default();
+    if let Some(v) = req.star {
+        m.star = v;
+    }
+    if let Some(v) = req.hide {
+        m.hide = v;
+    }
+    if m.star || m.hide {
+        marks.insert(key, m);
+    }
+    // 只留最近的一些（不会无限变大）
+    while marks.len() > 5000 {
+        let first = marks.keys().next().cloned();
+        if let Some(k) = first {
+            marks.remove(&k);
+        }
+    }
+    app.store.set(HISTORY_MARKS_KEY, &marks)?;
+    Ok(Json(json!({ "marks": marks })))
+}
+
+// ---------------- Docker 容器（docker.rs） ----------------
+
+/// 运行中的容器。没装 docker、docker 没在运行时返回空列表和原因（界面上提示）。
+async fn docker_containers() -> Json<Value> {
+    match crate::docker::list().await {
+        Ok(items) => Json(json!({ "items": items })),
+        Err(e) => Json(json!({ "items": [], "error": e.code })),
+    }
+}
+
+/// 容器里的默认用户、目录和装了的 AI 工具（开始页选了容器后显示）。
+async fn docker_probe(Path(name): Path<String>) -> R<Json<crate::docker::Probe>> {
+    Ok(Json(crate::docker::probe(&name).await?))
+}
+
+#[derive(Deserialize)]
+struct PreviewQuery {
+    #[serde(default)]
+    full: bool,
+}
+
+async fn history_preview(Path((agent, id)): Path<(String, String)>, Query(q): Query<PreviewQuery>) -> R<Json<Value>> {
+    let msgs = crate::history::preview(agent, id, q.full).await.ok_or_else(LocalError::not_found)?;
     Ok(Json(json!({ "items": msgs })))
 }
 
@@ -1458,7 +1384,6 @@ fn access_view(app: &App, peer: Option<Peer>) -> Value {
         "code_enabled": c.code_enabled,
         "code": c.code,
         "open_host": c.open_host,
-        "lan_switch": c.lan_switch,
         "port": app.ui_addr.port(),
         "lan_ips": app.lan_ips.iter().map(|ip| ip.to_string()).collect::<Vec<_>>(),
         "peer": peer,
@@ -1487,7 +1412,6 @@ struct AccessReq {
     /// 自己设置访问码
     code: Option<String>,
     open_host: Option<String>,
-    lan_switch: Option<bool>,
 }
 
 async fn put_access(State(app): State<App>, Extension(access): Extension<Access>, peer: Option<Extension<Peer>>, Json(req): Json<AccessReq>) -> R<Json<Value>> {
@@ -1514,9 +1438,6 @@ async fn put_access(State(app): State<App>, Extension(access): Extension<Access>
     }
     if let Some(v) = req.code_enabled {
         c.code_enabled = v;
-    }
-    if let Some(v) = req.lan_switch {
-        c.lan_switch = v;
     }
     if req.new_code {
         c.code = access::generate_code();
@@ -1906,6 +1827,13 @@ struct DismissReq {
 async fn update_seen(State(app): State<App>) -> R<Json<Value>> {
     app.updater.seen()?;
     Ok(Json(app.updater.view()))
+}
+
+/// 重启客户端（命令行 `looklook restart`）。
+async fn restart(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
+    require_local(&access)?;
+    app.updater.restart()?;
+    Ok(Json(json!({ "pid": std::process::id() })))
 }
 
 async fn update_dismiss(State(app): State<App>, Json(req): Json<DismissReq>) -> R<Json<Value>> {

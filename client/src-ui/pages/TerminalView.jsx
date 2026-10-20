@@ -3,20 +3,21 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页右边打开的每个会话是一个 TermPane（见 Sessions.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, Zap } from 'lucide-react';
+import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
-import { api, terminalDevice } from '../shared/api.js';
+import { api, selectedDevice, terminalDevice } from '../shared/api.js';
 import { CHAT_LAUNCHES } from '../shared/chat.js';
-import { LanButton, LanFallback, useLanPage } from '../shared/lan.jsx';
-import { termFit, termFocus, termPaste, useFocusWhenReady, useLatency, useRefitOnReturn, useTermSrc } from '../shared/direct.js';
+import { usePaths } from '../shared/paths.jsx';
+import { termFit, termFocus, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn } from '../shared/termFrame.js';
 import { errorText } from '../shared/i18n.js';
 import { AI_LAUNCHES } from '../shared/keys.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
+import { customName, sessionTitle } from '../shared/sessions.jsx';
 import TextSelect, { useTextSelect } from '../shared/TextSelect.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import ChatView from './ChatView.jsx';
@@ -54,24 +55,22 @@ function TermConnecting({ onRetry }) {
 }
 
 /**
- * 终端怎么连的：本机直连时显示“直连”；经中转时显示往返时间（远程打开才有），慢的时候标黄，
- * 让人知道卡顿来自网络距离（详见悬停说明）。本机/局域网打开时什么也不显示。
+ * 终端怎么连的：远程打开、或本机 App 打开另一台电脑的终端时，显示那台电脑实际走的路和往返时间
+ * （色点同电脑菜单：绿 局域网直连、蓝 公网直连、黄 中转），慢的时候标黄。本机的终端什么也不显示。
  */
-function LinkBadge({ id, direct }) {
+function LinkBadge({ id }) {
   const { t } = useTranslation();
-  const { relayMs, directMs } = useLatency(id);
-  if (direct) {
-    return (
-      <span className="link-badge link-direct" title={t('term.direct_hint', { ms: directMs ?? 1, relay: relayMs ?? '?' })}>
-        <Zap size={12} aria-hidden="true" />
-        {t('term.direct')}
-      </span>
-    );
-  }
-  if (relayMs === null) return null;
+  const { status } = useStatus();
+  const paths = usePaths();
+  const dev = terminalDevice(id) ?? selectedDevice();
+  const p = dev ? paths[dev] : status.access === 'remote' ? Object.values(paths)[0] : null;
+  if (!p) return null;
+  const ms = p.rtt_ms;
+  const tip = [t(`path.${p.kind}`), ms != null ? `${ms} ms` : null].filter(Boolean).join(' · ');
   return (
-    <span className={`link-badge ${relayMs >= SLOW_MS ? 'link-slow' : ''}`} title={t('term.relay_hint', { ms: relayMs })}>
-      {t('term.relay_ms', { ms: relayMs })}
+    <span className={`link-badge ${ms != null && ms >= SLOW_MS ? 'link-slow' : ''}`} title={tip}>
+      <span className={`dot path-${p.kind}`} aria-hidden="true" style={{ width: 7, height: 7 }} />
+      {ms != null ? `${ms} ms` : t(`path.${p.kind}`)}
     </span>
   );
 }
@@ -212,7 +211,7 @@ function PaneNotice({ title, body, children }) {
  * 不是当前标签时只是隐藏（iframe 不卸载、会话保持连接），切回来时让终端重新适配大小并聚焦。
  * 最大化：铺满整个浏览器窗口（盖住侧栏和标签栏），但不进系统全屏；双击工具栏空白处也能切换。
  */
-export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu }) {
+export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, focusN = 0 }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const wrap = useRef(null);
@@ -223,10 +222,19 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu }
   const [full, setFull] = useState(false);
   const [max, setMax] = useState(false);
   const chat = inst ? hasChat(inst) : undefined;
-  const [tab, setTab] = useTab(id, chat);
-  const link = useTermSrc(id, reloadKey);
+  const [tab0, setTab] = useTab(id, chat);
+  // 容器里的会话只有终端（文件、Git 看的是这台电脑上的目录，对话界面拿不到容器里的记录）
+  const tab = inst?.container ? 'term' : tab0;
+  const link = { src: termSrc(id) };
   const allowed = status.account.allowed;
   const running = Boolean(inst?.running && allowed);
+  // 把焦点交给当前标签的输入框：对话标签是对话输入框，其他是终端
+  const focusInput = () => {
+    if (isTouch()) return;
+    const box = tab === 'chat' ? wrap.current?.querySelector('.chat-tab textarea') : null;
+    if (box) box.focus({ preventScroll: true });
+    else if (tab === 'term') termFocus(frame);
+  };
   // “对话”标签有自己的发图片按钮：终端的上传按钮和提示只在其他标签出现
   const files = useTermFiles({ id, inst, frame, enabled: running && active && tab !== 'chat', touch: false, hostOs: status.capabilities.os, keybar: false });
   useRefitOnReturn(frame, running && active);
@@ -236,10 +244,16 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu }
     if (!active) return undefined;
     const timer = setTimeout(() => {
       termFit(frame);
-      termFocus(frame);
+      focusInput();
     }, 30);
     return () => clearTimeout(timer);
   }, [active, full, max, tab]);
+  // 点了侧栏里的会话、顶部标签（同一个会话再点也算）：焦点交给输入框
+  useEffect(() => {
+    if (!active || !focusN) return undefined;
+    const timer = setTimeout(focusInput, 30);
+    return () => clearTimeout(timer);
+  }, [focusN]);
   useEffect(() => {
     const on = () => setFull(document.fullscreenElement === wrap.current);
     document.addEventListener('fullscreenchange', on);
@@ -301,11 +315,12 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu }
       <header className="term-bar ws-pane-bar" onDoubleClick={(e) => !e.target.closest('button, a, input') && !full && toggleMax()}>
         <span className="term-title">
           {lead ?? <span className={`dot ${running ? 'on' : ''}`} />}
-          <span className="ellipsis term-name">{inst?.name ?? id}</span>
+          <span className="ellipsis term-name" title={inst ? sessionTitle(inst) : id}>{inst ? sessionTitle(inst) : id}</span>
+          {customName(inst) && <span className="ellipsis term-mine">{customName(inst)}</span>}
           {sub}
-          {running && <LinkBadge id={id} direct={link.direct} />}
+          {running && <LinkBadge id={id} />}
         </span>
-        {running && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
+        {running && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
         {tab === 'term' && <NewlineHint inst={inst} touch={false} />}
         {running && (
           <button type="button" className={iconBtn} onClick={reload} aria-label={t('term.reload')} title={t('term.reload')}>
@@ -318,7 +333,6 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu }
           </button>
         )}
         {tab !== 'chat' && files.button}
-        {running && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} autoSwitch={false} />}
         {!full && (
           <button type="button" className={iconBtn} onClick={toggleMax} aria-pressed={max} aria-label={t(max ? 'term.restore' : 'term.maximize')} title={t(max ? 'term.restore' : 'term.maximize')}>
             {max ? <Shrink size={16} /> : <Expand size={16} />}
@@ -371,8 +385,7 @@ export default function TerminalView({ id }) {
   const [full, setFull] = useState(false);
   const [starting, setStarting] = useState(false);
   const [loaded, setLoaded] = useState(false);
-  const link = useTermSrc(id, reloadKey);
-  const lanPage = useLanPage();
+  const link = { src: termSrc(id) };
   const [loadedInst, loadError, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
   // 连不上电脑（重连中、网络断了）时轮询会失败：沿用上一次的终端信息，不把终端换成错误页（那样会关掉终端、要点“返回”）
   const last = useRef(null);
@@ -381,12 +394,13 @@ export default function TerminalView({ id }) {
   const inst = loadedInst ?? (transient && last.current?.id === id ? last.current.inst : null);
   const error = transient ? null : loadError;
   const chat = inst ? hasChat(inst) : undefined;
-  const [tab, setTab] = useTab(id, chat);
+  const [tab0, setTab] = useTab(id, chat);
+  const tab = inst?.container ? 'term' : tab0;
   const allowed = status.account.allowed;
   const running = inst?.running;
   const live = Boolean(running && allowed);
   // 底部标签栏：手机和窄屏用；键盘弹起时让给终端
-  const bottomTabs = live && (touch || narrow);
+  const bottomTabs = live && (touch || narrow) && !inst?.container;
   const tabbarShown = bottomTabs && !mobile.ime.up;
   // 对话下面展开着终端时也要按键条（选择框要用方向键、回车、Esc）
   const keybarShown = touch && keys && live && tab === 'term';
@@ -405,11 +419,11 @@ export default function TerminalView({ id }) {
     return () => clearInterval(iv);
   }, []);
   useEffect(() => {
-    if (inst) document.title = `${inst.name} · ${t('brand')}`;
+    if (inst) document.title = `${sessionTitle(inst)} · ${t('brand')}`;
     return () => {
       document.title = t('brand');
     };
-  }, [inst?.name]);
+  }, [inst?.name, inst?.agent_title]);
   useEffect(() => {
     const on = () => setFull(Boolean(document.fullscreenElement));
     document.addEventListener('fullscreenchange', on);
@@ -508,7 +522,6 @@ export default function TerminalView({ id }) {
   ];
   return (
     <div className="term-page" data-scheme={termTheme(status.settings.theme).scheme} data-tabbar={tabbarShown ? '' : undefined} style={{ ...vars, ...mobile.style }}>
-      <LanFallback />
       {/* 横屏打字时屏幕极矮：先藏起顶栏，键盘收起后回来 */}
       <header className="term-bar" hidden={mobile.cramped}>
         <button type="button" className="btn btn-plain btn-icon" onClick={() => navigate('/')} aria-label={t('term.back')} title={t('term.back')}>
@@ -516,11 +529,11 @@ export default function TerminalView({ id }) {
         </button>
         <span className="term-title">
           <span className={`dot ${live ? 'on' : ''}`} />
-          <span className="ellipsis">{inst?.name ?? '…'}</span>
-          {live && (lanPage ? <span className="link-badge link-direct" title={t('lan.badge_hint')}>{t('lan.badge')}</span> : <LinkBadge id={id} direct={link.direct} />)}
+          <span className="ellipsis">{inst ? sessionTitle(inst) : "…"}</span>
+          {live && <LinkBadge id={id} />}
         </span>
         {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
-        {live && !bottomTabs && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
+        {live && !bottomTabs && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
         {!compact && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onClick={() => setSelecting(!selecting)} aria-pressed={selecting} aria-label={t('select.toggle')} title={t('select.toggle')}>
             <TextSelectIcon size={18} />
@@ -532,7 +545,6 @@ export default function TerminalView({ id }) {
           </button>
         )}
         {tab !== 'chat' && files.button}
-        {live && !link.direct && <LanButton id={id} device={terminalDevice(id) ?? undefined} />}
         {touch && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onPointerDown={keepFocus} onClick={() => setKeys(!keys)} aria-pressed={keys} aria-label={t('term.keys')} title={t('term.keys')}>
             <Keyboard size={19} />

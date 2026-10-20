@@ -2,18 +2,19 @@
 // 两个地方用：开始页里跟着当前项目的一节（PrevConversations），和“所有以前的对话”页面（/history）。
 // 点一行先展开看最后几句，再点“继续”；正开在看看会话里的直接打开那个会话；
 // 可能正开在别处（文件两分钟内还在变）的默认“复制一份继续”，原来那份不动。
-import { AlertCircle, ChevronDown, Copy, ExternalLink, Folder, GitBranch, History, Play, Search } from 'lucide-react';
+import { AlertCircle, ChevronDown, Copy, ExternalLink, Eye, EyeOff, Folder, GitBranch, History, Play, Search, SlidersHorizontal, Star, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { deviceApi } from '../shared/api.js';
-import { DeviceTag, LaunchIcon } from '../shared/brands.jsx';
-import { useDevices } from '../shared/devices.jsx';
+import { DeviceAvatar, DeviceTag, LaunchIcon } from '../shared/brands.jsx';
+import { deviceName, useDevices } from '../shared/devices.jsx';
 import { errorText } from '../shared/i18n.js';
 import { useRouter } from '../shared/router.jsx';
 import { baseName, useSessions } from '../shared/sessions.jsx';
 import { relativeTime } from '../shared/time.js';
 import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
+import { isTouch } from '../shared/KeyBar.jsx';
 import { useSessionUi } from './Sessions.jsx';
 
 const AGENTS = ['claude', 'codex', 'opencode'];
@@ -29,11 +30,7 @@ const enc = encodeURIComponent;
 /** 展开后的一行：最后几句和按钮。 */
 function ConvPeek({ device, conv }) {
   const { t } = useTranslation();
-  const ui = useSessionUi();
-  const toast = useToast();
   const [msgs, setMsgs] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const first = useRef(null);
   useEffect(() => {
     let alive = true;
     deviceApi(device)
@@ -42,23 +39,11 @@ function ConvPeek({ device, conv }) {
         (r) => alive && setMsgs(Array.isArray(r?.items) ? r.items : []),
         () => alive && setMsgs([]),
       );
-    first.current?.focus();
     return () => {
       alive = false;
     };
   }, [device, conv.agent, conv.id]);
-  const go = async (fork) => {
-    if (busy) return;
-    setBusy(true);
-    try {
-      await ui.continueConv(device, conv, fork);
-    } catch (e) {
-      toast(errorText(t, e), 'error');
-      setBusy(false);
-    }
-  };
   const tool = t(`launch.${conv.agent}.title`);
-  const fork = conv.live && CAN_FORK.includes(conv.agent);
   return (
     <div className="conv-peek">
       {msgs === null ? (
@@ -75,6 +60,34 @@ function ConvPeek({ device, conv }) {
           </div>
         )
       )}
+      <ConvPeekActions device={device} conv={conv} />
+    </div>
+  );
+}
+
+/** 继续 / 复制一份继续 / 打开已在看看里的会话，可能正开在别处时先提示。 */
+function ConvPeekActions({ device, conv }) {
+  const { t } = useTranslation();
+  const ui = useSessionUi();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const first = useRef(null);
+  useEffect(() => {
+    if (!isTouch()) first.current?.focus({ preventScroll: true });
+  }, [conv.id]);
+  const go = async (fork) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await ui.continueConv(device, conv, fork);
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+      setBusy(false);
+    }
+  };
+  const fork = conv.live && CAN_FORK.includes(conv.agent);
+  return (
+    <>
       {conv.live && !conv.instance_id && (
         <p className="conv-warn">
           <AlertCircle size={14} aria-hidden="true" />
@@ -98,13 +111,21 @@ function ConvPeek({ device, conv }) {
             </button>
           </>
         ) : (
-          <button ref={first} type="button" className="btn btn-primary btn-sm" onClick={() => go(false)} disabled={busy}>
-            {busy ? <Spinner size={15} /> : <Play size={15} aria-hidden="true" />}
-            {t('hist.continue')}
-          </button>
+          <>
+            <button ref={first} type="button" className="btn btn-primary btn-sm" onClick={() => go(false)} disabled={busy}>
+              {busy ? <Spinner size={15} /> : <Play size={15} aria-hidden="true" />}
+              {t('hist.continue')}
+            </button>
+            {CAN_FORK.includes(conv.agent) && (
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => go(true)} disabled={busy}>
+                <Copy size={15} aria-hidden="true" />
+                {t('hist.fork')}
+              </button>
+            )}
+          </>
         )}
       </div>
-    </div>
+    </>
   );
 }
 
@@ -163,6 +184,7 @@ export function PrevConversations({ device, workdir, launch, focus }) {
   const [agent, setAgent] = useState(AGENTS.includes(launch) && !focus ? launch : 'all');
   const [open, setOpen] = useState(null);
   const [more, setMore] = useState(false);
+  const [q, setQ] = useState('');
   const box = useRef(null);
   // 换了类型才跟着换（从项目菜单进来时先看全部）
   const lastLaunch = useRef(launch);
@@ -194,7 +216,8 @@ export function PrevConversations({ device, workdir, launch, focus }) {
   }, [focus, data]);
   const all = Array.isArray(data?.items) ? data.items : [];
   if (!data?.persistent || all.length === 0 || !AGENTS.includes(launch)) return null;
-  const list = all.filter((c) => agent === 'all' || c.agent === agent);
+  const words = q.trim().toLowerCase();
+  const list = all.filter((c) => (agent === 'all' || c.agent === agent) && (!words || [c.title, c.last, c.branch].filter(Boolean).join('\n').toLowerCase().includes(words)));
   const shown = list.slice(0, more ? 20 : START_SHOW);
   return (
     <section ref={box} className="prev" aria-label={t('hist.title')}>
@@ -203,13 +226,16 @@ export function PrevConversations({ device, workdir, launch, focus }) {
           <History size={14} aria-hidden="true" />
           {t('hist.in_project', { name: baseName(workdir) })}
         </h2>
+        {all.length > START_SHOW && (
+          <input className="prev-search" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('hist.search_here')} aria-label={t('hist.search_here')} spellCheck={false} />
+        )}
         <AgentChips items={all} value={agent} onChange={setAgent} />
       </div>
       <div className="conv-list">
         {shown.map((c) => (
           <ConvRow key={`${c.agent}:${c.id}`} device={device} conv={c} open={open === c.id} onToggle={() => setOpen(open === c.id ? null : c.id)} />
         ))}
-        {shown.length === 0 && <p className="conv-empty">{t('hist.none_for', { tool: t(`launch.${agent}.title`) })}</p>}
+        {shown.length === 0 && <p className="conv-empty">{words ? t('hist.no_match') : t('hist.none_for', { tool: t(`launch.${agent}.title`) })}</p>}
       </div>
       <div className="prev-foot">
         {!more && list.length > START_SHOW && (
@@ -227,105 +253,563 @@ export function PrevConversations({ device, workdir, launch, focus }) {
   );
 }
 
-/** 所有以前的对话：所有在线电脑、所有文件夹，按文件夹分组，可以搜。 */
+// ---------------- 所有以前的对话（/history） ----------------
+//
+// 左边筛选（每项带数量，可以多选）：工具、电脑、项目、状态、时间、分支、我的标记；
+// 中间列表按时间（默认）/ 项目 / 电脑分组；右边看完整的对话（窄屏在原地展开）。
+// 搜索框实时过滤标题、你说的话、文件夹、分支，回车搜对话全文（每台电脑扫描记录）；支持 agent:codex dev:名字 branch:main。
+// 筛选写在网址里（?q=…&f=…），后退、刷新都还在。收藏、隐藏存在各自的电脑上（PUT /history/marks）。
+
+const PAGE = 500;
+const DAY = 86400e3;
+const TIMES = { today: 1, week: 7, month: 30 };
+const STATES = ['open', 'live', 'ended'];
+const GROUPS = ['time', 'project', 'device'];
+
+const convKey = (c) => `${c.dev ?? ''}\n${c.agent}:${c.id}`;
+const projKey = (c) => `${c.dev ?? ''}\n${c.workdir}`;
+const stateOf = (c) => (c.instance_id ? 'open' : c.live ? 'live' : 'ended');
+const updatedMs = (c) => Date.parse(c.updated_at) || 0;
+
+function readFilters(search) {
+  const u = new URLSearchParams(search);
+  let f = {};
+  try {
+    f = JSON.parse(u.get('f') ?? '{}') ?? {};
+  } catch {
+    f = {};
+  }
+  const arr = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string') : []);
+  return {
+    q: u.get('q') ?? '',
+    agents: arr(f.a),
+    devs: arr(f.d),
+    projs: arr(f.p),
+    states: arr(f.s),
+    branches: arr(f.b),
+    time: TIMES[f.t] ? f.t : 'all',
+    mark: ['star', 'hidden'].includes(f.m) ? f.m : '',
+    group: GROUPS.includes(f.g) ? f.g : 'time',
+  };
+}
+
+function writeFilters(f) {
+  const short = { a: f.agents, d: f.devs, p: f.projs, s: f.states, b: f.branches, t: f.time === 'all' ? undefined : f.time, m: f.mark || undefined, g: f.group === 'time' ? undefined : f.group };
+  const clean = Object.fromEntries(Object.entries(short).filter(([, v]) => v !== undefined && !(Array.isArray(v) && v.length === 0)));
+  const u = new URLSearchParams();
+  if (f.q.trim()) u.set('q', f.q);
+  if (Object.keys(clean).length) u.set('f', JSON.stringify(clean));
+  const qs = u.toString();
+  try {
+    window.history.replaceState(null, '', `/history${qs ? `?${qs}` : ''}`);
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 搜索框里的 agent:codex dev:名字 branch:main，其余是要搜的文字。 */
+function parseQuery(q) {
+  const tokens = { agent: [], dev: [], branch: [] };
+  const words = [];
+  for (const w of q.trim().split(/\s+/).filter(Boolean)) {
+    const m = w.match(/^(agent|dev|branch):(.+)$/i);
+    if (m) tokens[m[1].toLowerCase()].push(m[2].toLowerCase());
+    else words.push(w.toLowerCase());
+  }
+  return { ...tokens, text: words.join(' ') };
+}
+
+/** 按时间分组的组名。 */
+function timeBucket(ms, now) {
+  const start = new Date(now);
+  start.setHours(0, 0, 0, 0);
+  const today = start.getTime();
+  if (ms >= today) return 'today';
+  if (ms >= today - DAY) return 'yesterday';
+  if (ms >= today - 6 * DAY) return 'week';
+  if (ms >= today - 29 * DAY) return 'month';
+  return 'earlier';
+}
+
+function Facet({ title, items, selected, onToggle, render, search, limit = 8 }) {
+  const { t } = useTranslation();
+  const [all, setAll] = useState(false);
+  const [q, setQ] = useState('');
+  if (items.length === 0) return null;
+  const words = q.trim().toLowerCase();
+  const list = items.filter((x) => !words || (x.text ?? x.label).toLowerCase().includes(words));
+  const shown = all || words ? list : list.slice(0, limit);
+  return (
+    <section className="hfacet">
+      <h3 className="hfacet-title">{title}</h3>
+      {search && items.length > limit && (
+        <input className="hfacet-search" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('hist.f_search')} aria-label={t('hist.f_search')} spellCheck={false} />
+      )}
+      {shown.map((x) => (
+        <button key={x.key} type="button" className="hfacet-item" aria-pressed={selected.includes(x.key)} onClick={() => onToggle(x.key)} title={x.title ?? x.label}>
+          {render ? render(x) : <span className="ellipsis grow">{x.label}</span>}
+          <span className="hfacet-n">{x.n}</span>
+        </button>
+      ))}
+      {!all && !words && list.length > limit && (
+        <button type="button" className="hfacet-more" onClick={() => setAll(true)}>
+          {t('hist.more', { count: list.length - limit })}
+        </button>
+      )}
+    </section>
+  );
+}
+
+function HistRow({ conv, selected, mark, onSelect, onMark, showDevice, showProject }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const dev = showDevice && devices.multi ? devices.byId(conv.dev) : null;
+  return (
+    <div className={`hrow ${selected ? 'on' : ''} ${mark.hide ? 'hidden-conv' : ''}`}>
+      <button type="button" className="hrow-main" onClick={onSelect} aria-pressed={selected} title={conv.workdir}>
+        <LaunchIcon launch={conv.agent} size={18} className="conv-icon" />
+        <span className="hrow-line">
+          {mark.star && <Star size={13} className="hrow-star" aria-label={t('hist.starred')} />}
+          <span className="ellipsis hrow-title">{conv.title}</span>
+          {conv.instance_id ? <span className="badge badge-brand">{t('hist.in_looklook')}</span> : conv.live ? <span className="badge badge-warn">{t('hist.live_badge')}</span> : null}
+        </span>
+        <span className="hrow-meta">
+          {showProject && (
+            <span className="conv-place">
+              <Folder size={12} aria-hidden="true" />
+              {baseName(conv.workdir) || conv.workdir}
+            </span>
+          )}
+          {conv.branch && (
+            <span className="conv-place conv-branch">
+              <GitBranch size={12} aria-hidden="true" />
+              {conv.branch}
+            </span>
+          )}
+          {dev && <DeviceTag device={dev} />}
+          <span className="hrow-when">{relativeTime(t, conv.updated_at)}</span>
+        </span>
+        {(conv.snippet || conv.last) && <span className="ellipsis hrow-last">{conv.snippet ?? conv.last}</span>}
+      </button>
+      <span className="hrow-acts">
+        <button type="button" className="btn btn-plain btn-icon" onClick={() => onMark({ star: !mark.star })} aria-pressed={Boolean(mark.star)} aria-label={t(mark.star ? 'hist.unstar' : 'hist.star')} title={t(mark.star ? 'hist.unstar' : 'hist.star')}>
+          <Star size={15} />
+        </button>
+        <button type="button" className="btn btn-plain btn-icon" onClick={() => onMark({ hide: !mark.hide })} aria-pressed={Boolean(mark.hide)} aria-label={t(mark.hide ? 'hist.unhide' : 'hist.hide')} title={t(mark.hide ? 'hist.unhide' : 'hist.hide')}>
+          {mark.hide ? <Eye size={15} /> : <EyeOff size={15} />}
+        </button>
+      </span>
+    </div>
+  );
+}
+
+/** 右边：完整的对话（最近 200 条）和继续按钮。 */
+function HistDetail({ conv, onClose }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const [msgs, setMsgs] = useState(null);
+  const box = useRef(null);
+  useEffect(() => {
+    let alive = true;
+    setMsgs(null);
+    deviceApi(conv.dev)
+      .get(`/history/${conv.agent}/${enc(conv.id)}?full=true`)
+      .then(
+        (r) => alive && setMsgs(Array.isArray(r?.items) ? r.items : []),
+        () => alive && setMsgs([]),
+      );
+    return () => {
+      alive = false;
+    };
+  }, [conv.dev, conv.agent, conv.id]);
+  useEffect(() => {
+    if (msgs && box.current) box.current.scrollTop = box.current.scrollHeight;
+  }, [msgs]);
+  const dev = devices.multi ? devices.byId(conv.dev) : null;
+  const tool = t(`launch.${conv.agent}.title`);
+  return (
+    <aside className="hdetail" aria-label={conv.title}>
+      <header className="hdetail-head">
+        <LaunchIcon launch={conv.agent} size={18} />
+        <span className="hdetail-titles">
+          <b className="hdetail-title">{conv.title}</b>
+          <span className="hrow-meta">
+            <span className="conv-place">
+              <Folder size={12} aria-hidden="true" />
+              {conv.workdir}
+            </span>
+            {conv.branch && (
+              <span className="conv-place">
+                <GitBranch size={12} aria-hidden="true" />
+                {conv.branch}
+              </span>
+            )}
+            {dev && <DeviceTag device={dev} />}
+            {conv.started_at && <span>{t('hist.started', { when: relativeTime(t, conv.started_at) })}</span>}
+          </span>
+        </span>
+        <button type="button" className="btn btn-plain btn-icon" onClick={onClose} aria-label={t('hist.close_preview')} title={t('hist.close_preview')}>
+          <X size={16} />
+        </button>
+      </header>
+      <div className="hdetail-msgs" ref={box}>
+        {msgs === null ? (
+          <div className="hist-loading">
+            <Spinner size={16} />
+          </div>
+        ) : msgs.length === 0 ? (
+          <p className="conv-empty">{t('hist.no_preview')}</p>
+        ) : (
+          msgs.map((m, i) => (
+            <div key={i} className={`hmsg hmsg-${m.role}`}>
+              <b>{m.role === 'user' ? t('hist.you') : tool}</b>
+              <p>{m.text}</p>
+            </div>
+          ))
+        )}
+      </div>
+      <div className="hdetail-foot">
+        <ConvPeekActions device={conv.dev} conv={conv} />
+      </div>
+    </aside>
+  );
+}
+
+/** 窄屏：右边放不下完整预览，改在原地展开。 */
+function useNarrowHist() {
+  const q = '(max-width: 1179px)';
+  const [narrow, setNarrow] = useState(() => window.matchMedia?.(q).matches ?? false);
+  useEffect(() => {
+    const m = window.matchMedia?.(q);
+    if (!m) return undefined;
+    const on = () => setNarrow(m.matches);
+    m.addEventListener('change', on);
+    return () => m.removeEventListener('change', on);
+  }, []);
+  return narrow;
+}
+
 export function HistoryPage() {
   const { t } = useTranslation();
   const { search } = useRouter();
   const devices = useDevices();
   const s = useSessions();
-  const [query, setQuery] = useState(() => new URLSearchParams(search).get('q') ?? '');
-  const [agent, setAgent] = useState('all');
-  const [open, setOpen] = useState(null);
-  const [expanded, setExpanded] = useState({});
+  const toast = useToast();
+  const [f, setF] = useState(() => readFilters(search));
   const [groups, setGroups] = useState(null);
+  const [deepQ, setDeepQ] = useState('');
+  const [sel, setSel] = useState(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const targets = devices.multi ? devices.items.filter((d) => d.online).map((d) => d.id) : [null];
   const sig = targets.join(',');
+  const update = (patch) =>
+    setF((x) => {
+      const next = { ...x, ...patch };
+      writeFilters(next);
+      return next;
+    });
+  const toggle = (field, key) => update({ [field]: f[field].includes(key) ? f[field].filter((x) => x !== key) : [...f[field], key] });
+  const load = (dev, extra = '') =>
+    deviceApi(dev)
+      .get(`/history?limit=${PAGE}${extra}`)
+      .then(
+        (r) => ({ dev, items: Array.isArray(r?.items) ? r.items : [], marks: r?.marks ?? {}, persistent: Boolean(r?.persistent) }),
+        (e) => ({ dev, items: [], marks: {}, error: e }),
+      );
   useEffect(() => {
     let alive = true;
     setGroups(null);
-    Promise.all(
-      targets.map((dev) =>
-        deviceApi(dev)
-          .get('/history?limit=500')
-          .then(
-            (r) => ({ dev, items: Array.isArray(r?.items) ? r.items : [], persistent: Boolean(r?.persistent) }),
-            (e) => ({ dev, items: [], error: e }),
-          ),
-      ),
-    ).then((r) => alive && setGroups(r));
+    const extra = deepQ ? `&deep=true&q=${enc(deepQ)}` : '';
+    Promise.all(targets.map((dev) => load(dev, extra))).then((r) => alive && setGroups(r.map((g) => ({ ...g, more: g.items.length >= PAGE }))));
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sig]);
-  useEffect(() => setQuery(new URLSearchParams(search).get('q') ?? ''), [search]);
-  const q = query.trim().toLowerCase();
+  }, [sig, deepQ]);
+  useEffect(() => {
+    const next = readFilters(search);
+    if (next.q !== f.q) setF((x) => ({ ...x, q: next.q }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [search]);
+  const loadMore = async () => {
+    if (!groups || loadingMore) return;
+    setLoadingMore(true);
+    const extra = deepQ ? `&deep=true&q=${enc(deepQ)}` : '';
+    const next = await Promise.all(
+      groups.map(async (g) => {
+        if (!g.more || g.error) return g;
+        const oldest = Math.min(...g.items.map(updatedMs));
+        const r = await load(g.dev, `${extra}&before=${oldest}`);
+        return { ...g, items: [...g.items, ...r.items], more: r.items.length >= PAGE };
+      }),
+    );
+    setGroups(next);
+    setLoadingMore(false);
+  };
+  const markOf = (c) => groups?.find((g) => g.dev === c.dev)?.marks?.[`${c.agent}:${c.id}`] ?? {};
+  const setMark = async (c, patch) => {
+    try {
+      const r = await deviceApi(c.dev).put('/history/marks', { agent: c.agent, id: c.id, ...patch });
+      setGroups((gs) => gs.map((g) => (g.dev === c.dev ? { ...g, marks: r?.marks ?? g.marks } : g)));
+      if (patch.hide) toast(t('hist.hidden_done'), 'ok', { label: t('sess.undo'), onClick: () => setMark(c, { hide: false }) });
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    }
+  };
+
+  const now = Date.now();
   const all = (groups ?? []).filter((g) => g.persistent).flatMap((g) => g.items.map((c) => ({ ...c, dev: g.dev })));
-  const list = all.filter((c) => (agent === 'all' || c.agent === agent) && (!q || `${c.title}\n${c.last ?? ''}\n${c.workdir}`.toLowerCase().includes(q)));
-  // 按 电脑 + 文件夹 分组，最近有对话的文件夹排前面（列表本来就按时间排好了）
-  const byDir = new Map();
-  for (const c of list) {
-    const key = `${c.dev ?? ''}\n${c.workdir}`;
-    if (!byDir.has(key)) byDir.set(key, { key, dev: c.dev, workdir: c.workdir, items: [] });
-    byDir.get(key).items.push(c);
-  }
+  const pq = parseQuery(f.q);
+  const devName = (id) => (devices.multi ? deviceName(t, devices.byId(id)) : '').toLowerCase();
+  const textOk = (c) => {
+    if (pq.agent.length && !pq.agent.some((a) => c.agent.includes(a))) return false;
+    if (pq.dev.length && !pq.dev.some((d) => devName(c.dev).includes(d))) return false;
+    if (pq.branch.length && !pq.branch.some((b) => (c.branch ?? '').toLowerCase().includes(b))) return false;
+    if (!pq.text) return true;
+    if (deepQ && c.snippet) return true;
+    return [c.title, c.last, c.workdir, c.branch].filter(Boolean).join('\n').toLowerCase().includes(pq.text);
+  };
+  // 每一组筛选只看其他组的条件（数量是“再选上它会有多少”）
+  const pass = {
+    agents: (c) => !f.agents.length || f.agents.includes(c.agent),
+    devs: (c) => !f.devs.length || f.devs.includes(c.dev ?? ''),
+    projs: (c) => !f.projs.length || f.projs.includes(projKey(c)),
+    states: (c) => !f.states.length || f.states.includes(stateOf(c)),
+    branches: (c) => !f.branches.length || f.branches.includes(c.branch ?? ''),
+    time: (c) => f.time === 'all' || updatedMs(c) >= now - TIMES[f.time] * DAY,
+    mark: (c) => {
+      const m = markOf(c);
+      if (f.mark === 'star') return Boolean(m.star);
+      if (f.mark === 'hidden') return Boolean(m.hide);
+      return !m.hide;
+    },
+  };
+  const base = all.filter(textOk);
+  const except = (skip) => base.filter((c) => Object.entries(pass).every(([k, fn]) => k === skip || fn(c)));
+  const list = except(null).sort((a, b) => updatedMs(b) - updatedMs(a));
+  const countBy = (items, keyOf) => {
+    const m = new Map();
+    for (const c of items) m.set(keyOf(c), (m.get(keyOf(c)) ?? 0) + 1);
+    return m;
+  };
   const known = new Set(s.projects.map((p) => p.key));
+  const agentItems = [...countBy(except('agents'), (c) => c.agent)].map(([key, n]) => ({ key, n, label: t(`launch.${key}.title`) }));
+  const devItems = devices.multi ? [...countBy(except('devs'), (c) => c.dev ?? '')].map(([key, n]) => ({ key, n, label: deviceName(t, devices.byId(key)), dev: devices.byId(key) })) : [];
+  const projItems = [...countBy(except('projs'), projKey)]
+    .map(([key, n]) => {
+      const [dev, workdir] = key.split('\n');
+      return { key, n, label: baseName(workdir) || workdir, text: workdir, title: workdir, dev: dev || null, fresh: !known.has(key) };
+    })
+    .sort((a, b) => b.n - a.n);
+  const stateItems = STATES.map((key) => ({ key, n: except('states').filter((c) => stateOf(c) === key).length, label: t(`hist.state_${key}`) })).filter((x) => x.n > 0);
+  const branchItems = f.projs.length ? [...countBy(except('branches').filter((c) => c.branch), (c) => c.branch)].map(([key, n]) => ({ key, n, label: key })) : [];
+  const timeCount = (k) => except('time').filter((c) => k === 'all' || updatedMs(c) >= now - TIMES[k] * DAY).length;
+  const allMarks = all.filter(textOk).map(markOf);
+  const starN = allMarks.filter((m) => m.star).length;
+  const hiddenN = allMarks.filter((m) => m.hide).length;
+  const active = f.agents.length + f.devs.length + f.projs.length + f.states.length + f.branches.length + (f.time !== 'all') + Boolean(f.mark);
+  const clear = () => update({ agents: [], devs: [], projs: [], states: [], branches: [], time: 'all', mark: '' });
+
+  // 分组
+  const byGroup = new Map();
+  for (const c of list) {
+    const key = f.group === 'project' ? projKey(c) : f.group === 'device' ? c.dev ?? '' : timeBucket(updatedMs(c), now);
+    if (!byGroup.has(key)) byGroup.set(key, []);
+    byGroup.get(key).push(c);
+  }
+  const groupHead = (key) => {
+    if (f.group === 'time') return t(`hist.when_${key}`);
+    if (f.group === 'device') return devices.multi ? deviceName(t, devices.byId(key)) : t('hist.this_computer');
+    const [, workdir] = key.split('\n');
+    return baseName(workdir) || workdir;
+  };
+  const selected = sel ? list.find((c) => convKey(c) === sel) ?? all.find((c) => convKey(c) === sel) : null;
+  // ↑↓ 切换上一条、下一条（焦点不在输入框里时）
+  useEffect(() => {
+    const on = (e) => {
+      if (!['ArrowUp', 'ArrowDown'].includes(e.key) || e.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+      const at = list.findIndex((c) => convKey(c) === sel);
+      const next = list[e.key === 'ArrowDown' ? at + 1 : Math.max(0, at - 1)];
+      if (next) {
+        e.preventDefault();
+        setSel(convKey(next));
+        document.querySelector(`[data-conv="${CSS.escape(convKey(next))}"]`)?.scrollIntoView({ block: 'nearest' });
+      }
+    };
+    window.addEventListener('keydown', on);
+    return () => window.removeEventListener('keydown', on);
+  });
   const failed = (groups ?? []).filter((g) => g.error);
   const noPersist = groups && groups.length > 0 && groups.every((g) => !g.error && !g.persistent);
+  const anyMore = (groups ?? []).some((g) => g.more);
+  const narrow = useNarrowHist();
+
+  const filters = (
+    <div className={`hfilters ${showFilters ? 'open' : ''}`}>
+      <div className="hfilters-head">
+        <b>{t('hist.filters')}</b>
+        {active > 0 && (
+          <button type="button" className="btn btn-plain btn-sm" onClick={clear}>
+            {t('hist.clear')}
+          </button>
+        )}
+      </div>
+      <Facet title={t('hist.f_agent')} items={agentItems} selected={f.agents} onToggle={(k) => toggle('agents', k)} render={(x) => (<><LaunchIcon launch={x.key} size={15} /><span className="ellipsis grow">{x.label}</span></>)} />
+      {devItems.length > 1 && (
+        <Facet title={t('hist.f_device')} items={devItems} selected={f.devs} onToggle={(k) => toggle('devs', k)} render={(x) => (<>{x.dev && <DeviceAvatar device={x.dev} size={16} />}<span className="ellipsis grow">{x.label}</span></>)} />
+      )}
+      <Facet
+        title={t('hist.f_project')}
+        items={projItems}
+        selected={f.projs}
+        onToggle={(k) => toggle('projs', k)}
+        search
+        render={(x) => (
+          <>
+            <Folder size={14} aria-hidden="true" />
+            <span className="ellipsis grow">{x.label}</span>
+            {x.fresh && <span className="hfacet-tag">{t('hist.new_folder')}</span>}
+          </>
+        )}
+      />
+      {branchItems.length > 0 && <Facet title={t('hist.f_branch')} items={branchItems} selected={f.branches} onToggle={(k) => toggle('branches', k)} search render={(x) => (<><GitBranch size={14} aria-hidden="true" /><span className="ellipsis grow">{x.label}</span></>)} />}
+      <Facet title={t('hist.f_state')} items={stateItems} selected={f.states} onToggle={(k) => toggle('states', k)} />
+      <section className="hfacet">
+        <h3 className="hfacet-title">{t('hist.f_time')}</h3>
+        {['today', 'week', 'month', 'all'].map((k) => (
+          <button key={k} type="button" className="hfacet-item" aria-pressed={f.time === k} onClick={() => update({ time: k })}>
+            <span className="grow">{t(`hist.time_${k}`)}</span>
+            <span className="hfacet-n">{timeCount(k)}</span>
+          </button>
+        ))}
+      </section>
+      {(starN > 0 || hiddenN > 0) && (
+        <section className="hfacet">
+          <h3 className="hfacet-title">{t('hist.f_mark')}</h3>
+          {starN > 0 && (
+            <button type="button" className="hfacet-item" aria-pressed={f.mark === 'star'} onClick={() => update({ mark: f.mark === 'star' ? '' : 'star' })}>
+              <Star size={14} aria-hidden="true" />
+              <span className="grow">{t('hist.starred')}</span>
+              <span className="hfacet-n">{starN}</span>
+            </button>
+          )}
+          {hiddenN > 0 && (
+            <button type="button" className="hfacet-item" aria-pressed={f.mark === 'hidden'} onClick={() => update({ mark: f.mark === 'hidden' ? '' : 'hidden' })}>
+              <EyeOff size={14} aria-hidden="true" />
+              <span className="grow">{t('hist.show_hidden')}</span>
+              <span className="hfacet-n">{hiddenN}</span>
+            </button>
+          )}
+        </section>
+      )}
+    </div>
+  );
+
   return (
-    <div className="hist-page">
-      <div className="page-head">
-        <h1>{t('hist.title')}</h1>
-      </div>
-      <p className="muted hist-lead">{t('hist.lead')}</p>
-      <div className="hist-bar">
-        <label className="slist-search hist-search">
-          <Search size={15} aria-hidden="true" />
-          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('hist.search')} aria-label={t('hist.search')} spellCheck={false} autoFocus={Boolean(query)} />
-        </label>
-        <AgentChips items={all} value={agent} onChange={setAgent} />
-      </div>
-      {failed.map((g) => (
-        <ErrorNote key={g.dev ?? ''} error={g.error} />
-      ))}
-      {!groups ? (
-        <div className="hist-loading">
-          <Spinner size={18} />
+    <div className={`hist-page ${selected && !narrow ? 'with-detail' : ''}`}>
+      {filters}
+      <div className="hist-main">
+        <div className="page-head">
+          <h1>{t('hist.title')}</h1>
         </div>
-      ) : noPersist ? (
-        <p className="muted">{t('hist.needs_persistent')}</p>
-      ) : byDir.size === 0 ? (
-        <p className="muted">{q ? t('hist.no_match') : t('hist.empty')}</p>
-      ) : (
-        [...byDir.values()].map((g) => {
-          const dev = devices.multi ? devices.byId(g.dev) : null;
-          const more = expanded[g.key] || q;
-          const shown = more ? g.items : g.items.slice(0, GROUP_SHOW);
-          return (
-            <section key={g.key} className="hist-group" aria-label={baseName(g.workdir)}>
+        <div className="hist-bar">
+          <label className="slist-search hist-search">
+            <Search size={15} aria-hidden="true" />
+            <input
+              type="search"
+              value={f.q}
+              onChange={(e) => {
+                update({ q: e.target.value });
+                if (!e.target.value.trim()) setDeepQ('');
+              }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && pq.text) setDeepQ(pq.text);
+                if (e.key === 'Escape') {
+                  update({ q: '' });
+                  setDeepQ('');
+                }
+              }}
+              placeholder={t('hist.search2')}
+              aria-label={t('hist.search2')}
+              spellCheck={false}
+              autoFocus={Boolean(f.q)}
+            />
+          </label>
+          <button type="button" className={`btn btn-ghost btn-sm hist-filter-btn ${active ? 'on' : ''}`} onClick={() => setShowFilters(!showFilters)} aria-expanded={showFilters}>
+            <SlidersHorizontal size={15} aria-hidden="true" />
+            {t('hist.filters')}
+            {active > 0 && <span className="hfacet-n">{active}</span>}
+          </button>
+          <span className="seg seg-xs" role="group" aria-label={t('hist.group_by')}>
+            {GROUPS.filter((g) => g !== 'device' || devices.multi).map((g) => (
+              <button key={g} type="button" aria-pressed={f.group === g} onClick={() => update({ group: g })}>
+                {t(`hist.group_${g}`)}
+              </button>
+            ))}
+          </span>
+        </div>
+        <p className="small muted hist-hint">
+          {deepQ ? t('hist.deep_on', { q: deepQ }) : pq.text ? t('hist.deep_hint') : t('hist.lead2', { count: list.length })}
+        </p>
+        {failed.map((g) => (
+          <ErrorNote key={g.dev ?? ''} error={g.error} />
+        ))}
+        {!groups ? (
+          <div className="hist-loading">
+            <Spinner size={18} />
+          </div>
+        ) : noPersist ? (
+          <p className="muted">{t('hist.needs_persistent')}</p>
+        ) : list.length === 0 ? (
+          <div className="conv-empty">
+            <p>{f.q || active ? t('hist.no_match') : t('hist.empty')}</p>
+            {active > 0 && (
+              <button type="button" className="btn btn-plain btn-sm" onClick={clear}>
+                {t('hist.clear')}
+              </button>
+            )}
+          </div>
+        ) : (
+          [...byGroup].map(([key, items]) => (
+            <section key={key} className="hist-group" aria-label={groupHead(key)}>
               <h2 className="hist-group-head">
-                <Folder size={15} aria-hidden="true" />
-                <span>{baseName(g.workdir) || g.workdir}</span>
-                {dev && <DeviceTag device={dev} />}
-                {!known.has(`${g.dev ?? ''}\n${g.workdir}`) && <span className="badge">{t('hist.new_folder')}</span>}
-                <span className="hist-path ellipsis">{g.workdir}</span>
+                {f.group === 'project' && <Folder size={15} aria-hidden="true" />}
+                <span>{groupHead(key)}</span>
+                <span className="hfacet-n">{items.length}</span>
+                {f.group === 'project' && <span className="hist-path ellipsis">{key.split('\n')[1]}</span>}
               </h2>
               <div className="conv-list">
-                {shown.map((c) => {
-                  const id = `${g.key}\n${c.agent}:${c.id}`;
-                  return <ConvRow key={id} device={g.dev} conv={c} open={open === id} onToggle={() => setOpen(open === id ? null : id)} />;
+                {items.map((c) => {
+                  const k = convKey(c);
+                  const on = sel === k;
+                  return (
+                    <div key={k} data-conv={k}>
+                      <HistRow
+                        conv={c}
+                        selected={on}
+                        mark={markOf(c)}
+                        onSelect={() => setSel(on ? null : k)}
+                        onMark={(patch) => setMark(c, patch)}
+                        showDevice={f.group !== 'device'}
+                        showProject={f.group !== 'project'}
+                      />
+                      {on && narrow && <ConvPeek device={c.dev} conv={c} />}
+                    </div>
+                  );
                 })}
               </div>
-              {!more && g.items.length > GROUP_SHOW && (
-                <button type="button" className="btn btn-plain btn-sm" onClick={() => setExpanded((x) => ({ ...x, [g.key]: true }))}>
-                  <ChevronDown size={14} aria-hidden="true" />
-                  {t('hist.more', { count: g.items.length - GROUP_SHOW })}
-                </button>
-              )}
             </section>
-          );
-        })
-      )}
+          ))
+        )}
+        {groups && anyMore && (
+          <button type="button" className="btn btn-ghost btn-sm hist-more" onClick={loadMore} disabled={loadingMore}>
+            {loadingMore ? <Spinner size={14} /> : <ChevronDown size={14} aria-hidden="true" />}
+            {t('hist.load_more')}
+          </button>
+        )}
+      </div>
+      {selected && !narrow && <HistDetail key={sel} conv={selected} onClose={() => setSel(null)} />}
     </div>
   );
 }

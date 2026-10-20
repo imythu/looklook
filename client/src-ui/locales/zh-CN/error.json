@@ -98,7 +98,6 @@
     "jump_missing": "选的跳板机已经不在了",
     "jump_depth": "跳板机嵌套太多层了"
   },
-  "LAN_SWITCH_OFF": "已关闭“远程打开时可以改走局域网”（设置 → 网络与访问）",
   "DEVICE_TIMEOUT": "这台电脑没有及时响应，正在重试",
   "CLIENT_UNREACHABLE": "连不上这台电脑上的看看，它可能已经退出",
   "RTC_RELAY_UDP": "连不上这台电脑：浏览器和它都连不上当前线路的 UDP 端口，只有在同一个局域网里才能直连。可能是中转服务器没有放行 UDP（3478 与 49160–49999），可以在这台电脑的看看里换一条线路",
@@ -200,5 +199,8 @@
   "CHAT_RUNNING": "Claude 正在处理，等这一轮做完再切换",
   "CHAT_INPUT_NOT_EMPTY": "Claude Code 的输入框里还有没发出去的文字（可能是在别的窗口里输入的），发出去或清空后再试",
   "CHAT_MODE_UNAVAILABLE": "这个模式现在用不了（启动 Claude Code 时没有开启）",
-  "RESUME_NEEDS_PERSISTENT": "这台电脑没有开启会话保持，不能接着以前的对话"
+  "RESUME_NEEDS_PERSISTENT": "这台电脑没有开启会话保持，不能接着以前的对话",
+  "DOCKER_NOT_FOUND": "这台电脑上没找到 docker 命令",
+  "DOCKER_FAILED": "Docker 出错了：{{detail}}",
+  "TOOL_NOT_IN_CONTAINER": "容器 {{container}} 里没有安装 {{tool}}"
 }

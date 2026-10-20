@@ -287,10 +287,6 @@
     "locked_title": "Can't open the terminal right now",
     "stopped_title": "This terminal hasn't started",
     "stopped_body": "You can use it once it starts.",
-    "direct": "Direct",
-    "direct_hint": "This browser runs on the same computer, so the terminal connects to it directly without the relay (round trip about {{ms}} ms; via the relay about {{relay}} ms).",
-    "relay_ms": "{{ms}} ms",
-    "relay_hint": "Connected through a remote route; round trip about {{ms}} ms. Typing delay mostly comes from network distance: a route closer to both you and the computer (Settings → Network & access) is faster, and opening it on the computer itself connects directly.",
     "newline_hint": "newline",
     "newline_title": "Shift+Enter adds a new line, Enter sends"
   },
@@ -493,9 +489,7 @@
     "fw_lan": "To let other devices at home open it: tick only \"Private networks\" and click \"Allow access\". Don't tick \"Public networks\" (cafés, airports, etc.).",
     "fw_profile": "Allowed but still can't connect: in Windows Settings → Network & Internet → Wi‑Fi (or Ethernet) → your network, set the network profile type to \"Private\".",
     "fw_fix": "Clicked the wrong option and want to change it: open Control Panel → Windows Defender Firewall → Allow an app through Windows Firewall → Change settings, find looklook and tick only \"Private\". You can also run this in PowerShell as administrator:",
-    "fw_never": "To never see this prompt: set the environment variable LOOKLOOK_LISTEN=127.0.0.1:1234 and reopen Looklook. Then the dashboard can only be opened on this computer, and LAN access won't work.",
-    "lan_switch": "Offer the local network when opened remotely",
-    "lan_switch_hint": "When you open Looklook remotely with your account while on the same network as this computer (say, your phone at home), the page offers a faster direct connection over the local network. Only browsers signed in to your account can switch; it doesn't need \"Allow LAN\" above or the access code."
+    "fw_never": "To never see this prompt: set the environment variable LOOKLOOK_LISTEN=127.0.0.1:1234 and reopen Looklook. Then the dashboard can only be opened on this computer, and LAN access won't work."
   },
   "relay": {
     "state": {
@@ -744,10 +738,11 @@
     "local_only_on": "Showing this computer only",
     "local_only_off": "Showing all computers again",
     "this_computer": "This computer",
-    "lan_title": "On your local network",
-    "lan_hint": "Open over your local network in the browser, without the platform or relay",
-    "lan_same": "same network",
-    "lan_open": "Open directly"
+    "only_this": "This computer only",
+    "only_this_short": "This one only",
+    "only_this_hint": "Hide your other computers in this browser",
+    "only_this_hint_on": "Other computers are hidden in this browser",
+    "only_this_on": "Showing this computer only"
   },
   "files": {
     "button": "Upload",
@@ -893,18 +888,6 @@
     "uploaded": "Uploaded {{n}} files",
     "drop": "Drop to upload to {{dir}}",
     "tab_git": "Git"
-  },
-  "lan": {
-    "hint": "You're on the same network as this computer. Connect over the local network instead of the remote route for snappier typing.",
-    "auto": "Switch automatically in this browser from now on",
-    "open": "Use local network",
-    "dismiss": "Not now",
-    "open_term": "Open this terminal over the local network in a new tab (faster)",
-    "open_term_unsure": "Open this terminal over the local network (you need to be on the same network as this computer)",
-    "badge": "LAN",
-    "badge_hint": "Connected to this computer directly over the local network, not through a remote route. If you leave this network you'll be offered the remote address.",
-    "lost": "Can't reach this computer; you may have left its network. Your terminals are still running. Continue at the remote address.",
-    "back_remote": "Back to remote address"
   },
   "model": {
     "title": "Model providers",
@@ -1559,7 +1542,27 @@
       "h": "{{n}}h",
       "d": "{{n}}d"
     },
-    "back": "Sessions"
+    "back": "Sessions",
+    "my_name": "My name: {{name}}",
+    "docker_pick": "Docker container",
+    "docker_search": "Search containers and images",
+    "docker_err": {
+      "DOCKER_NOT_FOUND": "The docker command was not found on this computer",
+      "DOCKER_FAILED": "Could not list containers. Docker may not be running."
+    },
+    "docker_none": "No running containers",
+    "container_dir": "Folder in the container",
+    "container_note": "Sessions in a container have no chat view yet, only the terminal.",
+    "container_root": "The container runs as root, so IS_SANDBOX=1 is added.",
+    "container_missing": "{{tool}} is not installed in the container",
+    "in_container": "Container {{name}}",
+    "tabs": "Open sessions",
+    "tabs_all": "All open sessions",
+    "tabs_search": "Search open sessions",
+    "tab_close": "Close tab (the terminal keeps running)",
+    "tabs_close_all": "Close all",
+    "tabs_close_others": "Close others",
+    "tabs_close_right": "Close tabs to the right"
   },
   "acct": {
     "computers": "Computers",
@@ -1669,8 +1672,7 @@
     "secure": "Encryption",
     "e2e": "End-to-end, computer signature verified",
     "latency": "Latency",
-    "remote_note": "Tries to reach that computer directly and falls back to the route as a relay, which only sees encrypted data.",
-    "lan_title": "Directly on the local network with {{name}}"
+    "remote_note": "Tries to reach that computer directly and falls back to the route as a relay, which only sees encrypted data."
   },
   "hist": {
     "title": "Earlier conversations",
@@ -1698,6 +1700,61 @@
     "no_match": "No matching conversations",
     "empty": "No earlier conversations yet. They show up here after you use Claude Code, Codex or OpenCode.",
     "new_folder": "Not a project yet",
-    "needs_persistent": "Session persistence is off on this computer, so earlier conversations can't be continued."
+    "needs_persistent": "Session persistence is off on this computer, so earlier conversations can't be continued.",
+    "f_search": "Search…",
+    "starred": "Starred",
+    "star": "Star",
+    "unstar": "Unstar",
+    "hide": "Hide",
+    "unhide": "Unhide",
+    "started": "Started {{when}}",
+    "close_preview": "Close preview",
+    "no_preview": "Nothing to show",
+    "hidden_done": "Conversation hidden",
+    "filters": "Filters",
+    "clear": "Clear filters",
+    "f_agent": "Tool",
+    "f_device": "Computer",
+    "f_project": "Project",
+    "f_branch": "Branch",
+    "f_state": "Status",
+    "f_time": "Time",
+    "f_mark": "My marks",
+    "time_today": "Today",
+    "time_week": "Last 7 days",
+    "time_month": "Last 30 days",
+    "time_all": "All time",
+    "show_hidden": "Hidden",
+    "search2": "Search titles, messages, folders (Enter: full text)",
+    "group_by": "Group by",
+    "group_time": "By time",
+    "group_project": "By project",
+    "group_device": "By computer",
+    "deep_on": "Showing full-text results for “{{q}}”",
+    "deep_hint": "Press Enter to search the full conversations",
+    "lead2": "{{count}} conversations. Click one to read it and pick it up again.",
+    "when_today": "Today",
+    "when_yesterday": "Yesterday",
+    "when_week": "This week",
+    "when_month": "This month",
+    "when_earlier": "Earlier",
+    "this_computer": "This computer",
+    "load_more": "Load older conversations",
+    "state_open": "Open in Looklook",
+    "state_live": "May be running elsewhere",
+    "state_ended": "Ended",
+    "search_here": "Search this project"
+  },
+  "path": {
+    "label": "Path",
+    "lan": "Direct on local network",
+    "p2p": "Direct over the internet",
+    "relay": "Through relay",
+    "none": "Not connected yet; connects when used",
+    "self": "This computer"
+  },
+  "pull": {
+    "pull": "Pull to refresh",
+    "release": "Release to refresh"
   }
 }
