@@ -1327,12 +1327,12 @@ async fn docker_containers() -> Json<Value> {
     }
 }
 
-/// 容器里的默认用户、目录和装了的 AI 工具（开始页选了容器后显示）。
 /// `GET /api/docker/containers/{name}/fs?path=&hidden=`：容器里的子文件夹，字段同 `/fs/list`。
 async fn docker_fs(Path(name): Path<String>, Query(q): Query<FsQ>) -> R<Json<crate::docker::DirList>> {
     Ok(Json(crate::docker::list_dirs(&name, &q.path, q.hidden).await?))
 }
 
+/// 容器里的默认用户、目录和装了的 AI 工具（开始页选了容器后显示）。
 async fn docker_probe(Path(name): Path<String>) -> R<Json<crate::docker::Probe>> {
     Ok(Json(crate::docker::probe(&name).await?))
 }

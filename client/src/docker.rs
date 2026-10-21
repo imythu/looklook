@@ -1,4 +1,4 @@
-//! Docker 容器里的会话：`docker ps` 列出运行中的容器，探测容器里的用户、默认目录和装了哪些 AI 工具，
+//! Docker 容器里的会话：读本机 Docker 的 socket（Engine API）列出运行中的容器（读不到再用 `docker ps`），探测容器里的用户、默认目录和装了哪些 AI 工具，
 //! 拼出 `docker exec -it …` 启动命令。tmux（会话保持）仍在这台电脑上，容器里只运行工具本身。
 //!
 //! 容器里的会话没有对话界面：hooks 回调的本机地址、对话记录（`~/.claude/projects` 等）都在容器里，客户端拿不到。
@@ -76,10 +76,75 @@ async fn run(args: &[&str]) -> Result<String, LocalError> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// 运行中的容器（`docker ps`）。
+/// 运行中的容器：先直接读本机 Docker 的 socket（不依赖 docker 命令和 PATH），读不到（Windows、远程 DOCKER_HOST、
+/// 没有权限等）再用 `docker ps`。
 pub async fn list() -> Result<Vec<Listed>, LocalError> {
+    #[cfg(unix)]
+    for sock in sockets() {
+        match tokio::time::timeout(TIMEOUT, api_get(&sock, "/containers/json")).await {
+            Ok(Ok(body)) => return Ok(parse_api(&body)),
+            Ok(Err(e)) => tracing::debug!(sock = %sock.display(), error = %e, "读 Docker socket 失败"),
+            Err(_) => tracing::debug!(sock = %sock.display(), "读 Docker socket 超时"),
+        }
+    }
     let out = run(&["ps", "--format", "{{json .}}"]).await?;
     Ok(parse_ps(&out))
+}
+
+/// 本机 Docker 的 socket：DOCKER_HOST（unix://）、系统默认的、rootless、Docker Desktop / OrbStack 的。只返回存在的。
+#[cfg(unix)]
+fn sockets() -> Vec<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let mut v = vec![];
+    match std::env::var("DOCKER_HOST") {
+        Ok(h) if !h.is_empty() => match h.strip_prefix("unix://") {
+            Some(p) => v.push(PathBuf::from(p)),
+            // tcp:// 等远程地址交给 docker 命令
+            None => return v,
+        },
+        _ => {}
+    }
+    v.push("/var/run/docker.sock".into());
+    v.push(format!("/run/user/{}/docker.sock", unsafe { libc::getuid() }).into());
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        v.push(home.join(".docker/run/docker.sock"));
+        v.push(home.join(".orbstack/run/docker.sock"));
+        v.push(home.join(".colima/default/docker.sock"));
+    }
+    v.dedup();
+    v.retain(|p| p.exists());
+    v
+}
+
+/// 在 unix socket 上发一个 HTTP/1.0 GET（服务端读完就关连接，不用处理分块），返回 2xx 的响应体。
+#[cfg(unix)]
+async fn api_get(sock: &Path, path: &str) -> std::io::Result<String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut s = tokio::net::UnixStream::connect(sock).await?;
+    s.write_all(format!("GET {path} HTTP/1.0\r\nHost: docker\r\nAccept: application/json\r\n\r\n").as_bytes()).await?;
+    let mut buf = Vec::new();
+    s.take(8 << 20).read_to_end(&mut buf).await?;
+    let text = String::from_utf8_lossy(&buf);
+    let (head, body) = text.split_once("\r\n\r\n").ok_or_else(|| std::io::Error::other("bad response"))?;
+    let ok = head.split_whitespace().nth(1).is_some_and(|c| c.starts_with('2'));
+    if !ok {
+        return Err(std::io::Error::other(head.lines().next().unwrap_or("").to_string()));
+    }
+    Ok(body.to_string())
+}
+
+/// Engine API `GET /containers/json` 的结果（名字带开头的 `/`）。
+#[cfg_attr(not(unix), allow(dead_code))]
+fn parse_api(body: &str) -> Vec<Listed> {
+    let Ok(serde_json::Value::Array(a)) = serde_json::from_str(body) else { return vec![] };
+    a.iter()
+        .map(|v| {
+            let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
+            let name = v["Names"].as_array().and_then(|n| n.first()).and_then(|n| n.as_str()).unwrap_or("").trim_start_matches('/').to_string();
+            Listed { id: s("Id").chars().take(12).collect(), name, image: s("Image"), status: s("Status") }
+        })
+        .filter(|c| !c.name.is_empty())
+        .collect()
 }
 
 fn parse_ps(out: &str) -> Vec<Listed> {
@@ -262,6 +327,35 @@ mod tests {
         assert_eq!((p.user.as_str(), p.workdir.as_str()), ("root", "/app"));
         assert_eq!(p.tools, vec!["claude", "codex"]);
         assert!(!parse_probe("1000\nnode\n/home/node\n").root);
+    }
+
+    #[test]
+    fn parses_api_list() {
+        let body = r#"[{"Id":"0123456789abcdef","Names":["/dev-box"],"Image":"node:22","Status":"Up 2 hours"},{"Id":"x","Names":[],"Image":"y"}]"#;
+        let l = parse_api(body);
+        assert_eq!(l.len(), 1);
+        assert_eq!((l[0].id.as_str(), l[0].name.as_str(), l[0].image.as_str(), l[0].status.as_str()), ("0123456789ab", "dev-box", "node:22", "Up 2 hours"));
+        assert!(parse_api("not json").is_empty());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn reads_unix_socket() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("docker.sock");
+        let l = tokio::net::UnixListener::bind(&sock).unwrap();
+        tokio::spawn(async move {
+            for code in ["200 OK", "500 Internal Server Error"] {
+                let (mut c, _) = l.accept().await.unwrap();
+                let mut req = [0u8; 1024];
+                let n = c.read(&mut req).await.unwrap();
+                assert!(String::from_utf8_lossy(&req[..n]).starts_with("GET /containers/json HTTP/1.0\r\n"));
+                c.write_all(format!("HTTP/1.0 {code}\r\nContent-Type: application/json\r\n\r\n[]").as_bytes()).await.unwrap();
+            }
+        });
+        assert_eq!(api_get(&sock, "/containers/json").await.unwrap(), "[]");
+        assert!(api_get(&sock, "/containers/json").await.is_err());
     }
 
     #[test]
