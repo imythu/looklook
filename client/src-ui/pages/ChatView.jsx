@@ -66,7 +66,7 @@ import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { runUpload } from '../shared/uploader.js';
-import { Button, useToast } from '../shared/ui.jsx';
+import { Button, useConfirm, useToast } from '../shared/ui.jsx';
 
 // ---------------- 数据 ----------------
 
@@ -1330,6 +1330,7 @@ function ShellTask({ id, shell }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [out, setOut] = useState(null);
+  const confirm = useConfirm();
   const [stopping, setStopping] = useState(false);
   const running = shell.state === 'running';
   useEffect(() => {
@@ -1351,7 +1352,10 @@ function ShellTask({ id, shell }) {
       clearTimeout(timer);
     };
   }, [open, running]);
+  // 停止会结束这条命令（构建、服务、测试……），先确认
   const stop = async () => {
+    const ok = await confirm({ title: t('chat.task_stop_title'), body: shell.command, confirm: t('chat.task_stop_confirm'), danger: true });
+    if (!ok) return;
     setStopping(true);
     try {
       await api.post(`/instances/${id}/chat/task/stop`, { tool: shell.tool_use_id });
@@ -1373,7 +1377,7 @@ function ShellTask({ id, shell }) {
           </span>
         </button>
         {running && (
-          <Button variant="ghost" className="chat-task-stop" busy={stopping} onClick={stop}>
+          <Button variant="danger" className="chat-task-stop" busy={stopping} onClick={stop}>
             {t('chat.task_stop')}
           </Button>
         )}

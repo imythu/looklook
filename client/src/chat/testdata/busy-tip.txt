@@ -1,0 +1,30 @@
+[38;5;231m●[39m Docker scripts are done and tests are
+  running in the background. I'm now
+  investigating the 对话 view bug—it looks
+  like the "⎿ Tip:" lines under the
+  spinner on narrow screens, combined with
+  the missing "esc to interrupt" text,
+  are preventing the screen reader from
+  recognizing Claude as busy.
+
+[38;5;246m●[39m Running grep -n "SPINNERS"
+  src/chat/screen.rs | head -3; …
+[38;5;246m  ⎿  $ M=$(command -v looklook-mux || ls [39m
+     [38;5;246m/opt/looklook/looklook-mux [39m
+     [38;5;246m~/.local/lib/looklook/looklook-mux [39m
+     [38;5;246m2>/dev/null | head -1); echo $M; $M [39m
+     [38;5;246m-S /tmp/tmux-0/looklook capture-pane
+[39m     [38;5;246m-p -e -t "$TMUX_PANE" > /tmp/claude-0
+[39m     [38;5;246m/-workspace-ttyd/46d3f22e-e9a5-4425-b
+[39m     [38;5;246mb92-34e3dca0b371/scratchpad/busy.txt;
+[39m     [38;5;246m$M -S /tmp/tmux-…[39m
+
+[38;5;174m✻[39m [38;5;174mManifesting… [38;5;246m(thought for 1s)[39m
+[38;5;246m  ⎿  Tip: Use /btw to ask a quick side [39m
+     [38;5;246mquestion without interrupting [39m
+     [38;5;246mClaude's current work[39m
+
+[38;5;244m──────────────────────────────────────────
+[38;5;246m❯ [39m
+[38;5;244m──────────────────────────────────────────
+[39m  [38;5;211m⏵⏵ bypass permissions on[38;5;246m · [38;5;44m1 shell[38;5;246m · …[39m

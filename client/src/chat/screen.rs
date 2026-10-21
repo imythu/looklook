@@ -20,7 +20,7 @@ pub enum Screen {
     Input {
         /// 输入框里用户真正输入的文字（灰色的推荐提示不算）
         text: String,
-        /// 状态行里有“esc to interrupt”：正在处理
+        /// 正在处理：状态行里有“esc to interrupt”，或输入框上面有转圈的状态行（窄屏时没有“esc to interrupt”）
         busy: bool,
     },
     /// 别的界面（对话框、选择器、确认框）
@@ -110,7 +110,7 @@ pub fn classify(capture: &str) -> Screen {
             text.push_str(t);
         }
     }
-    let busy = lines[bottom + 1..].iter().any(|(p, _)| p.contains("esc to interrupt"));
+    let busy = lines[bottom + 1..].iter().any(|(p, _)| p.contains("esc to interrupt")) || live(capture).activity.is_some();
     Screen::Input { text: text.trim().to_string(), busy }
 }
 
@@ -239,6 +239,20 @@ pub fn live(capture: &str) -> Live {
     let full = width(&lines[top]);
     let mut out = Live::default();
     let mut i = top;
+    // 状态行下面可能挂着 `  ⎿  Tip: …` 提示（窄屏时折成好几行缩进的续行）：跳过它们找到状态行
+    let mut j = top;
+    while j > 0 && top - j < 12 && (lines[j - 1].trim().is_empty() || lines[j - 1].starts_with("  ")) {
+        j -= 1;
+    }
+    if j > 0 && j < top {
+        let t = lines[j - 1].as_str();
+        // `✻ Manifesting… (12s)`：第一个词以 … 结尾；`⏺ Bash(ls …)` 下面的 `⎿` 是工具输出，不算
+        let verb = t.trim_start_matches(SPINNERS).split_whitespace().next().is_some_and(|w| w.ends_with('…'));
+        if !t.starts_with('⏺') && t.starts_with(SPINNERS) && verb && lines[j..top].iter().any(|l| l.trim_start().starts_with('⎿')) {
+            out.activity = Some(t.trim_start_matches(SPINNERS).trim().chars().take(200).collect());
+            i = j - 1;
+        }
+    }
     // 输入框上面：空行、右对齐的提示（缩进很多）、状态行
     while i > 0 {
         let l = &lines[i - 1];
@@ -465,6 +479,12 @@ mod tests {
         // 结束了：没有状态行
         assert_eq!(live(include_str!("testdata/stream12.txt")).activity, None);
         assert_eq!(live(include_str!("testdata/idle.txt")), Live::default());
+        // Claude Code 2.1.3xx 手机上（42 列）：状态行下面挂着折行的 Tip，状态栏里没有“esc to interrupt”
+        let s = include_str!("testdata/busy-tip.txt");
+        assert_eq!(live(s).activity.as_deref(), Some("Manifesting… (thought for 1s)"));
+        assert!(matches!(classify(s), Screen::Input { busy: true, .. }));
+        let s = format!("⏺ Bash(sleep 1 …)\n  ⎿  done\n\n{RULE}\n❯ \n{RULE}\n  ? for shortcuts\n");
+        assert!(matches!(classify(&s), Screen::Input { busy: false, .. }));
     }
 
     #[test]

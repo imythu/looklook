@@ -1401,6 +1401,8 @@
     "state_stopped": "已停止",
     "state_ended": "已结束",
     "task_stop": "停止",
+    "task_stop_title": "停止这条后台命令？命令会被结束，正在做的事情不会完成。",
+    "task_stop_confirm": "停止命令",
     "task_no_output": "没有找到输出文件",
     "task_empty_output": "（还没有输出）",
     "task_output_tail": "只显示最后 32 KB",

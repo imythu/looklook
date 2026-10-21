@@ -1409,6 +1409,8 @@
     "state_stopped": "Stopped",
     "state_ended": "Ended",
     "task_stop": "Stop",
+    "task_stop_title": "Stop this background command? It will be killed and won't finish what it was doing.",
+    "task_stop_confirm": "Stop command",
     "task_no_output": "No output file found",
     "task_empty_output": "(no output yet)",
     "task_output_tail": "Showing the last 32 KB",
