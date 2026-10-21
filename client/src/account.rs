@@ -1181,7 +1181,7 @@ mod tests {
                     assert_eq!(req.dev, "devb");
                     let mut pc = Pc::answer(&[], &req.offer).unwrap();
                     let answer = pc.local_answer(Duration::from_secs(3)).await.unwrap();
-                    let ctx = bridge::Ctx { router: target, host: "alice.looklook.test".into(), origin: "http://alice.looklook.test".into(), sid: "s".into(), device: "devb".into() };
+                    let ctx = bridge::Ctx { router: target, host: "alice.looklook.test".into(), origin: "http://alice.looklook.test".into(), sid: "s".into(), device: "devb".into(), terms: Default::default(), expires: tokio::time::Instant::now() + Duration::from_secs(3600) };
                     tokio::spawn(async move {
                         while let Some(ch) = pc.incoming.recv().await {
                             tokio::spawn(bridge::serve(ctx.clone(), ch));

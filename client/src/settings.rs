@@ -31,6 +31,8 @@ pub struct Settings {
     pub auto_update: bool,
     /// 粘贴的截图、“发给 AI”的文件（附件目录）保留几天，过期自动删除
     pub attach_days: u16,
+    /// 新建 AI 会话（Claude Code / Codex / OpenCode）默认带全部权限。项目里用过的跟着那个项目上次的（界面决定）
+    pub default_full_access: bool,
 }
 
 impl Default for Settings {
@@ -45,6 +47,7 @@ impl Default for Settings {
             default_shell: String::new(),
             auto_update: true,
             attach_days: 7,
+            default_full_access: false,
         }
     }
 }

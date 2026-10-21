@@ -1200,8 +1200,9 @@ struct Project {
     launch: String,
     #[serde(default)]
     shell: String,
-    #[serde(default)]
-    full_access: bool,
+    /// 在这里新建时选过的全部权限；没选过（只用项目上的 + 建过）为 None，界面按会话或默认设置决定
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    full_access: Option<bool>,
     #[serde(default)]
     auto_start: bool,
     /// 上次在这里新建会话的时间（RFC 3339，界面用来排“最近用过的”）
@@ -1949,5 +1950,15 @@ mod tests {
         let r2 = r2.unwrap();
         assert!(r2.denied);
         assert_eq!(r2.path, locked.display().to_string());
+    }
+
+    #[test]
+    fn project_full_access_is_optional() {
+        // 以前存下的（false 也是写明的）照旧；新建时没选过的不写，读出来是 None
+        let old: Project = serde_json::from_value(serde_json::json!({ "workdir": "/a", "full_access": false })).unwrap();
+        assert_eq!(old.full_access, Some(false));
+        let quick: Project = serde_json::from_value(serde_json::json!({ "workdir": "/a", "launch": "claude" })).unwrap();
+        assert_eq!(quick.full_access, None);
+        assert!(serde_json::to_value(&quick).unwrap().get("full_access").is_none());
     }
 }

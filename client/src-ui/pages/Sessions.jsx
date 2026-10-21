@@ -14,7 +14,7 @@ import { errorText } from '../shared/i18n.js';
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, useSessions } from '../shared/sessions.jsx';
+import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Modal, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { PrevConversations } from './History.jsx';
 import { BackendNote, FolderPicker, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
@@ -26,6 +26,17 @@ const START_LAUNCHES = ['claude', 'codex', 'opencode', 'shell', 'dsh', 'custom']
 const QUICK_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
 const AI_TOOLS = ['codex', 'claude', 'opencode', 'dsh'];
 const FULL_ACCESS = ['codex', 'claude', 'opencode'];
+
+/**
+ * 新会话默认带不带全部权限（各人习惯不同）：这个项目里最近一个 AI 会话怎么开的就怎么开；项目里没有 AI 会话时，
+ * 用在这个项目里新建时选过的；都没有用那台电脑的设置“新 AI 会话默认全部权限”。
+ */
+export function fullAccessFor(p, settings) {
+  const last = (p?.items ?? []).filter((i) => FULL_ACCESS.includes(i.launch)).sort((a, b) => startedAt(b) - startedAt(a))[0];
+  if (last) return Boolean(last.full_access);
+  if (typeof p?.full_access === 'boolean') return p.full_access;
+  return Boolean(settings?.default_full_access);
+}
 // 第一句话能用在哪些类型上（AI 工具作为第一条消息，普通终端当作启动后运行的命令）
 const PROMPT_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
 
@@ -65,6 +76,7 @@ export function SessionUiProvider({ children }) {
   const s = useSessions();
   const devices = useDevices();
   const { navigate, path } = useRouter();
+  const { status } = useStatus();
   const toast = useToast();
   const [dialog, setDialog] = useState(null);
   const [logs, setLogs] = useState(null);
@@ -81,7 +93,10 @@ export function SessionUiProvider({ children }) {
     setStart((x) => ({ ...want, nonce: x.nonce + 1 }));
     navigate(opensInPage() ? '/' : '/new');
   };
-  /** 在项目里直接新建一个（类型默认用这个项目上次用的），启动并打开；提示条里可以撤销。 */
+  /** 那台电脑的设置：顶栏选中的那台用已有的状态，别的电脑现取。 */
+  const settingsOf = async (device) =>
+    devices.multi && device && device !== devices.selected ? ((await deviceApi(device).get('/status').catch(() => null))?.settings ?? null) : status.settings;
+  /** 在项目里直接新建一个（类型默认用这个项目上次用的，全部权限见 [`fullAccessFor`]），启动并打开；提示条里可以撤销。 */
   const quickCreate = async (p, launch = p.launch || 'claude') => {
     const client = deviceApi(p.device);
     try {
@@ -90,6 +105,8 @@ export function SessionUiProvider({ children }) {
         newSession({ device: p.device, workdir: p.workdir, launch });
         return;
       }
+      const decided = p.items.some((i) => FULL_ACCESS.includes(i.launch)) || typeof p.full_access === 'boolean';
+      const full = FULL_ACCESS.includes(launch) && fullAccessFor(p, decided ? null : await settingsOf(p.device));
       const r = await client.post('/instances', {
         name: '',
         workdir: p.container ? '' : p.workdir,
@@ -98,7 +115,7 @@ export function SessionUiProvider({ children }) {
         command: '',
         shell: p.shell ?? '',
         auto_start: Boolean(p.auto_start),
-        full_access: FULL_ACCESS.includes(launch) && Boolean(p.full_access),
+        full_access: full,
         start: true,
       });
       if (p.device && r.id) rememberTerminals(p.device, [r]);
@@ -136,7 +153,7 @@ export function SessionUiProvider({ children }) {
       command: '',
       shell: p?.shell ?? '',
       auto_start: Boolean(p?.auto_start),
-      full_access: FULL_ACCESS.includes(c.agent) && Boolean(p?.full_access),
+      full_access: FULL_ACCESS.includes(c.agent) && fullAccessFor(p, await settingsOf(device)),
       resume: { id: c.id, fork },
       start: true,
     });
@@ -739,7 +756,13 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   const [adv, setAdv] = useState(false);
   const [name, setName] = useState('');
   const [shell, setShell] = useState(project?.shell ?? '');
-  const [fullAccess, setFullAccess] = useState(Boolean(project?.full_access));
+  const [fullAccess, setFullAccessState] = useState(() => fullAccessFor(project, selectedStatus.settings));
+  // 用户自己勾过：换项目、那台电脑的设置到了都不再改它
+  const fullChosen = useRef(false);
+  const setFullAccess = (v) => {
+    fullChosen.current = true;
+    setFullAccessState(v);
+  };
   const [rootOk, setRootOk] = useState(false);
   const [autoStart, setAutoStart] = useState(Boolean(project?.auto_start));
   const [busy, setBusy] = useState(false);
@@ -773,11 +796,15 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
     if (p) {
       if (!chosen.current && p.launch) setLaunchState(p.launch);
       setShell(p.shell ?? '');
-      setFullAccess(Boolean(p.full_access));
+      setFullAccessState(fullAccessFor(p, status?.settings));
       setAutoStart(Boolean(p.auto_start));
     }
     setTimeout(() => !isTouch() && input.current?.focus(), 0);
   };
+  // 别的电脑的设置（默认全部权限）晚一点才到：还没勾过时跟着它
+  useEffect(() => {
+    if (!fullChosen.current) setFullAccessState(fullAccessFor(project, status?.settings));
+  }, [device, status?.settings?.default_full_access]);
   const missing = (l) => (container ? AI_TOOLS.includes(l) && Array.isArray(container.tools) && !container.tools.includes(l) : AI_TOOLS.includes(l) && tools && !tools.tools?.[l]);
   const dshRow = launch === 'dsh' ? s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device)) : null;
   const isRoot = Boolean(status.capabilities?.root);
@@ -825,7 +852,8 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
         start: true,
       });
       if (device && r.id) rememberTerminals(device, [r]);
-      if (!container) s.touchProject(device, r.workdir ?? workdir, { launch, shell: shell.trim(), full_access: canFull && fullAccess, auto_start: autoStart });
+      // 全部权限只在能选的类型（AI 会话）上记：开个终端不该把这个项目记成“不要全部权限”
+      if (!container) s.touchProject(device, r.workdir ?? workdir, { launch, shell: shell.trim(), auto_start: autoStart, ...(canFull ? { full_access: fullAccess } : {}) });
       s.reload();
       setText('');
       setName('');
@@ -1072,7 +1100,6 @@ function SessionMenu({ inst }) {
  */
 export function SessionStage({ activeId }) {
   const s = useSessions();
-  const devices = useDevices();
   const ref = useRef(null);
   const height = useFillHeight(ref, Boolean(activeId));
   const ids = activeId && !s.recent.includes(activeId) ? [activeId, ...s.recent] : s.recent;
@@ -1081,13 +1108,8 @@ export function SessionStage({ activeId }) {
     s.openTab(activeId);
     s.openRecent(activeId);
   }, [activeId]);
-  // 被删掉的会话：拿到了它所在电脑的列表、里面却没有（电脑离线、还没加载时不算）
-  const missing = (id) => {
-    if (s.loading || s.error || s.byId(id)) return false;
-    if (!devices.multi) return true;
-    const dev = terminalDevice(id);
-    return Boolean(dev && s.groups?.[dev] && !s.groups[dev].error);
-  };
+  // 被删掉的会话（见 sessions.jsx 的 gone）：标签跟着关掉
+  const missing = s.gone;
   useEffect(() => {
     const gone = [...new Set([...s.recent, ...s.tabs])].filter((id) => id !== activeId && missing(id));
     if (gone.length) s.closeTabs(gone);

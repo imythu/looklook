@@ -18,6 +18,9 @@ const GROUP_TIMEOUT_MS = 10000;
 const POLL_MS = 5000;
 const RECENT_KEY = 'looklook.recent';
 const TABS_KEY = 'looklook.tabs';
+// 标签所在的电脑（会话 id → 电脑 id，单台时为 'self'）：重新打开页面后还没拿到各台的会话列表时，
+// 据此判断标签的会话是不是已经删掉了
+const TABDEV_KEY = 'looklook.tabdev';
 // 顶部最多几个标签（再多就把最早打开的收起）
 export const TABS_MAX = 40;
 const CACHE_KEY = 'looklook.devcache';
@@ -141,7 +144,11 @@ function useSingle(enabled) {
         busy.current = false;
       });
   };
-  useEffect(reload, [enabled]);
+  useEffect(() => {
+    // 停用（换成多台）时丢掉旧列表：再换回单台时那份已经过时，拿它判断“会话已删除”会误关标签
+    if (!enabled) setState({ data: null, error: null });
+    else reload();
+  }, [enabled]);
   return [state.data, state.error, reload];
 }
 
@@ -172,13 +179,14 @@ function useStoredProjects(devIds, key) {
 
 /**
  * 把会话和记着的项目合成项目列表：[{ key, device, workdir, name, launch, shell, full_access, auto_start, items, used, offline }]。
+ * `full_access` 是在这个项目里新建时选过的，没选过为 null（见 Sessions.jsx 的 fullAccessFor）。
  * 项目按最近用过排序，项目里的会话也是。
  */
 function mergeProjects({ devIds, store, items, multi, cache, onlineIds }) {
   const map = new Map();
   const add = (device, workdir, extra) => {
     const key = projectKey(device, workdir);
-    if (!map.has(key)) map.set(key, { key, device, workdir, name: baseName(workdir) || workdir, launch: '', shell: '', full_access: false, auto_start: false, items: [], used: 0, ...extra });
+    if (!map.has(key)) map.set(key, { key, device, workdir, name: baseName(workdir) || workdir, launch: '', shell: '', full_access: null, auto_start: false, items: [], used: 0, ...extra });
     return map.get(key);
   };
   for (const dev of devIds) {
@@ -187,7 +195,7 @@ function mergeProjects({ devIds, store, items, multi, cache, onlineIds }) {
       for (const p of cache[dev] ?? []) add(dev, p.workdir, { offline: true, count: p.count ?? 0, used: p.used ?? 0 });
       continue;
     }
-    for (const p of store[dev ?? ''] ?? []) add(dev, p.workdir, { launch: p.launch, shell: p.shell, full_access: p.full_access, auto_start: p.auto_start, used: ts(p.used_at) });
+    for (const p of store[dev ?? ''] ?? []) add(dev, p.workdir, { launch: p.launch, shell: p.shell, full_access: typeof p.full_access === 'boolean' ? p.full_access : null, auto_start: p.auto_start, used: ts(p.used_at) });
   }
   for (const i of items) {
     const dev = multi ? terminalDevice(i.id) : null;
@@ -269,6 +277,27 @@ export function SessionsProvider({ enabled, children }) {
     return Array.isArray(v) ? v.filter((x) => typeof x === 'string').slice(0, TABS_MAX) : [];
   });
   useEffect(() => writeJson(TABS_KEY, tabs), [tabs]);
+  const [tabDev, setTabDev] = useState(() => {
+    const v = readJson(TABDEV_KEY, {});
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  });
+  // 单台时那台电脑的 id（网页里只有一台、或者“只看这台电脑”）；本机 App 只看本机时不知道，记成 'self'
+  const selfId = devices.pinned ?? (devices.items.length === 1 ? devices.items[0].id : null);
+  // 记下各个标签（和后台保持连接的会话）在哪台电脑上；只留还开着的。单台时只记新开的（已经记着的不改）
+  const owned = [...new Set([...tabs, ...recent])];
+  const ownerOf = (id) => (multi ? terminalDevice(id) : null) ?? tabDev[id] ?? (multi ? null : selfId ?? 'self');
+  const ownerSig = owned.map((id) => `${id}=${ownerOf(id) ?? ''}`).join(',');
+  useEffect(() => {
+    const next = {};
+    for (const id of owned) {
+      const dev = ownerOf(id);
+      if (dev) next[id] = dev;
+    }
+    if (JSON.stringify(next) === JSON.stringify(tabDev)) return;
+    setTabDev(next);
+    writeJson(TABDEV_KEY, next);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ownerSig]);
   const openTab = (id) => setTabs((t) => (t.includes(id) ? t : [...t, id].slice(-TABS_MAX)));
   const closeTabs = (ids) => {
     const gone = new Set(ids);
@@ -281,6 +310,23 @@ export function SessionsProvider({ enabled, children }) {
       rest.splice(Math.max(0, Math.min(to, rest.length)), 0, id);
       return rest;
     });
+  /**
+   * 会话已经被删掉了（标签自动关掉）：只有拿到了它所在那台电脑这一次的会话列表、里面却没有时才算。
+   * 不知道在哪台电脑上、那台电脑离线或出错、列表还没到，都不算（不然重连、切换单台 / 多台时会把别的电脑的标签误关）。
+   * 单台时只看本机的标签（'self'）；多台时看记下的那台电脑。都不知道的旧标签：每台电脑的列表都拿到了才算。
+   */
+  const gone = (id) => {
+    if (items.some((i) => i.id === id)) return false;
+    if (!multi) {
+      if (!single || singleError) return false;
+      const dev = tabDev[id];
+      return !dev || dev === 'self' || dev === selfId;
+    }
+    const loaded = (dev) => Boolean(grouped?.groups?.[dev] && !grouped.groups[dev].error);
+    const dev = terminalDevice(id) ?? (tabDev[id] !== 'self' ? tabDev[id] : null);
+    if (dev) return loaded(dev);
+    return devices.items.length > 0 && devices.items.every((d) => d.online && loaded(d.id));
+  };
   // 电脑上点会话 / 标签后要把焦点交给它的输入框（终端或对话输入框）；同一个会话再点也要，所以带个计数
   const [focusReq, setFocusReq] = useState({ id: null, n: 0 });
   const requestFocus = (id) => setFocusReq((f) => ({ id, n: f.n + 1 }));
@@ -305,6 +351,7 @@ export function SessionsProvider({ enabled, children }) {
     focusReq,
     requestFocus,
     byId: (id) => items.find((i) => i.id === id) ?? null,
+    gone,
     projectOf: (i) => projects.find((p) => p.items.includes(i)) ?? null,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;

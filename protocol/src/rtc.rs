@@ -22,6 +22,8 @@ pub const CONNECT_PATH: &str = "/_ll/rtc/connect";
 pub const OFFER_PATH: &str = "/_ll/rtc/offer";
 /// 中转 → 设备：吊销推送。
 pub const REVOKE_PATH: &str = "/_ll/rtc/revoke";
+/// 启动页上报连接质量事件（用户站，docs/06 §15）。
+pub const REPORT_PATH: &str = "/_ll/rtc/report";
 /// 吊销推送的 MAC 请求头。
 pub const REVOKE_MAC_HEADER: &str = "x-ll-revoke-mac";
 

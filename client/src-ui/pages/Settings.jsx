@@ -1,5 +1,5 @@
 // 设置：按分区显示，一次只看一个分区（地址里的 #分区 决定）。
-//   通用：电脑名称、语言、附件；终端：字体与配色、新终端的默认文件夹和 shell；AI 模型：模型服务商；
+//   通用：电脑名称、语言、附件；终端：字体与配色、新终端的默认文件夹和 shell、新 AI 会话默认的权限；AI 模型：模型服务商；
 //   网络与访问：远程线路、访问控制；关于：版本、检查更新、问题记录。
 // 终端和通用里的选项改了就自动保存，不需要点保存按钮。
 import { Bot, Check, Globe, Info, SlidersHorizontal, SquareTerminal } from 'lucide-react';
@@ -72,7 +72,7 @@ function sectionOf(hash) {
 }
 
 // 自动保存的设置项
-const KEYS = ['font', 'font_size', 'theme', 'default_workdir', 'default_shell', 'device_name'];
+const KEYS = ['font', 'font_size', 'theme', 'default_workdir', 'default_shell', 'device_name', 'default_full_access'];
 const same = (a, b) => KEYS.every((k) => String(a[k] ?? '') === String(b[k] ?? ''));
 
 /** 改动停下 600 毫秒后保存；离开页面时把没保存的立即发出去。 */
@@ -215,6 +215,17 @@ export default function Settings() {
         <Card title={t('settings.new_terminal')}>
           <FolderField label={t('settings.workdir')} hint={t('settings.workdir_hint')} value={s.default_workdir} onChange={set('default_workdir')} />
           <ShellPicker value={s.default_shell ?? ''} onChange={set('default_shell')} data={shells} />
+          <Field label={t('settings.default_full_access')} hint={t('settings.default_full_access_hint')}>
+            <Seg
+              value={Boolean(s.default_full_access)}
+              label={t('settings.default_full_access')}
+              onChange={set('default_full_access')}
+              options={[
+                [false, t('settings.default_full_access_ask')],
+                [true, t('settings.default_full_access_on')],
+              ]}
+            />
+          </Field>
         </Card>
       </>
     ),

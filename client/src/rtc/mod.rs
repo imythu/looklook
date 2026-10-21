@@ -6,12 +6,13 @@
 //! - **连接**（[`run_peer`]）：浏览器开的每条 DataChannel 交给 [`bridge`]，请求带 `Access::Rtc` 进现有路由；
 //! - **失效与吊销**（§8.2）：子站会话到期、30 秒内没连上、连接失败或断开超过 30 秒时关闭；心跳下发的吊销列表、
 //!   退出登录、账户被停用时关闭（[`Rtc::watch`] 监视账户状态）；中转经通道推送的吊销（[`revoke`]）同样处理，
-//!   它只用来更快地关闭，不作为放行的依据。
+//!   它只用来更快地关闭，不作为放行的依据。连接断开后还保留着的终端会话（[`resume`]）同样关闭。
 
 pub mod bridge;
 pub mod frame;
 pub mod outbound;
 pub mod peer;
+pub mod resume;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -50,6 +51,8 @@ pub struct Rtc {
     /// 已用的票据 jti → 到期时间（Unix 毫秒）。
     jtis: Mutex<HashMap<String, i64>>,
     next: AtomicU64,
+    /// 可续接的终端会话（连接断了还保留一会儿，见 [`resume`]）。
+    pub terms: Arc<resume::Terms>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -60,10 +63,12 @@ impl Rtc {
     /// 关闭这些子站会话的全部连接。
     pub fn revoke(&self, sids: &[String]) {
         lock(&self.peers).values().filter(|e| sids.contains(&e.sid)).for_each(|e| e.cancel.cancel());
+        self.terms.revoke(sids);
     }
 
     pub fn close_all(&self) {
         lock(&self.peers).values().for_each(|e| e.cancel.cancel());
+        self.terms.close_all();
     }
 
     pub fn count(&self) -> usize {
@@ -78,7 +83,9 @@ impl Rtc {
                 self.close_all();
                 continue;
             }
-            let revoked: Vec<String> = lock(&self.peers).values().map(|e| e.sid.clone()).filter(|s| account.is_revoked(s)).collect();
+            let mut sids: Vec<String> = lock(&self.peers).values().map(|e| e.sid.clone()).collect();
+            sids.extend(self.terms.sids());
+            let revoked: Vec<String> = sids.into_iter().filter(|s| account.is_revoked(s)).collect();
             if !revoked.is_empty() {
                 self.revoke(&revoked);
             }
@@ -184,8 +191,16 @@ pub async fn offer(State(app): State<App>, remote: Option<Extension<Remote>>, _h
     };
     let (id, cancel) = app.rtc.add(&g.sid);
     let ttl = Duration::from_millis((g.abs_exp - app.account.clock.now_ms()).max(0) as u64);
-    let ctx = bridge::Ctx { router: crate::gateway::router(app.clone()), host: g.host.clone(), origin: g.origin.clone(), sid: g.sid.clone(), device: g.dev.clone() };
-    tracing::info!(sid = %g.sid, peers = app.rtc.count(), "WebRTC 连接建立中");
+    let ctx = bridge::Ctx {
+        router: crate::gateway::router(app.clone()),
+        host: g.host.clone(),
+        origin: g.origin.clone(),
+        sid: g.sid.clone(),
+        device: g.dev.clone(),
+        terms: app.rtc.terms.clone(),
+        expires: tokio::time::Instant::now() + ttl,
+    };
+    tracing::info!(sid = %g.sid, peers = app.rtc.count(), parked_terms = app.rtc.terms.count(), "WebRTC 连接建立中");
     tokio::spawn(run_peer(app.clone(), id, pc, ctx, cancel, ttl));
     Json(OfferResponse { answer, key, sig }).into_response()
 }

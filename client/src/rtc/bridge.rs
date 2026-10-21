@@ -6,17 +6,18 @@
 //!   响应体分块、`{"t":"end"}`，然后关闭通道。浏览器提前关闭通道就是放弃这个请求，这边随之丢弃。
 //! - `{"t":"ws","p":"/i/{id}/ws","proto":[…]}`：在内存里用 hyper 跑一条连接接到同一个路由上，再用 WebSocket 客户端
 //!   握手，终端的口令、`ensure_attachable`、更新保护等都沿用 `gateway::terminal` 的逻辑。成功回 `{"t":"open","proto":…}`，
-//!   失败回 `{"t":"close","code":…}`；之后每条 WebSocket 消息对应一条（大的拆成几帧）数据帧。
+//!   失败回 `{"t":"close","code":…}`；之后每条 WebSocket 消息对应一条（大的拆成几帧）数据帧。首帧带 `"resume": true` 时
+//!   `open` 帧带续接令牌，通道断了还能经新连接上的 `{"t":"resume",…}` 接回去（[`resume`](super::resume)）。
 //! - `ctl` 通道：`{"t":"hello","proto":1}` 握手，回本机设备 id。
 
 use std::convert::Infallible;
+use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
 use axum::body::Body;
 use axum::http::{header, HeaderName, HeaderValue, Method, Request};
 use axum::Router;
 use bytes::Bytes;
-use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -24,6 +25,7 @@ use tokio_tungstenite::tungstenite::{self, Message};
 
 use super::frame::{self, Frame};
 use super::peer::{Channel, DcEvent};
+use super::resume::{self, In, Out, Port, Terms};
 use crate::gateway::Access;
 
 /// 一条 PeerConnection 上所有通道共用的上下文。
@@ -36,6 +38,10 @@ pub struct Ctx {
     pub origin: String,
     pub sid: String,
     pub device: String,
+    /// 可续接的终端会话（属于整个 `Rtc`，不随这条连接结束）。
+    pub terms: Arc<Terms>,
+    /// 子站会话的绝对期限：终端会话最晚到这时结束。
+    pub expires: tokio::time::Instant,
 }
 
 impl Ctx {
@@ -53,6 +59,7 @@ pub async fn serve(ctx: Ctx, mut ch: Channel) {
             Some(Some(Frame::Ctl(head))) => match frame::kind(&head) {
                 "req" => http(&ctx, &mut ch, &head).await,
                 "ws" => websocket(&ctx, &mut ch, &head).await,
+                "resume" => resume_ws(&ctx, &mut ch, &head).await,
                 k => Err(anyhow::anyhow!("未知的首帧类型 {k:?}")),
             },
             Some(_) => Err(anyhow::anyhow!("首帧不是控制帧")),
@@ -202,9 +209,9 @@ async fn websocket(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
         let svc = hyper_util::service::TowerToHyperService::new(svc);
         let _ = hyper::server::conn::http1::Builder::new().serve_connection(hyper_util::rt::TokioIo::new(server_io), svc).with_upgrades().await;
     });
-    let _server = AbortOnDrop(server);
+    let server = AbortOnDrop(server);
 
-    let (mut ws, resp) = match tokio_tungstenite::client_async(req, client_io).await {
+    let (ws, resp) = match tokio_tungstenite::client_async(req, client_io).await {
         Ok(r) => r,
         Err(e) => {
             let code = match &e {
@@ -215,9 +222,29 @@ async fn websocket(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
             bail!("WebSocket 握手失败：{e}");
         }
     };
-    let proto = resp.headers().get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|v| v.to_str().ok()).unwrap_or("");
-    ch.send(&frame::ctl(&json!({ "t": "open", "proto": proto })))?;
+    let proto = resp.headers().get(header::SEC_WEBSOCKET_PROTOCOL).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+    let resumable = head.get("resume").and_then(Value::as_bool) == Some(true);
+    let (port, key) = resume::spawn(&ctx.terms, &ctx.sid, ws, server, resumable, ctx.expires);
+    ch.send(&frame::ctl(&json!({ "t": "open", "proto": proto, "resume": key })))?;
+    attach(ch, port).await
+}
 
+/// `{"t":"resume","k":令牌,"rx":已收到的消息数}`：把这条通道接到保留中的终端会话上。
+async fn resume_ws(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
+    let key = head.get("k").and_then(Value::as_str).unwrap_or("");
+    let rx = head.get("rx").and_then(Value::as_u64).unwrap_or(0);
+    let Some((port, received)) = ctx.terms.resume(&ctx.sid, key, rx).await else {
+        ch.send(&frame::ctl(&json!({ "t": "close", "code": 1006 })))?;
+        bail!("续接失败");
+    };
+    tracing::debug!(rx, received, "终端续接");
+    ch.send(&frame::ctl(&json!({ "t": "resumed", "rx": received })))?;
+    attach(ch, port).await
+}
+
+/// 通道 ↔ 终端会话：浏览器的消息（大的拆成几帧，拼回一条）交给会话，会话的输出按发送缓冲的水位发出去。
+/// 通道断了就返回，会话自己决定是保留还是结束。
+async fn attach(ch: &mut Channel, mut port: Port) -> Result<()> {
     let (mut buf, mut buf_text) = (Vec::new(), false);
     let mut writable = true;
     loop {
@@ -232,46 +259,37 @@ async fn websocket(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
                         if !more {
                             let msg = std::mem::take(&mut buf);
                             let msg = if buf_text { Message::Text(String::from_utf8(msg).context("文本消息不是 UTF-8")?.into()) } else { Message::Binary(msg.into()) };
-                            ws.send(msg).await?;
+                            if port.inp.send(In::Msg(msg)).is_err() {
+                                return Ok(());
+                            }
                         }
                     }
                     Some(Frame::Ctl(v)) if frame::kind(&v) == "close" => {
-                        let _ = ws.close(None).await;
+                        let _ = port.inp.send(In::Close);
                         return Ok(());
                     }
                     _ => {}
                 },
                 Some(DcEvent::Low) => writable = true,
                 Some(DcEvent::Open) => {}
-                Some(DcEvent::Closed) | None => {
-                    let _ = ws.close(None).await;
+                Some(DcEvent::Closed) | None => return Ok(()),
+            },
+            o = port.out.recv(), if writable => match o {
+                Some(Out::Msg(text, bytes)) => {
+                    for f in frame::split(text, &bytes) {
+                        ch.send(&f)?;
+                    }
+                    writable = !ch.congested();
+                }
+                Some(Out::Close(code)) => {
+                    ch.send(&frame::ctl(&json!({ "t": "close", "code": code })))?;
+                    return Ok(());
+                }
+                None => {
+                    ch.send(&frame::ctl(&json!({ "t": "close", "code": 1006 })))?;
                     return Ok(());
                 }
             },
-            m = ws.next(), if writable => {
-                let (text, bytes): (bool, Bytes) = match m {
-                    Some(Ok(Message::Text(t))) => (true, Bytes::from(t)),
-                    Some(Ok(Message::Binary(b))) => (false, b),
-                    Some(Ok(Message::Close(c))) => {
-                        let code = c.map(|c| u16::from(c.code)).unwrap_or(1000);
-                        ch.send(&frame::ctl(&json!({ "t": "close", "code": code })))?;
-                        return Ok(());
-                    }
-                    Some(Ok(_)) => continue,
-                    Some(Err(e)) => {
-                        ch.send(&frame::ctl(&json!({ "t": "close", "code": 1006 })))?;
-                        bail!("WebSocket 出错：{e}");
-                    }
-                    None => {
-                        ch.send(&frame::ctl(&json!({ "t": "close", "code": 1006 })))?;
-                        return Ok(());
-                    }
-                };
-                for f in frame::split(text, &bytes) {
-                    ch.send(&f)?;
-                }
-                writable = !ch.congested();
-            }
         }
     }
 }

@@ -576,12 +576,17 @@ mod loopback {
     use crate::rtc::bridge;
 
     async fn pair(router: axum::Router) -> Arc<Link> {
+        pair_with(router, Default::default()).await
+    }
+
+    /// 应答方的终端会话表由调用方给：几条连接共用一张表，才能在新连接上续接旧连接上的终端。
+    async fn pair_with(router: axum::Router, terms: Arc<crate::rtc::resume::Terms>) -> Arc<Link> {
         let (mut a, mut ctl) = Pc::offer(&[]).unwrap();
         let offer = a.local_offer(Duration::from_secs(3)).await.unwrap();
         let mut b = Pc::answer(&[], &offer).unwrap();
         let answer = b.local_answer(Duration::from_secs(3)).await.unwrap();
         a.set_answer(&answer).unwrap();
-        let ctx = bridge::Ctx { router, host: "u.looklook.test".into(), origin: "http://u.looklook.test".into(), sid: "s".into(), device: "devb".into() };
+        let ctx = bridge::Ctx { router, host: "u.looklook.test".into(), origin: "http://u.looklook.test".into(), sid: "s".into(), device: "devb".into(), terms, expires: tokio::time::Instant::now() + Duration::from_secs(3600) };
         tokio::spawn(async move {
             while let Some(ch) = b.incoming.recv().await {
                 tokio::spawn(bridge::serve(ctx.clone(), ch));
@@ -669,5 +674,72 @@ mod loopback {
         ws.send(Message::Binary(big.clone().into())).await.unwrap();
         assert_eq!(ws.next().await.unwrap().unwrap().into_data().len(), big.len());
         ws.close(None).await.unwrap();
+    }
+
+    async fn ctl_frame(ch: &mut Channel) -> Value {
+        loop {
+            if let Some(Frame::Ctl(v)) = frame::parse(&ch.recv().await.expect("frame")) {
+                return v;
+            }
+        }
+    }
+
+    async fn data_frame(ch: &mut Channel) -> Vec<u8> {
+        loop {
+            match frame::parse(&ch.recv().await.expect("frame")) {
+                Some(Frame::Data { data, .. }) => return data.to_vec(),
+                Some(Frame::Ctl(v)) => panic!("unexpected {v}"),
+                None => {}
+            }
+        }
+    }
+
+    /// 通道断了，终端会话还在：经另一条连接续接，没送到的输出重发，之前的输入不重复。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn terminal_resumes_on_a_new_connection() {
+        let terms: Arc<crate::rtc::resume::Terms> = Default::default();
+        let router = axum::Router::new().route("/i/abc/ws", get(echo_ws));
+        let first = pair_with(router.clone(), terms.clone()).await;
+        let mut ch = first.channel("w").unwrap();
+        ch.opened(OPEN_LIMIT).await.unwrap();
+        ch.send(&frame::ctl(&json!({ "t": "ws", "p": "/i/abc/ws", "proto": ["tty"], "resume": true }))).unwrap();
+        let open = ctl_frame(&mut ch).await;
+        assert_eq!(open["t"], "open");
+        let key = open["resume"].as_str().expect("resume key").to_string();
+        ch.send(&frame::data(true, false, b"a")).unwrap();
+        assert_eq!(data_frame(&mut ch).await, b"a");
+        // 发了 b，回显还没读到通道就断了：浏览器只收到 1 条
+        ch.send(&frame::data(true, false, b"b")).unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        drop(ch);
+        first.closed.cancel();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert_eq!(terms.count(), 1, "parked");
+
+        let second = pair_with(router, terms.clone()).await;
+        // 令牌不对
+        let mut bad = second.channel("w").unwrap();
+        bad.opened(OPEN_LIMIT).await.unwrap();
+        bad.send(&frame::ctl(&json!({ "t": "resume", "k": "nope", "rx": 1 }))).unwrap();
+        assert_eq!(ctl_frame(&mut bad).await["t"], "close");
+
+        let mut ch = second.channel("w").unwrap();
+        ch.opened(OPEN_LIMIT).await.unwrap();
+        ch.send(&frame::ctl(&json!({ "t": "resume", "k": key, "rx": 1 }))).unwrap();
+        let resumed = ctl_frame(&mut ch).await;
+        assert_eq!(resumed, json!({ "t": "resumed", "rx": 2 }));
+        assert_eq!(data_frame(&mut ch).await, b"b", "replayed");
+        ch.send(&frame::data(true, false, b"c")).unwrap();
+        assert_eq!(data_frame(&mut ch).await, b"c");
+
+        // 浏览器主动关闭：会话结束
+        ch.send(&frame::ctl(&json!({ "t": "close" }))).unwrap();
+        for _ in 0..50 {
+            if terms.count() == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(terms.count(), 0);
     }
 }
