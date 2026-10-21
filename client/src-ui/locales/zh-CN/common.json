@@ -1386,6 +1386,9 @@
     "effort_high": "高",
     "effort_xhigh": "很高",
     "effort_max": "最高",
+    "effort_none": "不思考",
+    "effort_minimal": "极低",
+    "effort_ultra": "超强",
     "mode": "模式",
     "mode_pick": "权限模式",
     "mode_hint_default": "每次修改、运行命令前都问你",
@@ -1482,7 +1485,16 @@
     "cmd_action_history": "页面",
     "cmd_action_usage": "面板",
     "cmd_action_tasks": "面板",
-    "cmd_action_config": "面板"
+    "cmd_action_config": "面板",
+    "usage_account": "账号",
+    "usage_plan": "套餐",
+    "usage_reached": "已经用到上限，要等额度重置后才能继续。",
+    "usage_limits_note_codex": "额度是整个 ChatGPT 账号的，数字来自 Codex 最近一次查询。",
+    "detached_app_server_title": "Codex 没能启动",
+    "detached_app_server_body": "看看用 `codex app-server` 驱动对话。确认这台电脑装了 Codex 并且已经登录，然后点下面的按钮重试。",
+    "relaunch_app_server": "重试",
+    "patch_files": "要修改 {{n}} 个文件",
+    "codex_thinking": "正在思考"
   },
   "sess": {
     "new": "新会话",

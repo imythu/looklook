@@ -8,10 +8,12 @@
 //!
 //! 审批时 TUI 也同时弹出了自己的确认框，两边谁先回答算谁的（实测）；任何异常都交给 TUI，不会自动放行。
 //!
-//! Codex 也用同一套（docs/CODEX_UI.md）：和工具有关的部分（记录文件、屏幕、审批答复、对话框）由 [`agent::Agent`] 适配；
-//! 任务面板、后台命令、快捷设置这些只有 Claude Code 才有，对 Codex 不提供。
+//! Codex 不走这一套（docs/CODEX_UI.md）：对话模式的 Codex 由看看通过 `codex app-server` 驱动（`codex_chat.rs`），
+//! 不跑 TUI、没有 hooks。快照、事件推送、读记录文件（rollout）和审批挂起两边共用；任务面板、后台命令只有 Claude Code 有。
 
 pub mod agent;
+pub mod codex_app;
+pub mod codex_chat;
 pub mod codex_compat;
 pub mod codex_launch;
 pub mod codex_rollout;
@@ -25,7 +27,7 @@ pub mod transcript;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -138,6 +140,8 @@ struct State {
     title: Option<String>,
     /// TUI 上的选择框（phase 为 tui 时）
     dialog: Option<screen::Dialog>,
+    /// Codex（app-server）的这一轮、上下文窗口、累计 token
+    codex: codex_chat::CodexSt,
 }
 
 /// 推给界面的事件
@@ -212,6 +216,9 @@ pub struct Chat {
     token: String,
     next_id: AtomicU64,
     insts: Mutex<HashMap<String, Arc<Inst>>>,
+    /// Codex 的 app-server
+    codex: codex_chat::Hub,
+    me: Weak<Chat>,
 }
 
 /// 一个打开着的对话视图；没有视图时不跟读 transcript、不抓屏。
@@ -228,7 +235,16 @@ impl Drop for Viewer {
 
 impl Chat {
     pub fn new(store: Arc<Store>, paths: Paths, instances: Arc<Instances>) -> Arc<Self> {
-        Arc::new(Self { store, paths, instances, token: crate::util::random_secret(), next_id: AtomicU64::new(1), insts: Mutex::new(HashMap::new()) })
+        Arc::new_cyclic(|me| Self {
+            store,
+            paths,
+            instances,
+            token: crate::util::random_secret(),
+            next_id: AtomicU64::new(1),
+            insts: Mutex::new(HashMap::new()),
+            codex: Default::default(),
+            me: me.clone(),
+        })
     }
 
     /// 写 `run/hook.json`（本机地址与令牌）和 hooks 配置文件。
@@ -276,6 +292,7 @@ impl Chat {
                         context: None,
                         title: None,
                         dialog: None,
+                        codex: Default::default(),
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
@@ -291,8 +308,15 @@ impl Chat {
     /// 终端删除时清掉记录；挂起的审批交给 TUI（进程也已经结束了）。
     pub fn forget(&self, id: &str) {
         if let Some(inst) = lock(&self.insts).remove(id) {
-            if let Some(p) = lock(&inst.st).pending.as_mut() {
+            let mut st = lock(&inst.st);
+            if let Some(p) = st.pending.as_mut() {
                 p.resolve(String::new());
+            }
+            if inst.agent.launch() == "codex" {
+                let thread = st.binding.as_ref().map(|b| b.session_id.clone());
+                if let Some(me) = self.me.upgrade() {
+                    tokio::spawn(async move { me.codex_forget(thread).await });
+                }
             }
         }
         let _ = self.store.remove(&binding_key(id));
@@ -548,9 +572,13 @@ impl Chat {
         let title = claude.and_then(|t| t.title.clone());
         let (model, model_msg) = claude.map(|t| (t.model.clone(), t.model_msg.clone())).unwrap_or_default();
         let context = claude.and_then(|t| t.usage.as_ref()).map(|u| ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().map(|k| u[*k].as_u64().unwrap_or(0)).sum::<u64>());
+        let is_claude = claude.is_some();
         drop(tr);
         {
             let mut st = lock(&inst.st);
+            // 别的工具（Codex）的标题、模型、上下文由 app-server 给，这里只更新版本
+            let (title, model_msg, context) = if is_claude { (title, model_msg, context) } else { (st.title.clone(), st.model_msg.clone(), st.context) };
+            let version = if is_claude { version } else { version.or(st.version.clone()) };
             if st.version != version || st.title != title || st.model_msg != model_msg || st.context != context {
                 st.version = version;
                 st.title = title;
@@ -579,6 +607,13 @@ impl Chat {
     pub async fn snapshot(self: &Arc<Self>, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
         let inst = self.inst(id);
+        if inst.agent.launch() == "codex" {
+            if let Err(e) = self.codex_attach(id).await {
+                let mut st = lock(&inst.st);
+                st.error = Some(format!("{:?}", e).chars().take(500).collect());
+                Self::set_phase(&inst, &mut st, Phase::Detached, Some("app_server"));
+            }
+        }
         self.poll(&inst).await;
         let tr = inst.tr.lock().await;
         let (total, items) = match tr.as_ref().map(Reader::get) {
@@ -628,7 +663,8 @@ impl Chat {
         loop {
             while inst.viewers.load(Ordering::SeqCst) > 0 {
                 self.poll(&inst).await;
-                if tick.is_multiple_of(3) {
+                // Codex 的状态来自 app-server，不用看屏幕
+                if tick.is_multiple_of(3) && inst.agent.launch() != "codex" {
                     self.check_screen(&inst).await;
                 }
                 tick = tick.wrapping_add(1);
@@ -783,6 +819,9 @@ impl Chat {
                 return Err(LocalError::invalid("images", "not_found"));
             }
         }
+        if inst.agent.launch() == "codex" {
+            return self.codex_input(id, text, images).await;
+        }
         let hooked = {
             let st = lock(&inst.st);
             match st.phase {
@@ -877,8 +916,16 @@ impl Chat {
     /// 停止这一轮（Esc）。没有 hook 会告诉我们停下来了，交给抓屏确认。
     pub async fn interrupt(&self, id: &str) -> Result<(), LocalError> {
         self.require(id)?;
-        self.instances.send_keys(id, &["Escape"]).await?;
+        if self.is_codex(id) {
+            return self.codex_interrupt(id).await;
+        }
         let inst = self.inst(id);
+        // 已经停下来时不按：输入框空着时连按两次 Esc 会打开回退（Rewind）菜单
+        let idle = matches!(lock(&inst.st).phase, Phase::Idle | Phase::Detached);
+        if idle && !matches!(self.instances.screen(id).await.map(|s| inst.agent.classify(&s)), Some(Screen::Input { busy: true, .. })) {
+            return Ok(());
+        }
+        self.instances.send_keys(id, &["Escape"]).await?;
         lock(&inst.st).last_hook = None;
         Ok(())
     }
@@ -889,6 +936,25 @@ impl Chat {
         let inst = self.inst(id);
         let mut st = lock(&inst.st);
         let Some(p) = st.pending.as_mut().filter(|p| p.id == req.id) else { return Err(LocalError::new("CHAT_STALE")) };
+        // Codex：答复直接是 app-server 请求的结果
+        if inst.agent.launch() == "codex" {
+            let result = codex_chat::decision(&p.tool, p.kind, &p.input, req)?;
+            p.resolve(result.to_string());
+            st.pending = None;
+            Self::set_phase(&inst, &mut st, Phase::Running, None);
+            // 拒绝时写的理由：Codex 的拒绝不带话，接着插一句给它
+            let msg = req.message.as_deref().map(str::trim).filter(|m| !m.is_empty() && req.decision == "deny").map(String::from);
+            if let (Some(msg), Some(me)) = (msg, self.me.upgrade()) {
+                let id = id.to_string();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    if let Err(e) = me.codex_input(&id, &msg, &[]).await {
+                        tracing::debug!(error = ?e, "拒绝理由没送到");
+                    }
+                });
+            }
+            return Ok(());
+        }
         if req.decision == "terminal" {
             p.resolve(String::new());
             st.pending = None;
@@ -935,6 +1001,10 @@ impl Chat {
     /// 面板里是 shell（claude 已退出，或是没带 hooks 启动后退出了）：以对话模式接着上次的会话启动。
     pub async fn relaunch(&self, id: &str) -> Result<(), LocalError> {
         self.require(id)?;
+        // Codex：重新起 app-server、重新加载会话
+        if self.is_codex(id) {
+            return self.codex_attach(id).await.map(|_| ());
+        }
         let pane = self.instances.pane(id).await.ok_or_else(|| LocalError::new("CHAT_NOT_RUNNING"))?;
         if agent_state(self.inst(id).agent, &pane).is_some() {
             return Err(LocalError::new("CHAT_CLAUDE_RUNNING"));
@@ -967,6 +1037,9 @@ impl Chat {
     pub async fn setting(&self, id: &str, kind: &str, value: &str) -> Result<(), LocalError> {
         self.require(id)?;
         let inst = self.inst(id);
+        if inst.agent.launch() == "codex" {
+            return self.codex_setting(id, kind, value);
+        }
         // 斜杠命令和状态栏都是按 Claude Code 认的
         if inst.agent.launch() != "claude" {
             return Err(LocalError::new("CHAT_UNAVAILABLE"));
@@ -1068,6 +1141,9 @@ impl Chat {
     /// 模型菜单：Claude Code 的选项（`/model` 里的那些），加上第三方接口自己列出的模型。
     pub async fn models(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
+        if self.is_codex(id) {
+            return self.codex_models(id).await;
+        }
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         let workdir = PathBuf::from(&row.workdir);
         let ctx = self.model_ctx(id, &workdir).await;
@@ -1095,6 +1171,9 @@ impl Chat {
     /// 用量：上下文、这个会话累计的 token、订阅的 5 小时 / 7 天用量
     pub async fn usage(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
+        if self.is_codex(id) {
+            return self.codex_usage(id).await;
+        }
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         let workdir = PathBuf::from(&row.workdir);
         let inst = self.inst(id);
@@ -1179,8 +1258,16 @@ impl Chat {
     /// 关掉选择框（Esc）
     pub async fn dialog_cancel(&self, id: &str) -> Result<(), LocalError> {
         self.require(id)?;
-        if lock(&self.inst(id).st).phase != Phase::Tui {
-            return Err(LocalError::new("CHAT_STALE"));
+        let inst = self.inst(id);
+        // 界面上的弹窗和状态可能慢一步：只要屏幕上真有选择框就按 Esc（没有选择框时不按：
+        // 输入框空着时连按两次 Esc 会打开回退菜单）
+        let modal = matches!(self.instances.screen(id).await.map(|s| inst.agent.classify(&s)), Some(Screen::Modal));
+        if !modal {
+            let mut st = lock(&inst.st);
+            if st.phase == Phase::Tui {
+                Self::set_phase(&inst, &mut st, Phase::Idle, None);
+            }
+            return Ok(());
         }
         self.instances.send_keys(id, &["Escape"]).await
     }

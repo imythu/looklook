@@ -185,6 +185,9 @@ export const COMMANDS = [
   ['/init'],
 ];
 
+/** Codex（走 app-server）认的内置命令：/compact、/clear 由看看换成对应的请求，其余是界面自己的动作 */
+export const CODEX_COMMANDS = ['/compact', '/clear', '/model', '/resume', '/context', '/usage', '/status'];
+
 /** 只和终端外观有关的命令：不在菜单里列出（自己打出来照样送进去） */
 export const TERMINAL_ONLY = ['/theme', '/vim', '/terminal-setup', '/statusline', '/ide'];
 

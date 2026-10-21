@@ -252,6 +252,33 @@ impl LaunchEnv {
             }
         }
     }
+
+    /// 直接起进程（Codex 的 app-server）时用：环境变量设在进程上，Key 文件由这里读；`-c` 参数逐个加上。
+    pub fn apply(&self, cmd: &mut tokio::process::Command) {
+        for (k, v) in &self.vars {
+            match v {
+                Val::Lit(s) => {
+                    cmd.env(k, s);
+                }
+                Val::File(p) => {
+                    if let Ok(s) = std::fs::read_to_string(p) {
+                        cmd.env(k, s.trim());
+                    }
+                }
+                Val::Unset => {
+                    cmd.env_remove(k);
+                }
+            }
+        }
+        for a in self.args.split(" -c ").map(str::trim).filter(|a| !a.is_empty()) {
+            cmd.arg("-c").arg(a);
+        }
+    }
+
+    /// 区分配置是否变了（不含 Key 内容）
+    pub fn signature(&self) -> String {
+        format!("{:?}{}", self.vars, self.args)
+    }
 }
 
 /// 单引号字符串；`esc` 是该 shell 里单引号本身的写法。

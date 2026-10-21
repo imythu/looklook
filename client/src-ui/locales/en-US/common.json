@@ -1386,6 +1386,9 @@
     "effort_high": "High",
     "effort_xhigh": "Extra high",
     "effort_max": "Max",
+    "effort_none": "None",
+    "effort_minimal": "Minimal",
+    "effort_ultra": "Ultra",
     "mode": "Mode",
     "mode_pick": "Permission mode",
     "mode_hint_default": "Ask before every edit and command",
@@ -1482,7 +1485,16 @@
     "cmd_action_history": "Page",
     "cmd_action_usage": "Panel",
     "cmd_action_tasks": "Panel",
-    "cmd_action_config": "Panel"
+    "cmd_action_config": "Panel",
+    "usage_account": "Account",
+    "usage_plan": "Plan",
+    "usage_reached": "You've hit the limit. Codex can continue after it resets.",
+    "usage_limits_note_codex": "Limits are for the whole ChatGPT account, as of Codex's last check.",
+    "detached_app_server_title": "Codex couldn't start",
+    "detached_app_server_body": "Looklook drives the chat through `codex app-server`. Make sure Codex is installed and signed in on this computer, then try again.",
+    "relaunch_app_server": "Try again",
+    "patch_files": "Wants to change {{n}} files",
+    "codex_thinking": "Thinking"
   },
   "sess": {
     "new": "New session",
