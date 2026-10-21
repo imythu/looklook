@@ -1702,6 +1702,12 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .start-back.btn { align-self: flex-start; gap: 4px; min-height: 36px; padding: 0 8px; margin: -8px 0 -4px -6px; }
 .start-title { margin: 0; font-size: 26px; font-weight: 650; text-align: center; text-wrap: balance; }
 .start > .composer, .start > .note, .start-foot { width: 100%; max-width: 720px; }
+/* 标签栏“+”弹出的新建框（QuickStart） */
+.modal.start-modal { max-width: 760px; padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); }
+.start-modal > h2 { display: none; }
+.start-modal .start { min-height: 0; padding: 0; gap: 10px; }
+.start-title.start-title-sm { font-size: 18px; }
+@media (min-width: 640px) { .modal.start-modal { overflow: visible; } }
 .composer { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 20px; background: var(--panel); box-shadow: var(--shadow); }
 .composer:focus-within { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
 .start-types { display: flex; flex-wrap: wrap; gap: 6px; }
@@ -1722,6 +1728,9 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 }
 .start-loc-dev { font-weight: 400; }
 .start-adv.btn { min-height: 34px; gap: 6px; font-size: 14px; border-radius: 999px; }
+.start-adv.btn[aria-pressed="true"] { color: var(--brand); background: var(--brand-soft); }
+/* 窄屏上 Docker 列表对齐输入框左边，不超出屏幕 */
+@media (max-width: 560px) { .start-bar { position: relative; } .start-docker { position: static; } }
 .start-go { flex: none; display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; border: 0; background: var(--brand); color: var(--on-brand); cursor: pointer; }
 .start-go:disabled { opacity: .45; cursor: default; }
 .start-advanced { display: grid; gap: 4px; padding: 12px 4px 2px; border-top: 1px dashed var(--line); }
@@ -1899,6 +1908,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .stab-x { flex: none; display: grid; place-items: center; width: 22px; height: 22px; margin-right: 4px; border: 0; border-radius: 6px; background: none; color: var(--muted); cursor: pointer; visibility: hidden; }
 .stab:hover .stab-x, .stab.on .stab-x, .stab-x:focus-visible { visibility: visible; }
 .stab-x:hover { background: var(--line); color: var(--text); }
+.stabs-new.btn { flex: none; width: 30px; min-height: 30px; border-radius: 8px; }
 .stabs-all-wrap { position: relative; flex: none; }
 .stabs-more.btn { width: auto; min-height: 30px; padding: 0 6px; gap: 2px; border-radius: 8px; }
 .stabs-count { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -1929,6 +1939,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .start-container { display: grid; gap: 6px; padding: 8px 12px 10px; border-top: 1px solid var(--line); }
 .start-container-dir { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .start-container-dir input { flex: 1; min-width: 0; padding: 5px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 13px; }
+.start-container-dir .btn { min-height: 30px; padding: 0 8px; }
 .start-container p { margin: 0; }
 
 /* 对话界面 Beta 标记 */

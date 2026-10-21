@@ -1545,6 +1545,7 @@
     "back": "会话",
     "my_name": "我起的名字：{{name}}",
     "docker_pick": "Docker 容器",
+    "docker_hint": "在这台电脑的 Docker 容器里开会话",
     "docker_search": "搜容器名、镜像",
     "docker_err": {
       "DOCKER_NOT_FOUND": "这台电脑上没找到 docker 命令",
@@ -1557,6 +1558,8 @@
     "container_missing": "容器里没有安装 {{tool}}",
     "in_container": "容器 {{name}}",
     "tabs": "打开的会话",
+    "tab_new": "新会话",
+    "tab_new_hint": "在同一台电脑上新建会话",
     "tabs_all": "所有打开的会话",
     "tabs_search": "搜打开的会话",
     "tab_close": "关闭标签（终端继续运行）",

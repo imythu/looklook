@@ -2,7 +2,7 @@
 // 像 ChatGPT：点“新会话”进开始页，选好类型和项目、写一句话（可以不写），回车就启动并打开；项目上的 + 一下就新建。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, Container, X, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderPlus, History, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, Container, X, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderOpen, FolderPlus, History, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,7 +15,7 @@ import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, useSessions } from '../shared/sessions.jsx';
-import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
+import { Button, ErrorNote, Modal, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { PrevConversations } from './History.jsx';
 import { BackendNote, FolderPicker, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
@@ -526,9 +526,9 @@ export function SessionHome() {
  * Docker 容器：点开后列出这台电脑上运行中的容器（docker ps），可以搜；选中后探测容器里的用户、默认目录和装了的工具。
  * 容器里的会话只有终端，没有对话界面。
  */
-function DockerPick({ device, onPick }) {
+function DockerPick({ device, onPick, startOpen = false }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(startOpen);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState(null);
@@ -579,6 +579,58 @@ function DockerPick({ device, onPick }) {
       )}
       {error && <p className="ppick-note warn-text">{errorText(t, error)}</p>}
     </div>
+  );
+}
+
+/** 文件夹选择弹窗用的“客户端”：把 `/fs/list` 换成容器里的文件夹列表（字段一样）。 */
+function containerFs(device, name) {
+  return { get: (url) => deviceApi(device).get(url.replace(/^\/fs\/list\?/, `/docker/containers/${encodeURIComponent(name)}/fs?`)) };
+}
+
+/** 开始页输入框下面的“Docker”按钮：直接列出当前电脑上运行中的容器。 */
+function DockerChip({ device, active, onPick }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const ref = useRef(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (!open) return;
+    const close = (e) => !ref.current?.contains(e.target) && setOpen(false);
+    const esc = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('pointerdown', close);
+    document.addEventListener('keydown', esc);
+    return () => {
+      document.removeEventListener('pointerdown', close);
+      document.removeEventListener('keydown', esc);
+    };
+  }, [open]);
+  const d = devices.multi ? devices.byId(device) : null;
+  return (
+    <span className="start-loc-wrap start-docker" ref={ref}>
+      <button type="button" className="btn btn-plain start-adv" aria-pressed={active} aria-expanded={open} onClick={() => setOpen(!open)} title={t('sess.docker_hint')}>
+        <Container size={15} aria-hidden="true" />
+        Docker
+      </button>
+      {open && (
+        <div className="ppick" role="dialog" aria-label={t('sess.docker_pick')}>
+          {d && (
+            <div className="ppick-dev">
+              <DeviceAvatar device={d} size={18} />
+              <b className="ellipsis">{deviceName(t, d)}</b>
+              <span className="muted">{osLabel(d.os)}</span>
+            </div>
+          )}
+          <DockerPick
+            device={device}
+            startOpen
+            onPick={(c) => {
+              setOpen(false);
+              onPick(c);
+            }}
+          />
+        </div>
+      )}
+    </span>
   );
 }
 
@@ -653,7 +705,11 @@ export function StartPane() {
   return <StartForm key={ui.start.nonce} />;
 }
 
-function StartForm() {
+/**
+ * 开始页的表单。`want` 不给时用 ui.start（开始页）；标签栏的“+”弹窗里给出当前会话的电脑和项目，
+ * `onDone` 在新建成功后关掉弹窗，`inModal` 时只留输入框（不显示以前的对话、最近项目、提示卡片）。
+ */
+function StartForm({ want: wantProp, onDone, inModal = false }) {
   const { t } = useTranslation();
   const { navigate } = useRouter();
   const { status: selectedStatus } = useStatus();
@@ -661,7 +717,7 @@ function StartForm() {
   const s = useSessions();
   const ui = useSessionUi();
   const toast = useToast();
-  const want = ui.start;
+  const want = wantProp ?? ui.start;
   // 默认：要求的 > 最近用过的在线项目 > 默认文件夹
   const firstProject = s.projects.find((p) => !p.offline);
   const initDevice = want.device !== undefined ? want.device : firstProject ? firstProject.device : devices.multi ? devices.selected : null;
@@ -670,9 +726,16 @@ function StartForm() {
   const project = s.projects.find((p) => p.device === device && p.workdir === workdir);
   // Docker 容器（{ name, dir, root, tools }）：选了时会话在容器里运行，只有终端
   const [container, setContainer] = useState(want.container ?? null);
-  const [launch, setLaunch] = useState(want.launch ?? project?.launch ?? 'claude');
+  const [launch, setLaunchState] = useState(want.launch ?? project?.launch ?? 'claude');
+  // 用户自己点过类型：换项目、换电脑都不再改它
+  const chosen = useRef(Boolean(want.launch));
+  const setLaunch = (l) => {
+    chosen.current = true;
+    setLaunchState(l);
+  };
   const [text, setText] = useState('');
   const [picking, setPicking] = useState(Boolean(want.pick));
+  const [dirPick, setDirPick] = useState(false);
   const [adv, setAdv] = useState(false);
   const [name, setName] = useState('');
   const [shell, setShell] = useState(project?.shell ?? '');
@@ -701,14 +764,14 @@ function StartForm() {
     setPicking(false);
     setContainer(c);
     if (c) {
-      if (launch === 'dsh') setLaunch('claude');
+      if (launch === 'dsh') setLaunchState('claude');
       setTimeout(() => !isTouch() && input.current?.focus(), 0);
       return;
     }
     setWorkdir(dir);
     const p = s.projects.find((x) => x.device === dev && x.workdir === dir);
     if (p) {
-      setLaunch(p.launch || launch);
+      if (!chosen.current && p.launch) setLaunchState(p.launch);
       setShell(p.shell ?? '');
       setFullAccess(Boolean(p.full_access));
       setAutoStart(Boolean(p.auto_start));
@@ -768,6 +831,7 @@ function StartForm() {
       setName('');
       if (launch === 'dsh') openDsh(r, t, toast);
       else ui.openSession(r.id);
+      onDone?.();
     } catch (e) {
       setError(e);
     } finally {
@@ -779,13 +843,13 @@ function StartForm() {
   const launches = container ? START_LAUNCHES.filter((l) => l !== 'dsh') : START_LAUNCHES;
   return (
     <div className="start">
-      {!opensInPage() && (
+      {!opensInPage() && !inModal && (
         <button type="button" className="btn btn-plain start-back" onClick={() => navigate('/')}>
           <ArrowLeft size={18} aria-hidden="true" />
           {t('sess.back')}
         </button>
       )}
-      <h1 className="start-title">{workdir ? t('sess.start_in', { name: projName }) : t('sess.start_title')}</h1>
+      <h1 className={`start-title ${inModal ? 'start-title-sm' : ''}`}>{workdir ? t('sess.start_in', { name: projName }) : t('sess.start_title')}</h1>
       <form
         className="composer"
         onSubmit={(e) => {
@@ -836,6 +900,7 @@ function StartForm() {
             </button>
             {picking && <ProjectPicker projects={s.projects} device={device} workdir={workdir} container={container} onPick={pickProject} onClose={() => setPicking(false)} />}
           </span>
+          <DockerChip device={device} active={Boolean(container)} onPick={(c) => pickProject(device, '', c)} />
           {launch !== 'dsh' && (
             <button type="button" className="btn btn-plain start-adv" onClick={() => setAdv(!adv)} aria-expanded={adv}>
               <SlidersHorizontal size={15} aria-hidden="true" />
@@ -853,7 +918,15 @@ function StartForm() {
             <label className="start-container-dir">
               <span className="muted">{t('sess.container_dir')}</span>
               <input className="mono" value={container.dir} onChange={(e) => setContainer({ ...container, dir: e.target.value })} spellCheck={false} aria-label={t('sess.container_dir')} />
+              <Button variant="secondary" icon={FolderOpen} onClick={() => setDirPick(true)} aria-label={t('fs.browse')} title={t('fs.browse')} />
             </label>
+            <FolderPicker
+              open={dirPick}
+              initial={container.dir}
+              client={containerFs(device, container.name)}
+              onClose={() => setDirPick(false)}
+              onPick={(dir) => setContainer((c) => c && { ...c, dir })}
+            />
             <p className="small muted">
               {t('sess.container_note')}
               {container.root && canFull && fullAccess && launch === 'claude' ? ` ${t('sess.container_root')}` : ''}
@@ -906,14 +979,18 @@ function StartForm() {
           {t('tools.recheck')}
         </button>
       )}
-      {!container && <PrevConversations device={device} workdir={workdir} launch={launch} focus={Boolean(want.prev)} />}
-      <RecentProjects current={project?.key} onPick={pickProject} />
-      <div className="start-foot">
-        <BackendNote />
-        <RemoteCard />
-        <SafetyNote />
-        <Promotions />
-      </div>
+      {!inModal && (
+        <>
+          {!container && <PrevConversations device={device} workdir={workdir} launch={launch} focus={Boolean(want.prev)} />}
+          <RecentProjects current={project?.key} onPick={pickProject} />
+          <div className="start-foot">
+            <BackendNote />
+            <RemoteCard />
+            <SafetyNote />
+            <Promotions />
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -1083,6 +1160,7 @@ export function SessionTabs({ activeId }) {
   const [ctx, setCtx] = useState(null);
   const [all, setAll] = useState(false);
   const [q, setQ] = useState('');
+  const [create, setCreate] = useState(false);
   const ctxRef = useRef(null);
   const allRef = useRef(null);
   useDismiss(ctxRef, Boolean(ctx), () => setCtx(null));
@@ -1133,6 +1211,9 @@ export function SessionTabs({ activeId }) {
           />
         ))}
       </div>
+      <button type="button" className="btn btn-plain btn-icon stabs-new" onClick={() => setCreate(true)} aria-label={t('sess.tab_new')} title={t('sess.tab_new_hint')}>
+        <Plus size={16} />
+      </button>
       <div className="stabs-all-wrap" ref={allRef}>
         <button type="button" className="btn btn-plain btn-icon stabs-more" onClick={() => setAll(!all)} aria-expanded={all} aria-label={t('sess.tabs_all')} title={t('sess.tabs_all')}>
           <ChevronDown size={15} />
@@ -1179,6 +1260,7 @@ export function SessionTabs({ activeId }) {
           </div>
         )}
       </div>
+      {create && <QuickStart inst={s.byId(activeId)} onClose={() => setCreate(false)} />}
       {ctx && (
         <div className="pop-menu stabs-ctx" ref={ctxRef} role="menu" style={{ left: ctx.x, top: ctx.y }}>
           <button type="button" role="menuitem" onClick={() => close([ctx.id])}>{t('sess.tab_close')}</button>
@@ -1188,6 +1270,24 @@ export function SessionTabs({ activeId }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** 标签栏“+”：弹出新建框，预先选好当前会话所在的电脑和项目（容器会话就是同一个容器）。 */
+function QuickStart({ inst, onClose }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const [want] = useState(() => {
+    if (!inst) return { nonce: 0 };
+    const device = devices.multi ? terminalDevice(inst.id) : undefined;
+    return inst.container
+      ? { device, container: { ...inst.container, dir: inst.container.dir || '/' }, nonce: 0 }
+      : { device, workdir: inst.workdir || sessionDir(inst), nonce: 0 };
+  });
+  return (
+    <Modal open onClose={onClose} title={t('sess.tab_new')} wide className="start-modal">
+      <StartForm want={want} onDone={onClose} inModal />
+    </Modal>
   );
 }
 

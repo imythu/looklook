@@ -125,12 +125,89 @@ fn parse_probe(out: &str) -> Probe {
     Probe { root: uid == "0", user, workdir: if workdir.starts_with('/') { workdir } else { "/".into() }, tools }
 }
 
+/// 容器里的文件夹列表（开始页选“容器里的目录”），字段和 `GET /api/fs/list` 一样，界面共用文件夹选择弹窗。
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct DirList {
+    pub path: String,
+    pub parent: Option<String>,
+    pub entries: Vec<DirEntry>,
+    pub exists: bool,
+    pub denied: bool,
+    pub os: &'static str,
+    pub roots: Vec<String>,
+    pub home: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    pub is_dir: bool,
+}
+
+/// 列出容器里的子文件夹（以容器默认用户身份）。路径为空或 `~` 取容器里的主目录；不存在时退到最近的已存在上级。
+/// 路径和开关作为 `sh -c` 的位置参数传进去，不拼进脚本。
+pub async fn list_dirs(name: &str, path: &str, hidden: bool) -> Result<DirList, LocalError> {
+    if !valid_name(name) {
+        return Err(LocalError::invalid("container", "invalid"));
+    }
+    let path = path.trim();
+    if !(path.is_empty() || path == "~" || path.starts_with("~/") || path.starts_with('/')) || path.chars().any(char::is_control) {
+        return Err(LocalError::new("WORKDIR_NOT_FOUND").with("path", path));
+    }
+    const SCRIPT: &str = r#"p=$1; h=${HOME:-/}
+case $p in ''|'~') p=$h ;; '~/'*) p=$h/${p#'~/'} ;; esac
+want=$p
+while [ ! -d "$p" ]; do
+  case $p in /|'') p=/; break ;; esac
+  p=$(dirname "$p")
+done
+echo "home:$h"
+echo "path:$p"
+[ "$p" = "$want" ] && echo exists
+cd "$p" 2>/dev/null && [ -r . ] || { echo denied; exit 0; }
+for f in .* *; do
+  case $f in .|..) continue ;; .*) [ "$2" = 1 ] || continue ;; esac
+  [ -d "$f" ] && printf 'd:%s
+' "$f"
+done
+exit 0"#;
+    let out = run(&["exec", name, "sh", "-c", SCRIPT, "sh", path, if hidden { "1" } else { "0" }]).await?;
+    Ok(parse_dirs(&out))
+}
+
+fn parse_dirs(out: &str) -> DirList {
+    let mut l = DirList { os: "linux", roots: vec!["/".into()], path: "/".into(), ..Default::default() };
+    for line in out.lines() {
+        if let Some(h) = line.strip_prefix("home:") {
+            l.home = Some(h.to_string()).filter(|h| h.starts_with('/'));
+        } else if let Some(p) = line.strip_prefix("path:") {
+            // `dirname` 可能留下 `//`、结尾的 `/`
+            let p = p.trim_end_matches('/');
+            l.path = if p.is_empty() { "/".into() } else { p.replace("//", "/") };
+        } else if line == "exists" {
+            l.exists = true;
+        } else if line == "denied" {
+            l.denied = true;
+        } else if let Some(n) = line.strip_prefix("d:") {
+            l.entries.push(DirEntry { name: n.to_string(), is_dir: true });
+        }
+    }
+    l.entries.sort_by_key(|e| e.name.to_lowercase());
+    l.entries.truncate(2000);
+    l.parent = (l.path != "/").then(|| match l.path.rfind('/') {
+        Some(0) | None => "/".to_string(),
+        Some(i) => l.path[..i].to_string(),
+    });
+    l
+}
+
 /// POSIX sh 的单引号写法（容器里一定是 sh）。
 fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// 把启动命令放进容器：`docker exec -it -w <目录> [-e NAME=值…] <容器> sh -lc 'exec <命令>'`。
+/// 把启动命令放进容器：`docker exec -it [-e NAME=值…] <容器> sh -lc 'mkdir -p <目录>…; cd <目录> && exec <命令>'`。
+/// 目录不存在时先建好（和普通文件夹一样，选择文件夹时可以新建）。
 /// `inner` 是容器里要运行的命令（POSIX 写法，开头可以带 `NAME=值` 环境变量，例如 root + 全部权限时的
 /// `IS_SANDBOX=1 claude …`，这里改成 `-e`）；None 时打开容器里的 shell（有 bash 用 bash）。
 /// 返回的命令行按这台电脑的 shell（`family`）加引号。
@@ -152,9 +229,11 @@ pub fn exec_command(docker: &str, c: &Container, inner: Option<&str>, family: cr
         }
         None => "if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi".into(),
     };
+    let dir = sh_quote(&c.dir);
+    let script = format!("mkdir -p {dir} 2>/dev/null; cd {dir} && {script}");
     // PowerShell 里带引号的路径是字符串，要用 `&` 才会当命令运行
     let program = if family == crate::shells::Family::Pwsh { format!("& {}", q(docker)) } else { q(docker) };
-    let mut parts = vec![program, "exec".into(), "-it".into(), "-w".into(), q(&c.dir)];
+    let mut parts = vec![program, "exec".into(), "-it".into()];
     for e in env {
         parts.push("-e".into());
         parts.push(q(&e));
@@ -186,13 +265,23 @@ mod tests {
     }
 
     #[test]
+    fn parses_dirs() {
+        let l = parse_dirs("home:/root\npath:/app/src\nexists\nd:lib\nd:Bin\n");
+        assert_eq!((l.path.as_str(), l.parent.as_deref(), l.exists, l.home.as_deref()), ("/app/src", Some("/app"), true, Some("/root")));
+        assert_eq!(l.entries.iter().map(|e| e.name.as_str()).collect::<Vec<_>>(), ["Bin", "lib"]);
+        let r = parse_dirs("home:/\npath:/\ndenied\n");
+        assert_eq!((r.path.as_str(), r.parent, r.exists, r.denied), ("/", None, false, true));
+        assert_eq!(parse_dirs("path:/home\n").parent.as_deref(), Some("/"));
+    }
+
+    #[test]
     fn builds_exec_command() {
         let c = Container { name: "dev".into(), dir: "/app".into(), root: true };
         assert_eq!(
             exec_command("docker", &c, Some("IS_SANDBOX=1 claude --dangerously-skip-permissions 'hi'"), Family::Posix),
-            "'docker' exec -it -w '/app' -e 'IS_SANDBOX=1' 'dev' sh -lc 'exec claude --dangerously-skip-permissions '\\''hi'\\'''"
+            "'docker' exec -it -e 'IS_SANDBOX=1' 'dev' sh -lc 'mkdir -p '\\''/app'\\'' 2>/dev/null; cd '\\''/app'\\'' && exec claude --dangerously-skip-permissions '\\''hi'\\'''"
         );
-        assert!(exec_command("docker", &c, None, Family::Posix).ends_with("'dev' sh -lc 'if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi'"));
+        assert!(exec_command("docker", &c, None, Family::Posix).ends_with("'dev' sh -lc 'mkdir -p '\\''/app'\\'' 2>/dev/null; cd '\\''/app'\\'' && if command -v bash >/dev/null 2>&1; then exec bash -l; else exec sh -l; fi'"));
         assert!(valid_name("my_app-1.2") && !valid_name("a b") && !valid_name("x;rm"));
         assert!(valid_dir("/app/src") && !valid_dir("app") && !valid_dir("/a'b"));
     }

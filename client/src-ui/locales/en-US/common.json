@@ -1545,6 +1545,7 @@
     "back": "Sessions",
     "my_name": "My name: {{name}}",
     "docker_pick": "Docker container",
+    "docker_hint": "Start a session in a Docker container on this computer",
     "docker_search": "Search containers and images",
     "docker_err": {
       "DOCKER_NOT_FOUND": "The docker command was not found on this computer",
@@ -1557,6 +1558,8 @@
     "container_missing": "{{tool}} is not installed in the container",
     "in_container": "Container {{name}}",
     "tabs": "Open sessions",
+    "tab_new": "New session",
+    "tab_new_hint": "New session on the same computer",
     "tabs_all": "All open sessions",
     "tabs_search": "Search open sessions",
     "tab_close": "Close tab (the terminal keeps running)",
