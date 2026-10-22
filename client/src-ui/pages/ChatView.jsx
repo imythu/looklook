@@ -350,27 +350,12 @@ function ToolBody({ id, block, result }) {
   }
 }
 
-/** 对话生成的图片的地址（`chat/file`）：放进 <img>、复制给别人、下载都用它 */
+/** 对话生成的图片的地址（`chat/file`）：放进 <img>、查看原图、下载都用它 */
 const genFileUrl = (id, name, download) => `/instances/${id}/chat/file?name=${encodeURIComponent(name)}${download ? '&download=1' : ''}`;
 
-/** 复制图片地址；复制不了时提示 */
-function useCopyLink() {
-  const { t } = useT();
-  const toast = useToast();
-  return async (path) => {
-    try {
-      await navigator.clipboard.writeText(new URL(`/api${path}`, window.location.href).href);
-      toast(t('chat.res_copied'));
-    } catch {
-      toast(t('chat.res_copy_failed'), 'error');
-    }
-  };
-}
-
-/** 一张生成的图片和它的操作（打开、复制链接、下载） */
+/** 一张生成的图片和它的操作（查看原图、下载） */
 function GenFigure({ id, name, caption }) {
   const { t } = useT();
-  const copy = useCopyLink();
   const src = useGenSrc(genFileUrl(id, name));
   return (
     <figure className="chat-gen-fig">
@@ -384,9 +369,6 @@ function GenFigure({ id, name, caption }) {
             {t('chat.res_open')}
           </a>
         )}
-        <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(genFileUrl(id, name))}>
-          {t('chat.res_copy')}
-        </button>
         {plainLinksWork() && (
           <a className="btn btn-plain btn-sm" href={`/api${genFileUrl(id, name, true)}`} download={name}>
             {t('chat.res_download')}
@@ -1817,7 +1799,7 @@ function GenImage({ src, name }) {
 }
 
 /**
- * Codex 对话的“资源”栏：上面是这段对话生成的图片（每张有自己的地址，可以打开、复制链接、下载），
+ * Codex 对话的“资源”栏：上面是这段对话生成的图片（每张有自己的地址，可以查看原图、下载），
  * 下面是对话里用到的网页、搜索、看过的图片（从已经载入的对话条目里找，最近的在前）。
  */
 function ResourcesTab({ id, items }) {
@@ -1826,7 +1808,6 @@ function ResourcesTab({ id, items }) {
   const { data } = usePoll(`/instances/${id}/chat/files`, { deps: [items.length] });
   const files = data?.items ?? [];
   const made = useContext(ArtifactCtx).list;
-  const copy = useCopyLink();
   if (!list.length && !files.length && !made.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
   return (
     <>
@@ -1858,9 +1839,6 @@ function ResourcesTab({ id, items }) {
                   <a className="ellipsis" href={artifactUrl(id, a.path, !a.viewable)} target="_blank" rel="noopener noreferrer" title={a.path}>
                     {a.name}
                   </a>
-                  <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(artifactUrl(id, a.path).replace(/^\/api/, ''))}>
-                    {t('chat.res_copy')}
-                  </button>
                   <a className="btn btn-plain btn-sm" href={artifactUrl(id, a.path, true)} download={a.name}>
                     {t('chat.res_download')}
                   </a>
