@@ -13,6 +13,7 @@ pub mod frame;
 pub mod outbound;
 pub mod peer;
 pub mod resume;
+pub mod signal;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -132,7 +133,7 @@ fn reject(status: StatusCode, why: &'static str) -> Response {
 }
 
 /// 校验授权票据（不含建立连接）：通过时返回票据。
-fn check_grant(app: &App, remote: &Remote, req: &OfferRequest) -> Result<RtcGrant, (StatusCode, &'static str)> {
+fn check_grant(app: &App, sid: Option<&str>, req: &OfferRequest) -> Result<RtcGrant, (StatusCode, &'static str)> {
     let account = &app.account;
     let session = account.session().ok_or((StatusCode::UNAUTHORIZED, "not_logged_in"))?;
     if !account.gate().allowed() {
@@ -145,8 +146,8 @@ fn check_grant(app: &App, remote: &Remote, req: &OfferRequest) -> Result<RtcGran
     if g.aud != session.relay.name {
         return Err((StatusCode::FORBIDDEN, "wrong_relay"));
     }
-    // 票据与转发它的请求属于同一个子站会话
-    if g.sid != remote.sid {
+    // 票据与转发它的请求属于同一个子站会话（经信令长连接直接从主服务来的没有这一层凭证）
+    if sid.is_some_and(|sid| g.sid != sid) {
         return Err((StatusCode::FORBIDDEN, "wrong_session"));
     }
     if account.is_revoked(&g.sid) {
@@ -164,31 +165,29 @@ fn check_grant(app: &App, remote: &Remote, req: &OfferRequest) -> Result<RtcGran
     Ok(g)
 }
 
-/// `POST /_ll/rtc/offer`：只接受经远程入口校验过的请求。
+/// `POST /_ll/rtc/offer`：主服务经中转转来（旧路径），只接受经远程入口校验过的请求。
 pub async fn offer(State(app): State<App>, remote: Option<Extension<Remote>>, _headers: HeaderMap, body: Bytes) -> Response {
     let Some(Extension(remote)) = remote else { return reject(StatusCode::NOT_FOUND, "not_remote") };
     let Ok(req) = serde_json::from_slice::<OfferRequest>(&body) else { return reject(StatusCode::BAD_REQUEST, "body") };
-    let g = match check_grant(&app, &remote, &req) {
-        Ok(g) => g,
-        Err((s, why)) => return reject(s, why),
-    };
-    let mut pc = match peer::Pc::answer(&g.ice, &req.offer) {
-        Ok(pc) => pc,
-        Err(e) => {
-            tracing::warn!(error = %format!("{e:#}"), "WebRTC 建立连接失败");
-            return reject(StatusCode::BAD_REQUEST, "offer");
-        }
-    };
-    let answer = match pc.local_answer(GATHER_LIMIT).await {
-        Ok(a) => a,
-        Err(e) => {
-            tracing::warn!(error = %format!("{e:#}"), "WebRTC 生成 answer 失败");
-            return reject(StatusCode::INTERNAL_SERVER_ERROR, "answer");
-        }
-    };
-    let Some((key, sig)) = app.account.sign_device(&proto::answer_canonical(&req.grant, &answer)) else {
-        return reject(StatusCode::UNAUTHORIZED, "not_logged_in");
-    };
+    match accept(&app, Some(&remote.sid), &req).await {
+        Ok(r) => Json(r).into_response(),
+        Err((s, why)) => reject(s, why),
+    }
+}
+
+/// 校验 offer 的授权票据、建立 PeerConnection、签 answer。`sid`：经通道来的请求所属的子站会话（票据要属于它）；
+/// 经信令长连接（[`signal`]）从主服务直接来的为 None。
+pub(crate) async fn accept(app: &App, sid: Option<&str>, req: &OfferRequest) -> Result<OfferResponse, (StatusCode, &'static str)> {
+    let g = check_grant(app, sid, req)?;
+    let mut pc = peer::Pc::answer(&g.ice, &req.offer).map_err(|e| {
+        tracing::warn!(error = %format!("{e:#}"), "WebRTC 建立连接失败");
+        (StatusCode::BAD_REQUEST, "offer")
+    })?;
+    let answer = pc.local_answer(GATHER_LIMIT).await.map_err(|e| {
+        tracing::warn!(error = %format!("{e:#}"), "WebRTC 生成 answer 失败");
+        (StatusCode::INTERNAL_SERVER_ERROR, "answer")
+    })?;
+    let (key, sig) = app.account.sign_device(&proto::answer_canonical(&req.grant, &answer)).ok_or((StatusCode::UNAUTHORIZED, "not_logged_in"))?;
     let (id, cancel) = app.rtc.add(&g.sid);
     let ttl = Duration::from_millis((g.abs_exp - app.account.clock.now_ms()).max(0) as u64);
     let ctx = bridge::Ctx {
@@ -202,7 +201,7 @@ pub async fn offer(State(app): State<App>, remote: Option<Extension<Remote>>, _h
     };
     tracing::info!(sid = %g.sid, peers = app.rtc.count(), parked_terms = app.rtc.terms.count(), "WebRTC 连接建立中");
     tokio::spawn(run_peer(app.clone(), id, pc, ctx, cancel, ttl));
-    Json(OfferResponse { answer, key, sig }).into_response()
+    Ok(OfferResponse { answer, key, sig })
 }
 
 /// 一条连接的生命周期：把浏览器开的通道交给 [`bridge`]，到期、吊销、失败时关闭。

@@ -11,6 +11,7 @@ import { deviceApi, rememberTerminals, terminalDevice } from '../shared/api.js';
 import { DeviceAvatar, deviceColor, DeviceTag, LaunchIcon } from '../shared/brands.jsx';
 import { deviceName, osLabel, RenameDeviceDialog, useDevices } from '../shared/devices.jsx';
 import { errorText } from '../shared/i18n.js';
+import { linkFailure, linkLabel, linkState, useLinks } from '../shared/paths.jsx';
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -325,14 +326,18 @@ function DeviceHead({ device, count, open, onToggle }) {
   const { t } = useTranslation();
   const devices = useDevices();
   const [renaming, setRenaming] = useState(false);
+  const links = useLinks();
+  const state = linkState(device, links);
+  const failure = linkFailure(device, links);
   return (
+    <>
     <div className="dhead">
       <button type="button" className="dhead-main" onClick={onToggle} aria-expanded={open}>
         <DeviceAvatar device={device} size={26} dot />
         <span className="dhead-text">
           <b className="ellipsis">{deviceName(t, device)}</b>
           <span className="small muted">
-            {[osLabel(device.os), device.online ? t('devices.count', { count }) : t('devices.offline')].filter(Boolean).join(' · ')}
+            {[osLabel(device.os), state === 'online' ? t('devices.count', { count }) : linkLabel(t, device, links)].filter(Boolean).join(' · ')}
           </span>
         </span>
         <ChevronDown size={14} className="prow-chev" aria-hidden="true" />
@@ -349,6 +354,15 @@ function DeviceHead({ device, count, open, onToggle }) {
         />
       )}
     </div>
+    {failure && (
+      <p className="slist-note">
+        {t(`error:${failure.reason}`, { defaultValue: t('devices.unreachable_note') })}{' '}
+        <button type="button" className="slist-retry" onClick={failure.retry}>
+          {t('devices.retry')}
+        </button>
+      </p>
+    )}
+    </>
   );
 }
 
@@ -364,6 +378,7 @@ function matcher(q, t) {
 
 /** 项目和会话列表（左侧栏、手机首页共用）。 */
 export function SessionList({ currentId }) {
+  const links = useLinks();
   const { t } = useTranslation();
   const { navigate } = useRouter();
   const devices = useDevices();
@@ -463,7 +478,7 @@ export function SessionList({ currentId }) {
             <button key={d.id} type="button" aria-pressed={filter === d.id} onClick={() => setDevFilter(filter === d.id ? 'all' : d.id)} style={{ '--dc': deviceColor(devices, d.id) }}>
               <DeviceAvatar device={d} size={18} />
               <span className="ellipsis">{deviceName(t, d)}</span>
-              {!d.online && <span className="muted">{t('devices.offline')}</span>}
+              {linkState(d, links) !== 'online' && <span className="muted">{linkLabel(t, d, links)}</span>}
             </button>
           ))}
         </div>

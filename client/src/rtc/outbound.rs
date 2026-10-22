@@ -594,6 +594,9 @@ mod loopback {
             drop(b);
         });
         ctl.opened(Duration::from_secs(10)).await.unwrap();
+        // 连上后两端选中的地址都在 SDP 里：本机回环是 host ⟷ host
+        let path = a.path().expect("path");
+        assert!(path.local.ends_with(" host") && path.remote.ends_with(" host"), "{path:?}");
         ctl.send(&frame::ctl(&json!({ "t": "hello", "proto": 1 }))).unwrap();
         let m = ctl.recv().await.unwrap();
         let Some(Frame::Ctl(v)) = frame::parse(&m) else { panic!("hello") };

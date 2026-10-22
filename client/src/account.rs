@@ -291,6 +291,17 @@ impl Account {
         Some((s.key_id, looklook_protocol::signing::sign(&key, message)))
     }
 
+    /// 信令长连接（`rtc::signal`）：未登录时为 None。登录已在平台失效时照常清除登录状态。
+    pub async fn signal_socket(&self) -> Option<PResult<tokio_tungstenite::WebSocketStream<reqwest::Upgraded>>> {
+        let (s, key) = self.creds()?;
+        let signer = Signer { device: &s.device_id, key_id: &s.key_id, key: &key };
+        let r = self.platform().websocket(looklook_protocol::rtc::SIGNAL_PATH, signer).await;
+        if let Err(e) = &r {
+            self.on_error(e);
+        }
+        Some(r)
+    }
+
     fn creds(&self) -> Option<(Session, SigningKey)> {
         Some((lock(&self.session).clone()?, lock(&self.key).clone()?))
     }
@@ -1155,6 +1166,44 @@ mod tests {
         let url = format!("http://{}", l.local_addr().unwrap());
         tokio::spawn(async move { axum::serve(l, app).await.unwrap() });
         (url, seen)
+    }
+
+    /// 信令长连接：签名的 GET 升级成 WebSocket，101 应答的平台签名不对就不用。
+    #[tokio::test]
+    async fn signal_socket_upgrades_with_platform_signature() {
+        use futures_util::{SinkExt, StreamExt};
+        use tokio_tungstenite::tungstenite::{handshake::server, Message};
+
+        async fn fake(good_sig: bool) -> String {
+            let l = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", l.local_addr().unwrap());
+            tokio::spawn(async move {
+                let (tcp, _) = l.accept().await.unwrap();
+                let cb = |req: &server::Request, mut resp: server::Response| {
+                    assert_eq!(req.uri().path(), "/api/client/v1/signal");
+                    assert_eq!(req.headers()[looklook_protocol::signing::HDR_DEVICE], "dev1");
+                    assert!(req.headers().contains_key(looklook_protocol::signing::HDR_SIGNATURE));
+                    let nonce = req.headers()[HDR_NONCE].to_str().unwrap();
+                    let key = if good_sig { platform_key() } else { SigningKey::from_bytes(&[9u8; 32]) };
+                    let sig = looklook_protocol::signing::sign(&key, &response_canonical(nonce, 101, b""));
+                    resp.headers_mut().insert(HDR_PLATFORM_KEY, "p1".parse().unwrap());
+                    resp.headers_mut().insert(HDR_PLATFORM_SIGNATURE, sig.parse().unwrap());
+                    Ok(resp)
+                };
+                let Ok(mut ws) = tokio_tungstenite::accept_hdr_async(tcp, cb).await else { return };
+                ws.send(Message::Text("hi".into())).await.unwrap();
+                let _ = ws.next().await;
+            });
+            url
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let a = account(dir.path(), &fake(true).await);
+        let mut ws = a.signal_socket().await.unwrap().unwrap();
+        assert_eq!(ws.next().await.unwrap().unwrap(), Message::Text("hi".into()));
+
+        let b = account(dir.path(), &fake(false).await);
+        assert!(b.signal_socket().await.unwrap().is_err(), "平台签名不对");
     }
 
     /// 本机 App 连另一台电脑（服务端 docs/06 §14）：经假平台取设备列表、交换 offer / answer（那台电脑是真的应答方），

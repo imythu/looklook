@@ -59,6 +59,8 @@ pub struct Platform {
     http: reqwest::Client,
     /// 下载安装包用：没有总超时（几十 MB 在慢网络上要好几分钟），只限制连接与两次读之间的间隔
     dl: reqwest::Client,
+    /// 信令长连接用：单独的连接池，没有总超时（升级后的连接一直用着）
+    ws: reqwest::Client,
     /// 主站地址，如 `https://looklook.example`（无结尾斜杠）
     pub base: String,
     keys: RwLock<HashMap<String, VerifyingKey>>,
@@ -97,7 +99,8 @@ impl Platform {
         };
         let http = builder().timeout(Duration::from_secs(30)).build()?;
         let dl = builder().read_timeout(Duration::from_secs(60)).build()?;
-        Ok(Self { http, dl, base, keys: RwLock::new(keys), clock })
+        let ws = builder().build()?;
+        Ok(Self { http, dl, ws, base, keys: RwLock::new(keys), clock })
     }
 
     pub fn has_keys(&self) -> bool {
@@ -240,6 +243,59 @@ impl Platform {
             }
             return Ok((status, body_bytes));
         }
+    }
+
+    /// 签名的 `GET` 升级成 WebSocket（信令长连接，`looklook_protocol::rtc::SIGNAL_PATH`）。与普通请求一样走系统代理、
+    /// 本机解析覆盖，101 应答也要带有效的平台签名。
+    pub async fn websocket(&self, path: &str, signer: Signer<'_>) -> PResult<tokio_tungstenite::WebSocketStream<reqwest::Upgraded>> {
+        use tokio_tungstenite::tungstenite::{handshake::client::generate_key, protocol::Role};
+        let full = format!("{CLIENT_API}{path}");
+        let nonce = b64(&random_bytes::<16>());
+        let ts = self.clock.now_ms();
+        let canonical = request_canonical(&RequestParts {
+            method: "GET",
+            path_and_query: &full,
+            device: signer.device,
+            key: signer.key_id,
+            timestamp_ms: ts,
+            nonce: &nonce,
+            body: b"",
+        });
+        let req = self
+            .ws
+            .get(format!("{}{full}", self.base))
+            .header(signing::HDR_DEVICE, signer.device)
+            .header(signing::HDR_KEY, signer.key_id)
+            .header(signing::HDR_TIMESTAMP, ts.to_string())
+            .header(signing::HDR_NONCE, &nonce)
+            .header(signing::HDR_SIGNATURE, signing::sign(signer.key, &canonical))
+            .header("connection", "Upgrade")
+            .header("upgrade", "websocket")
+            .header("sec-websocket-version", "13")
+            .header("sec-websocket-key", generate_key());
+        let resp = tokio::time::timeout(Duration::from_secs(20), req.send())
+            .await
+            .map_err(|_| PlatformError::Network("连接平台超时".into()))?
+            .map_err(net)?;
+        let status = resp.status().as_u16();
+        let kid = header(&resp, signing::HDR_PLATFORM_KEY);
+        let sig = header(&resp, signing::HDR_PLATFORM_SIGNATURE);
+        let verified = |body: &[u8]| match (kid.as_deref().and_then(|k| self.key(k)), sig.as_deref()) {
+            (Some(vk), Some(s)) => signing::verify(&vk, &signing::response_canonical(&nonce, status, body), s),
+            _ => false,
+        };
+        if status != 101 {
+            let body = resp.bytes().await.map_err(net)?;
+            if !verified(&body) {
+                return Err(PlatformError::Network(format!("平台响应签名校验失败（HTTP {status}）")));
+            }
+            return Err(api_error(status, &body));
+        }
+        if !verified(b"") {
+            return Err(PlatformError::Network("平台响应签名校验失败".into()));
+        }
+        let io = resp.upgrade().await.map_err(net)?;
+        Ok(tokio_tungstenite::WebSocketStream::from_raw_socket(io, Role::Client, None).await)
     }
 
     /// 无需签名的请求（浏览器授权登录：此时设备还没有密钥身份）。仍要求响应带有效的平台签名。

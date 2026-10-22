@@ -70,3 +70,66 @@ export function PathDot({ device, self = false }) {
     </span>
   );
 }
+
+// 网页（WebRTC）里到各台电脑的连接状态（boot.js 的 __llrtc.links）。平台只说电脑在不在线（它与平台的长连接），
+// 网页自己连不连得上要看这里：连接中 / 在线 / 重连中 / 连不上。本机 App 没有这一层，只看平台的在线。
+const LINK_POLL_MS = 2000;
+let links = {};
+let linkTimer = 0;
+let linkUsers = 0;
+const linkSubs = new Set();
+
+function loadLinks() {
+  if (document.visibilityState !== 'visible') return;
+  let next = {};
+  try {
+    next = window.top.__llrtc?.links?.() ?? {};
+  } catch {
+    /* 旧的启动页没有 links */
+  }
+  if (JSON.stringify(next) === JSON.stringify(links)) return;
+  links = next;
+  linkSubs.forEach((f) => f());
+}
+
+/** 订阅各台电脑的连接状态：`{设备 id: {s, reason, path}}`，有人在看时每 2 秒刷新。 */
+export function useLinks() {
+  const [, setN] = useState(0);
+  useEffect(() => {
+    if (!rtcMode) return undefined;
+    const f = () => setN((n) => n + 1);
+    linkSubs.add(f);
+    if (linkUsers++ === 0) {
+      loadLinks();
+      linkTimer = setInterval(loadLinks, LINK_POLL_MS);
+    }
+    return () => {
+      linkSubs.delete(f);
+      if (--linkUsers === 0) clearInterval(linkTimer);
+    };
+  }, []);
+  return links;
+}
+
+/**
+ * 一台电脑给用户看的状态：`offline`（平台说它不在线）、`connecting`、`reconnecting`、`failed`（连不上），
+ * 其余为 `online`（含还没去连的）。
+ */
+export function linkState(device, all) {
+  if (!device?.online) return 'offline';
+  return all[device.id]?.s ?? 'online';
+}
+
+const STATE_KEY = { offline: 'devices.offline', online: 'devices.online', connecting: 'devices.connecting', reconnecting: 'devices.reconnecting', failed: 'devices.unreachable' };
+
+/** 状态的文字（“在线”“连接中…”“连不上”等）。 */
+export function linkLabel(t, device, all) {
+  return t(STATE_KEY[linkState(device, all)]);
+}
+
+/** 连不上时的原因（error 文案里的 RTC_* 等）与重试。 */
+export function linkFailure(device, all) {
+  const l = linkState(device, all) === 'failed' ? all[device.id] : null;
+  if (!l) return null;
+  return { reason: l.reason || '', retry: () => window.top.__llrtc?.retry?.(device.id) };
+}

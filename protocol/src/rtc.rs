@@ -194,6 +194,9 @@ pub struct ConnectRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectResponse {
     pub answer: String,
+    /// offer 走的路：`signal`（设备的信令长连接）或 `relay`（经中转转发，旧客户端）。上报连接事件用。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub via: String,
 }
 
 /// 本机客户端作为发起方连到同一账户的其他电脑（docs/06 §14）：客户端接口（`/api/client/v1`）下的相对路径，
@@ -222,6 +225,24 @@ pub struct OfferResponse {
     pub answer: String,
     pub key: String,
     pub sig: String,
+}
+
+/// 设备 → 主服务的信令长连接（客户端接口下的相对路径）：设备签名的 `GET` 升级成 WebSocket，之后主服务把 offer
+/// 直接推给设备，不再经中转转发；连着就说明设备在线。消息是 [`SignalMsg`] 的 JSON 文本帧。
+pub const SIGNAL_PATH: &str = "/signal";
+/// 主服务每隔这么久发一个 WebSocket ping（也让 Cloudflare 等代理不因空闲断开）；设备 3 倍时间收不到任何帧就重连。
+pub const SIGNAL_PING_SECS: u64 = 20;
+
+/// 信令长连接上的消息。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "t", rename_all = "snake_case")]
+pub enum SignalMsg {
+    /// 主服务 → 设备：同 [`OfferRequest`]，`id` 对应回复。
+    Offer { id: u64, grant: String, offer: String },
+    /// 设备 → 主服务：同 [`OfferResponse`]。
+    Answer { id: u64, answer: String, key: String, sig: String },
+    /// 设备 → 主服务：不接受这个 offer，`status`、`why` 同 HTTP 路径的拒绝。
+    Reject { id: u64, status: u16, why: String },
 }
 
 /// 主服务 →（经通道）设备：关闭这些子站会话的连接。`ts` 为 Unix 毫秒（主服务时钟）。

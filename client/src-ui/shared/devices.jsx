@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { configureDevices, deviceApi, fetchDevices, localApi, rtcMode } from './api.js';
 import { DeviceAvatar } from './brands.jsx';
-import { PathDot } from './paths.jsx';
+import { linkLabel, PathDot, useLinks } from './paths.jsx';
 import { Button, ErrorNote, Field, Modal, Switch, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
@@ -198,6 +198,7 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
   if (d.localOnly) return <LocalOnlySwitcher side={side} />;
   const current = d.byId(d.selected);
   const online = d.items.filter((x) => x.online).length;
+  const links = useLinks();
   const dismissTip = () => {
     markTipSeen();
     setTip(false);
@@ -269,7 +270,7 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
                 <span className="device-item-text">
                   <span className="ellipsis">{deviceName(t, x)}</span>
                   <span className="small muted">
-                    {[osLabel(x.os), t(x.online ? 'devices.online' : 'devices.offline'), x.id === d.def ? t('devices.default') : null].filter(Boolean).join(' · ')}
+                    {[osLabel(x.os), linkLabel(t, x, links), x.id === d.def ? t('devices.default') : null].filter(Boolean).join(' · ')}
                   </span>
                 </span>
                 {x.online && <PathDot device={x.id} self={!rtcMode && x.id === d.def} />}

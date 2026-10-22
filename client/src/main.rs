@@ -512,6 +512,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(transfers.run(store.clone())),
         tokio::spawn(app.rtc.clone().watch(account.clone())),
         tokio::spawn(app.outbound.clone().watch(account.clone())),
+        tokio::spawn(rtc::signal::run(app.clone(), shutdown.clone())),
         {
             let app = app.clone();
             tokio::spawn(app.resolved.clone().run(move || app.access()))

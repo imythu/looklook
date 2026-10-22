@@ -224,6 +224,13 @@ pub struct PathInfo {
     pub remote: String,
 }
 
+#[cfg(test)]
+fn classify(local: &str, remote: &str) -> Option<PathInfo> {
+    let (la, lt) = cand_parts(local)?;
+    let (ra, rt) = cand_parts(remote)?;
+    Some(path_info(la, lt, ra, rt))
+}
+
 /// `candidate:1 1 UDP 2122317823 192.168.1.2 42009 typ host …` → (地址, 类型)。
 fn cand_parts(c: &str) -> Option<(&str, &str)> {
     let t: Vec<&str> = c.trim().trim_start_matches("a=").split_whitespace().collect();
@@ -243,9 +250,7 @@ fn private_addr(a: &str) -> bool {
     }
 }
 
-pub fn classify(local: &str, remote: &str) -> Option<PathInfo> {
-    let (la, lt) = cand_parts(local)?;
-    let (ra, rt) = cand_parts(remote)?;
+fn path_info(la: &str, lt: &str, ra: &str, rt: &str) -> PathInfo {
     let kind = if lt == "relay" || rt == "relay" {
         PathKind::Relay
     } else if private_addr(la) && private_addr(ra) {
@@ -253,7 +258,18 @@ pub fn classify(local: &str, remote: &str) -> Option<PathInfo> {
     } else {
         PathKind::P2p
     };
-    Some(PathInfo { kind, local: format!("{la} {lt}"), remote: format!("{ra} {rt}") })
+    PathInfo { kind, local: format!("{la} {lt}"), remote: format!("{ra} {rt}") }
+}
+
+/// SDP 里地址为 `addr`（`ip:端口`，libjuice 的写法，IPv6 不带方括号）的候选的类型。
+fn cand_type_at<'a>(sdp: &'a str, addr: &str) -> Option<&'a str> {
+    let (ip, port) = addr.rsplit_once(':')?;
+    let ip = ip.trim_matches(['[', ']']);
+    sdp.lines().filter(|l| l.starts_with("a=candidate")).find_map(|l| {
+        let t: Vec<&str> = l.split_whitespace().collect();
+        let typ = t.iter().position(|x| *x == "typ").and_then(|i| t.get(i + 1))?;
+        (t.get(4)?.eq_ignore_ascii_case(ip) && *t.get(5)? == port).then_some(*typ)
+    })
 }
 
 /// 一条 PeerConnection（应答方：浏览器连进来；发起方：本机 App 连同一账户的其他电脑，见 `super::outbound`）。
@@ -270,6 +286,8 @@ pub struct Pc {
     remote: String,
     /// offer 里的候选（`mid`, `candidate:…`），本机候选收集完再交给 libjuice（见 [`split_candidates`]）。
     deferred: Vec<(String, String)>,
+    /// 对端的完整 SDP（含候选），[`Self::path`] 按地址查候选类型用。
+    remote_sdp: String,
 }
 
 impl Pc {
@@ -281,6 +299,7 @@ impl Pc {
             serde_json::from_value(serde_json::json!({ "type": "offer", "sdp": sdp })).map_err(|e| anyhow!("offer 无法解析：{e}"))?;
         me.pc.set_remote_description(&offer).map_err(|e| anyhow!("设置 offer 失败：{e:?}"))?;
         me.remote = cand_summary(offer_sdp);
+        me.remote_sdp = offer_sdp.to_string();
         me.deferred = deferred;
         Ok(me)
     }
@@ -305,13 +324,21 @@ impl Pc {
         let h = PcHandler { incoming: incoming_tx, pending: None, state: state_tx, gathered: gathered_tx, reflexive: reflexive_tx, gather: gather.clone() };
         let pc = RtcPeerConnection::new(&cfg, h).map_err(|e| anyhow!("创建 PeerConnection 失败：{e:?}"))?;
         let servers = urls.iter().map(|u| server_host(u)).collect();
-        Ok(Self { pc, state, gathered, reflexive, incoming, gather, servers, remote: String::new(), deferred: Vec::new() })
+        Ok(Self { pc, state, gathered, reflexive, incoming, gather, servers, remote: String::new(), deferred: Vec::new(), remote_sdp: String::new() })
     }
 
     /// 连上以后实际走的路；还没选出候选对时为 None。
+    ///
+    /// 不用 `selected_candidate_pair`：datachannel 0.16 给两端分配同样大小的缓冲区，短的那个末尾多出 NUL，
+    /// 每次都转换失败（还记一条 ERROR）。这里取选中的两端地址，到两边的 SDP 里查候选类型；
+    /// 对端 SDP 里没有的地址是对端经未公布的地址连过来的（prflx）。
     pub fn path(&self) -> Option<PathInfo> {
-        let p = self.pc.selected_candidate_pair()?;
-        classify(&p.local, &p.remote)
+        let (la, ra) = (self.pc.local_address()?, self.pc.remote_address()?);
+        let local = self.pc.local_description().and_then(|d| serde_json::to_value(&d).ok()).and_then(|v| v["sdp"].as_str().map(str::to_owned));
+        let lt = local.as_deref().and_then(|sdp| cand_type_at(sdp, &la)).unwrap_or("host");
+        let rt = cand_type_at(&self.remote_sdp, &ra).unwrap_or("prflx");
+        let host = |a: &str| a.rsplit_once(':').map_or(a, |(h, _)| h).trim_matches(['[', ']']).to_string();
+        Some(path_info(&host(&la), lt, &host(&ra), rt))
     }
 
     /// 本机开一条通道（发起方）。
@@ -324,6 +351,7 @@ impl Pc {
 
     /// 发起方：设置对端的 answer。
     pub fn set_answer(&mut self, sdp: &str) -> Result<()> {
+        self.remote_sdp = sdp.to_string();
         let answer: SessionDescription = serde_json::from_value(serde_json::json!({ "type": "answer", "sdp": sdp })).map_err(|e| anyhow!("answer 无法解析：{e}"))?;
         self.pc.set_remote_description(&answer).map_err(|e| anyhow!("设置 answer 失败：{e:?}"))
     }
@@ -515,6 +543,16 @@ mod tests {
                    a=candidate:3 1 UDP 1 203.0.113.5 5002 typ srflx raddr 0.0.0.0 rport 0\r\n";
         assert_eq!(cand_summary(sdp), "host×2(mdns×1) srflx×1 relay×0 other×0 ipv6×1");
         assert_eq!(cand_summary("v=0\r\n"), "none");
+    }
+
+    #[test]
+    fn candidate_type_by_address() {
+        let sdp = "a=candidate:1 1 UDP 1 192.168.1.2 5000 typ host\r\na=candidate:2 1 UDP 1 2001:db8::1 5001 typ srflx raddr 0.0.0.0 rport 0\r\n\
+                   a=candidate:3 1 UDP 1 203.0.113.9 6000 typ relay raddr 1.2.3.4 rport 7\r\n";
+        assert_eq!(cand_type_at(sdp, "192.168.1.2:5000"), Some("host"));
+        assert_eq!(cand_type_at(sdp, "2001:db8::1:5001"), Some("srflx"));
+        assert_eq!(cand_type_at(sdp, "203.0.113.9:6000"), Some("relay"));
+        assert_eq!(cand_type_at(sdp, "192.168.1.2:5001"), None);
     }
 
     #[test]
