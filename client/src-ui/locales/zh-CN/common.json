@@ -1512,7 +1512,8 @@
     "usage_limits_note_live": "额度是整个 Claude 账号的，和 Claude 桌面版、/usage 看到的一样（一分钟内取一次）。",
     "imagegen": "生成了图片",
     "res_open": "查看原图",
-    "res_made": "产出的文件（{{n}}）"
+    "res_made": "产出的文件（{{n}}）",
+    "side_toggle_codex": "改动、资源和用量"
   },
   "sess": {
     "new": "新会话",

@@ -1512,7 +1512,8 @@
     "usage_limits_note_live": "Limits are for the whole Claude account and match what the Claude app and /usage show (refreshed at most once a minute).",
     "imagegen": "Generated an image",
     "res_open": "View full size",
-    "res_made": "Files it produced ({{n}})"
+    "res_made": "Files it produced ({{n}})",
+    "side_toggle_codex": "Changes, resources and usage"
   },
   "sess": {
     "new": "New session",

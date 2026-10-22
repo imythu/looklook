@@ -126,7 +126,7 @@ impl Rollout {
             }
             "AgentMessage" => {
                 let text: Vec<&str> = it["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect()).unwrap_or_default();
-                let text = text.join("\n");
+                let text = file_citations(&text.join("\n"));
                 if !text.trim().is_empty() {
                     self.push(line, 0, ts, Body::Assistant { model: None, blocks: vec![Block::Text { text }] });
                 }
@@ -217,6 +217,31 @@ fn command_text(it: &Value) -> String {
 }
 
 /// `file:///C:/x/y.png` → `C:/x/y.png`（Unix 是 `/x/y.png`）
+/// Codex 在回复里引用文件的指令：`:codex-file-citation{path="F:/out/a.pdf" purpose="output"}`（也可能是 `::` 开头）。
+/// 换成 Markdown 链接 `[a.pdf](<F:/out/a.pdf>)`，界面再把它指向这段对话产出的文件；没有 path 的原样留着。
+fn file_citations(text: &str) -> String {
+    const TAG: &str = "codex-file-citation{";
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find(TAG) {
+        let colons = rest[..at].len() - rest[..at].trim_end_matches(':').len();
+        let Some(end) = rest[at..].find('}').map(|e| at + e) else { break };
+        let attrs = &rest[at + TAG.len()..end];
+        let path = attrs.split_once("path=\"").and_then(|(_, p)| p.split_once('"')).map(|(p, _)| p);
+        match path.filter(|p| !p.is_empty()) {
+            Some(p) => {
+                out.push_str(&rest[..at - colons]);
+                let name = p.rsplit(['/', '\\']).next().filter(|n| !n.is_empty()).unwrap_or(p);
+                out.push_str(&format!("[{}](<{}>)", name.replace(['[', ']'], ""), p));
+            }
+            None => out.push_str(&rest[..=end]),
+        }
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 fn file_url_path(s: &str) -> String {
     let rest = s.strip_prefix("file://").unwrap_or(s);
     let rest = if rest.len() > 2 && rest.as_bytes()[0] == b'/' && rest.as_bytes()[2] == b':' { &rest[1..] } else { rest };
@@ -379,6 +404,15 @@ mod tests {
         assert_eq!(r.tool_input("i").unwrap()["file_path"], "C:/x/my pic.png");
         let tail: Vec<&Body> = items.iter().rev().take(3).map(|i| &i.body).collect();
         assert_eq!(tail, [&Body::Turn { ms: 8558 }, &Body::Interrupt, &Body::Divider { kind: "compact".into() }]);
+    }
+
+    #[test]
+    fn file_citations_become_links() {
+        let t = "已制作《灯》：四页。\n\n:codex-file-citation{path=\"F:/out/pdf/替远行的人留一盏灯.pdf\" purpose=\"output\"}";
+        assert_eq!(file_citations(t), "已制作《灯》：四页。\n\n[替远行的人留一盏灯.pdf](<F:/out/pdf/替远行的人留一盏灯.pdf>)");
+        assert_eq!(file_citations("a ::codex-file-citation{path=\"/tmp/a b.txt\"} b"), "a [a b.txt](</tmp/a b.txt>) b");
+        assert_eq!(file_citations("no path :codex-file-citation{purpose=\"x\"}"), "no path :codex-file-citation{purpose=\"x\"}");
+        assert_eq!(file_citations("plain"), "plain");
     }
 
     #[test]

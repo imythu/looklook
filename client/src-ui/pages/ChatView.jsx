@@ -1303,6 +1303,8 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
 /** 输入框上面一行：状态，还在跑的后台任务，右侧面板开关 */
 function StatusLine({ status, online, side, onSide, onTerm }) {
   const { t } = useT();
+  // Codex 的侧栏有“资源”（生成的图片、产出的文件），按钮的说明里写上
+  const sideLabel = useContext(AgentCtx).id === 'codex' ? t('chat.side_toggle_codex') : t('chat.side_toggle');
   if (!status) return null;
   const { phase, tool, error, reason } = status;
   const label = phase === 'detached' && reason === 'not_attached' ? 'chat.phase_not_attached' : `chat.phase_${phase}`;
@@ -1330,7 +1332,7 @@ function StatusLine({ status, online, side, onSide, onTerm }) {
       <button type="button" className="chat-beta" onClick={onTerm} title={t('chat.beta_hint')}>
         Beta
       </button>
-      <button type="button" className="btn btn-plain btn-icon chat-status-btn" onClick={() => onSide(side ? null : 'changes')} aria-pressed={Boolean(side)} aria-label={t('chat.side_toggle')} title={t('chat.side_toggle')}>
+      <button type="button" className="btn btn-plain btn-icon chat-status-btn" onClick={() => onSide(side ? null : 'changes')} aria-pressed={Boolean(side)} aria-label={sideLabel} title={sideLabel}>
         <PanelRight size={16} />
       </button>
     </div>
@@ -2124,7 +2126,11 @@ export default function ChatView({ id, active, touch, onTab }) {
   const artifactCtx = useMemo(() => {
     const list = arts?.items ?? [];
     const links = {};
-    for (const a of list) for (const m of a.mentions ?? []) links[m] = artifactUrl(id, a.path, !a.viewable);
+    for (const a of list) {
+      const url = artifactUrl(id, a.path, !a.viewable);
+      // 文字里的写法，加上完整路径的两种斜杠（Codex 引用文件时用正斜杠，路径里可能有空格）
+      for (const m of [...(a.mentions ?? []), a.path, a.path.replaceAll('\\', '/')]) links[m] = url;
+    }
     return { list, links: list.length ? links : null };
   }, [arts, id]);
   const prev = useRef(phase);
