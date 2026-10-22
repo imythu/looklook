@@ -3,7 +3,8 @@
 //! 回调里只往无界通道里发消息，不做别的：`rtcDelete*` 会等正在执行的回调结束，回调里阻塞就会死锁。
 //! 通道（[`Channel`]）要先于它所属的连接（[`Pc`]）释放，见 `super::run_peer`。
 
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use datachannel::{
@@ -135,6 +136,34 @@ struct PcHandler {
     gathered: watch::Sender<bool>,
     /// 已得到的 srflx / relay 候选数。
     reflexive: watch::Sender<usize>,
+    gather: Arc<Mutex<GatherLog>>,
+}
+
+/// 候选收集的经过（电脑端没拿到 srflx / relay 候选时记进日志）：每个候选与距开始的毫秒数、收集结束的时间。
+struct GatherLog {
+    start: Instant,
+    cands: Vec<(u128, String)>,
+    done: Option<u128>,
+}
+
+impl GatherLog {
+    fn new() -> Arc<Mutex<Self>> {
+        Arc::new(Mutex::new(Self { start: Instant::now(), cands: Vec::new(), done: None }))
+    }
+
+    /// `host 172.17.0.2@3ms srflx 203.0.113.5@120ms done@450ms`（还没结束时末尾为 `pending@…`）。
+    fn describe(&self) -> String {
+        let mut out: Vec<String> = self.cands.iter().map(|(ms, c)| format!("{c}@{ms}ms")).collect();
+        out.push(match self.done {
+            Some(ms) => format!("done@{ms}ms"),
+            None => format!("pending@{}ms", self.start.elapsed().as_millis()),
+        });
+        out.join(" ")
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl PeerConnectionHandler for PcHandler {
@@ -161,10 +190,17 @@ impl PeerConnectionHandler for PcHandler {
         if cand.candidate.contains(" typ srflx") || cand.candidate.contains(" typ relay") {
             self.reflexive.send_modify(|n| *n += 1);
         }
+        let mut g = lock(&self.gather);
+        let ms = g.start.elapsed().as_millis();
+        let c = cand_parts(&cand.candidate).map_or_else(|| cand.candidate.clone(), |(a, t)| format!("{t} {a}"));
+        g.cands.push((ms, c));
     }
 
     fn on_gathering_state_change(&mut self, state: GatheringState) {
         if state == GatheringState::Complete {
+            let mut g = lock(&self.gather);
+            g.done = Some(g.start.elapsed().as_millis());
+            drop(g);
             let _ = self.gathered.send(true);
         }
     }
@@ -227,36 +263,49 @@ pub struct Pc {
     gathered: watch::Receiver<bool>,
     reflexive: watch::Receiver<usize>,
     pub incoming: mpsc::UnboundedReceiver<Channel>,
+    gather: Arc<Mutex<GatherLog>>,
+    /// STUN / TURN 服务器（`host:port`，不含凭证），排查用。
+    servers: Vec<String>,
+    /// 对端 SDP 里的候选概况（应答方才有），排查用。
+    remote: String,
+    /// offer 里的候选（`mid`, `candidate:…`），本机候选收集完再交给 libjuice（见 [`split_candidates`]）。
+    deferred: Vec<(String, String)>,
 }
 
 impl Pc {
     /// 按浏览器的 offer 建立连接（libdatachannel 随即自动生成 answer 并开始收集候选）。
     pub fn answer(ice: &[IceServer], offer_sdp: &str) -> Result<Self> {
-        let cfg = RtcConfig::new(&ice_urls(ice));
-        let (state_tx, state) = watch::channel(PcState::New);
-        let (gathered_tx, gathered) = watch::channel(false);
-        let (reflexive_tx, reflexive) = watch::channel(0);
-        let (incoming_tx, incoming) = mpsc::unbounded_channel();
-        let h = PcHandler { incoming: incoming_tx, pending: None, state: state_tx, gathered: gathered_tx, reflexive: reflexive_tx };
-        let mut pc = RtcPeerConnection::new(&cfg, h).map_err(|e| anyhow!("创建 PeerConnection 失败：{e:?}"))?;
-        let offer: SessionDescription = serde_json::from_value(serde_json::json!({ "type": "offer", "sdp": offer_sdp }))
-            .map_err(|e| anyhow!("offer 无法解析：{e}"))?;
-        pc.set_remote_description(&offer).map_err(|e| anyhow!("设置 offer 失败：{e:?}"))?;
-        Ok(Self { pc, state, gathered, reflexive, incoming })
+        let mut me = Self::new(ice)?;
+        let (sdp, deferred) = split_candidates(offer_sdp);
+        let offer: SessionDescription =
+            serde_json::from_value(serde_json::json!({ "type": "offer", "sdp": sdp })).map_err(|e| anyhow!("offer 无法解析：{e}"))?;
+        me.pc.set_remote_description(&offer).map_err(|e| anyhow!("设置 offer 失败：{e:?}"))?;
+        me.remote = cand_summary(offer_sdp);
+        me.deferred = deferred;
+        Ok(me)
     }
 
     /// 作为发起方建立连接：开一条 `ctl` 通道（libdatachannel 随即生成 offer 并开始收集候选）。
     pub fn offer(ice: &[IceServer]) -> Result<(Self, Channel)> {
-        let cfg = RtcConfig::new(&ice_urls(ice));
+        let mut me = Self::new(ice)?;
+        let ctl = me.channel("ctl")?;
+        Ok((me, ctl))
+    }
+
+    fn new(ice: &[IceServer]) -> Result<Self> {
+        // libdatachannel / libjuice 自己的警告（STUN / TURN 失败、发送失败等）进日志；只设置一次
+        datachannel::configure_logging(tracing::Level::WARN);
+        let urls = ice_urls(ice);
+        let cfg = RtcConfig::new(&urls);
         let (state_tx, state) = watch::channel(PcState::New);
         let (gathered_tx, gathered) = watch::channel(false);
         let (reflexive_tx, reflexive) = watch::channel(0);
         let (incoming_tx, incoming) = mpsc::unbounded_channel();
-        let h = PcHandler { incoming: incoming_tx, pending: None, state: state_tx, gathered: gathered_tx, reflexive: reflexive_tx };
+        let gather = GatherLog::new();
+        let h = PcHandler { incoming: incoming_tx, pending: None, state: state_tx, gathered: gathered_tx, reflexive: reflexive_tx, gather: gather.clone() };
         let pc = RtcPeerConnection::new(&cfg, h).map_err(|e| anyhow!("创建 PeerConnection 失败：{e:?}"))?;
-        let mut me = Self { pc, state, gathered, reflexive, incoming };
-        let ctl = me.channel("ctl")?;
-        Ok((me, ctl))
+        let servers = urls.iter().map(|u| server_host(u)).collect();
+        Ok(Self { pc, state, gathered, reflexive, incoming, gather, servers, remote: String::new(), deferred: Vec::new() })
     }
 
     /// 连上以后实际走的路；还没选出候选对时为 None。
@@ -286,8 +335,15 @@ impl Pc {
 
     /// 等候选收集完（不用 trickle），返回 answer SDP：收集结束、或者有了 srflx / relay 候选再等 [`REFLEXIVE_GRACE`]，
     /// 最多 `limit`。
+    /// 之后才把 offer 里的候选交给 libjuice。
     pub async fn local_answer(&mut self, limit: Duration) -> Result<String> {
-        self.local_sdp("answer", limit).await
+        let sdp = self.local_sdp("answer", limit).await?;
+        for (mid, candidate) in std::mem::take(&mut self.deferred) {
+            if let Err(e) = self.pc.add_remote_candidate(&IceCandidate { candidate, mid }) {
+                tracing::debug!(error = ?e, "添加对端候选失败");
+            }
+        }
+        Ok(sdp)
     }
 
     async fn local_sdp(&mut self, kind: &str, limit: Duration) -> Result<String> {
@@ -304,7 +360,31 @@ impl Pc {
         if v["type"] != kind {
             bail!("本地描述不是 {kind}：{}", v["type"]);
         }
-        v["sdp"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("{kind} 缺少 sdp"))
+        let sdp = v["sdp"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("{kind} 缺少 sdp"))?;
+        if !sdp.contains(" typ srflx") && !sdp.contains(" typ relay") && !self.servers.is_empty() {
+            self.warn_no_reflexive(kind).await;
+        }
+        Ok(sdp)
+    }
+
+    /// 本机没拿到 srflx / relay 候选：对端多半连不上（浏览器报 RTC_DEVICE_NO_ROUTE）。记下收集经过、
+    /// 服务器地址与系统解析结果（Clash/mihomo 的 fake-ip 会解析成 198.18.x），以及对端的候选概况。
+    async fn warn_no_reflexive(&self, kind: &str) {
+        let mut resolved = Vec::new();
+        for s in &self.servers {
+            if resolved.iter().any(|(h, _): &(String, String)| h == s) {
+                continue;
+            }
+            let ips = match tokio::time::timeout(Duration::from_secs(1), tokio::net::lookup_host(s.as_str())).await {
+                Ok(Ok(a)) => a.map(|a| a.ip().to_string()).collect::<Vec<_>>().join("|"),
+                Ok(Err(e)) => format!("error: {e}"),
+                Err(_) => "timeout".into(),
+            };
+            resolved.push((s.clone(), ips));
+        }
+        let resolved = resolved.iter().map(|(h, ip)| format!("{h}={ip}")).collect::<Vec<_>>().join(" ");
+        let gather = lock(&self.gather).describe();
+        tracing::warn!(kind, gather, servers = resolved, remote = self.remote, "WebRTC 本机没拿到公网/中继候选，对端可能连不上");
     }
 }
 
@@ -350,6 +430,64 @@ pub fn ice_urls(servers: &[IceServer]) -> Vec<String> {
     out
 }
 
+/// 把 offer 里的候选拿出来，等本机候选收集完再加（[`Pc::local_answer`]）。
+///
+/// 电脑上开着 Clash/mihomo 的 TUN 时，同一个本地 UDP 端口发出的第一个包决定这个端口之后走直连还是走代理。
+/// 电脑版 Chrome 把本机地址藏成 mDNS 名，offer 里能用的只有它的公网 srflx：libjuice 一拿到就先向它发连通性检查，
+/// 这个包按规则走了代理，之后同一端口发往中转的 STUN / TURN 请求也跟着走不通，answer 里只剩 host 候选，
+/// 浏览器报 RTC_DEVICE_NO_ROUTE。先和中转通信，端口就按中转的规则（直连）走。
+fn split_candidates(sdp: &str) -> (String, Vec<(String, String)>) {
+    let mut out = String::with_capacity(sdp.len());
+    let mut cands = Vec::new();
+    let mut mid = String::new();
+    for line in sdp.split_inclusive('\n') {
+        let l = line.trim_end();
+        if let Some(m) = l.strip_prefix("a=mid:") {
+            mid = m.to_string();
+        }
+        if let Some(c) = l.strip_prefix("a=") {
+            if c.starts_with("candidate:") {
+                cands.push((mid.clone(), c.to_string()));
+                continue;
+            }
+            if c == "end-of-candidates" {
+                continue;
+            }
+        }
+        out.push_str(line);
+    }
+    (out, cands)
+}
+
+/// `stun:host:port`、`turn:user:pass@host:port?transport=udp` → `host:port`（不含凭证）。
+fn server_host(url: &str) -> String {
+    let rest = url.split_once(':').map_or(url, |(_, r)| r);
+    let rest = rest.rsplit_once('@').map_or(rest, |(_, r)| r);
+    rest.split('?').next().unwrap_or(rest).to_string()
+}
+
+/// SDP 里的候选概况：`host×2(mdns×2) srflx×1 relay×1 ipv6×0`，没有候选时为 `none`。
+fn cand_summary(sdp: &str) -> String {
+    let (mut host, mut mdns, mut srflx, mut relay, mut prflx, mut v6) = (0, 0, 0, 0, 0, 0);
+    for (addr, typ) in sdp.lines().filter(|l| l.starts_with("a=candidate")).filter_map(cand_parts) {
+        match typ {
+            "host" => host += 1,
+            "srflx" => srflx += 1,
+            "relay" => relay += 1,
+            _ => prflx += 1,
+        }
+        if addr.ends_with(".local") {
+            mdns += 1;
+        } else if addr.contains(':') {
+            v6 += 1;
+        }
+    }
+    if host + srflx + relay + prflx == 0 {
+        return "none".into();
+    }
+    format!("host×{host}(mdns×{mdns}) srflx×{srflx} relay×{relay} other×{prflx} ipv6×{v6}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -366,6 +504,33 @@ mod tests {
         // base64 密码里的 + / = 都要编码
         let p = s[1].credential.clone().unwrap();
         assert!(!urls[1].contains(&p) || !p.contains(['+', '/', '=']));
+    }
+
+    #[test]
+    fn diagnostics_helpers() {
+        assert_eq!(server_host("stun:r3.x:3478"), "r3.x:3478");
+        assert_eq!(server_host("turn:1700000000%3A1:p%2Fw@r3.x:3478?transport=udp"), "r3.x:3478");
+        assert_eq!(server_host("stun:[2001:db8::1]:3478"), "[2001:db8::1]:3478");
+        let sdp = "v=0\r\na=candidate:1 1 UDP 1 3f1c-aa.local 5000 typ host\r\na=candidate:2 1 UDP 1 2001:db8::1 5001 typ host\r\n\
+                   a=candidate:3 1 UDP 1 203.0.113.5 5002 typ srflx raddr 0.0.0.0 rport 0\r\n";
+        assert_eq!(cand_summary(sdp), "host×2(mdns×1) srflx×1 relay×0 other×0 ipv6×1");
+        assert_eq!(cand_summary("v=0\r\n"), "none");
+    }
+
+    #[test]
+    fn offer_candidates_are_deferred() {
+        let sdp = "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\na=ice-ufrag:x\r\n\
+                   a=candidate:1 1 udp 1 3f1c-aa.local 5000 typ host\r\na=candidate:2 1 udp 1 203.0.113.5 5002 typ srflx\r\n\
+                   a=end-of-candidates\r\na=sctp-port:5000\r\n";
+        let (rest, cands) = split_candidates(sdp);
+        assert_eq!(rest, "v=0\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=mid:0\r\na=ice-ufrag:x\r\na=sctp-port:5000\r\n");
+        assert_eq!(
+            cands,
+            vec![
+                ("0".to_string(), "candidate:1 1 udp 1 3f1c-aa.local 5000 typ host".to_string()),
+                ("0".to_string(), "candidate:2 1 udp 1 203.0.113.5 5002 typ srflx".to_string()),
+            ]
+        );
     }
 
     #[test]
