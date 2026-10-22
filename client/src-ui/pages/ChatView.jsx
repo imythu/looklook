@@ -1648,8 +1648,8 @@ function UsageTab({ id, status, onCompact }) {
       {lim?.five_hour && <Meter label={t('chat.usage_5h')} value={lim.five_hour.used} sub={resetText(t, lim.five_hour.resets_at)} />}
       {lim?.seven_day && <Meter label={t('chat.usage_7d')} value={lim.seven_day.used} sub={resetText(t, lim.seven_day.resets_at)} />}
       {lim?.reached && <p className="chat-note chat-warn">{t('chat.usage_reached')}</p>}
-      {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{t(lim.account ? 'chat.usage_limits_note_codex' : 'chat.usage_limits_note')}</p>}
-      {lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: duration(Date.now() - lim.fetched_at) })}</p>}
+      {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{t(lim.account ? 'chat.usage_limits_note_codex' : lim.live ? 'chat.usage_limits_note_live' : 'chat.usage_limits_note')}</p>}
+      {!lim?.live && lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: duration(Date.now() - lim.fetched_at) })}</p>}
       <Button variant="secondary" onClick={onCompact} disabled={status?.phase !== 'idle' || !used}>
         {t('chat.usage_compact')}
       </Button>

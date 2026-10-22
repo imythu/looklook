@@ -21,6 +21,8 @@ use serde_json::Value;
 const FAMILIES: [&str; 4] = ["opus", "sonnet", "haiku", "fable"];
 /// 服务商的模型列表缓存多久
 const PROVIDER_TTL: Duration = Duration::from_secs(600);
+/// 实时用量的缓存（界面每次回复后都会来取）
+const LIVE_LIMITS_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct Opt {
@@ -281,6 +283,46 @@ pub fn limits(ctx: &Ctx) -> Value {
         }
     };
     serde_json::json!({ "five_hour": pick("five_hour"), "seven_day": pick("seven_day"), "fetched_at": c["fetchedAtMs"] })
+}
+
+/// 实时用量：和 Claude Code 的 `/usage`、Claude 桌面版一样问 Anthropic（`/api/oauth/usage`），
+/// 用 Claude Code 登录时存的令牌（`<配置目录>/.credentials.json`）。令牌过期、文件不在（macOS 存在钥匙串里）、
+/// 请求失败时 None，界面退回 [`limits`] 的缓存。不刷新令牌（那是 Claude Code 的事），结果缓存一分钟。
+pub async fn live_limits(config_dir: &Path) -> Option<Value> {
+    static CACHE: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
+    if let Some((at, v)) = CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if at.elapsed() < LIVE_LIMITS_TTL {
+            return Some(v.clone());
+        }
+    }
+    let creds = read_json(&config_dir.join(".credentials.json"))?;
+    let o = &creds["claudeAiOauth"];
+    let token = o["accessToken"].as_str().filter(|t| !t.is_empty())?;
+    let now_ms = crate::util::system_ms();
+    if o["expiresAt"].as_i64().is_some_and(|e| e <= now_ms + 30_000) {
+        return None;
+    }
+    let c = reqwest::Client::builder().timeout(Duration::from_secs(6)).redirect(reqwest::redirect::Policy::none()).build().ok()?;
+    let r = c
+        .get("https://api.anthropic.com/api/oauth/usage")
+        .bearer_auth(token)
+        .header("anthropic-beta", "oauth-2025-04-20")
+        .header("content-type", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !r.status().is_success() {
+        tracing::debug!(status = %r.status(), "取不到实时用量");
+        return None;
+    }
+    let u: Value = r.json().await.ok()?;
+    let pick = |k: &str| match u[k]["utilization"].as_f64() {
+        Some(p) => serde_json::json!({ "used": p, "resets_at": u[k]["resets_at"] }),
+        None => Value::Null,
+    };
+    let v = serde_json::json!({ "five_hour": pick("five_hour"), "seven_day": pick("seven_day"), "fetched_at": now_ms, "live": true, "plan": o["subscriptionType"] });
+    *CACHE.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), v.clone()));
+    Some(v)
 }
 
 /// 权限规则（各 settings 文件里的，按来源）和 MCP 服务器（`~/.claude.json` 的用户级、这个项目的，以及项目的 `.mcp.json`）

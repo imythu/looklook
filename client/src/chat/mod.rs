@@ -1184,7 +1184,9 @@ impl Chat {
             (st.actual_model.clone(), st.context, st.version.clone())
         };
         let ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir: &workdir, env: HashMap::new() };
-        let (window, limits) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
+        let (window, cached) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
+        // 先问 Anthropic 要实时的（和 Claude 桌面版、`/usage` 一致），取不到才用 Claude Code 的缓存
+        let limits = models::live_limits(&ctx.config_dir).await.unwrap_or(cached);
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
     }
 
