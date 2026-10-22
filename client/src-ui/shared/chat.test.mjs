@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, backgroundCounts, chatRows, diffLines, diffStat, EMPTY, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, questionAnswers, slashAction, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, questionAnswers, slashAction, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -122,4 +122,26 @@ test('background counts', () => {
   assert.deepEqual(backgroundCounts({ background: [{ n: 2, kind: 'shell' }], agents: 0 }), { shell: 2 });
   assert.deepEqual(backgroundCounts({ background: [{ n: 1, kind: 'subagent' }], agents: 3 }), { subagent: 3 });
   assert.deepEqual(backgroundCounts(null), {});
+});
+
+test('conversationResources: 链接、搜索、图片，最近的在前、去重、标出最近一轮', () => {
+  const items = [
+    { k: 'user', text: 'a' },
+    { k: 'assistant', blocks: [{ t: 'text', text: '见 https://old.example/x。' }] },
+    { k: 'user', text: 'b' },
+    { k: 'assistant', blocks: [{ t: 'tool_use', id: 's', name: 'WebSearch', input: { query: 'rust tokio' } }] },
+    { k: 'tool_result', tool_use_id: 's', content: 'Tokio docs https://tokio.rs/\nOld https://old.example/x' },
+    { k: 'assistant', blocks: [{ t: 'tool_use', id: 'r', name: 'Read', input: { file_path: 'C:\pics\a.png' } }, { t: 'text', text: '参考 https://tokio.rs/' }] },
+  ];
+  const r = conversationResources(items);
+  assert.deepEqual(
+    r.map((x) => [x.kind, x.value, x.turn]),
+    [
+      ['link', 'https://tokio.rs/', true],
+      ['image', 'C:\pics\a.png', true],
+      ['link', 'https://old.example/x', true],
+      ['search', 'rust tokio', true],
+    ],
+  );
+  assert.equal(r[0].title, '');
 });

@@ -943,6 +943,9 @@ impl Instances {
 
     /// 启动类型对应的命令行（含“全部权限”参数）；普通终端为 None。
     fn launch_command(&self, row: &InstanceRow) -> Option<String> {
+        if self.codex_app_mode(row) {
+            return None;
+        }
         let cmd = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
         match self.chat_settings(row) {
             Some(settings) => Some(with_chat(row, &cmd, &settings, None)),
@@ -960,12 +963,10 @@ impl Instances {
                 Some(settings) => format!("{}{fork}", with_chat_hooks(&base, &row.id, &settings, Some(&r.id))),
                 None => format!("{base} --resume {}{fork}", r.id),
             }),
+            // 对话模式由 app-server 接着（见 gateway 的新建），终端里是 shell
+            "codex" if self.codex_app_mode(row) => None,
             "codex" => {
                 let sub = if r.fork { "fork" } else { "resume" };
-                // 对话界面：照样带看看的 profile 和 --no-daemon
-                if self.chat_settings(row).is_some() {
-                    return Some(crate::chat::codex_launch::with_chat_sub(&base, &row.id, sub, &r.id));
-                }
                 let flags = base.strip_prefix("codex").unwrap_or("").trim();
                 Some(format!("codex {sub}{}{} {}", if flags.is_empty() { "" } else { " " }, flags, r.id))
             }
@@ -974,17 +975,17 @@ impl Instances {
         }
     }
 
-    /// 带对话界面的终端：hooks 配置文件（Claude Code 的 `--settings` 文件、Codex 的 profile；顺便确保它已经写好）。
-    /// 不是这类终端时为 None。
+    /// 对话模式的 Codex：对话由看看通过 `codex app-server` 驱动，终端里是同一个工作目录下的普通 shell。
+    pub fn codex_app_mode(&self, row: &InstanceRow) -> bool {
+        row.launch == "codex" && self.opts(&row.id).chat_ui && matches!(self.backend, Backend::Tmux(_)) && self.container(&row.id).is_none()
+    }
+
+    /// 带对话界面的 Claude Code：hooks 配置文件（`--settings` 用；顺便确保它已经写好）。不是这类终端时为 None。
     fn chat_settings(&self, row: &InstanceRow) -> Option<PathBuf> {
-        if !has_chat(&row.launch) || !self.opts(&row.id).chat_ui || !matches!(self.backend, Backend::Tmux(_)) {
+        if row.launch != "claude" || !self.opts(&row.id).chat_ui || !matches!(self.backend, Backend::Tmux(_)) {
             return None;
         }
-        let written = match row.launch.as_str() {
-            "codex" => crate::chat::codex_launch::ensure_profile(&self.paths),
-            _ => crate::chat::hooks::ensure_settings(&self.paths),
-        };
-        match written {
+        match crate::chat::hooks::ensure_settings(&self.paths) {
             Ok(p) => Some(p),
             Err(e) => {
                 tracing::warn!(error = %e, launch = %row.launch, "无法写入对话界面的 hooks 配置，按普通方式启动");
@@ -1376,10 +1377,7 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
 /// 环境变量用 POSIX 写法，PowerShell / cmd 由 shells.rs 改成各自的写法。
 /// 对话界面的启动命令：Claude Code 加 `--settings`，Codex 选用看看的 profile。
 fn with_chat(row: &InstanceRow, cmd: &str, settings: &Path, resume: Option<&str>) -> String {
-    match row.launch.as_str() {
-        "codex" => crate::chat::codex_launch::with_chat(cmd, &row.id, resume),
-        _ => with_chat_hooks(cmd, &row.id, settings, resume),
-    }
+    with_chat_hooks(cmd, &row.id, settings, resume)
 }
 
 /// 程序换成完整路径：

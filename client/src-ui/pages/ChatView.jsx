@@ -18,6 +18,7 @@ import {
   FileText,
   GitBranch,
   Globe,
+  Image as ImageIcon,
   Layers,
   ListTodo,
   LoaderCircle,
@@ -39,6 +40,7 @@ import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
 import {
+  CODEX_COMMANDS,
   COMMANDS,
   EFFORTS,
   EMPTY,
@@ -47,6 +49,7 @@ import {
   applyEvent,
   backgroundCounts,
   chatRows,
+  conversationResources,
   contentText,
   diffLines,
   diffStat,
@@ -83,10 +86,9 @@ function useT(name) {
   return { t: useCallback((key, opts) => t(key, { agent, ...opts }), [t, agent]) };
 }
 
-/** Codex 屏幕上的 “• Working (12s • esc to interrupt)” → 正在工作（12 秒） */
+/** Codex（app-server）：`thinking` → 正在思考；其余是正在运行的命令，原样显示 */
 function activityText(t, activity) {
-  const m = /\bWorking \((\d+)s\b/.exec(activity ?? '');
-  return m ? t('chat.codex_working', { s: m[1] }) : activity;
+  return activity === 'thinking' ? t('chat.codex_thinking') : activity;
 }
 
 /** 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。 */
@@ -666,13 +668,22 @@ function PendingCard({ id, pending, active }) {
       <>
         {pending.tool === 'Bash' ? (
           <Pre text={`$ ${input.command ?? ''}`} className="cmd" />
+        ) : pending.tool === 'apply_patch' && Array.isArray(input.changes) ? (
+          // Codex 要改文件：列出文件，展开看改动
+          <>
+            <button type="button" className="chat-tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+              {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+              <span className="chat-tool-sum ellipsis">{input.changes.length === 1 ? input.changes[0].path : t('chat.patch_files', { n: input.changes.length })}</span>
+            </button>
+            {open && <Pre text={input.changes.map((c) => `${c.path}\n${c.diff ?? ''}`).join('\n')} />}
+          </>
         ) : (
           <button type="button" className="chat-tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
             {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
             <span className="chat-tool-sum ellipsis">{toolSummary(pending.tool, input) || t('chat.details')}</span>
           </button>
         )}
-        {(open || (diff && diff.length <= 40)) && (diff ? <DiffView lines={diff} /> : <Pre text={JSON.stringify(input, null, 2)} />)}
+        {pending.tool !== 'apply_patch' && (open || (diff && diff.length <= 40)) && (diff ? <DiffView lines={diff} /> : <Pre text={JSON.stringify(input, null, 2)} />)}
         {input.description && <p className="chat-note">{input.description}</p>}
         <div className="chat-acts">
           <Button busy={busy} onClick={() => answer('allow')}>
@@ -746,7 +757,7 @@ function TuiDialog({ id, dialog }) {
       setBusy(false);
     }
   };
-  const choose = () => send({ index: pick, title: dialog.title });
+  const choose = () => send({ index: pick, title: dialog.title, label: dialog.options[pick]?.label ?? '' });
   const cancel = () => send({});
   const onKey = (e) => {
     if (e.key === 'Escape') {
@@ -770,7 +781,7 @@ function TuiDialog({ id, dialog }) {
             <div className="chat-dialog-opts" role="radiogroup">
               {dialog.options.map((o, n) => (
                 // eslint-disable-next-line react/no-array-index-key -- 选项按位置对应 TUI 里的顺序
-                <button key={n} type="button" className="chat-opt" role="radio" aria-checked={pick === n} onClick={() => setPick(n)} onDoubleClick={() => send({ index: n, title: dialog.title })}>
+                <button key={n} type="button" className="chat-opt" role="radio" aria-checked={pick === n} onClick={() => setPick(n)} onDoubleClick={() => send({ index: n, title: dialog.title, label: o.label })}>
                   <span className="chat-opt-dot" aria-hidden="true" />
                   <span className="chat-opt-text">
                     <b>
@@ -979,9 +990,8 @@ function ContextRing({ used, window: win, onClick }) {
 
 function Composer({ id, status, phase, touch, models, usage, onAction }) {
   const { t } = useT();
-  // 权限模式、模型、思考强度、上下文用量是按 Claude Code 的命令、状态栏和 transcript 做的
+  // 权限模式只有 Claude Code 有；模型、思考强度、上下文用量按工具的能力（caps）显示
   const { id: agentId, caps } = useContext(AgentCtx);
-  const isClaude = agentId === 'claude';
   const toast = useToast();
   const [text, setText] = useState('');
   const [files, setFiles] = useState([]);
@@ -1073,7 +1083,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
     } else if (slash.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       e.preventDefault();
       setSlashPick((p) => ((p ?? -1) + (e.key === 'ArrowDown' ? 1 : -1) + slash.length) % slash.length);
-    } else if (e.key === 'Tab' && e.shiftKey && !text) {
+    } else if (e.key === 'Tab' && e.shiftKey && !text && caps.mode !== false) {
       // 和 Claude Code 一样：Shift+Tab 轮换权限模式
       e.preventDefault();
       const i = MODE_CHOICES.indexOf(status?.mode);
@@ -1094,7 +1104,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
   const slash = useMemo(() => {
     if (!wantSlash) return [];
     const q = text.toLowerCase();
-    const builtin = COMMANDS.map(([name, action]) => ({ name, action, description: t(`chat.cmd.${name.slice(1)}`) }));
+    const builtin = COMMANDS.filter(([name]) => agentId !== 'codex' || CODEX_COMMANDS.includes(name)).map(([name, action]) => ({ name, action, description: t(`chat.cmd.${name.slice(1)}`) }));
     const names = new Set([...builtin.map((c) => c.name), ...TERMINAL_ONLY]);
     const mine = (custom ?? []).filter((c) => !names.has(c.name));
     const all = [...builtin, ...mine];
@@ -1177,7 +1187,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
           <button type="button" className="btn btn-plain btn-icon" onClick={() => picker.current?.click()} disabled={disabled || caps.images === false} aria-label={t('chat.attach')} title={caps.images === false ? t('chat.no_images') : t('chat.attach')}>
             <Plus size={18} />
           </button>
-          {isClaude && (
+          {caps.mode !== false && (
           <button type="button" className={`btn btn-plain chat-chip chat-chip-mode`} data-mode={status?.mode ?? ''} data-pop-anchor="" aria-expanded={menu === 'mode'} disabled={!ready} onClick={() => setMenu(menu === 'mode' ? null : 'mode')} title={t('chat.mode_pick')}>
             <ShieldCheck size={14} aria-hidden="true" />
             <span className="ellipsis">{modeText}</span>
@@ -1185,7 +1195,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
           </button>
           )}
           <span className="grow" />
-          {isClaude && (
+          {caps.models !== false && (
           <button
             type="button"
             className="btn btn-plain chat-chip"
@@ -1201,7 +1211,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
             <ChevronDown size={13} aria-hidden="true" />
           </button>
           )}
-          {isClaude && <ContextRing used={status?.context} window={usage?.window} onClick={() => onAction('usage')} />}
+          {caps.usage !== false && <ContextRing used={status?.context} window={usage?.window} onClick={() => onAction('usage')} />}
           {showStop ? (
             <button type="button" className="btn btn-icon chat-send chat-stop" onClick={stop} aria-label={t('chat.stop')} title={t('chat.stop_hint')}>
               <Square size={14} fill="currentColor" />
@@ -1282,10 +1292,10 @@ function Detached({ id, status }) {
       {reason === 'starting' && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
       <b>{t(`chat.detached_${reason}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
       <p className="muted">{t(`chat.detached_${reason}_body`, { defaultValue: '' })}</p>
-      {(reason === 'not_running' || reason === 'ended') && (
+      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server') && (
         <div className="chat-acts">
           <Button busy={busy} onClick={relaunch}>
-            {t(status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
+            {t(reason === 'app_server' ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
           </Button>
         </div>
       )}
@@ -1596,6 +1606,7 @@ const resetText = (t, iso) => {
 
 function UsageTab({ id, status, onCompact }) {
   const { t } = useT();
+  const { name: agentName } = useContext(AgentCtx);
   const { data, error } = usePoll(`/instances/${id}/chat/usage`, { deps: [status?.context, status?.actual_model] });
   if (!data) return error ? <p className="chat-note">{errorText(t, error)}</p> : <LoaderCircle size={16} className="spin" />;
   const used = data.context ?? 0;
@@ -1615,14 +1626,30 @@ function UsageTab({ id, status, onCompact }) {
         <dd>{tokens(data.totals?.output)}</dd>
         {data.version && (
           <>
-            <dt>Claude Code</dt>
+            <dt>{agentName}</dt>
             <dd>{data.version}</dd>
           </>
         )}
       </dl>
+      {lim?.account && (
+        <dl className="chat-kv">
+          <dt>{t('chat.usage_account')}</dt>
+          <dd className="ellipsis" title={lim.account.email ?? ''}>
+            {lim.account.email ?? lim.account.type ?? '—'}
+          </dd>
+          {(lim.account.plan || lim.plan) && (
+            <>
+              <dt>{t('chat.usage_plan')}</dt>
+              <dd>{lim.account.plan || lim.plan}</dd>
+            </>
+          )}
+        </dl>
+      )}
       {lim?.five_hour && <Meter label={t('chat.usage_5h')} value={lim.five_hour.used} sub={resetText(t, lim.five_hour.resets_at)} />}
       {lim?.seven_day && <Meter label={t('chat.usage_7d')} value={lim.seven_day.used} sub={resetText(t, lim.seven_day.resets_at)} />}
-      {lim && <p className="chat-note">{t('chat.usage_limits_note')}</p>}
+      {lim?.reached && <p className="chat-note chat-warn">{t('chat.usage_reached')}</p>}
+      {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{t(lim.account ? 'chat.usage_limits_note_codex' : 'chat.usage_limits_note')}</p>}
+      {lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: duration(Date.now() - lim.fetched_at) })}</p>}
       <Button variant="secondary" onClick={onCompact} disabled={status?.phase !== 'idle' || !used}>
         {t('chat.usage_compact')}
       </Button>
@@ -1679,9 +1706,41 @@ function ConfigTab({ id }) {
 
 const SIDE_TABS = ['changes', 'tasks', 'usage', 'config'];
 
+const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
+
+/** Codex 对话里用到的网页、搜索、图片（从已经载入的对话条目里找，最近的在前） */
+function ResourcesTab({ items }) {
+  const { t } = useT();
+  const list = useMemo(() => conversationResources(items), [items]);
+  if (!list.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
+  return (
+    <ul className="chat-rules chat-res">
+      {list.map((r) => {
+        const Icon = RES_ICONS[r.kind] ?? Globe;
+        return (
+          <li key={`${r.kind}:${r.value}`}>
+            <Icon size={14} aria-hidden="true" />
+            {r.kind === 'link' ? (
+              <a className="ellipsis" href={r.value} target="_blank" rel="noopener noreferrer" title={r.value}>
+                {r.title || r.value}
+              </a>
+            ) : (
+              <code className="ellipsis" title={r.value}>
+                {r.value}
+              </code>
+            )}
+            <span className="chat-note">{t(r.turn ? 'chat.res_this_turn' : `chat.res_${r.kind}`)}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact }) {
   const { t } = useT();
-  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : ['changes'];
+  // 资源栏先只给 Codex
+  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : ['changes', 'resources', 'usage'];
   const bg = backgroundCounts(status);
   const running = (bg.subagent ?? 0) + (bg.shell ?? 0);
   return (
@@ -1704,6 +1763,7 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
         {tab === 'tasks' && <TasksTab id={id} />}
         {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
         {tab === 'config' && <ConfigTab id={id} />}
+        {tab === 'resources' && <ResourcesTab items={items} />}
       </div>
     </aside>
   );
@@ -1876,7 +1936,6 @@ export default function ChatView({ id, active, touch, onTab }) {
   const { status, items } = chat;
   const agentId = status?.agent ?? 'claude';
   const agentName = AGENT_NAMES[agentId] ?? AGENT_NAMES.claude;
-  const isClaude = agentId === 'claude';
   const { t } = useT(agentName);
   const caps = status?.caps;
   const agentCtx = useMemo(() => ({ id: agentId, name: agentName, caps: caps ?? {} }), [agentId, agentName, caps]);
@@ -1898,8 +1957,8 @@ export default function ChatView({ id, active, touch, onTab }) {
   }, []);
   // 模型菜单的选项、上下文窗口：模型变了重新取
   const modelKey = `${status?.actual_model ?? ''}|${status?.model ?? ''}|${phase === 'detached'}`;
-  const { data: models } = usePoll(`/instances/${id}/chat/models`, { enabled: isClaude && status != null && phase !== 'detached', deps: [modelKey] });
-  const { data: usage } = usePoll(`/instances/${id}/chat/usage`, { enabled: isClaude && status != null, deps: [status?.actual_model] });
+  const { data: models } = usePoll(`/instances/${id}/chat/models`, { enabled: caps?.models !== false && status != null && phase !== 'detached', deps: [modelKey] });
+  const { data: usage } = usePoll(`/instances/${id}/chat/usage`, { enabled: caps?.usage !== false && status != null, deps: [status?.actual_model, status?.context] });
   const prev = useRef(phase);
   useAttention(id, phase, status?.pending?.kind, prev, bg.shell ?? 0, agentName);
   useEffect(() => {

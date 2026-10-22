@@ -71,11 +71,6 @@ impl Agent {
     }
 }
 
-/// Codex 的配置目录（`$CODEX_HOME`，默认 `~/.codex`）
-pub fn codex_home() -> PathBuf {
-    Agent::Codex.dir()
-}
-
 fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }

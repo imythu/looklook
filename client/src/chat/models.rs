@@ -269,9 +269,12 @@ pub fn limits(ctx: &Ctx) -> Value {
     if c["accountUuid"].is_null() || c["accountUuid"] != state["oauthAccount"]["accountUuid"] {
         return Value::Null;
     }
+    // 这份缓存只在 Claude Code 查用量时更新，可能是几天前的：已经过了重置时间的窗口不再显示（数字早就不对了）
+    let now = time::OffsetDateTime::now_utc();
     let pick = |k: &str| {
         let u = &c["utilization"][k];
-        if u["utilization"].is_number() {
+        let expired = u["resets_at"].as_str().and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()).is_some_and(|t| t <= now);
+        if u["utilization"].is_number() && !expired {
             serde_json::json!({ "used": u["utilization"], "resets_at": u["resets_at"] })
         } else {
             Value::Null

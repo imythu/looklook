@@ -1535,6 +1535,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-files-list .ellipsis { flex: 1; min-width: 0; }
 .chat-rules li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--line); }
 .chat-rules li code { flex: 1; min-width: 0; font: 12.5px var(--mono); }
+.chat-res li > svg { flex: none; color: var(--muted); }
+.chat-res li > a { flex: 1; min-width: 0; color: var(--brand); text-decoration: none; }
+.chat-res li > a:hover { text-decoration: underline; }
 .chat-rules li b { flex: 1; min-width: 0; font-weight: 500; }
 .chat-rules .chat-note { margin: 0; flex: none; }
 .chat-rules li[data-kind="deny"] .badge { color: var(--danger); }

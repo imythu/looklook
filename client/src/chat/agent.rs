@@ -210,7 +210,7 @@ impl Agent for Claude {
     }
 
     fn caps(&self) -> Value {
-        json!({ "allow_session": true, "allow_dirs": true, "images": true, "plan": true, "questions": true })
+        json!({ "allow_session": true, "allow_dirs": true, "images": true, "plan": true, "questions": true, "models": true, "usage": true, "mode": true })
     }
 }
 
@@ -244,22 +244,17 @@ impl Agent for Codex {
         super::codex_screen::live(capture)
     }
 
-    /// Codex 的提问、计划确认走不走 PermissionRequest 还没验证（docs/CODEX_UI.md S7），先都当作普通审批
-    fn pending_kind(&self, _tool: &str) -> &'static str {
-        "permission"
+    fn pending_kind(&self, tool: &str) -> &'static str {
+        if tool == "AskUserQuestion" {
+            "question"
+        } else {
+            "permission"
+        }
     }
 
-    /// 答复格式和 Claude 一样（S0 实测：allow 照办；deny 照办，message 会转给模型）。
-    /// “本会话都允许”“允许访问目录”Codex 认不认还没验证（S4），界面上不显示（见 caps）。
-    fn decision(&self, _p: &PendingView, _kind: &str, req: &PermissionAnswer) -> Result<Value, LocalError> {
-        Ok(match req.decision.as_str() {
-            "allow" => json!({ "behavior": "allow" }),
-            "deny" => {
-                let msg = req.message.as_deref().map(str::trim).filter(|m| !m.is_empty()).unwrap_or("The user denied this in the Looklook chat view.");
-                json!({ "behavior": "deny", "message": msg.chars().take(2000).collect::<String>() })
-            }
-            _ => return Err(LocalError::invalid("decision", "invalid")),
-        })
+    /// app-server 请求的答复（见 `codex_chat::decision`）
+    fn decision(&self, p: &PendingView, kind: &str, req: &PermissionAnswer) -> Result<Value, LocalError> {
+        super::codex_chat::decision(p.tool, kind, p.input, req)
     }
 
     fn plan_check(&self, _choice: u8) -> Option<(&'static [&'static str], &'static str)> {
@@ -271,8 +266,9 @@ impl Agent for Codex {
         json!([])
     }
 
+    /// 走 app-server：能选模型、看账号用量、“本会话都允许”、提问、发图片；没有权限模式和计划确认框
     fn caps(&self) -> Value {
-        json!({ "allow_session": false, "allow_dirs": false, "images": false, "plan": false, "questions": false })
+        json!({ "allow_session": true, "allow_dirs": false, "images": true, "plan": false, "questions": true, "models": true, "usage": true, "mode": false })
     }
 
     /// 子代理的 hook 可能带着它自己的 rollout（S11 未验证），只认主线的开始和用户发消息
@@ -288,10 +284,6 @@ impl Agent for Codex {
         &["codex"]
     }
 
-    /// 对话模式的 Codex 带着 `-p looklook-chat` 启动；手动在终端里开的、开启对话界面之前就在运行的没有
-    fn launched_with_hooks(&self, args: &[String]) -> Option<bool> {
-        Some(args.windows(2).any(|w| matches!(w[0].as_str(), "-p" | "--profile") && w[1] == super::codex_launch::PROFILE))
-    }
 
     fn dialog(&self, capture: &str) -> Option<screen::Dialog> {
         super::codex_screen::dialog(capture)
@@ -332,18 +324,12 @@ mod tests {
         assert!(!c.valid_transcript(Path::new("/home/a/.codex/sessions/2026/10/18/other.jsonl")));
         assert!(!c.valid_transcript(Path::new("/home/a/.claude/projects/x/s.jsonl")), "Claude 的路径不认");
         assert!(!c.valid_transcript(Path::new("/home/a/.codex/sessions/2026/10/../../../../etc/rollout-x.jsonl")));
-        let input = json!({ "command": "ls", "description": "why" });
-        let p = PendingView { tool: "Bash", input: &input, suggestions: &Value::Null };
-        let ans = |d: &str| PermissionAnswer { id: 1, decision: d.into(), message: Some("别建".into()), answers: None };
-        assert_eq!(c.decision(&p, "permission", &ans("allow")).unwrap(), json!({ "behavior": "allow" }));
-        assert_eq!(c.decision(&p, "permission", &ans("deny")).unwrap(), json!({ "behavior": "deny", "message": "别建" }));
-        assert!(c.decision(&p, "permission", &ans("allow_session")).is_err(), "还没验证，不答");
+        let p = PendingView { tool: "Bash", input: &Value::Null, suggestions: &Value::Null };
+        let ans = |d: &str| PermissionAnswer { id: 1, decision: d.into(), message: None, answers: None };
+        assert_eq!(c.decision(&p, "permission", &ans("allow")).unwrap(), json!({ "decision": "accept" }));
+        assert_eq!(c.decision(&p, "permission", &ans("deny")).unwrap(), json!({ "decision": "decline" }));
         assert!(c.plan_check(1).is_none());
-        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(c.launched_with_hooks(&args(&["codex.exe", "--no-daemon", "-p", "looklook-chat", "--yolo"])), Some(true));
-        assert_eq!(c.launched_with_hooks(&args(&["codex.exe", "resume", "--profile", "looklook-chat", "x"])), Some(true));
-        assert_eq!(c.launched_with_hooks(&args(&["codex.exe", "--yolo"])), Some(false));
-        assert_eq!(Claude.launched_with_hooks(&args(&["claude"])), None);
+        assert_eq!(c.pending_kind("AskUserQuestion"), "question");
     }
 
     #[test]

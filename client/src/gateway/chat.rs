@@ -204,13 +204,16 @@ pub struct DialogReq {
     index: Option<usize>,
     #[serde(default)]
     title: String,
+    /// 选的那一项的文字（标题对不上时按它核对）
+    #[serde(default)]
+    label: String,
 }
 
 /// TUI 上的选择框：选一项或取消
 pub async fn dialog(State(app): State<App>, Path(id): Path<String>, Json(req): Json<DialogReq>) -> R<StatusCode> {
     require_allowed(&app)?;
     match req.index {
-        Some(i) => app.chat.dialog_choose(&id, &req.title, i).await?,
+        Some(i) => app.chat.dialog_choose(&id, &req.title, &req.label, i).await?,
         None => app.chat.dialog_cancel(&id).await?,
     }
     Ok(StatusCode::NO_CONTENT)
