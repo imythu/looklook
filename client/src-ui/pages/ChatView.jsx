@@ -366,13 +366,19 @@ function useCopyLink() {
 function GenFigure({ id, name, caption }) {
   const { t } = useT();
   const copy = useCopyLink();
+  const src = useGenSrc(genFileUrl(id, name));
   return (
     <figure className="chat-gen-fig">
-      <GenImage url={genFileUrl(id, name)} name={name} />
+      <GenImage src={src} name={name} />
       <figcaption className="chat-gen-acts">
         <span className="chat-note ellipsis" title={caption || name}>
           {caption || name}
         </span>
+        {src && (
+          <a className="btn btn-plain btn-sm" href={src} target="_blank" rel="noopener noreferrer">
+            {t('chat.res_open')}
+          </a>
+        )}
         <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(genFileUrl(id, name))}>
           {t('chat.res_copy')}
         </button>
@@ -1767,8 +1773,8 @@ const SIDE_TABS = ['changes', 'tasks', 'usage', 'config'];
 
 const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
 
-/** 对话生成的图片：本机直接用地址，远程（经 WebRTC 转发）先取成 blob */
-function GenImage({ url, name }) {
+/** 对话生成的图片的显示地址：本机直接用接口地址，远程（经 WebRTC 转发）先取成 blob */
+function useGenSrc(url) {
   const [src, setSrc] = useState(plainLinksWork() ? `/api${url}` : null);
   useEffect(() => {
     if (plainLinksWork()) return undefined;
@@ -1786,9 +1792,13 @@ function GenImage({ url, name }) {
       if (made) URL.revokeObjectURL(made);
     };
   }, [url]);
+  return src;
+}
+
+function GenImage({ src, name }) {
   return src ? (
     <a href={src} target="_blank" rel="noopener noreferrer" title={name}>
-      <img src={src} alt={name} loading="lazy" />
+      <img src={src} alt={name} />
     </a>
   ) : (
     <span className="chat-gen-wait">
