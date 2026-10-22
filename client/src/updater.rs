@@ -4,7 +4,7 @@
 //! - 手动更新：用户在管理台点“更新”后才下载。安装包来自平台 `/updates/latest` 给出的地址，校验大小与 SHA-256，
 //!   解压到数据目录的 `updates/`，然后逐个替换安装目录里的文件：旧文件先改名为 `*.old`（运行中的程序也能改名），
 //!   新文件写好再改名到位；中途出错就把改名的文件挪回去。会话保持程序例外，见 `backup_name`。
-//! - 重启：由 systemd（`INVOCATION_ID`）或 launchd（`XPC_SERVICE_NAME`）管着时以非零状态退出，让它们用新文件拉起；
+//! - 重启：由 systemd（`INVOCATION_ID`）或带 `KeepAlive` 的 launchd 登录项（`XPC_SERVICE_NAME`）管着时以非零状态退出，让它们用新文件拉起；
 //!   否则（Windows 托盘、手动运行）先启动新版本再退出，新版本等旧进程释放单实例锁后接手。
 //!   终端里的会话（looklook-mux）不受影响，新版本启动后自动接回。
 //! - 提醒：界面显示角标/横幅；用户关掉后同一个版本不再提醒（记在本机数据库，手机和电脑上都一样），有更新的版本时再提醒。
@@ -706,7 +706,19 @@ pub fn restart_requested() -> bool {
 
 /// 被系统服务管理器管着（它会在非零退出后用新文件重新拉起）。
 fn supervised() -> bool {
-    std::env::var_os("INVOCATION_ID").is_some() || std::env::var("XPC_SERVICE_NAME").is_ok_and(|v| v.contains("looklook"))
+    std::env::var_os("INVOCATION_ID").is_some() || launchd_keeps_alive()
+}
+
+/// macOS：只有安装脚本的登录项（Label `com.looklook.client`，带 `KeepAlive`）会在非零退出后重新拉起。
+/// 从访达/程序坞打开的应用 `XPC_SERVICE_NAME` 是 `application.com.looklook.client.…`，桌面应用自己写的登录项
+/// 也没有 `KeepAlive`：这两种情况退出后没人拉起，要自己启动新版本（用户报告：Mac 上手动更新后没有重启）。
+fn launchd_keeps_alive() -> bool {
+    const LABEL: &str = "com.looklook.client";
+    if std::env::var("XPC_SERVICE_NAME").ok().as_deref() != Some(LABEL) {
+        return false;
+    }
+    let plist = dirs::home_dir().map(|h| h.join("Library/LaunchAgents").join(format!("{LABEL}.plist")));
+    plist.and_then(|p| std::fs::read_to_string(p).ok()).is_some_and(|s| s.contains("KeepAlive"))
 }
 
 /// 更新后重启（run() 收尾完成后调用，不返回）。
