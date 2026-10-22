@@ -872,7 +872,7 @@ fn preview_type(ext: &str) -> &'static str {
 }
 
 /// `attachment; filename="<ASCII 近似>"; filename*=UTF-8''<百分号编码>`（RFC 6266 / RFC 5987）
-fn content_disposition(name: &str) -> String {
+pub fn content_disposition(name: &str) -> String {
     let ascii: String = name.chars().map(|c| if c.is_ascii_graphic() && c != '"' && c != '\\' || c == ' ' { c } else { '_' }).collect();
     let mut enc = String::new();
     for b in name.bytes() {

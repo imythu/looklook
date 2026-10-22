@@ -38,7 +38,7 @@ import {
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { api } from '../shared/api.js';
+import { api, fetchRaw, plainLinksWork } from '../shared/api.js';
 import {
   CODEX_COMMANDS,
   COMMANDS,
@@ -1708,13 +1708,91 @@ const SIDE_TABS = ['changes', 'tasks', 'usage', 'config'];
 
 const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
 
-/** Codex 对话里用到的网页、搜索、图片（从已经载入的对话条目里找，最近的在前） */
-function ResourcesTab({ items }) {
+/** 对话生成的图片：本机直接用地址，远程（经 WebRTC 转发）先取成 blob */
+function GenImage({ url, name }) {
+  const [src, setSrc] = useState(plainLinksWork() ? `/api${url}` : null);
+  useEffect(() => {
+    if (plainLinksWork()) return undefined;
+    let alive = true;
+    let made = null;
+    fetchRaw(url)
+      .then((r) => r.blob())
+      .then((b) => {
+        made = URL.createObjectURL(b);
+        if (alive) setSrc(made);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+      if (made) URL.revokeObjectURL(made);
+    };
+  }, [url]);
+  return src ? (
+    <a href={src} target="_blank" rel="noopener noreferrer" title={name}>
+      <img src={src} alt={name} loading="lazy" />
+    </a>
+  ) : (
+    <span className="chat-gen-wait">
+      <LoaderCircle size={16} className="spin" />
+    </span>
+  );
+}
+
+/**
+ * Codex 对话的“资源”栏：上面是这段对话生成的图片（每张有自己的地址，可以打开、复制链接、下载），
+ * 下面是对话里用到的网页、搜索、看过的图片（从已经载入的对话条目里找，最近的在前）。
+ */
+function ResourcesTab({ id, items }) {
   const { t } = useT();
+  const toast = useToast();
   const list = useMemo(() => conversationResources(items), [items]);
-  if (!list.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
+  const { data } = usePoll(`/instances/${id}/chat/files`, { deps: [items.length] });
+  const files = data?.items ?? [];
+  const fileUrl = (name, dl) => `/instances/${id}/chat/file?name=${encodeURIComponent(name)}${dl ? '&download=1' : ''}`;
+  const copy = async (name) => {
+    try {
+      await navigator.clipboard.writeText(new URL(`/api${fileUrl(name)}`, window.location.href).href);
+      toast(t('chat.res_copied'));
+    } catch {
+      toast(t('chat.res_copy_failed'), 'error');
+    }
+  };
+  if (!list.length && !files.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
   return (
-    <ul className="chat-rules chat-res">
+    <>
+      {files.length > 0 && (
+        <>
+          <h4 className="chat-side-title">
+            <ImageIcon size={15} aria-hidden="true" /> {t('chat.res_generated', { n: files.length })}
+          </h4>
+          <ul className="chat-gen">
+            {files.map((f) => (
+              <li key={f.name}>
+                <GenImage url={fileUrl(f.name)} name={f.name} />
+                <div className="chat-gen-acts">
+                  <span className="chat-note ellipsis" title={f.path}>
+                    {f.name}
+                  </span>
+                  <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(f.name)}>
+                    {t('chat.res_copy')}
+                  </button>
+                  {plainLinksWork() && (
+                    <a className="btn btn-plain btn-sm" href={`/api${fileUrl(f.name, true)}`} download={f.name}>
+                      {t('chat.res_download')}
+                    </a>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {list.length > 0 && files.length > 0 && (
+        <h4 className="chat-side-title">
+          <Globe size={15} aria-hidden="true" /> {t('chat.res_used')}
+        </h4>
+      )}
+      <ul className="chat-rules chat-res">
       {list.map((r) => {
         const Icon = RES_ICONS[r.kind] ?? Globe;
         return (
@@ -1733,7 +1811,8 @@ function ResourcesTab({ items }) {
           </li>
         );
       })}
-    </ul>
+      </ul>
+    </>
   );
 }
 
@@ -1763,7 +1842,7 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
         {tab === 'tasks' && <TasksTab id={id} />}
         {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
         {tab === 'config' && <ConfigTab id={id} />}
-        {tab === 'resources' && <ResourcesTab items={items} />}
+        {tab === 'resources' && <ResourcesTab id={id} items={items} />}
       </div>
     </aside>
   );

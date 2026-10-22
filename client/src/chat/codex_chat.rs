@@ -645,6 +645,50 @@ impl Chat {
         Ok(json!({ "model": st.actual_model.clone().or(st.model.clone()), "context": st.context, "window": st.codex.window, "totals": totals, "limits": limits, "version": st.version }))
     }
 
+    /// 这段对话里 Codex 生成的图片（`$CODEX_HOME/generated_images/<会话>/`），最新的在前。
+    /// 界面用 `/api/instances/<终端>/chat/file?name=<文件名>` 取（完整内容，可以直接放进 `<img>`、复制链接、下载）。
+    pub(super) fn codex_files(&self, id: &str) -> Value {
+        let inst = self.inst(id);
+        let Some(thread) = lock(&inst.st).binding.as_ref().map(|b| b.session_id.clone()) else { return json!({ "items": [] }) };
+        if !crate::history::valid_id(&thread) {
+            return json!({ "items": [] });
+        }
+        let dir = crate::agents::codex_home().join("generated_images").join(&thread);
+        let mut files: Vec<(std::time::SystemTime, Value)> = std::fs::read_dir(&dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                let ext = p.extension()?.to_str()?.to_ascii_lowercase();
+                if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+                    return None;
+                }
+                let m = e.metadata().ok().filter(|m| m.is_file())?;
+                let t = m.modified().ok()?;
+                let ms = t.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+                Some((t, json!({ "kind": "image", "path": p.display().to_string(), "name": p.file_name()?.to_string_lossy(), "size": m.len(), "mtime_ms": ms })))
+            })
+            .collect();
+        files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
+        json!({ "items": files.into_iter().map(|(_, v)| v).take(200).collect::<Vec<_>>() })
+    }
+
+    /// 这段对话生成的某张图片的完整路径：只认 `generated_images/<会话>/` 下、名字里没有路径分隔符的图片文件
+    pub fn codex_file_path(&self, id: &str, name: &str) -> Option<PathBuf> {
+        let ok_name = !name.is_empty() && name.len() <= 200 && !name.contains(['/', '\\', ':']) && !name.starts_with('.');
+        let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
+        if !ok_name || !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+            return None;
+        }
+        let thread = lock(&self.inst(id).st).binding.as_ref().map(|b| b.session_id.clone())?;
+        if !crate::history::valid_id(&thread) {
+            return None;
+        }
+        let p = crate::agents::codex_home().join("generated_images").join(thread).join(name);
+        p.is_file().then_some(p)
+    }
+
     /// 从“以前的对话”接着、或者迁移时：直接记下要接着的会话（记录文件路径在加载时由 app-server 给）
     pub fn codex_bind(&self, id: &str, thread: &str) {
         let b = Binding { session_id: thread.to_string(), transcript_path: PathBuf::new() };

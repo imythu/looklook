@@ -1188,6 +1188,24 @@ impl Chat {
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
     }
 
+    /// 对话生成的文件（目前只有 Codex 生成的图片）
+    pub fn files(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Ok(json!({ "items": [] }));
+        }
+        Ok(tokio::task::block_in_place(|| self.codex_files(id)))
+    }
+
+    /// 对话生成的某个文件的路径（`files` 列出的那些）
+    pub fn file_path(&self, id: &str, name: &str) -> Result<PathBuf, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Err(LocalError::not_found());
+        }
+        self.codex_file_path(id, name).ok_or_else(LocalError::not_found)
+    }
+
     /// 权限规则和 MCP 服务器（只读）
     pub fn config(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;

@@ -188,6 +188,40 @@ pub async fn usage(State(app): State<App>, Path(id): Path<String>) -> R<Json<Val
     Ok(Json(app.chat.usage(&id).await?))
 }
 
+/// 对话生成的文件（Codex 生成的图片）
+pub async fn files(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.files(&id)?))
+}
+
+#[derive(Deserialize)]
+pub struct FileQ {
+    name: String,
+    /// 1：作为附件下载
+    #[serde(default)]
+    download: Option<u8>,
+}
+
+/// `GET /api/instances/{id}/chat/file?name=`：对话生成的图片（完整内容，按图片类型返回，可以直接放进 `<img>`）
+pub async fn file(State(app): State<App>, Path(id): Path<String>, Query(q): Query<FileQ>) -> R<Response> {
+    use axum::http::header;
+    let path = app.chat.file_path(&id, &q.name)?;
+    let bytes = tokio::fs::read(&path).await.map_err(|_| LocalError::not_found())?;
+    let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("webp") => "image/webp",
+        Some("gif") => "image/gif",
+        _ => "image/png",
+    };
+    let mut res = (StatusCode::OK, [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=86400")], bytes).into_response();
+    res.headers_mut().insert("x-content-type-options", axum::http::HeaderValue::from_static("nosniff"));
+    if q.download == Some(1) {
+        if let Ok(v) = crate::transfer::content_disposition(&q.name).parse() {
+            res.headers_mut().insert(header::CONTENT_DISPOSITION, v);
+        }
+    }
+    Ok(res)
+}
+
 /// 权限规则和 MCP 服务器
 pub async fn config(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     Ok(Json(app.chat.config(&id)?))

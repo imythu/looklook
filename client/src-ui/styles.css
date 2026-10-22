@@ -1538,6 +1538,12 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-res li > svg { flex: none; color: var(--muted); }
 .chat-res li > a { flex: 1; min-width: 0; color: var(--brand); text-decoration: none; }
 .chat-res li > a:hover { text-decoration: underline; }
+.chat-gen { list-style: none; margin: 0 0 14px; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.chat-gen li { display: flex; flex-direction: column; gap: 6px; }
+.chat-gen img { display: block; width: 100%; max-height: 320px; object-fit: contain; border-radius: var(--radius-sm); border: 1px solid var(--line); background: var(--panel-2); }
+.chat-gen-wait { display: grid; place-items: center; height: 120px; border-radius: var(--radius-sm); border: 1px solid var(--line); color: var(--muted); }
+.chat-gen-acts { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.chat-gen-acts > .chat-note { flex: 1; min-width: 0; }
 .chat-rules li b { flex: 1; min-width: 0; font-weight: 500; }
 .chat-rules .chat-note { margin: 0; flex: none; }
 .chat-rules li[data-kind="deny"] .badge { color: var(--danger); }

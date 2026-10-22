@@ -1498,11 +1498,17 @@
     "usage_fetched": "Updated {{ago}} ago",
     "usage_stale": "Claude Code last checked usage {{ago}} ago and the limits have reset since, so those numbers are out of date. Run /usage in the terminal to refresh.",
     "side_resources": "Resources",
-    "res_empty": "No web pages, searches or images in this conversation yet.",
+    "res_empty": "No generated images, web pages or searches in this conversation yet.",
     "res_this_turn": "This turn",
     "res_link": "Web",
     "res_search": "Search",
-    "res_image": "Image"
+    "res_image": "Image",
+    "res_generated": "Generated images ({{n}})",
+    "res_used": "Web pages and searches",
+    "res_copy": "Copy link",
+    "res_copied": "Link copied",
+    "res_copy_failed": "Couldn't copy: the browser blocked clipboard access",
+    "res_download": "Download"
   },
   "sess": {
     "new": "New session",

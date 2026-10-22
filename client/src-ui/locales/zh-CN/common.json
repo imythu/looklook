@@ -1498,11 +1498,17 @@
     "usage_fetched": "{{ago}}前更新",
     "usage_stale": "Claude Code 上次查用量是{{ago}}前，额度已经重置过，这份数字不准了。在终端里运行 /usage 可以刷新。",
     "side_resources": "资源",
-    "res_empty": "这段对话里还没有用到网页、搜索或图片。",
+    "res_empty": "这段对话里还没有生成图片，也没有用到网页或搜索。",
     "res_this_turn": "这一轮",
     "res_link": "网页",
     "res_search": "搜索",
-    "res_image": "图片"
+    "res_image": "图片",
+    "res_generated": "生成的图片（{{n}}）",
+    "res_used": "用到的网页和搜索",
+    "res_copy": "复制链接",
+    "res_copied": "链接已复制",
+    "res_copy_failed": "没能复制，浏览器不允许访问剪贴板",
+    "res_download": "下载"
   },
   "sess": {
     "new": "新会话",
