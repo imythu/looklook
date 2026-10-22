@@ -824,7 +824,7 @@ impl Instances {
         {
             cmd.creation_flags(CREATE_NO_WINDOW);
         }
-        let child = cmd.spawn().map_err(|e| LocalError::new("START_FAILED").with("detail", e.to_string()))?;
+        let child = spawn_ttyd(cmd).await.map_err(|e| LocalError::new("START_FAILED").with("detail", e.to_string()))?;
         if let Some(pid) = child.id() {
             let _ = std::fs::write(self.paths.instance_pid(&row.id), pid.to_string());
         }
@@ -1613,6 +1613,41 @@ pub fn log_tail(path: &Path) -> String {
     lines.into_iter().rev().collect::<Vec<_>>().join("\n")
 }
 
+/// 启动 ttyd。Linux 上在一条常驻线程里启动：`PR_SET_PDEATHSIG` 跟的是创建子进程的**线程**而不是整个进程，
+/// 在 tokio 的工作线程上启动的话，那条线程一退出（`block_in_place` 之后它变成阻塞线程，空闲 10 秒就退出）
+/// 同一线程启动的 ttyd 就都收到 SIGTERM，所有终端一起断开。
+#[cfg(target_os = "linux")]
+async fn spawn_ttyd(mut cmd: Command) -> std::io::Result<Child> {
+    type Job = (Command, tokio::sync::oneshot::Sender<std::io::Result<Child>>);
+    static SPAWNER: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    let tx = SPAWNER.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::Builder::new()
+            .name("ttyd-spawner".into())
+            .spawn(move || {
+                // tokio 的 Child 要在运行时里创建（等待子进程退出靠运行时的信号驱动）
+                let _g = rt.enter();
+                for (mut cmd, reply) in rx {
+                    let _ = reply.send(cmd.spawn());
+                }
+            })
+            .expect("ttyd-spawner");
+        tx
+    });
+    let (reply, got) = tokio::sync::oneshot::channel();
+    if let Err(std::sync::mpsc::SendError((c, _))) = tx.send((cmd, reply)) {
+        cmd = c;
+        return cmd.spawn();
+    }
+    got.await.unwrap_or_else(|_| Err(std::io::Error::other("ttyd-spawner 线程已退出")))
+}
+
+#[cfg(not(target_os = "linux"))]
+async fn spawn_ttyd(mut cmd: Command) -> std::io::Result<Child> {
+    cmd.spawn()
+}
+
 /// 上次运行遗留的 ttyd（客户端被强制结束）：只结束确实是终端服务的进程（新名 looklook-term，旧版为 ttyd）。
 fn kill_stale(pid_file: &Path) {
     let Some(pid) = std::fs::read_to_string(pid_file).ok().and_then(|s| s.trim().parse::<u32>().ok()) else { return };
@@ -1651,6 +1686,32 @@ fn process_name(pid: u32) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    /// 启动 ttyd 的线程退出后 ttyd 不能跟着收到 SIGTERM（PR_SET_PDEATHSIG 跟的是线程）。
+    #[cfg(target_os = "linux")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn ttyd_survives_the_spawning_thread() {
+        let rt = tokio::runtime::Handle::current();
+        let mut child = std::thread::spawn(move || {
+            rt.block_on(async {
+                let mut cmd = Command::new("sleep");
+                cmd.arg("30").kill_on_drop(true);
+                unsafe {
+                    cmd.pre_exec(|| {
+                        libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                        Ok(())
+                    });
+                }
+                spawn_ttyd(cmd).await.unwrap()
+            })
+        })
+        .join()
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(child.try_wait().unwrap().is_none(), "启动它的线程退出后子进程被结束了");
+    }
+
     #[test]
     fn pane_titles_from_agents() {
         assert_eq!(super::clean_pane_title("✳ 修登录页", "box").as_deref(), Some("修登录页"));
@@ -1661,8 +1722,6 @@ mod tests {
         }
         assert_eq!(super::clip_title(&"字".repeat(100)).chars().count(), 80);
     }
-
-    use super::*;
 
     #[test]
     fn tmux_session_marker() {
