@@ -142,6 +142,8 @@ struct State {
     dialog: Option<screen::Dialog>,
     /// Codex（app-server）的这一轮、上下文窗口、累计 token
     codex: codex_chat::CodexSt,
+    /// 连续几次抓屏都认不出输入框、也读不出选择框（重绘、缩放到一半时会抓到这种半截屏幕）
+    odd_screens: u8,
 }
 
 /// 推给界面的事件
@@ -293,6 +295,7 @@ impl Chat {
                         title: None,
                         dialog: None,
                         codex: Default::default(),
+                        odd_screens: 0,
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
@@ -715,6 +718,9 @@ impl Chat {
                 if scr == Screen::Modal {
                     st.dialog = capture.as_deref().and_then(|c| inst.agent.dialog(c));
                 }
+                // 读不出来的界面要连着看到两次才算：只看到一次多半是正在重绘，弹出“在等你选择”过一会儿又自己消失
+                let odd = scr == Screen::Modal && st.dialog.is_none() && st.phase != Phase::Tui;
+                st.odd_screens = if odd { st.odd_screens.saturating_add(1) } else { 0 };
                 match (st.phase, scr) {
                     // 确认框已经不在了（在终端里按了 Esc 或选了“否”：这两种都没有 hook）。
                     // Codex 要等 hook 答复之后才在 TUI 上弹确认框，挂起时屏幕上本来就是输入框，不能据此放掉
@@ -725,6 +731,7 @@ impl Chat {
                     (Phase::Approval, _) => {}
                     (_, Screen::Modal) if st.phase == Phase::Tui => {}
                     (Phase::Running, Screen::Modal) if !quiet => {}
+                    (_, Screen::Modal) if st.odd_screens == 1 => {}
                     (_, Screen::Modal) => Self::set_phase(inst, &mut st, Phase::Tui, None),
                     (_, Screen::Input { .. }) if !attached => Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached")),
                     (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),

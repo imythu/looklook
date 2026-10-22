@@ -28,7 +28,9 @@ pub async fn ui(uri: Uri) -> Response {
 }
 
 pub async fn term_js() -> Response {
-    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], TERM_JS).into_response()
+    // 脚本里有只针对 Windows（psmux）的处理，按本机系统打开。
+    let js = if cfg!(windows) { format!("window.__llHostWindows=true;\n{TERM_JS}") } else { TERM_JS.to_string() };
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], js).into_response()
 }
 
 pub async fn font(State(app): State<App>, Path(path): Path<String>) -> Response {

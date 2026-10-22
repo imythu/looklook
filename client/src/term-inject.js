@@ -267,6 +267,7 @@
         socket = ws;
         var nativeSend = ws.send;
         ws.send = function (data) {
+          if (bareMotion(data)) return;
           if (data instanceof Uint8Array && data[0] === 0x30) lastLocal = Date.now();
           return nativeSend.call(ws, withMods(data));
         };
@@ -389,6 +390,18 @@
     }
     return m.alt ? '\x1b' + out : out;
   }
+  // Windows 上的会话保持程序 psmux 开着“鼠标移动也上报”（1003），浏览器里鼠标一动就发一串 ESC[<35;列;行M。
+  // 这串字节经 ConPTY 交给 psmux 时偶尔被拆开（网络卡顿后积压的一批一起到），ESC 被当成单独的 Esc 键，
+  // 剩下的 [<35;45;31M 作为文字打进 Codex 等程序的输入框。Windows 上不发没按键的鼠标移动：
+  // 滚轮、点击、拖选（按着键移动）照常上报，只是程序里的悬停效果没有了。
+  var HOST_WIN = window.__llHostWindows === true;
+  var MOTION = /^0\x1b\[<(\d+);\d+;\d+M$/;
+  function bareMotion(data) {
+    if (!HOST_WIN || !(data instanceof Uint8Array) || data[0] !== 0x30 || data.length > 24 || data[1] !== 0x1b) return false;
+    var m = MOTION.exec(new TextDecoder().decode(data));
+    return Boolean(m && (m[1] & 35) === 35);
+  }
+
   // ttyd 发送输入的格式：'0' + UTF-8 文本。只改单个字符（输入法一次上屏多个字时原样发送）。
   function withMods(data) {
     var box;
