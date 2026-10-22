@@ -93,6 +93,7 @@ function useT(name) {
 
 /** Codex（app-server）：`thinking` → 正在思考；其余是正在运行的命令，原样显示 */
 function activityText(t, activity) {
+  if (activity === 'compacting') return t('chat.compacting');
   return activity === 'thinking' ? t('chat.codex_thinking') : activity;
 }
 
@@ -1103,13 +1104,15 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
     // 第一次发消息时（有用户操作）申请通知权限：需要确认、做完了在后台也能知道
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission().catch?.(() => {});
     setSending(true);
+    // 先清空输入框（斜杠命令也一样）；没送出去时再放回来，不丢用户打的字
+    setText('');
     try {
       const r = await api.post(`/instances/${id}/chat/input`, { text: body, images });
-      setText('');
       files.forEach((f) => URL.revokeObjectURL(f.url));
       setFiles([]);
       if (r?.delivered === false) toast(t('chat.not_delivered'), 'error');
     } catch (e) {
+      setText((cur) => cur || body);
       toast(errorText(t, e), 'error');
     } finally {
       setSending(false);

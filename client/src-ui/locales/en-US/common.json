@@ -1510,7 +1510,8 @@
     "imagegen": "Generated an image",
     "res_open": "View full size",
     "res_made": "Files it produced ({{n}})",
-    "side_toggle_codex": "Changes, resources and usage"
+    "side_toggle_codex": "Changes, resources and usage",
+    "compacting": "Compacting the conversation…"
   },
   "sess": {
     "new": "New session",

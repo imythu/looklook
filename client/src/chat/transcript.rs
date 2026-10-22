@@ -92,6 +92,8 @@ struct Rec {
     uuid: Option<String>,
     parent: Option<String>,
     sidechain: bool,
+    /// 压缩分界（`compact_boundary`）：它的 `logicalParentUuid` 有时指向文件里没有的记录
+    boundary: bool,
     /// assistant 记录的 `message.id`（同一次回复的多行共用）
     message_id: Option<String>,
     items: Vec<Item>,
@@ -362,7 +364,13 @@ impl Transcript {
                 break;
             }
             chain.push(i);
-            cur = self.recs[i].parent.as_ref().and_then(|p| self.by_uuid.get(p)).copied();
+            let rec = &self.recs[i];
+            cur = rec.parent.as_ref().and_then(|p| self.by_uuid.get(p)).copied();
+            // 压缩分界指向的前一条记录不在文件里（实测 2.1.30x 的自动压缩会这样）：接到分界之前写下的最后一条主线记录，
+            // 不然压缩前的对话在界面上整个消失
+            if cur.is_none() && rec.boundary {
+                cur = self.recs[..i].iter().rposition(|r| r.uuid.is_some() && (self.sidechain || !r.sidechain));
+            }
         }
         chain.reverse();
         let chain = self.with_parallel_results(chain);
@@ -441,6 +449,7 @@ impl Transcript {
         let mut rec = Rec {
             parent: v["parentUuid"].as_str().or_else(|| v["logicalParentUuid"].as_str()).map(String::from),
             sidechain: v["isSidechain"].as_bool().unwrap_or(false) && !self.sidechain,
+            boundary: v["subtype"] == "compact_boundary",
             ..Default::default()
         };
         let ts = v["timestamp"].as_str().map(String::from);
@@ -852,6 +861,19 @@ mod tests {
         let mut s = user("u1", None, json!("记住暗号"));
         s += &assistant("a1", "u1", "m1", json!({"type":"text","text":"好的"}));
         s += &line(json!({"type":"system","subtype":"compact_boundary","uuid":"c1","parentUuid":null,"logicalParentUuid":"a1","content":"Conversation compacted"}));
+        s += &line(json!({"type":"user","uuid":"s1","parentUuid":"c1","isCompactSummary":true,"message":{"content":"摘要……"}}));
+        s += &user("u2", Some("s1"), json!("暗号是什么"));
+        t.feed(s.as_bytes());
+        assert_eq!(kinds(&t), ["user", "assistant", "divider", "summary", "user"]);
+    }
+
+    #[test]
+    fn compaction_with_missing_logical_parent_keeps_history() {
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("记住暗号"));
+        s += &assistant("a1", "u1", "m1", json!({"type":"text","text":"好的"}));
+        // 指向一条文件里没有的记录
+        s += &line(json!({"type":"system","subtype":"compact_boundary","uuid":"c1","parentUuid":null,"logicalParentUuid":"gone","content":"Conversation compacted"}));
         s += &line(json!({"type":"user","uuid":"s1","parentUuid":"c1","isCompactSummary":true,"message":{"content":"摘要……"}}));
         s += &user("u2", Some("s1"), json!("暗号是什么"));
         t.feed(s.as_bytes());

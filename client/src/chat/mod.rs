@@ -54,6 +54,8 @@ const TYPE_GAP: Duration = Duration::from_millis(30);
 pub const PASTE_ABOVE: usize = 8_000;
 /// 运行中多久没有 hook 就去看一眼屏幕（Esc 中断没有任何 hook）
 const QUIET: Duration = Duration::from_secs(3);
+/// 压缩上下文最多按这么久算“运行中”
+const COMPACT_MAX: Duration = Duration::from_secs(600);
 /// claude 在运行却一直没有 SessionStart：没带 hooks 启动，或者 hooks 被用户配置关掉了
 const ATTACH_GRACE: Duration = Duration::from_secs(10);
 
@@ -145,6 +147,8 @@ struct State {
     codex: codex_chat::CodexSt,
     /// 连续几次抓屏都认不出输入框、也读不出选择框（重绘、缩放到一半时会抓到这种半截屏幕）
     odd_screens: u8,
+    /// 正在压缩上下文（PreCompact 到 PostCompact）：这期间屏幕上的转圈认不出来，不能按屏幕改成空闲
+    compacting: Option<Instant>,
 }
 
 /// 推给界面的事件
@@ -297,6 +301,7 @@ impl Chat {
                         dialog: None,
                         codex: Default::default(),
                         odd_screens: 0,
+                        compacting: None,
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
@@ -429,6 +434,7 @@ impl Chat {
                 }
                 "SessionEnd" => {
                     Self::drop_pending(&mut st);
+                    st.compacting = None;
                     st.agents.clear();
                     Self::set_phase(&inst, &mut st, Phase::Detached, Some("ended"));
                 }
@@ -455,10 +461,12 @@ impl Chat {
                 // Codex 有 Interrupt（Esc 中断）；Claude Code 没有，靠抓屏
                 "Stop" | "Interrupt" => {
                     Self::drop_pending(&mut st);
+                    st.compacting = None;
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                 }
                 "StopFailure" => {
                     Self::drop_pending(&mut st);
+                    st.compacting = None;
                     st.error = ev["error"].as_str().or_else(|| ev["message"].as_str()).map(|s| s.chars().take(500).collect());
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                     Self::emit_status(&inst, &st);
@@ -490,8 +498,22 @@ impl Chat {
                     if st.phase != Phase::Approval {
                         Self::set_phase(&inst, &mut st, Phase::Running, None);
                     }
+                    if name == "PreCompact" {
+                        st.compacting = Some(Instant::now());
+                        st.live.activity = Some("compacting".into());
+                        Self::emit_status(&inst, &st);
+                    }
                 }
-                "PostCompact" if ev["trigger"] == "manual" => Self::set_phase(&inst, &mut st, Phase::Idle, None),
+                "PostCompact" => {
+                    st.compacting = None;
+                    // 手动压缩（/compact）做完就空闲了；自动压缩发生在一轮当中，接着跑
+                    if ev["trigger"] == "manual" {
+                        Self::set_phase(&inst, &mut st, Phase::Idle, None);
+                    } else if st.live.activity.as_deref() == Some("compacting") {
+                        st.live.activity = None;
+                        Self::emit_status(&inst, &st);
+                    }
+                }
                 _ => {}
             }
             rebound
@@ -735,6 +757,8 @@ impl Chat {
                     (_, Screen::Modal) if st.odd_screens == 1 => {}
                     (_, Screen::Modal) => Self::set_phase(inst, &mut st, Phase::Tui, None),
                     (_, Screen::Input { .. }) if !attached => Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached")),
+                    // 压缩中（最多算 10 分钟，防止丢了 PostCompact 一直卡着）
+                    (Phase::Running, Screen::Input { .. }) if st.compacting.is_some_and(|t| t.elapsed() < COMPACT_MAX) => {}
                     (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),
                     (Phase::Running, Screen::Input { .. }) => {}
                     (_, Screen::Input { busy, .. }) => Self::set_phase(inst, &mut st, if busy { Phase::Running } else { Phase::Idle }, None),
@@ -759,7 +783,10 @@ impl Chat {
                 }
                 // 运行中：把屏幕上正在输出的内容推给界面（transcript 要等整段写完才有）
                 if st.phase == Phase::Running {
-                    let live = capture.as_deref().map(|c| inst.agent.live(c)).unwrap_or_default();
+                    let mut live = capture.as_deref().map(|c| inst.agent.live(c)).unwrap_or_default();
+                    if st.compacting.is_some() && live.activity.is_none() {
+                        live.activity = Some("compacting".into());
+                    }
                     if live != st.live {
                         st.live = live;
                         Self::emit_status(inst, &st);
@@ -875,7 +902,8 @@ impl Chat {
         }
         tokio::time::sleep(Duration::from_millis(80)).await;
         self.instances.send_keys(id, &["Enter"]).await?;
-        if !hooked {
+        // 斜杠命令（/clear、/new、/compact……）不会有 UserPromptSubmit：不等、不补按回车（补按会把下一条也送出去）
+        if !hooked || text.starts_with('/') {
             return Ok(json!({ "delivered": null }));
         }
         if tokio::time::timeout(inst.agent.delivery_wait(), prompts.changed()).await.is_ok() {

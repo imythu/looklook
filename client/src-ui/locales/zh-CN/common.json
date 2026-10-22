@@ -1510,7 +1510,8 @@
     "imagegen": "生成了图片",
     "res_open": "查看原图",
     "res_made": "产出的文件（{{n}}）",
-    "side_toggle_codex": "改动、资源和用量"
+    "side_toggle_codex": "改动、资源和用量",
+    "compacting": "正在压缩上下文…"
   },
   "sess": {
     "new": "新会话",
