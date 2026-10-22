@@ -1836,7 +1836,7 @@ function ResourcesTab({ id, items }) {
               return (
                 <li key={a.path}>
                   <Icon size={14} aria-hidden="true" />
-                  <a className="ellipsis" href={artifactUrl(id, a.path, !a.viewable)} target="_blank" rel="noopener noreferrer" title={a.path}>
+                  <a className="ellipsis" href={artifactUrl(id, a.path, !a.viewable)} {...(a.viewable ? { target: '_blank', rel: 'noopener noreferrer' } : { download: a.name })} title={a.path}>
                     {a.name}
                   </a>
                   <a className="btn btn-plain btn-sm" href={artifactUrl(id, a.path, true)} download={a.name}>

@@ -140,7 +140,8 @@ pub fn find(texts: &[String], workdir: &Path, skip: &[PathBuf]) -> Vec<(PathBuf,
     found
 }
 
-/// 打开时怎么返回：(Content-Type, 能不能在浏览器里直接看)。网页、SVG、代码一类按纯文本给看源码；其余只能下载
+/// 打开时怎么返回：(Content-Type, 能不能在浏览器里直接看)。网页、SVG、代码一类按纯文本给看源码；
+/// PDF 和其余的直接下载（手机上转到浏览器的 PDF 页面不好用）
 pub fn content_type(path: &Path) -> (&'static str, bool) {
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_default();
     match ext.as_str() {
@@ -149,7 +150,7 @@ pub fn content_type(path: &Path) -> (&'static str, bool) {
         "gif" => ("image/gif", true),
         "webp" => ("image/webp", true),
         "bmp" => ("image/bmp", true),
-        "pdf" => ("application/pdf", true),
+        "pdf" => ("application/pdf", false),
         "mp4" | "m4v" => ("video/mp4", true),
         "webm" => ("video/webm", true),
         "mov" => ("video/quicktime", true),
@@ -223,5 +224,6 @@ mod tests {
         assert_eq!(content_type(Path::new("a.html")), ("text/plain; charset=utf-8", true), "网页只给看源码");
         assert_eq!(content_type(Path::new("a.zip")).1, false);
         assert_eq!(kind(Path::new("a.mp4")), "video");
+        assert_eq!(content_type(Path::new("a.pdf")), ("application/pdf", false), "PDF 直接下载");
     }
 }

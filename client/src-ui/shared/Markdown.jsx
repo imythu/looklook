@@ -87,9 +87,14 @@ export default function Markdown({ text, imageUrl, links }) {
             const href = node.getAttribute('href') ?? '';
             if (node.getAttribute('data-file') === '1' && href.startsWith('/api/')) {
               node.removeAttribute('data-file');
-              node.setAttribute('target', '_blank');
-              node.setAttribute('rel', 'noopener noreferrer');
               node.setAttribute('class', 'md-file');
+              // 要下载的（PDF 等）直接下载，不开新标签页；能看的在新标签页里打开
+              if (href.includes('&download=1')) {
+                node.setAttribute('download', '');
+              } else {
+                node.setAttribute('target', '_blank');
+                node.setAttribute('rel', 'noopener noreferrer');
+              }
             } else if (EXTERNAL.test(href)) {
               node.setAttribute('target', '_blank');
               node.setAttribute('rel', 'noopener noreferrer');
