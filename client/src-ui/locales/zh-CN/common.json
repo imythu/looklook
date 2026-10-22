@@ -1494,7 +1494,15 @@
     "detached_app_server_body": "看看用 `codex app-server` 驱动对话。确认这台电脑装了 Codex 并且已经登录，然后点下面的按钮重试。",
     "relaunch_app_server": "重试",
     "patch_files": "要修改 {{n}} 个文件",
-    "codex_thinking": "正在思考"
+    "codex_thinking": "正在思考",
+    "usage_fetched": "{{ago}}前更新",
+    "usage_stale": "Claude Code 上次查用量是{{ago}}前，额度已经重置过，这份数字不准了。在终端里运行 /usage 可以刷新。",
+    "side_resources": "资源",
+    "res_empty": "这段对话里还没有用到网页、搜索或图片。",
+    "res_this_turn": "这一轮",
+    "res_link": "网页",
+    "res_search": "搜索",
+    "res_image": "图片"
   },
   "sess": {
     "new": "新会话",

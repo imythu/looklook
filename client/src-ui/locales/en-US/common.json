@@ -1494,7 +1494,15 @@
     "detached_app_server_body": "Looklook drives the chat through `codex app-server`. Make sure Codex is installed and signed in on this computer, then try again.",
     "relaunch_app_server": "Try again",
     "patch_files": "Wants to change {{n}} files",
-    "codex_thinking": "Thinking"
+    "codex_thinking": "Thinking",
+    "usage_fetched": "Updated {{ago}} ago",
+    "usage_stale": "Claude Code last checked usage {{ago}} ago and the limits have reset since, so those numbers are out of date. Run /usage in the terminal to refresh.",
+    "side_resources": "Resources",
+    "res_empty": "No web pages, searches or images in this conversation yet.",
+    "res_this_turn": "This turn",
+    "res_link": "Web",
+    "res_search": "Search",
+    "res_image": "Image"
   },
   "sess": {
     "new": "New session",

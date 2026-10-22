@@ -399,3 +399,43 @@ export function duration(ms) {
   if (m < 60) return `${m}m${String(s % 60).padStart(2, '0')}s`;
   return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, '0')}m`;
 }
+
+const URL_RE = /https?:\/\/[^\s<>"'`()[\]{}]+/g;
+const IMAGE_RE = /\.(png|jpe?g|gif|webp|bmp|svg)$/i;
+
+/**
+ * 对话里用到的资源（Codex 的“资源”栏）：网页链接、联网搜索、看过的图片。最近的在前，同一个只列一次。
+ * `turn`：出现在最近一轮（最后一条用户消息之后）时为 true。
+ */
+export function conversationResources(items) {
+  const lastUser = items.map((i) => i.k).lastIndexOf('user');
+  const out = [];
+  const seen = new Set();
+  const add = (kind, value, n, title) => {
+    const v = String(value ?? '').trim().replace(/[.,;:!?。，；：！？]+$/, '');
+    if (!v || seen.has(`${kind}:${v}`)) return;
+    seen.add(`${kind}:${v}`);
+    out.push({ kind, value: v, title: title || '', turn: n > lastUser });
+  };
+  const links = (text, n) => {
+    for (const m of String(text ?? '').match(URL_RE) ?? []) add('link', m, n);
+  };
+  for (let n = items.length - 1; n >= 0; n -= 1) {
+    const it = items[n];
+    if (it.k === 'tool_result') {
+      // 搜索结果是“标题 网址”一行一条
+      for (const line of String(it.content ?? '').split('\n')) {
+        const m = line.match(URL_RE);
+        if (m) add('link', m[0], n, line.replace(m[0], '').trim());
+      }
+    } else if (it.k === 'assistant') {
+      for (const b of [...(it.blocks ?? [])].reverse()) {
+        if (b.t === 'text') links(b.text, n);
+        else if (b.t === 'tool_use' && b.name === 'WebSearch') add('search', b.input?.query, n);
+        else if (b.t === 'tool_use' && b.name === 'Read' && IMAGE_RE.test(b.input?.file_path ?? '')) add('image', b.input.file_path, n);
+        else if (b.t === 'tool_use') links(JSON.stringify(b.input ?? {}), n);
+      }
+    }
+  }
+  return out;
+}

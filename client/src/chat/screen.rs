@@ -552,6 +552,27 @@ mod tests {
     }
 
     #[test]
+    fn resume_dialog_parsed() {
+        // Claude Code 2.1.306 接着很久没动的长对话时
+        let cap = "
+ Resume this conversation?
+
+ This conversation has been inactive for 13h 54m and is 433.3k tokens long. Resuming it will use about 8% of your
+ 5-hour usage limit.
+
+ ❯ 1. Resume
+   2. Start a new conversation  Claude can look this one up if you refer to it later
+
+ Enter to confirm · Esc to cancel
+";
+        let d = dialog(cap).expect("dialog");
+        assert_eq!(d.title, "Resume this conversation?");
+        assert_eq!(d.options.len(), 2);
+        assert_eq!(d.options[0].label, "Resume");
+        assert_eq!(d.selected, 0);
+    }
+
+    #[test]
     fn dialogs_parsed() {
         let permission = format!("● Creating empty file\n  ⎿  $ touch x\n{RULE}\n Bash command\n\n   touch x\n   Create file\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again for touch commands in /tmp\n   3. No\n\n Esc to cancel · Tab to amend\n");
         let d = dialog(&permission).unwrap();

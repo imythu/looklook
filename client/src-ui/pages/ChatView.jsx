@@ -18,6 +18,7 @@ import {
   FileText,
   GitBranch,
   Globe,
+  Image as ImageIcon,
   Layers,
   ListTodo,
   LoaderCircle,
@@ -48,6 +49,7 @@ import {
   applyEvent,
   backgroundCounts,
   chatRows,
+  conversationResources,
   contentText,
   diffLines,
   diffStat,
@@ -755,7 +757,7 @@ function TuiDialog({ id, dialog }) {
       setBusy(false);
     }
   };
-  const choose = () => send({ index: pick, title: dialog.title });
+  const choose = () => send({ index: pick, title: dialog.title, label: dialog.options[pick]?.label ?? '' });
   const cancel = () => send({});
   const onKey = (e) => {
     if (e.key === 'Escape') {
@@ -779,7 +781,7 @@ function TuiDialog({ id, dialog }) {
             <div className="chat-dialog-opts" role="radiogroup">
               {dialog.options.map((o, n) => (
                 // eslint-disable-next-line react/no-array-index-key -- 选项按位置对应 TUI 里的顺序
-                <button key={n} type="button" className="chat-opt" role="radio" aria-checked={pick === n} onClick={() => setPick(n)} onDoubleClick={() => send({ index: n, title: dialog.title })}>
+                <button key={n} type="button" className="chat-opt" role="radio" aria-checked={pick === n} onClick={() => setPick(n)} onDoubleClick={() => send({ index: n, title: dialog.title, label: o.label })}>
                   <span className="chat-opt-dot" aria-hidden="true" />
                   <span className="chat-opt-text">
                     <b>
@@ -1647,6 +1649,7 @@ function UsageTab({ id, status, onCompact }) {
       {lim?.seven_day && <Meter label={t('chat.usage_7d')} value={lim.seven_day.used} sub={resetText(t, lim.seven_day.resets_at)} />}
       {lim?.reached && <p className="chat-note chat-warn">{t('chat.usage_reached')}</p>}
       {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{t(lim.account ? 'chat.usage_limits_note_codex' : 'chat.usage_limits_note')}</p>}
+      {lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: duration(Date.now() - lim.fetched_at) })}</p>}
       <Button variant="secondary" onClick={onCompact} disabled={status?.phase !== 'idle' || !used}>
         {t('chat.usage_compact')}
       </Button>
@@ -1703,9 +1706,41 @@ function ConfigTab({ id }) {
 
 const SIDE_TABS = ['changes', 'tasks', 'usage', 'config'];
 
+const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
+
+/** Codex 对话里用到的网页、搜索、图片（从已经载入的对话条目里找，最近的在前） */
+function ResourcesTab({ items }) {
+  const { t } = useT();
+  const list = useMemo(() => conversationResources(items), [items]);
+  if (!list.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
+  return (
+    <ul className="chat-rules chat-res">
+      {list.map((r) => {
+        const Icon = RES_ICONS[r.kind] ?? Globe;
+        return (
+          <li key={`${r.kind}:${r.value}`}>
+            <Icon size={14} aria-hidden="true" />
+            {r.kind === 'link' ? (
+              <a className="ellipsis" href={r.value} target="_blank" rel="noopener noreferrer" title={r.value}>
+                {r.title || r.value}
+              </a>
+            ) : (
+              <code className="ellipsis" title={r.value}>
+                {r.value}
+              </code>
+            )}
+            <span className="chat-note">{t(r.turn ? 'chat.res_this_turn' : `chat.res_${r.kind}`)}</span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact }) {
   const { t } = useT();
-  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : ['changes', 'usage'];
+  // 资源栏先只给 Codex
+  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : ['changes', 'resources', 'usage'];
   const bg = backgroundCounts(status);
   const running = (bg.subagent ?? 0) + (bg.shell ?? 0);
   return (
@@ -1728,6 +1763,7 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
         {tab === 'tasks' && <TasksTab id={id} />}
         {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
         {tab === 'config' && <ConfigTab id={id} />}
+        {tab === 'resources' && <ResourcesTab items={items} />}
       </div>
     </aside>
   );

@@ -1235,11 +1235,14 @@ impl Chat {
     // ---------------- TUI 上的选择框 ----------------
 
     /// 在界面上选了选择框的第 `index` 项：再抓一次屏，标题和选项数都对得上才按方向键移过去、回车。
-    pub async fn dialog_choose(&self, id: &str, title: &str, index: usize) -> Result<(), LocalError> {
+    pub async fn dialog_choose(&self, id: &str, title: &str, label: &str, index: usize) -> Result<(), LocalError> {
         self.require(id)?;
         let agent = self.inst(id).agent;
         let d = self.instances.screen(id).await.as_deref().and_then(|c| agent.dialog(c)).ok_or_else(|| LocalError::new("CHAT_SCREEN_CHANGED"))?;
-        if d.title != title || index >= d.options.len() {
+        // 标题是从选项往上找的第一行文字，说明里的时间、重绘时的折行都会让它和界面上看到的不一样；
+        // 选项文字稳定得多：标题对不上时，只要这一项还是界面上选的那一项就照选
+        let same_option = !label.is_empty() && d.options.get(index).is_some_and(|o| o.label == label);
+        if index >= d.options.len() || (d.title != title && !same_option) {
             return Err(LocalError::new("CHAT_SCREEN_CHANGED"));
         }
         let key = if index > d.selected { "Down" } else { "Up" };
