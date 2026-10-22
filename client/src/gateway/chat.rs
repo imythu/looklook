@@ -222,6 +222,44 @@ pub async fn file(State(app): State<App>, Path(id): Path<String>, Query(q): Quer
     Ok(res)
 }
 
+/// 对话产出的文件（Codex 新建、改过、提到过的本机文件）
+pub async fn artifacts(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.artifacts(&id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct ArtifactQ {
+    path: String,
+    #[serde(default)]
+    download: Option<u8>,
+}
+
+/// `GET /api/instances/{id}/chat/artifact?path=`：这段对话产出的某个文件。图片、PDF、音视频按类型返回，
+/// 网页、代码这类按纯文本返回（加 `sandbox`，不会在管理台的源上运行），其余（和 `download=1`）作为附件下载。
+pub async fn artifact(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ArtifactQ>) -> R<Response> {
+    use axum::http::{header, HeaderValue};
+    let path = app.chat.artifact_path(&id, &q.path).await?;
+    let f = tokio::fs::File::open(&path).await.map_err(|_| LocalError::not_found())?;
+    let len = f.metadata().await.map(|m| m.len()).unwrap_or(0);
+    let (mime, viewable) = crate::chat::codex_artifacts::content_type(&path);
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "file".into());
+    let mut res = axum::body::Body::from_stream(tokio_util::io::ReaderStream::with_capacity(f, 64 * 1024)).into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static(mime));
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(len));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("private, no-cache"));
+    if mime.starts_with("text/") {
+        h.insert(header::CONTENT_SECURITY_POLICY, HeaderValue::from_static("sandbox"));
+    }
+    if !viewable || q.download == Some(1) {
+        if let Ok(v) = crate::transfer::content_disposition(&name).parse() {
+            h.insert(header::CONTENT_DISPOSITION, v);
+        }
+    }
+    Ok(res)
+}
+
 /// 权限规则和 MCP 服务器
 pub async fn config(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     Ok(Json(app.chat.config(&id)?))

@@ -41,6 +41,8 @@ pub struct Hub {
     patches: Mutex<HashMap<String, Value>>,
     models: Mutex<Option<(Instant, Value)>>,
     limits: Mutex<Option<(Instant, Value)>>,
+    /// 每个终端最近一次算出的“产出的文件”（取文件时核对用）
+    artifacts: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
 }
 
 /// Codex 这边每个终端多记的状态
@@ -687,6 +689,41 @@ impl Chat {
         }
         let p = crate::agents::codex_home().join("generated_images").join(thread).join(name);
         p.is_file().then_some(p)
+    }
+
+    /// 这段对话产出的文件（[`codex_artifacts`](super::codex_artifacts)），最近提到的在前
+    async fn codex_artifact_list(&self, id: &str) -> Vec<(PathBuf, Vec<String>)> {
+        let inst = self.inst(id);
+        self.poll(&inst).await;
+        let workdir = self.store.instance(id).ok().flatten().map(|r| PathBuf::from(r.workdir)).unwrap_or_default();
+        let mut texts: Vec<String> = vec![];
+        {
+            let tr = inst.tr.lock().await;
+            let Some(t) = tr.as_ref().map(super::Reader::get) else { return vec![] };
+            for it in t.items(0, t.len()).iter().rev() {
+                if let Ok(v) = serde_json::to_value(it) {
+                    super::codex_artifacts::strings(&v, &mut texts);
+                }
+            }
+        }
+        let mut skip = super::codex_artifacts::system_dirs();
+        skip.push(crate::agents::codex_home());
+        let found = tokio::task::block_in_place(|| super::codex_artifacts::find(&texts, &workdir, &skip));
+        lock(&self.codex.artifacts).insert(id.to_string(), (Instant::now(), found.iter().map(|(p, _)| p.clone()).collect()));
+        found
+    }
+
+    pub(super) async fn codex_artifacts(&self, id: &str) -> Value {
+        let found = self.codex_artifact_list(id).await;
+        json!({ "items": found.iter().map(|(p, m)| super::codex_artifacts::view(p, m)).collect::<Vec<_>>() })
+    }
+
+    /// 取某个产出的文件：只认这段对话里出现过的（一分钟内算过就用算过的，否则重算一次）
+    pub(super) async fn codex_artifact_path(&self, id: &str, path: &str) -> Option<PathBuf> {
+        let want = super::codex_artifacts::normalize(Path::new(path));
+        let known = lock(&self.codex.artifacts).get(id).filter(|(t, _)| t.elapsed() < super::codex_artifacts::TTL).is_some_and(|(_, v)| v.contains(&want));
+        let ok = known || self.codex_artifact_list(id).await.iter().any(|(p, _)| *p == want);
+        (ok && want.is_file()).then_some(want)
     }
 
     /// 从“以前的对话”接着、或者迁移时：直接记下要接着的会话（记录文件路径在加载时由 app-server 给）

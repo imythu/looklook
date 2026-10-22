@@ -13,6 +13,7 @@
 
 pub mod agent;
 pub mod codex_app;
+pub mod codex_artifacts;
 pub mod codex_chat;
 pub mod codex_compat;
 pub mod codex_launch;
@@ -1204,6 +1205,24 @@ impl Chat {
             return Ok(json!({ "items": [] }));
         }
         Ok(tokio::task::block_in_place(|| self.codex_files(id)))
+    }
+
+    /// 对话产出的文件（目前只有 Codex：新建、改过、提到过的本机文件）
+    pub async fn artifacts(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Ok(json!({ "items": [] }));
+        }
+        Ok(self.codex_artifacts(id).await)
+    }
+
+    /// 产出的某个文件的路径：只认这段对话里出现过的
+    pub async fn artifact_path(&self, id: &str, path: &str) -> Result<PathBuf, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Err(LocalError::not_found());
+        }
+        self.codex_artifact_path(id, path).await.ok_or_else(LocalError::not_found)
     }
 
     /// 对话生成的某个文件的路径（`files` 列出的那些）

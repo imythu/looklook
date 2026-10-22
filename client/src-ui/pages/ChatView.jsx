@@ -77,6 +77,11 @@ import { Button, useConfirm, useToast } from '../shared/ui.jsx';
 const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
 /** 这个对话的 AI 工具和它支持的操作（`status.caps`；老版本服务端不带 caps，就是全部可用）：界面只按它显示按钮 */
 const AgentCtx = createContext({ id: 'claude', name: AGENT_NAMES.claude, caps: {} });
+/** 这段对话产出的文件（Codex）：list 给资源栏，links（文字里的写法 → 地址）给回复里的路径变成链接 */
+const ArtifactCtx = createContext({ list: [], links: null });
+
+/** 产出的文件的地址：图片、PDF、音视频、文本直接在浏览器里看，其余下载 */
+const artifactUrl = (id, path, download) => `/api/instances/${id}/chat/artifact?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`;
 
 /** 和 useTranslation 一样，但文案里的 {{agent}} 换成这个对话的 AI 工具（`name` 给了就用它，否则看上层的 AgentCtx） */
 function useT(name) {
@@ -505,12 +510,13 @@ function ToolGroup({ id, row, results, live }) {
 /** 一串条目：assistant 回复拆成文字、思考、工具调用，连续的同类工具调用合成一组（主对话和子代理共用）。 */
 function Rows({ id, items, live }) {
   const { t } = useT();
+  const { links } = useContext(ArtifactCtx);
   const results = useMemo(() => resultsById(items), [items]);
   const rows = useMemo(() => chatRows(items, toolUseIds(items)), [items]);
   return rows.map((r) => {
     switch (r.k) {
       case 'text':
-        return <Markdown key={r.key} text={r.block.text} />;
+        return <Markdown key={r.key} text={r.block.text} links={links} />;
       case 'thinking':
         return <Thinking key={r.key} text={r.block.text} />;
       case 'tool':
@@ -1772,6 +1778,7 @@ function ConfigTab({ id }) {
 const SIDE_TABS = ['changes', 'tasks', 'usage', 'config'];
 
 const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
+const ART_ICONS = { image: ImageIcon, pdf: FileText, video: FileText, audio: FileText, text: FileText, file: FileText };
 
 /** 对话生成的图片的显示地址：本机直接用接口地址，远程（经 WebRTC 转发）先取成 blob */
 function useGenSrc(url) {
@@ -1816,7 +1823,9 @@ function ResourcesTab({ id, items }) {
   const list = useMemo(() => conversationResources(items), [items]);
   const { data } = usePoll(`/instances/${id}/chat/files`, { deps: [items.length] });
   const files = data?.items ?? [];
-  if (!list.length && !files.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
+  const made = useContext(ArtifactCtx).list;
+  const copy = useCopyLink();
+  if (!list.length && !files.length && !made.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
   return (
     <>
       {files.length > 0 && (
@@ -1833,7 +1842,33 @@ function ResourcesTab({ id, items }) {
           </ul>
         </>
       )}
-      {list.length > 0 && files.length > 0 && (
+      {made.length > 0 && (
+        <>
+          <h4 className="chat-side-title">
+            <FileText size={15} aria-hidden="true" /> {t('chat.res_made', { n: made.length })}
+          </h4>
+          <ul className="chat-rules chat-res">
+            {made.map((a) => {
+              const Icon = ART_ICONS[a.kind] ?? FileText;
+              return (
+                <li key={a.path}>
+                  <Icon size={14} aria-hidden="true" />
+                  <a className="ellipsis" href={artifactUrl(id, a.path, !a.viewable)} target="_blank" rel="noopener noreferrer" title={a.path}>
+                    {a.name}
+                  </a>
+                  <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(artifactUrl(id, a.path).replace(/^\/api/, ''))}>
+                    {t('chat.res_copy')}
+                  </button>
+                  <a className="btn btn-plain btn-sm" href={artifactUrl(id, a.path, true)} download={a.name}>
+                    {t('chat.res_download')}
+                  </a>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      )}
+      {list.length > 0 && (files.length > 0 || made.length > 0) && (
         <h4 className="chat-side-title">
           <Globe size={15} aria-hidden="true" /> {t('chat.res_used')}
         </h4>
@@ -2084,6 +2119,14 @@ export default function ChatView({ id, active, touch, onTab }) {
   const modelKey = `${status?.actual_model ?? ''}|${status?.model ?? ''}|${phase === 'detached'}`;
   const { data: models } = usePoll(`/instances/${id}/chat/models`, { enabled: caps?.models !== false && status != null && phase !== 'detached', deps: [modelKey] });
   const { data: usage } = usePoll(`/instances/${id}/chat/usage`, { enabled: caps?.usage !== false && status != null, deps: [status?.actual_model, status?.context] });
+  // 产出的文件：对话有新条目时重新取（只有 Codex 有）
+  const { data: arts } = usePoll(`/instances/${id}/chat/artifacts`, { enabled: agentId === 'codex' && status != null, deps: [items.length] });
+  const artifactCtx = useMemo(() => {
+    const list = arts?.items ?? [];
+    const links = {};
+    for (const a of list) for (const m of a.mentions ?? []) links[m] = artifactUrl(id, a.path, !a.viewable);
+    return { list, links: list.length ? links : null };
+  }, [arts, id]);
   const prev = useRef(phase);
   useAttention(id, phase, status?.pending?.kind, prev, bg.shell ?? 0, agentName);
   useEffect(() => {
@@ -2127,6 +2170,7 @@ export default function ChatView({ id, active, touch, onTab }) {
   }
   return (
     <AgentCtx.Provider value={agentCtx}>
+      <ArtifactCtx.Provider value={artifactCtx}>
     <div className="chat-view" data-side={side ? '' : undefined}>
       <div className="chat-col">
         <div className="chat-main">
@@ -2187,6 +2231,7 @@ export default function ChatView({ id, active, touch, onTab }) {
       </div>
       {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} />}
     </div>
+      </ArtifactCtx.Provider>
     </AgentCtx.Provider>
   );
 }

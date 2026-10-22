@@ -1498,7 +1498,7 @@
     "usage_fetched": "{{ago}}前更新",
     "usage_stale": "Claude Code 上次查用量是{{ago}}前，额度已经重置过，这份数字不准了。在终端里运行 /usage 可以刷新。",
     "side_resources": "资源",
-    "res_empty": "这段对话里还没有生成图片，也没有用到网页或搜索。",
+    "res_empty": "这段对话里还没有生成图片、产出文件，也没有用到网页或搜索。",
     "res_this_turn": "这一轮",
     "res_link": "网页",
     "res_search": "搜索",
@@ -1511,7 +1511,8 @@
     "res_download": "下载",
     "usage_limits_note_live": "额度是整个 Claude 账号的，和 Claude 桌面版、/usage 看到的一样（一分钟内取一次）。",
     "imagegen": "生成了图片",
-    "res_open": "查看原图"
+    "res_open": "查看原图",
+    "res_made": "产出的文件（{{n}}）"
   },
   "sess": {
     "new": "新会话",

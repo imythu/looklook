@@ -1498,7 +1498,7 @@
     "usage_fetched": "Updated {{ago}} ago",
     "usage_stale": "Claude Code last checked usage {{ago}} ago and the limits have reset since, so those numbers are out of date. Run /usage in the terminal to refresh.",
     "side_resources": "Resources",
-    "res_empty": "No generated images, web pages or searches in this conversation yet.",
+    "res_empty": "No generated images, produced files, web pages or searches in this conversation yet.",
     "res_this_turn": "This turn",
     "res_link": "Web",
     "res_search": "Search",
@@ -1511,7 +1511,8 @@
     "res_download": "Download",
     "usage_limits_note_live": "Limits are for the whole Claude account and match what the Claude app and /usage show (refreshed at most once a minute).",
     "imagegen": "Generated an image",
-    "res_open": "View full size"
+    "res_open": "View full size",
+    "res_made": "Files it produced ({{n}})"
   },
   "sess": {
     "new": "New session",
