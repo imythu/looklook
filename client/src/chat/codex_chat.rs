@@ -204,7 +204,7 @@ impl Chat {
             s.kill();
         }
         let (tx, rx) = mpsc::unbounded_channel();
-        let server = AppServer::start(program, env.as_ref(), signature, tx).await?;
+        let server = AppServer::start(&self.paths.home.join("run"), program, env.as_ref(), signature, tx).await?;
         self.codex.generation.fetch_add(1, Ordering::SeqCst);
         lock(&self.codex.threads).clear();
         *slot = Some(server.clone());
@@ -775,6 +775,39 @@ impl Chat {
         }
     }
 
+    // ---------------- 终端里的 TUI（和对话界面同步） ----------------
+
+    /// 终端标签连上之前：起好 app-server、加载好会话（还没有就建一个），这样终端里的 TUI 接的是同一个会话。
+    pub async fn codex_prepare_terminal(&self, id: &str) {
+        let r: Result<(), LocalError> = async {
+            let server = self.codex_attach(id).await?;
+            let inst = self.inst(id);
+            if lock(&inst.st).binding.is_none() {
+                self.codex_new_thread(&server, &inst).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = r {
+            tracing::warn!(id, error = ?e, "没能给终端准备好 Codex 会话");
+        }
+    }
+
+    /// 终端标签连上之后：终端里停在 shell 上（用户退出了 TUI、终端是先开的 shell）就替用户打开同一个会话的 TUI。
+    pub async fn codex_terminal_attached(self: Arc<Self>, id: String) {
+        // 等终端会话建好、刚启动的 TUI 跑起来
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+        let Some(pane) = self.instances.pane(&id).await else { return };
+        let inst = self.inst(&id);
+        if super::agent_state(inst.agent, &pane).is_some() || !super::is_shell(&pane.command) {
+            return;
+        }
+        let Some(line) = self.instances.codex_tui_line(&id) else { return };
+        if self.instances.send_literal(&id, &line).await.is_ok() {
+            let _ = self.instances.send_keys(&id, &["Enter"]).await;
+        }
+    }
+
     // ---------------- 旧版本留下的 TUI ----------------
 
     /// 终端里还在跑 Codex TUI（以前用 hooks 接入时启动的，或者手动开的）：找出它的会话，重启终端换成普通 shell。
@@ -816,11 +849,16 @@ fn started_with_codex(pid: u32) -> bool {
     let pid = Pid::from_u32(pid);
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
     let Some(p) = sys.process(pid) else { return false };
+    let args: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_ascii_lowercase()).collect();
+    // 看看自己开的、接到 app-server 上的 TUI（`--remote`）：本来就和对话界面同步，不用迁移
+    if args.iter().any(|a| a.contains("--remote")) {
+        return false;
+    }
     let name = p.name().to_string_lossy().to_ascii_lowercase();
     if name.trim_end_matches(".exe") == "codex" {
         return true;
     }
-    p.cmd().iter().skip(1).any(|a| a.to_string_lossy().to_ascii_lowercase().contains("codex"))
+    args.iter().skip(1).any(|a| a.contains("codex"))
 }
 
 /// 面板进程是什么时候启动的（找它之后才开始写的记录）

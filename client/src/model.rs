@@ -198,6 +198,11 @@ fn env_for(agent: ModelAgent, base_url: &str, key: PathBuf) -> LaunchEnv {
 }
 
 impl LaunchEnv {
+    /// 只设一个环境变量，值由 shell 从文件里读（口令、Key 不出现在命令行里）
+    pub fn file_var(key: &'static str, path: PathBuf) -> Self {
+        LaunchEnv { vars: vec![(key, Val::File(path))], args: String::new() }
+    }
+
     /// 按终端所用 shell 的写法，把环境变量加在启动命令前面。认不出的 shell（命令是“打”进去的）按 POSIX 写。
     pub fn wrap(&self, cmd: &str, family: Family) -> String {
         let cmd = format!("{cmd}{}", self.args);

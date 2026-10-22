@@ -246,9 +246,18 @@ async fn terminal(State(app): State<App>, req: Request) -> Response {
     if proxy::is_websocket(req.headers()) && !origin_matches(req.headers(), &access) {
         return (StatusCode::FORBIDDEN, "origin").into_response();
     }
+    // 对话模式的 Codex：终端里是接到同一个 app-server、同一个会话的 TUI。连上之前起好 app-server、备好会话，
+    // 连上之后终端停在 shell 上就替用户打开 TUI（见 chat::codex_chat）
+    let codex = proxy::is_websocket(req.headers()) && app.store.instance(&id).ok().flatten().is_some_and(|r| app.instances.codex_app_mode(&r));
+    if codex {
+        app.chat.codex_prepare_terminal(&id).await;
+    }
     // Windows：ttyd 只接入会话，连上之前先确保会话在（见 Instances::command_for）
     if proxy::is_websocket(req.headers()) {
         app.instances.ensure_attachable(&id).await;
+    }
+    if codex {
+        tokio::spawn(app.chat.clone().codex_terminal_attached(id.clone()));
     }
     let index = req.method() == Method::GET && req.uri().path() == format!("/i/{id}/");
     let opts = proxy::Opts { auth: Some(auth), host: None, inject_fonts: index, rewrite_location: None, terminal: true };

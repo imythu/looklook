@@ -900,6 +900,8 @@ impl Instances {
             });
         }
         let launch = match prompt {
+            // 对话模式的 Codex：第一句话、接着的会话都由对话界面交给 app-server，终端里是接上同一个会话的 TUI
+            _ if self.codex_app_mode(row) => self.launch_command(row),
             None if resume.is_some() => resume.and_then(|r| self.resume_command(row, r)),
             None => self.launch_command(row),
             Some(p) => match row.launch.as_str() {
@@ -931,9 +933,16 @@ impl Instances {
 
     /// Claude Code / Codex 选了第三方模型服务商时，按 shell 的写法加上接口地址与 Key（见 model.rs）。
     /// 容器里的会话不加（命令已经整个包在 docker exec 里）。
+    /// 对话模式的 Codex 终端（接到 app-server 的 TUI）：服务商在 app-server 那边，这里只加连接口令。
     fn model_wrap(&self, row: &InstanceRow, cmd: &str, family: crate::shells::Family) -> String {
         if self.container(&row.id).is_some() {
             return cmd.to_string();
+        }
+        if self.codex_app_mode(row) {
+            return match (cmd.contains("--remote"), codex_token_env()) {
+                (true, Some(e)) => e.wrap(cmd, family),
+                _ => cmd.to_string(),
+            };
         }
         match crate::model::launch_env(&self.store, &self.paths.home, &row.launch) {
             Some(env) => env.wrap(cmd, family),
@@ -943,8 +952,9 @@ impl Instances {
 
     /// 启动类型对应的命令行（含“全部权限”参数）；普通终端为 None。
     fn launch_command(&self, row: &InstanceRow) -> Option<String> {
+        // 对话模式的 Codex：终端里是接到看看的 app-server 上的 TUI，和对话界面是同一个会话（还没起 app-server 时是 shell）
         if self.codex_app_mode(row) {
-            return None;
+            return self.codex_tui_command(row);
         }
         let cmd = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
         match self.chat_settings(row) {
@@ -992,6 +1002,28 @@ impl Instances {
                 None
             }
         }
+    }
+
+    /// 对话模式的 Codex 终端里跑的 TUI：`codex [--yolo] resume <会话> --remote ws://127.0.0.1:<端口> …`，
+    /// 接到看看起的 app-server 上（见 `chat::codex_app`）。app-server 还没起时 None。
+    fn codex_tui_command(&self, row: &InstanceRow) -> Option<String> {
+        let ep = crate::chat::codex_app::endpoint()?;
+        let base = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
+        let thread = crate::chat::binding(&self.store, &row.id).map(|b| b.session_id);
+        Some(crate::chat::codex_app::tui_command(&base, &ep, thread.as_deref()))
+    }
+
+    /// 在终端已有的 shell 里接着打开同一个会话的 Codex TUI（用户退出了 TUI、或者终端是先开的 shell）：
+    /// 按面板里的 shell 写好程序路径和口令环境变量。不是对话模式的 Codex、app-server 还没起时 None。
+    pub fn codex_tui_line(&self, id: &str) -> Option<String> {
+        let row = self.store.instance(id).ok().flatten()?;
+        if !self.codex_app_mode(&row) {
+            return None;
+        }
+        let cmd = self.codex_tui_command(&row)?;
+        let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell).ok()?;
+        let cmd = with_launch_program(&row, &cmd, shell.family);
+        Some(codex_token_env().map_or(cmd.clone(), |e| e.wrap(&crate::shells::adapt_for(&cmd, shell.family), shell.family)))
     }
 
     /// 对话界面“以对话模式重新启动”：在面板的 shell 里接着某个会话启动 Claude Code / Codex（带 hooks、全部权限等原来的参数）。
@@ -1351,6 +1383,12 @@ pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[Strin
     }
     a.extend(command.iter().cloned());
     a
+}
+
+/// 终端里的 Codex TUI 连 app-server 用的口令：由 shell 从口令文件读进环境变量（口令不出现在命令行里）
+fn codex_token_env() -> Option<crate::model::LaunchEnv> {
+    let ep = crate::chat::codex_app::endpoint()?;
+    Some(crate::model::LaunchEnv::file_var(crate::chat::codex_app::TOKEN_ENV, ep.token_file))
 }
 
 /// Codex：`--yolo`（即 `--dangerously-bypass-approvals-and-sandbox`，不再询问、不启用沙箱）。
