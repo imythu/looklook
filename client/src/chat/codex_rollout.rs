@@ -182,6 +182,15 @@ impl Rollout {
                 self.tools(line, ts, vec![(id, "Read".into(), json!({ "file_path": file_url_path(path) }), Outcome { content: String::new(), is_error: false, extra: None })]);
             }
             "ContextCompaction" => self.push(line, 0, ts, Body::Divider { kind: "compact".into() }),
+            // 生成图片（`image_gen`）：图片存在 `$CODEX_HOME/generated_images/<会话>/<id>.png`，
+            // 记录里只留文件名和提示词（`result` 是整张图的 base64，不放进条目），界面按文件名从 `chat/file` 取
+            "Extension" if it["kind"] == "image_gen.generation" => {
+                let file = format!("{id}.png");
+                let ok = it["status"].as_str().is_none_or(|s| s == "completed");
+                let prompt = it["revisedPrompt"].as_str().or_else(|| it["prompt"].as_str()).unwrap_or("");
+                let input = json!({ "prompt": truncate(prompt, 2000).0, "file": file });
+                self.tools(line, ts, vec![(id, "ImageGen".into(), input, Outcome { content: String::new(), is_error: !ok, extra: None })]);
+            }
             t if SKIPPED_ITEMS.contains(&t) => {}
             _ => self.stats.unknown += 1,
         }
@@ -370,6 +379,25 @@ mod tests {
         assert_eq!(r.tool_input("i").unwrap()["file_path"], "C:/x/my pic.png");
         let tail: Vec<&Body> = items.iter().rev().take(3).map(|i| &i.body).collect();
         assert_eq!(tail, [&Body::Turn { ms: 8558 }, &Body::Interrupt, &Body::Divider { kind: "compact".into() }]);
+    }
+
+    #[test]
+    fn image_generation_shows_file_not_base64() {
+        let mut r = Rollout::new(PathBuf::from("x.jsonl"));
+        let big = "A".repeat(200_000);
+        let text = done(json!({ "type": "Extension", "kind": "image_gen.generation", "id": "exec-1174", "status": "completed", "revisedPrompt": "a water town at blue hour", "result": big }));
+        r.feed(text.as_bytes());
+        let items = r.items(0, r.len());
+        let Body::Assistant { blocks, .. } = &items[0].body else { panic!("{:?}", items[0]) };
+        let Block::ToolUse { name, input, .. } = &blocks[0] else { panic!() };
+        assert_eq!(name, "ImageGen");
+        assert_eq!(input["file"], "exec-1174.png");
+        assert_eq!(input["prompt"], "a water town at blue hour");
+        assert!(serde_json::to_string(&items).unwrap().len() < 2000, "base64 不能进条目");
+        // 别的 Extension 照旧跳过
+        let mut r2 = Rollout::new(PathBuf::from("y.jsonl"));
+        r2.feed(done(json!({ "type": "Extension", "kind": "other", "id": "e" })).as_bytes());
+        assert_eq!(r2.len(), 0);
     }
 
     #[test]

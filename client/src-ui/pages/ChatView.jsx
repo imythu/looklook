@@ -152,7 +152,7 @@ function useChat(id) {
 
 // ---------------- 条目 ----------------
 
-const TOOL_ICONS = { Bash: SquareTerminal, Read: FileText, Edit: FilePen, MultiEdit: FilePen, Write: FilePen, NotebookEdit: FilePen, Grep: Search, Glob: Search, WebFetch: Globe, WebSearch: Globe, TodoWrite: ListTodo, Task: Bot, Agent: Bot };
+const TOOL_ICONS = { ImageGen: ImageIcon, Bash: SquareTerminal, Read: FileText, Edit: FilePen, MultiEdit: FilePen, Write: FilePen, NotebookEdit: FilePen, Grep: Search, Glob: Search, WebFetch: Globe, WebSearch: Globe, TodoWrite: ListTodo, Task: Bot, Agent: Bot };
 const DIFF_TOOLS = ['Edit', 'MultiEdit', 'Write'];
 const DIFF_LIMIT = 400;
 
@@ -345,7 +345,66 @@ function ToolBody({ id, block, result }) {
   }
 }
 
-function ToolCard({ id, block, result, live }) {
+/** 对话生成的图片的地址（`chat/file`）：放进 <img>、复制给别人、下载都用它 */
+const genFileUrl = (id, name, download) => `/instances/${id}/chat/file?name=${encodeURIComponent(name)}${download ? '&download=1' : ''}`;
+
+/** 复制图片地址；复制不了时提示 */
+function useCopyLink() {
+  const { t } = useT();
+  const toast = useToast();
+  return async (path) => {
+    try {
+      await navigator.clipboard.writeText(new URL(`/api${path}`, window.location.href).href);
+      toast(t('chat.res_copied'));
+    } catch {
+      toast(t('chat.res_copy_failed'), 'error');
+    }
+  };
+}
+
+/** 一张生成的图片和它的操作（打开、复制链接、下载） */
+function GenFigure({ id, name, caption }) {
+  const { t } = useT();
+  const copy = useCopyLink();
+  return (
+    <figure className="chat-gen-fig">
+      <GenImage url={genFileUrl(id, name)} name={name} />
+      <figcaption className="chat-gen-acts">
+        <span className="chat-note ellipsis" title={caption || name}>
+          {caption || name}
+        </span>
+        <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(genFileUrl(id, name))}>
+          {t('chat.res_copy')}
+        </button>
+        {plainLinksWork() && (
+          <a className="btn btn-plain btn-sm" href={`/api${genFileUrl(id, name, true)}`} download={name}>
+            {t('chat.res_download')}
+          </a>
+        )}
+      </figcaption>
+    </figure>
+  );
+}
+
+/** Codex 生成的图片：直接显示在对话里（手机上也不用去侧栏找） */
+function ImageGenCard({ id, block, result, live }) {
+  const { t } = useT();
+  return (
+    <div className="chat-tool chat-imagegen" data-state={toolState(block, result, live)}>
+      <div className="chat-tool-head">
+        <ImageIcon size={15} aria-hidden="true" />
+        <b>{t('chat.imagegen')}</b>
+      </div>
+      <GenFigure id={id} name={block.input.file} caption={block.input.prompt} />
+    </div>
+  );
+}
+
+function ToolCard(props) {
+  return props.block.name === 'ImageGen' && props.block.input?.file ? <ImageGenCard {...props} /> : <ToolCallCard {...props} />;
+}
+
+function ToolCallCard({ id, block, result, live }) {
   const { t } = useT();
   const diff = DIFF_TOOLS.includes(block.name) ? diffLines(block.name, block.input, result?.extra) : null;
   const stat = diff ? diffStat(diff) : null;
@@ -1744,19 +1803,9 @@ function GenImage({ url, name }) {
  */
 function ResourcesTab({ id, items }) {
   const { t } = useT();
-  const toast = useToast();
   const list = useMemo(() => conversationResources(items), [items]);
   const { data } = usePoll(`/instances/${id}/chat/files`, { deps: [items.length] });
   const files = data?.items ?? [];
-  const fileUrl = (name, dl) => `/instances/${id}/chat/file?name=${encodeURIComponent(name)}${dl ? '&download=1' : ''}`;
-  const copy = async (name) => {
-    try {
-      await navigator.clipboard.writeText(new URL(`/api${fileUrl(name)}`, window.location.href).href);
-      toast(t('chat.res_copied'));
-    } catch {
-      toast(t('chat.res_copy_failed'), 'error');
-    }
-  };
   if (!list.length && !files.length) return <p className="chat-note">{t('chat.res_empty')}</p>;
   return (
     <>
@@ -1768,20 +1817,7 @@ function ResourcesTab({ id, items }) {
           <ul className="chat-gen">
             {files.map((f) => (
               <li key={f.name}>
-                <GenImage url={fileUrl(f.name)} name={f.name} />
-                <div className="chat-gen-acts">
-                  <span className="chat-note ellipsis" title={f.path}>
-                    {f.name}
-                  </span>
-                  <button type="button" className="btn btn-plain btn-sm" onClick={() => copy(f.name)}>
-                    {t('chat.res_copy')}
-                  </button>
-                  {plainLinksWork() && (
-                    <a className="btn btn-plain btn-sm" href={`/api${fileUrl(f.name, true)}`} download={f.name}>
-                      {t('chat.res_download')}
-                    </a>
-                  )}
-                </div>
+                <GenFigure id={id} name={f.name} />
               </li>
             ))}
           </ul>

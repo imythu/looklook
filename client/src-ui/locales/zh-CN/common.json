@@ -1509,7 +1509,8 @@
     "res_copied": "链接已复制",
     "res_copy_failed": "没能复制，浏览器不允许访问剪贴板",
     "res_download": "下载",
-    "usage_limits_note_live": "额度是整个 Claude 账号的，和 Claude 桌面版、/usage 看到的一样（一分钟内取一次）。"
+    "usage_limits_note_live": "额度是整个 Claude 账号的，和 Claude 桌面版、/usage 看到的一样（一分钟内取一次）。",
+    "imagegen": "生成了图片"
   },
   "sess": {
     "new": "新会话",

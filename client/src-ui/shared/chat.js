@@ -79,6 +79,8 @@ export function toolSummary(name, input = {}) {
       return short(i.url);
     case 'WebSearch':
       return short(i.query);
+    case 'ImageGen':
+      return short(i.prompt);
     case 'Task':
     case 'Agent':
       return short(i.description ?? i.prompt);
@@ -242,7 +244,8 @@ const TOOL_CLASS = {
   Task: 'agent',
   Agent: 'agent',
 };
-const NO_GROUP = new Set(['TodoWrite', 'AskUserQuestion', 'ExitPlanMode']);
+// 生成的图片要直接看到，不合进“调用了几次工具”的一组里
+const NO_GROUP = new Set(['TodoWrite', 'AskUserQuestion', 'ExitPlanMode', 'ImageGen']);
 
 /** 工具的类别（合并用）；不合并的返回 null。别的工具（MCP 等）按名字各成一类。 */
 export function toolClass(name) {
