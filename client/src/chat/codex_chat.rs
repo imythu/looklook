@@ -223,6 +223,10 @@ impl Chat {
     /// 让这个终端的 thread 在当前 app-server 里加载着（打开对话、发消息、回答之前调用）。
     /// 还没有会话时什么都不做：第一条消息时再 `thread/start`。
     pub(super) async fn codex_attach(&self, id: &str) -> Result<Arc<AppServer>, LocalError> {
+        // 终端里跑着不是看看打开的 Codex（旧版本留下的、用户自己在终端里开的）：两边会同时写一个会话，对话界面不接
+        if self.codex_foreign(id).await {
+            return Err(LocalError::new("CHAT_FOREIGN"));
+        }
         let server = self.codex_server().await?;
         let gen = self.codex.generation.load(Ordering::SeqCst);
         let inst = self.inst(id);
@@ -233,11 +237,6 @@ impl Chat {
         if loaded {
             return Ok(server);
         }
-        // 终端里还跑着旧版本留下的 Codex TUI：先换成普通 shell，免得两边同时写一个会话
-        let thread = match self.codex_migrate(id, thread.as_deref()).await {
-            Some(t) => Some(t),
-            None => thread,
-        };
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         match thread {
             Some(t) => {
@@ -520,8 +519,8 @@ impl Chat {
             Some(t) => t,
             None => self.codex_new_thread(&server, &inst).await?,
         };
-        // /clear：开一个新会话（原来的留在“以前的对话”里）
-        if text.trim() == "/clear" && images.is_empty() {
+        // /clear、/new：开一个新会话（原来的留在“以前的对话”里）
+        if matches!(text.trim(), "/clear" | "/new") && images.is_empty() {
             if phase == Phase::Running {
                 return Err(LocalError::new("CHAT_RUNNING"));
             }
@@ -808,73 +807,21 @@ impl Chat {
         }
     }
 
-    // ---------------- 旧版本留下的 TUI ----------------
+    // ---------------- 不是看看打开的 Codex ----------------
 
-    /// 终端里还在跑 Codex TUI（以前用 hooks 接入时启动的，或者手动开的）：找出它的会话，重启终端换成普通 shell。
-    /// 返回找到的会话号；终端里没有 Codex 时 None。
-    async fn codex_migrate(&self, id: &str, bound: Option<&str>) -> Option<String> {
-        let pane = self.instances.pane(id).await?;
-        let inst = self.inst(id);
-        super::agent_state(inst.agent, &pane)?;
-        // 只迁移“终端就是为了跑 Codex 开的”那种（旧版本启动的）；在 shell 里手动敲的 codex 不动
-        if !tokio::task::block_in_place(|| started_with_codex(pane.pid)) {
-            return None;
+    /// 终端里跑着 Codex、但不是看看打开的那种（看看开的都带 `--remote`，接在看看的 app-server 上）
+    async fn codex_foreign(&self, id: &str) -> bool {
+        let Some(pane) = self.instances.pane(id).await else { return false };
+        match tokio::task::block_in_place(|| super::find_under(pane.pid, &["codex"])) {
+            Some(args) => !args.iter().any(|a| a == "--remote"),
+            None => false,
         }
-        let row = self.store.instance(id).ok().flatten()?;
-        let thread = match bound {
-            Some(t) => Some(t.to_string()),
-            None => self.store.get::<String>(&crate::instances::resume_key(id)).ok().flatten().or_else(|| latest_rollout_thread(Path::new(&row.workdir), pane_started(pane.pid))),
-        };
-        tracing::info!(id, thread = ?thread, "终端里还在跑 Codex TUI，换成 app-server");
-        if let Err(e) = self.instances.restart(id).await {
-            tracing::warn!(id, error = ?e, "重启终端失败");
-        }
-        if let Some(t) = &thread {
-            self.codex_bind(id, t);
-        }
-        thread
-    }
-}
+    }}
 
 fn merge(a: &mut Value, b: Value) {
     if let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) {
         a.extend(b);
     }
-}
-
-/// 面板进程（shell）的命令行里带着 codex：终端是用来跑 Codex 的（`powershell -Command codex …`、`sh -c 'codex …'`）
-fn started_with_codex(pid: u32) -> bool {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
-    let mut sys = System::new();
-    let pid = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
-    let Some(p) = sys.process(pid) else { return false };
-    let args: Vec<String> = p.cmd().iter().map(|a| a.to_string_lossy().to_ascii_lowercase()).collect();
-    // 看看自己开的、接到 app-server 上的 TUI（`--remote`）：本来就和对话界面同步，不用迁移
-    if args.iter().any(|a| a.contains("--remote")) {
-        return false;
-    }
-    let name = p.name().to_string_lossy().to_ascii_lowercase();
-    if name.trim_end_matches(".exe") == "codex" {
-        return true;
-    }
-    args.iter().skip(1).any(|a| a.contains("codex"))
-}
-
-/// 面板进程是什么时候启动的（找它之后才开始写的记录）
-fn pane_started(pid: u32) -> Option<std::time::SystemTime> {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
-    let mut sys = System::new();
-    let pid = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), true, ProcessRefreshKind::nothing());
-    let secs = sys.process(pid)?.start_time();
-    Some(std::time::UNIX_EPOCH + Duration::from_secs(secs))
-}
-
-/// 这个工作目录下、在 `since` 之后还写过的最近一份 Codex 记录的会话号
-fn latest_rollout_thread(workdir: &Path, since: Option<std::time::SystemTime>) -> Option<String> {
-    let convs = tokio::task::block_in_place(|| crate::history::codex_recent(workdir, since));
-    convs.into_iter().next()
 }
 
 #[cfg(test)]

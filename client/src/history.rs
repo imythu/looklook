@@ -186,18 +186,6 @@ fn list_blocking(q: &Query) -> Vec<Conv> {
     out
 }
 
-/// 这个文件夹下、`since` 之后还写过的 Codex 对话的会话号，最近的在前（找终端里那个 TUI 在用的会话）。
-pub fn codex_recent(workdir: &Path, since: Option<SystemTime>) -> Vec<String> {
-    let w = workdir.display().to_string();
-    let mut files: Vec<(SystemTime, PathBuf)> = codex_files()
-        .into_iter()
-        .filter_map(|(p, m)| Some((m.modified().ok()?, p)))
-        .filter(|(t, _)| since.is_none_or(|s| *t >= s))
-        .collect();
-    files.sort_by_key(|(t, _)| std::cmp::Reverse(*t));
-    files.into_iter().filter_map(|(_, p)| parse_codex(&p)).filter(|c| same_dir(&c.workdir, &w)).map(|c| c.id).collect()
-}
-
 /// 标题、你最后说的话、文件夹、分支里有没有这段文字（已转成小写）。
 fn matches_text(c: &Conv, text: &str) -> bool {
     [Some(c.title.as_str()), c.last.as_deref(), Some(c.workdir.as_str()), c.branch.as_deref()].into_iter().flatten().any(|s| s.to_lowercase().contains(text))

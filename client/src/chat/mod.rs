@@ -636,8 +636,13 @@ impl Chat {
         if inst.agent.launch() == "codex" {
             if let Err(e) = self.codex_attach(id).await {
                 let mut st = lock(&inst.st);
-                st.error = Some(format!("{:?}", e).chars().take(500).collect());
-                Self::set_phase(&inst, &mut st, Phase::Detached, Some("app_server"));
+                if e.code == "CHAT_FOREIGN" {
+                    // 不是看看打开的：界面上说明，不算出错
+                    Self::set_phase(&inst, &mut st, Phase::Detached, Some("not_attached"));
+                } else {
+                    st.error = Some(format!("{:?}", e).chars().take(500).collect());
+                    Self::set_phase(&inst, &mut st, Phase::Detached, Some("app_server"));
+                }
             }
         }
         self.poll(&inst).await;

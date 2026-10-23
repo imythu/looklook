@@ -202,5 +202,9 @@
   "RESUME_NEEDS_PERSISTENT": "Session persistence is off on this computer, so earlier conversations can't be continued",
   "DOCKER_NOT_FOUND": "The docker command was not found on this computer",
   "DOCKER_FAILED": "Docker failed: {{detail}}",
-  "TOOL_NOT_IN_CONTAINER": "{{tool}} is not installed in container {{container}}"
+  "TOOL_NOT_IN_CONTAINER": "{{tool}} is not installed in container {{container}}",
+  "CHAT_FOREIGN": "The {{agent}} in the terminal wasn't opened by Looklook, so the chat view can't be used",
+  "CODEX_APP_SERVER": "Couldn't reach the Codex background service. Please try again",
+  "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer",
+  "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}"
 }
