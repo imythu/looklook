@@ -889,6 +889,26 @@ impl Account {
         self.signed("POST", looklook_protocol::rtc::CLIENT_CONNECT_PATH, Some(&req)).await
     }
 
+    /// 远程确认 SSH 导出（docs/SSH_TRANSFER.md §4.3）：平台发验证码到账户邮箱。
+    pub async fn ssh_export_email_code(&self) -> PResult<()> {
+        self.signed_empty("POST", looklook_protocol::dto::CLIENT_SSH_EXPORT_CODE_PATH, None::<&()>).await
+    }
+
+    /// 校验并消费远程确认 SSH 导出的邮箱验证码。
+    pub async fn ssh_export_verify(&self, code: &str) -> PResult<()> {
+        let body = looklook_protocol::dto::EmailCodeVerify { code: code.trim().to_string() };
+        self.signed_empty("POST", looklook_protocol::dto::CLIENT_SSH_EXPORT_VERIFY_PATH, Some(&body)).await
+    }
+
+    async fn signed_empty(&self, method: &str, path: &str, body: Option<&(impl Serialize + Sync)>) -> PResult<()> {
+        let (s, key) = self.creds().ok_or_else(|| api("NOT_LOGGED_IN"))?;
+        let r = self.platform().call_empty(method, path, Signer { device: &s.device_id, key_id: &s.key_id, key: &key }, body).await;
+        if let Err(e) = &r {
+            self.on_error(e);
+        }
+        r
+    }
+
     pub async fn tunnels(&self) -> PResult<TunnelList> {
         self.signed("GET", "/tunnels", None::<&()>).await
     }
@@ -1052,6 +1072,53 @@ pub fn api(code: &str) -> PlatformError {
 fn internal(e: impl std::fmt::Display) -> PlatformError {
     tracing::error!(error = %e, "本机状态保存失败");
     PlatformError::Api { status: 500, code: "INTERNAL".into(), params: Map::new() }
+}
+
+/// 其他模块的测试用：已登录的账户（设备 `device`、私钥 `key`），平台指向 `server`，平台公钥是 [`test_support::platform_key`]。
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub const NOW: i64 = 1_800_000_000_000;
+
+    pub fn platform_key() -> SigningKey {
+        SigningKey::from_bytes(&[5u8; 32])
+    }
+
+    pub fn logged_in(store: Arc<Store>, paths: Paths, server: &str, device: &str, key: SigningKey) -> Arc<Account> {
+        store.set(KV_SERVER, &ServerConfig { url: server.into(), pinned_keys: [("p1".to_string(), b64(platform_key().verifying_key().as_bytes()))].into() }).unwrap();
+        let a = Account::new(store, paths, "https://looklook.test", "").unwrap();
+        a.clock.set(NOW);
+        a.set_for_test(
+            Session {
+                server: server.into(),
+                device_id: device.into(),
+                key_id: format!("k-{device}"),
+                user: UserInfo { id: "1".into(), username: "alice".into(), nickname: "a".into(), email: None },
+                user_host_url: "https://alice.looklook.test/".into(),
+                expires_ms: NOW * 2,
+                heartbeat_interval: 600,
+                offline_grace: 600,
+                last_ok_ms: NOW,
+                allow_run: true,
+                reason: None,
+                relay: RelayParams {
+                    name: "r1".into(),
+                    server_addr: "r1.looklook.test:2333".into(),
+                    transport: "noise".into(),
+                    noise_remote_public_key: "x".into(),
+                    service_name: device.into(),
+                    token: "t".into(),
+                    gateway_mac_key: "x".into(),
+                },
+                update: None,
+                rotation: None,
+            },
+            &[],
+        );
+        a.set_key_for_test(key);
+        a
+    }
 }
 
 #[cfg(test)]
@@ -1221,7 +1288,7 @@ mod tests {
             let target = target.clone();
             async move {
                 let path = uri.path().to_string();
-                let dev = |id: &str, t: &[&str]| RemoteDevice { id: id.into(), name: id.into(), os: "linux".into(), online: true, terminals: t.iter().map(|s| s.to_string()).collect() };
+                let dev = |id: &str, t: &[&str]| RemoteDevice { id: id.into(), name: id.into(), os: "linux".into(), online: true, terminals: t.iter().map(|s| s.to_string()).collect(), keys: Vec::new() };
                 let (status, out) = if path.ends_with("/rtc/devices") {
                     let d = RemoteDevices { items: vec![dev("dev1", &[]), dev("devb", &["tb1"])], default: Some("dev1".into()), max: 7, ice_servers: vec![] };
                     (StatusCode::OK, serde_json::to_vec(&d).unwrap())

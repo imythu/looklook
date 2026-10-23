@@ -47,6 +47,7 @@ mod rtc;
 mod settings;
 mod shells;
 mod ssh;
+mod ssh_transfer;
 mod store;
 mod tools;
 mod transfer;
@@ -506,6 +507,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         remote: Default::default(),
         rtc: Default::default(),
         outbound: Default::default(),
+        ssh_transfer: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     if let Err(e) = chat.publish(ui_addr) {

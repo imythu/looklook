@@ -38,7 +38,6 @@ phone / any browser ──HTTPS──▶ Looklook relay ──Noise tunnel──
 - The app opens an outbound, Noise-encrypted tunnel (rathole) to a relay, so no inbound ports are needed.
 - Each remote request carries a short-lived token signed by the platform. **This app verifies it** before anything reaches a terminal ([`src/gateway/`](client/src/gateway)). Terminals listen only on `127.0.0.1` with random credentials.
 - The local console listens on `0.0.0.0:1234` but only allows this machine by default. LAN access and an IP allowlist are opt-in, and an access code is optional ([`src/gateway/access.rs`](client/src/gateway/access.rs)).
-- Running in Docker? The host's browser reaches the container through a gateway (e.g. `172.17.0.1`), not `127.0.0.1`. Start with `--local-from 172.17.0.1` (or `LOOKLOOK_LOCAL_FROM`, comma-separated IPs or ranges) to treat it as this machine, so local-only settings such as the MCP token can be changed there.
 
 ## Security, plainly
 

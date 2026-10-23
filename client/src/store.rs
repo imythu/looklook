@@ -106,6 +106,20 @@ impl Store {
         Ok(())
     }
 
+    /// 在一个事务里写多个键：`Some` 写入，`None` 删除。任何一步失败都不留下改动（导入 SSH 主机用）。
+    pub fn batch(&self, writes: &[(String, Option<serde_json::Value>)]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        for (key, value) in writes {
+            match value {
+                Some(v) => tx.execute("INSERT INTO kv(key,value) VALUES(?1,?2) ON CONFLICT(key) DO UPDATE SET value=excluded.value", params![key, v.to_string()])?,
+                None => tx.execute("DELETE FROM kv WHERE key=?1", [key])?,
+            };
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     // ---------- instances ----------
 
     const COLS: &'static str = "id,name,workdir,launch,command,auto_start,want_running,port,created_at,updated_at,shell";

@@ -125,17 +125,21 @@ pub enum LinkError {
 
 impl LinkError {
     pub fn response(&self) -> Response {
+        self.local().into_response()
+    }
+
+    pub fn local(&self) -> LocalError {
         match self {
-            LinkError::Offline => LocalError { status: StatusCode::SERVICE_UNAVAILABLE, code: "DEVICE_OFFLINE".into(), params: Default::default() }.into_response(),
+            LinkError::Offline => LocalError { status: StatusCode::SERVICE_UNAVAILABLE, code: "DEVICE_OFFLINE".into(), params: Default::default() },
             LinkError::Platform(e) => {
                 if e.is("DEVICE_OFFLINE") || e.is("NOT_FOUND") {
-                    return LinkError::Offline.response();
+                    return LinkError::Offline.local();
                 }
-                LocalError::from(e.clone()).into_response()
+                LocalError::from(e.clone())
             }
             LinkError::Failed(e) => {
                 tracing::info!(error = %format!("{e:#}"), "连不上另一台电脑");
-                LocalError { status: StatusCode::BAD_GATEWAY, code: "RTC_FAILED".into(), params: Default::default() }.into_response()
+                LocalError { status: StatusCode::BAD_GATEWAY, code: "RTC_FAILED".into(), params: Default::default() }
             }
         }
     }

@@ -1348,6 +1348,247 @@ pub fn set_allow_ai(store: &Store, id: &str, allow: bool) -> Result<HostView, Lo
     Ok(HostView { has_secret: has_secret(store, &h.id), has_key: has_key(store, &h.id), host: h })
 }
 
+// ---------------- 搬到另一台电脑（ssh_transfer.rs，docs/SSH_TRANSFER.md §5） ----------------
+
+/// 旧电脑上一台主机的概况（不含秘密）：新电脑据此列出可导入的主机，旧电脑的确认框据此说明会带上什么。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Brief {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub user: String,
+    pub auth: String,
+    #[serde(default)]
+    pub jump: String,
+    /// 会带上的秘密：`password` 密码 / `key` 上传的私钥 / `key_file` 这台电脑上的私钥文件（`key_path`）/
+    /// `key_missing` 私钥文件读不到（只带路径）/ `none` 不带秘密
+    pub carries: String,
+    /// 私钥带着口令
+    #[serde(default)]
+    pub passphrase: bool,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_path: String,
+}
+
+/// 导出的一台主机（数据包里的明文，只在内存里，用完清零）。
+#[derive(Debug, Default, Serialize, Deserialize)]
+pub struct Carried {
+    pub host: Option<SshHost>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secret: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key_text: Option<String>,
+    /// 私钥在旧电脑上的位置（`~/.ssh/id_ed25519`）；上传的私钥为空
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub key_from: String,
+}
+
+impl Drop for Carried {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        for s in [&mut self.secret, &mut self.key_text].into_iter().flatten() {
+            s.zeroize();
+        }
+    }
+}
+
+/// `~/.ssh` 里 ssh 默认会用的第一把私钥（“系统密钥”主机可以选择带上它，§5）。
+pub fn default_identity() -> Option<String> {
+    DEFAULT_IDENTITIES.iter().map(|n| format!("~/.ssh/{n}")).find(|p| readable_key(p))
+}
+
+/// 这台电脑上的私钥文件导出时读得出来（和 [`export`] 用同一个检查）。
+fn readable_key(path: &str) -> bool {
+    read_key_file(path).map(zeroize::Zeroizing::new).is_some()
+}
+
+/// 全部主机的概况（阻塞调用：会看私钥文件在不在）。
+pub fn briefs(store: &Store) -> Vec<Brief> {
+    list(store)
+        .into_iter()
+        .map(|h| {
+            let has = has_secret(store, &h.id);
+            let (carries, passphrase, key_path) = match h.auth.as_str() {
+                "password" if has => ("password", false, String::new()),
+                "key" if h.key_stored => ("key", has, String::new()),
+                "key" => (if readable_key(&h.key_path) { "key_file" } else { "key_missing" }, has, h.key_path.clone()),
+                _ => ("none", false, String::new()),
+            };
+            Brief { id: h.id, name: h.name, host: h.host, port: h.port, user: h.user, auth: h.auth, jump: h.jump, carries: carries.into(), passphrase, key_path }
+        })
+        .collect()
+}
+
+/// 读这台电脑上的私钥文件（只收 OpenSSH / PEM）。
+fn read_key_file(path: &str) -> Option<String> {
+    let full = PathBuf::from(expand_home(path.trim()));
+    if std::fs::metadata(&full).ok()?.len() > KEY_MAX as u64 {
+        return None;
+    }
+    normalize_key("key_path", &std::fs::read_to_string(full).ok()?).ok()
+}
+
+/// 取出要导出的主机连同秘密（阻塞调用）。本机文件的私钥读出内容，到新电脑上存成上传的私钥；
+/// `agent_keys` 里的“系统密钥”主机带上 [`default_identity`]，到新电脑上也存成上传的私钥。`allow_ai` 一律关掉。
+pub fn export(store: &Store, home: &Path, ids: &[String], agent_keys: &[String]) -> Result<Vec<Carried>, LocalError> {
+    let hosts = list(store);
+    let default_key = if agent_keys.is_empty() { None } else { default_identity() };
+    ids.iter()
+        .map(|id| {
+            let mut h = hosts.iter().find(|h| &h.id == id).cloned().ok_or_else(|| LocalError::new("SSH_TRANSFER_HOSTS"))?;
+            h.allow_ai = false;
+            let mut c = Carried::default();
+            match h.auth.as_str() {
+                "password" => c.secret = secret(store, home, id)?,
+                "key" if h.key_stored => {
+                    c.key_text = stored_key(store, home, id)?;
+                    c.secret = secret(store, home, id)?;
+                }
+                "key" => {
+                    c.secret = secret(store, home, id)?;
+                    c.key_from = h.key_path.clone();
+                    // 读不到就只带路径：新电脑上也有这个文件的话照样能用
+                    if let Some(k) = read_key_file(&h.key_path) {
+                        c.key_text = Some(k);
+                        h.key_stored = true;
+                        h.key_path.clear();
+                    }
+                }
+                "agent" if agent_keys.contains(id) => {
+                    if let Some((path, k)) = default_key.as_ref().and_then(|p| Some((p.clone(), read_key_file(p)?))) {
+                        c.key_text = Some(k);
+                        c.key_from = path;
+                        h.auth = "key".into();
+                        h.key_stored = true;
+                    }
+                }
+                _ => {}
+            }
+            c.host = Some(h);
+            Ok(c)
+        })
+        .collect()
+}
+
+/// 导入时和这台电脑上已有主机重名的处理。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum Resolve {
+    /// 保留这台电脑上的同名主机（导入的主机用它当跳板机时就接到它上面）
+    Skip,
+    /// 用导入的替换同名主机（id 不变，拿它当跳板机的主机照常能用）
+    Overwrite,
+    Rename { name: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Imported {
+    /// 在旧电脑上的 id
+    pub from: String,
+    /// 在这台电脑上的 id
+    pub id: String,
+    pub name: String,
+    /// `added` / `overwritten` / `skipped`
+    pub action: &'static str,
+}
+
+/// 导入一批主机（docs/SSH_TRANSFER.md §4.4）：跳板机先建，`jump` 换成这台电脑上的 id；秘密用这台电脑的 `secret.key` 重新加密。
+/// 主机列表与全部秘密在一个事务里写入：任何一台不合格就整批不写。
+pub fn import(store: &Store, home: &Path, mut items: Vec<Carried>, resolve: &std::collections::HashMap<String, Resolve>) -> Result<Vec<Imported>, LocalError> {
+    // 跳板机排在用它的主机前面
+    let mut ordered: Vec<Carried> = Vec::with_capacity(items.len());
+    while !items.is_empty() {
+        let pending: Vec<String> = items.iter().filter_map(|c| c.host.as_ref().map(|h| h.id.clone())).collect();
+        let Some(i) = items.iter().position(|c| c.host.as_ref().is_some_and(|h| h.jump.is_empty() || !pending.contains(&h.jump))) else {
+            return Err(LocalError::invalid("jump", "jump_loop"));
+        };
+        ordered.push(items.remove(i));
+    }
+    let mut hosts = list(store);
+    let mut ids: std::collections::HashMap<String, String> = Default::default();
+    let mut writes: Vec<(String, Option<serde_json::Value>)> = Vec::new();
+    let mut out = Vec::new();
+    for c in &ordered {
+        let mut h = c.host.clone().ok_or_else(|| LocalError::invalid("hosts", "format"))?;
+        let from = h.id.clone();
+        let choice = resolve.get(&from);
+        if let Some(Resolve::Rename { name }) = choice {
+            h.name = name.trim().to_string();
+        }
+        let clash = hosts.iter().position(|x| x.name.eq_ignore_ascii_case(h.name.trim()));
+        let action = match (clash, choice) {
+            (Some(i), Some(Resolve::Skip)) => {
+                ids.insert(from.clone(), hosts[i].id.clone());
+                out.push(Imported { from, id: hosts[i].id.clone(), name: hosts[i].name.clone(), action: "skipped" });
+                continue;
+            }
+            (None, Some(Resolve::Skip)) => continue,
+            (Some(i), Some(Resolve::Overwrite)) => {
+                h.id = hosts[i].id.clone();
+                "overwritten"
+            }
+            (Some(_), _) => return Err(LocalError::new("SSH_NAME_TAKEN").with("name", h.name.trim())),
+            (None, _) => {
+                h.id = crate::util::random_id(8);
+                "added"
+            }
+        };
+        if !h.jump.is_empty() {
+            h.jump = ids.get(&h.jump).cloned().ok_or_else(|| LocalError::invalid("jump", "jump_missing"))?;
+        }
+        h.allow_ai = false;
+        h.key_stored = h.auth == "key" && h.key_stored;
+        if h.auth != "key" || h.key_stored {
+            h.key_path.clear();
+        }
+        // 私钥内容下面单独检查，不再复制一份明文
+        let input = HostInput {
+            name: h.name.clone(),
+            host: h.host.clone(),
+            port: h.port,
+            user: h.user.clone(),
+            auth: h.auth.clone(),
+            key_path: h.key_path.clone(),
+            key_stored: h.key_stored,
+            key_text: None,
+            jump: h.jump.clone(),
+            jump_new: None,
+            allow_ai: false,
+            secret: None,
+            clear_secret: false,
+        };
+        validate(&input)?;
+        if h.auth == "jump" && h.jump.is_empty() {
+            return Err(LocalError::invalid("auth", "jump_required"));
+        }
+        let key_text = match c.key_text.as_deref() {
+            Some(k) if h.key_stored => Some(zeroize::Zeroizing::new(normalize_key("key_text", k)?)),
+            _ if h.key_stored => return Err(LocalError::invalid("key_text", "required")),
+            _ => None,
+        };
+        let secret = c.secret.as_deref().filter(|s| !s.is_empty() && !matches!(h.auth.as_str(), "agent" | "jump"));
+        writes.push((format!("{SECRET_PREFIX}{}", h.id), secret.map(|s| encrypt(home, s)).transpose()?.map(serde_json::Value::String)));
+        writes.push((format!("{KEY_PREFIX}{}", h.id), key_text.map(|k| encrypt(home, &k)).transpose()?.map(serde_json::Value::String)));
+        ids.insert(from.clone(), h.id.clone());
+        out.push(Imported { from, id: h.id.clone(), name: h.name.clone(), action });
+        match clash {
+            Some(i) => hosts[i] = h,
+            None => hosts.push(h),
+        }
+    }
+    if hosts.len() > 200 {
+        return Err(LocalError::invalid("hosts", "too_many"));
+    }
+    for i in out.iter().filter(|i| i.action != "skipped") {
+        let h = hosts.iter().find(|h| h.id == i.id).expect("imported");
+        check_jump(&hosts, Some(&h.id), &h.jump)?;
+    }
+    writes.push((HOSTS_KEY.to_string(), Some(serde_json::to_value(&hosts).map_err(anyhow::Error::from)?)));
+    store.batch(&writes)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1679,5 +1920,160 @@ mod tests {
         assert_eq!(ask("wrong", "deploy@h's password:"), "");
         assert_eq!(ask(token, "Are you sure you want to continue connecting (yes/no)?"), "", "不替用户确认主机指纹");
         assert_eq!(ask(token, "deploy@h's password:"), "s3cret\n");
+    }
+
+    fn pem(body: &str) -> String {
+        let (kind, tail) = ("OPENSSH", "PRIVATE KEY-----");
+        format!("-----BEGIN {kind} {tail}\n{body}\n-----END {kind} {tail}\n")
+    }
+
+    /// 旧电脑导出、新电脑导入（docs/SSH_TRANSFER.md §5）：密码、上传的私钥、本机私钥文件都带过去，在新电脑上用新电脑的
+    /// `secret.key` 重新加密；跳板机先建、`jump` 换成新 id；`allow_ai` 一律关掉。
+    #[test]
+    fn export_then_import_carries_secrets_and_remaps_jumps() {
+        let (a_home, b_home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (a, b) = (Store::memory().unwrap(), Store::memory().unwrap());
+        let jump = save(&a, a_home.path(), None, input("bastion")).unwrap().host;
+        let mut i = input("web");
+        i.auth = "key".into();
+        i.key_stored = true;
+        i.key_text = Some(pem("c3RvcmVka2V5"));
+        i.secret = Some("pp-123".into());
+        i.jump = jump.id.clone();
+        let web = save(&a, a_home.path(), None, i).unwrap().host;
+        let key_file = a_home.path().join("id_test");
+        std::fs::write(&key_file, pem("ZmlsZWtleQ")).unwrap();
+        let mut i = input("db");
+        i.auth = "key".into();
+        i.key_path = key_file.display().to_string();
+        i.secret = None;
+        i.jump = web.id.clone();
+        let db = save(&a, a_home.path(), None, i).unwrap().host;
+
+        let briefs = briefs(&a);
+        let carries: Vec<&str> = briefs.iter().map(|b| b.carries.as_str()).collect();
+        assert_eq!(carries, ["password", "key", "key_file"]);
+        assert!(briefs[1].passphrase);
+
+        let ids = vec![jump.id.clone(), web.id.clone(), db.id.clone()];
+        // 故意打乱顺序：导入时跳板机要排在前面
+        let mut out = export(&a, a_home.path(), &ids, &[]).unwrap();
+        out.reverse();
+        assert!(out.iter().all(|c| !c.host.as_ref().unwrap().allow_ai));
+        let got = import(&b, b_home.path(), out, &Default::default()).unwrap();
+        assert!(got.iter().all(|g| g.action == "added"));
+        let hosts = list(&b);
+        let by = |n: &str| hosts.iter().find(|h| h.name == n).unwrap().clone();
+        let (nb, nw, nd) = (by("bastion"), by("web"), by("db"));
+        assert_ne!(nb.id, jump.id, "新电脑上是新的 id");
+        assert_eq!(nw.jump, nb.id);
+        assert_eq!(nd.jump, nw.id);
+        assert!(!nb.allow_ai && !nw.allow_ai);
+        assert_eq!(secret(&b, b_home.path(), &nb.id).unwrap().as_deref(), Some("hunter2!pw"));
+        assert_eq!(secret(&b, b_home.path(), &nw.id).unwrap().as_deref(), Some("pp-123"));
+        assert!(stored_key(&b, b_home.path(), &nw.id).unwrap().unwrap().contains("c3RvcmVka2V5"));
+        // 本机私钥文件到新电脑上成了上传的私钥
+        assert!(nd.key_stored && nd.key_path.is_empty());
+        assert!(stored_key(&b, b_home.path(), &nd.id).unwrap().unwrap().contains("ZmlsZWtleQ"));
+        // 新电脑用自己的 secret.key：拿旧电脑的解不开
+        let raw: String = b.get(&format!("{SECRET_PREFIX}{}", nb.id)).unwrap().unwrap();
+        assert!(decrypt(a_home.path(), &raw).is_err());
+    }
+
+    /// 重名：不处理就整批不写；跳过时接到已有的同名主机上，覆盖时沿用原来的 id，改名时用新名字。
+    #[test]
+    fn import_resolves_name_clashes_and_rolls_back_on_error() {
+        let (a_home, b_home) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let (a, b) = (Store::memory().unwrap(), Store::memory().unwrap());
+        let jump = save(&a, a_home.path(), None, input("bastion")).unwrap().host;
+        let mut i = input("web");
+        i.jump = jump.id.clone();
+        let web = save(&a, a_home.path(), None, i).unwrap().host;
+        let mine = save(&b, b_home.path(), None, input("bastion")).unwrap().host;
+        let mine_web = save(&b, b_home.path(), None, input("WEB")).unwrap().host;
+        let ids = vec![jump.id.clone(), web.id.clone()];
+        let before = list(&b);
+
+        // 没说怎么处理重名：什么都不写
+        let e = import(&b, b_home.path(), export(&a, a_home.path(), &ids, &[]).unwrap(), &Default::default()).unwrap_err();
+        assert_eq!(e.code, "SSH_NAME_TAKEN");
+        assert_eq!(list(&b), before);
+
+        // 改名也和已有的重名：同样整批不写（跳板机那台已经处理过了也不留下）
+        let mut r = std::collections::HashMap::new();
+        r.insert(jump.id.clone(), Resolve::Skip);
+        r.insert(web.id.clone(), Resolve::Rename { name: "web".into() });
+        assert_eq!(import(&b, b_home.path(), export(&a, a_home.path(), &ids, &[]).unwrap(), &r).unwrap_err().code, "SSH_NAME_TAKEN");
+        assert_eq!(list(&b), before);
+
+        r.insert(web.id.clone(), Resolve::Rename { name: "web-a".into() });
+        let got = import(&b, b_home.path(), export(&a, a_home.path(), &ids, &[]).unwrap(), &r).unwrap();
+        assert_eq!(got.iter().map(|g| g.action).collect::<Vec<_>>(), ["skipped", "added"]);
+        let hosts = list(&b);
+        assert_eq!(hosts.len(), 3);
+        let renamed = hosts.iter().find(|h| h.name == "web-a").unwrap();
+        assert_eq!(renamed.jump, mine.id, "跳过的跳板机接到已有的同名主机上");
+        // 已有主机的秘密没被动过
+        assert_eq!(secret(&b, b_home.path(), &mine.id).unwrap().as_deref(), Some("hunter2!pw"));
+
+        // 覆盖：沿用原来的 id
+        let mut r = std::collections::HashMap::new();
+        r.insert(jump.id.clone(), Resolve::Overwrite);
+        r.insert(web.id.clone(), Resolve::Overwrite);
+        let mut out = export(&a, a_home.path(), &ids, &[]).unwrap();
+        out[0].secret = Some("new-pw".into());
+        let got = import(&b, b_home.path(), out, &r).unwrap();
+        assert_eq!(got.iter().map(|g| g.id.as_str()).collect::<Vec<_>>(), [mine.id.as_str(), mine_web.id.as_str()]);
+        assert_eq!(list(&b).len(), 3);
+        assert_eq!(secret(&b, b_home.path(), &mine.id).unwrap().as_deref(), Some("new-pw"));
+        assert_eq!(find(&b, "WEB").map(|h| h.name), Some("web".into()), "覆盖后用导入的名字");
+    }
+
+    /// 坏数据：上传的私钥没带内容、跳板机不在这一批里、主机地址不合格，都是整批不写。
+    #[test]
+    fn import_rejects_bad_items_without_writing() {
+        let b_home = tempfile::tempdir().unwrap();
+        let b = Store::memory().unwrap();
+        let host = |id: &str, name: &str| SshHost { id: id.into(), name: name.into(), host: "example.com".into(), port: 22, user: "u".into(), auth: "password".into(), key_path: String::new(), key_stored: false, jump: String::new(), allow_ai: true };
+        let carried = |h: SshHost, secret: Option<&str>| Carried { host: Some(h), secret: secret.map(str::to_string), key_text: None, key_from: String::new() };
+        let ok = carried(host("a1", "ok"), Some("pw"));
+        let mut no_key = host("a2", "nokey");
+        no_key.auth = "key".into();
+        no_key.key_stored = true;
+        let mut orphan = host("a3", "orphan");
+        orphan.jump = "zz".into();
+        let mut bad_host = host("a4", "bad");
+        bad_host.host = "-oProxyCommand=x".into();
+        for (bad, code) in [(no_key, "key_text"), (orphan, "jump"), (bad_host, "host")] {
+            let items = vec![carried(host("a1", "ok"), Some("pw")), carried(bad, None)];
+            assert_eq!(import(&b, b_home.path(), items, &Default::default()).unwrap_err().params["field"], code);
+            assert!(list(&b).is_empty());
+            assert!(b.get::<String>(&format!("{SECRET_PREFIX}a1")).unwrap().is_none());
+        }
+        let got = import(&b, b_home.path(), vec![ok], &Default::default()).unwrap();
+        assert!(!list(&b)[0].allow_ai, "allow_ai 不跟着搬");
+        assert_eq!(secret(&b, b_home.path(), &got[0].id).unwrap().as_deref(), Some("pw"));
+    }
+
+    /// “系统密钥”主机选了带上默认私钥：存成上传的私钥；没选的照旧是系统密钥、不带秘密。
+    #[test]
+    fn agent_hosts_only_carry_the_default_key_when_asked() {
+        let a_home = tempfile::tempdir().unwrap();
+        let a = Store::memory().unwrap();
+        let mut i = input("agent");
+        i.auth = "agent".into();
+        let h = save(&a, a_home.path(), None, i).unwrap().host;
+        let plain = export(&a, a_home.path(), std::slice::from_ref(&h.id), &[]).unwrap();
+        assert_eq!(plain[0].host.as_ref().unwrap().auth, "agent");
+        assert!(plain[0].key_text.is_none() && plain[0].secret.is_none());
+        let with = export(&a, a_home.path(), std::slice::from_ref(&h.id), std::slice::from_ref(&h.id)).unwrap();
+        match default_identity() {
+            Some(p) => {
+                assert_eq!(with[0].key_from, p);
+                assert!(with[0].host.as_ref().unwrap().key_stored);
+            }
+            // 这台电脑 ~/.ssh 里没有默认私钥：带不了，照旧
+            None => assert_eq!(with[0].host.as_ref().unwrap().auth, "agent"),
+        }
     }
 }

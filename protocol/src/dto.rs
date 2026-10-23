@@ -177,6 +177,27 @@ pub struct RemoteDevice {
     /// 这台设备上的终端 id（终端路由表）：WebRTC 启动页按它把 `/i/{id}…` 转给终端所在的设备（docs/06 §6.1）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub terminals: Vec<String>,
+    /// 这台设备当前有效的设备公钥（`active`，以及轮换中尚未过期的 `retiring`）。只在客户端接口
+    /// （[`crate::rtc::CLIENT_DEVICES_PATH`]）里给：电脑之间互相校验签名用（客户端 docs/SSH_TRANSFER.md §4.2）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keys: Vec<DeviceKey>,
+}
+
+/// 一把设备公钥：`id` 是请求签名里的 `X-LL-Key`，`public_key` 是 Ed25519 公钥（base64url 无填充）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeviceKey {
+    pub id: String,
+    pub public_key: String,
+}
+
+/// 客户端接口（`/api/client/v1`，设备签名）：导出 SSH 主机时的邮箱验证码（客户端 docs/SSH_TRANSFER.md §4.3“远程确认”）。
+/// `send` 发到账户自己的邮箱，无请求体；`verify` 收 [`EmailCodeVerify`]，对了就消费掉，回 204。
+pub const CLIENT_SSH_EXPORT_CODE_PATH: &str = "/ssh-export/email-code";
+pub const CLIENT_SSH_EXPORT_VERIFY_PATH: &str = "/ssh-export/email-code/verify";
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmailCodeVerify {
+    pub code: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

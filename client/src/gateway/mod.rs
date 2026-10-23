@@ -80,6 +80,8 @@ pub struct Inner {
     pub rtc: Arc<crate::rtc::Rtc>,
     /// 本机 App 连同一账户其他电脑的连接（src/rtc/outbound.rs）
     pub outbound: Arc<crate::rtc::outbound::Outbound>,
+    /// 从另一台电脑导入 SSH 主机：进行中的导出与导入（src/ssh_transfer.rs）
+    pub ssh_transfer: crate::ssh_transfer::SshTransfer,
 }
 
 impl Inner {

@@ -3,7 +3,7 @@
 // 选好后显示脱敏的概况（算法、指纹、首尾几个字符），“系统密钥”也列出 ssh 会试的钥匙。可以经跳板机（另一台保存的主机）连接，
 // 添加主机时也能顺手新建跳板机；目标机的密钥配在跳板机上的，登录方式选“跳板机代登”，这台不用填任何密码 / 私钥。标了“允许 AI 使用”的主机，AI 助手可以经 MCP（“AI 助手”页）运行命令，同样拿不到密码。
 // 测试连接用 `ssh -v`：添加 / 修改时保存前就能测（新主机保存后也自动测一次），失败时说清卡在哪一步、为什么、怎么办，附完整日志。
-import { Bot, CheckCircle2, FolderOpen, KeyRound, LockKeyhole, Pencil, Play, Plus, PlugZap, Server, ShieldCheck, Trash2, Upload, Waypoints } from 'lucide-react';
+import { ArrowDownToLine, Bot, CheckCircle2, FolderOpen, KeyRound, LockKeyhole, Pencil, Play, Plus, PlugZap, Server, ShieldCheck, Trash2, Upload, Waypoints } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,6 +13,7 @@ import { errorText } from '../shared/i18n.js';
 import { Link, useRouter } from '../shared/router.jsx';
 import { Button, Card, CopyButton, Empty, ErrorNote, Field, FoldNote, Modal, Note, PasswordInput, Skeleton, Switch, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { Seg } from './Settings.jsx';
+import { ImportDialog, TransferPanel } from './SshTransfer.jsx';
 import { FolderPicker } from './Terminals.jsx';
 
 const EMPTY = { name: '', host: '', port: 22, user: '', auth: 'agent', key_path: '~/.ssh/id_ed25519', key_stored: false, jump: '', allow_ai: false };
@@ -686,8 +687,10 @@ function HostCard({ h, hosts, ai, autoTest, onEdit, onChanged }) {
 
 export default function SshHosts() {
   const { t } = useTranslation();
+  const { status } = useStatus();
   const [data, error, reload] = useLoad(() => api.get('/ssh/hosts'));
   const [dialog, setDialog] = useState(null);
+  const [importing, setImporting] = useState(false);
   // 刚添加、保存前没测通的主机：卡片出来后自动测试
   const [autoTest, setAutoTest] = useState(null);
   const items = data?.items ?? [];
@@ -695,11 +698,16 @@ export default function SshHosts() {
     <>
       <div className="page-head">
         <h1>{t('ssh.title')}</h1>
-        {items.length > 0 && (
-          <Button icon={Plus} onClick={() => setDialog({})}>
-            {t('ssh.add')}
+        <span className="row">
+          <Button variant="ghost" icon={ArrowDownToLine} onClick={() => setImporting(true)}>
+            {t('sshx.import')}
           </Button>
-        )}
+          {items.length > 0 && (
+            <Button icon={Plus} onClick={() => setDialog({})}>
+              {t('ssh.add')}
+            </Button>
+          )}
+        </span>
       </div>
       <ErrorNote error={error} />
       {data && !data.ssh && <Note kind="warn">{t('ssh.no_ssh')}</Note>}
@@ -734,6 +742,8 @@ export default function SshHosts() {
           <li>{t('ssh.safety_4')}</li>
         </ul>
       </FoldNote>
+      <TransferPanel local={status.access === 'local'} />
+      {importing && <ImportDialog local={items} onClose={() => setImporting(false)} onDone={reload} />}
       {dialog && (
         <HostDialog
           initial={dialog.id ? dialog : null}

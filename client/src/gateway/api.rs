@@ -17,6 +17,7 @@ use crate::account::VERSION;
 use crate::error::LocalError;
 use crate::instances::{log_tail, Backend, Input, Instances};
 use crate::settings::Settings;
+use crate::ssh_transfer as xfer;
 use crate::tools;
 use crate::transfer;
 
@@ -94,6 +95,24 @@ pub fn routes(app: App) -> Router<App> {
         .route("/ssh/hosts/{id}/test", post(ssh_test))
         .route("/ssh/hosts/{id}/ai", put(ssh_allow_ai))
         .route("/ssh/test", post(ssh_test_draft))
+        // 从另一台电脑导入（docs/SSH_TRANSFER.md）：旧电脑这边
+        .route("/ssh/transfer/list", post(xfer_list))
+        .route("/ssh/transfer/start", post(xfer_start))
+        .route("/ssh/transfer/reveal", post(xfer_reveal))
+        .route("/ssh/transfer/fetch", post(xfer_fetch))
+        .route("/ssh/transfer/cancel", post(xfer_cancel))
+        .route("/ssh/transfer/pending", get(xfer_pending))
+        .route("/ssh/transfer/settings", get(xfer_settings).put(put_xfer_settings))
+        .route("/ssh/transfer/log", get(xfer_log))
+        .route("/ssh/transfer/{id}/approve", post(xfer_approve))
+        .route("/ssh/transfer/{id}/reject", post(xfer_reject))
+        .route("/ssh/transfer/{id}/email-code", post(xfer_email_code))
+        // 新电脑这边
+        .route("/ssh/import/sources", get(import_sources))
+        .route("/ssh/import/hosts", post(import_hosts))
+        .route("/ssh/import/start", post(import_start))
+        .route("/ssh/import/{id}", get(import_view))
+        .route("/ssh/import/{id}/cancel", post(import_cancel))
         .route("/fs/list", get(fs_list))
         .route("/fs/download", get(fs_download))
         .route("/fs/preview", get(fs_preview))
@@ -914,6 +933,142 @@ async fn ssh_create(State(app): State<App>, Json(req): Json<crate::ssh::HostInpu
 
 async fn ssh_update(State(app): State<App>, Path(id): Path<String>, Json(req): Json<crate::ssh::HostInput>) -> R<Json<crate::ssh::Saved>> {
     Ok(Json(crate::ssh::save(&app.store, &app.paths.home, Some(&id), req)?))
+}
+
+// ---------------- SSH 主机：从另一台电脑导入（ssh_transfer.rs，docs/SSH_TRANSFER.md） ----------------
+
+/// 旧电脑这边给新电脑调的接口：只接受经 WebRTC 的请求，中转 HTTP 回退（中转看得到内容）一律拒绝。
+fn rtc_only(access: &Access) -> R<()> {
+    match access {
+        Access::Rtc { .. } => Ok(()),
+        _ => Err(LocalError::new("SSH_TRANSFER_NEED_RTC")),
+    }
+}
+
+/// 确认 / 拒绝导出：本机界面总可以；经 WebRTC 的远程会话要这台电脑打开了“允许远程确认”。返回是不是远程。
+fn approver(app: &App, access: &Access) -> R<bool> {
+    match access {
+        Access::Local => Ok(false),
+        Access::Rtc { .. } if xfer::Config::load(&app.store).allow_remote_approve => Ok(true),
+        Access::Rtc { .. } => Err(LocalError::new("SSH_TRANSFER_LOCAL_APPROVE")),
+        Access::Remote { .. } => Err(LocalError::new("SSH_TRANSFER_NEED_RTC")),
+    }
+}
+
+/// 新电脑这边要连另一台电脑：“只看本机”时不连。
+fn can_dial(app: &App) -> R<()> {
+    require_allowed(app)?;
+    if local_only(app) {
+        return Err(LocalError::new("SSH_TRANSFER_LOCAL_ONLY"));
+    }
+    Ok(())
+}
+
+async fn xfer_list(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
+    rtc_only(&access)?;
+    require_allowed(&app)?;
+    Ok(Json(xfer::list(&app).await?))
+}
+
+async fn xfer_start(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<xfer::StartReq>) -> R<Json<xfer::StartResp>> {
+    rtc_only(&access)?;
+    require_allowed(&app)?;
+    Ok(Json(xfer::start(&app, req).await?))
+}
+
+async fn xfer_reveal(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<xfer::RevealReq>) -> R<StatusCode> {
+    rtc_only(&access)?;
+    xfer::reveal(&app, req)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn xfer_fetch(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<xfer::IdReq>) -> R<Json<xfer::FetchResp>> {
+    rtc_only(&access)?;
+    Ok(Json(xfer::fetch(&app, req)))
+}
+
+async fn xfer_cancel(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<xfer::IdReq>) -> R<StatusCode> {
+    rtc_only(&access)?;
+    xfer::cancel_export(&app, req).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn xfer_pending(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
+    let remote = approver(&app, &access)?;
+    let mut v = xfer::pending(&app);
+    v["remote"] = remote.into();
+    Ok(Json(v))
+}
+
+#[derive(Deserialize)]
+struct ApproveReq {
+    code: String,
+    #[serde(default)]
+    email_code: Option<String>,
+}
+
+async fn xfer_approve(State(app): State<App>, Extension(access): Extension<Access>, Path(id): Path<String>, Json(req): Json<ApproveReq>) -> R<Json<Value>> {
+    let remote = approver(&app, &access)?;
+    Ok(Json(xfer::approve(&app, &id, &req.code, req.email_code.as_deref(), remote).await?))
+}
+
+async fn xfer_reject(State(app): State<App>, Extension(access): Extension<Access>, Path(id): Path<String>) -> R<StatusCode> {
+    approver(&app, &access)?;
+    xfer::reject(&app, &id)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn xfer_email_code(State(app): State<App>, Extension(access): Extension<Access>, Path(id): Path<String>) -> R<StatusCode> {
+    if !approver(&app, &access)? {
+        // 本机确认不需要邮箱验证码
+        return Err(LocalError::new("SSH_TRANSFER_STATE"));
+    }
+    xfer::email_code(&app, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn xfer_settings(State(app): State<App>) -> Json<xfer::Config> {
+    Json(xfer::Config::load(&app.store))
+}
+
+/// “允许远程确认 SSH 导出”只能在这台电脑的本机界面打开，远程会话打不开它（§4.3）。
+async fn put_xfer_settings(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<xfer::Config>) -> R<Json<xfer::Config>> {
+    require_local(&access)?;
+    req.save(&app.store)?;
+    Ok(Json(req))
+}
+
+async fn xfer_log(State(app): State<App>) -> Json<Value> {
+    Json(json!({ "items": xfer::log(&app.store) }))
+}
+
+async fn import_sources(State(app): State<App>) -> R<Json<Value>> {
+    can_dial(&app)?;
+    Ok(Json(xfer::sources(&app).await?))
+}
+
+#[derive(Deserialize)]
+struct ImportFrom {
+    from: String,
+}
+
+async fn import_hosts(State(app): State<App>, Json(req): Json<ImportFrom>) -> R<Json<Value>> {
+    can_dial(&app)?;
+    Ok(Json(xfer::remote_hosts(&app, &req.from).await?))
+}
+
+async fn import_start(State(app): State<App>, Json(req): Json<xfer::ImportReq>) -> R<Json<Value>> {
+    can_dial(&app)?;
+    Ok(Json(xfer::begin(&app, req).await?))
+}
+
+async fn import_view(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    xfer::view(&app, &id).map(Json).ok_or_else(LocalError::not_found)
+}
+
+async fn import_cancel(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    xfer::cancel_import(&app, &id)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// 这台电脑 `~/.ssh` 里的私钥文件（路径），添加主机时快捷选择。

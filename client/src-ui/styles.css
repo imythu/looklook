@@ -94,6 +94,12 @@ p { margin: 0 0 12px; }
 .lang-switch { gap: 6px; font-size: 14px; }
 .topbar > * { min-width: 0; }
 @media (max-width: 379px) { .topbar .brand-text { display: none; } .topbar { padding: 10px 12px; } }
+/* 控制台顶栏只在手机上显示（宽屏上侧栏里都有），--topbar-h 是它占的高度 */
+:root { --topbar-h: 60px; }
+@media (min-width: 900px) {
+  :root { --topbar-h: 0px; }
+  .topbar-console { display: none; }
+}
 
 /* ---------- 控制台：左侧栏（用户、新会话、工具、项目和会话），电脑上可收成图标栏，手机是抽屉 ---------- */
 .console { display: grid; grid-template-columns: minmax(0, 1fr); }
@@ -105,6 +111,18 @@ p { margin: 0 0 12px; }
   border-right: 1px solid var(--line); overflow: hidden; min-height: 0;
 }
 .side-head { display: flex; align-items: center; gap: 4px; flex: none; }
+/* 侧栏顶上的 logo（宽屏上没有顶栏，logo 在这里） */
+.side-brand { flex: none; padding: 2px 4px 4px; }
+.side-brand:active .brand-mark { transform: scale(.94); }
+.brand-mark { transition: transform .12s; }
+.rail-brand { position: relative; display: grid; place-items: center; width: 40px; height: 40px; margin-bottom: 4px; padding: 0; border: 0; border-radius: 11px; background: none; color: var(--text); cursor: pointer; }
+.rail-brand > * { grid-area: 1 / 1; }
+.rail-brand-open { opacity: 0; transition: opacity .12s; }
+.rail-brand:hover, .rail-brand:focus-visible { background: var(--panel-2); }
+.rail-brand:hover .brand-mark, .rail-brand:focus-visible .brand-mark { opacity: 0; }
+.rail-brand:hover .rail-brand-open, .rail-brand:focus-visible .rail-brand-open { opacity: 1; }
+@media (hover: none) { .rail-brand .rail-brand-open { display: none; } .rail-brand .brand-mark { opacity: 1 !important; } }
+@media (prefers-reduced-motion: reduce) { .brand-mark, .rail-brand-open { transition: none; } }
 .side-me {
   display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; padding: 8px 10px; border-radius: 14px; border: 0;
   color: var(--text); background: var(--panel-2); font: inherit; text-align: left; cursor: pointer;
@@ -149,10 +167,23 @@ p { margin: 0 0 12px; }
 .side-rail .rail-new:hover:not(:disabled) { filter: brightness(1.08); }
 .rail-count { position: absolute; top: 2px; right: 0; min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--warn); color: #fff; font: 700 10.5px/17px var(--font); text-align: center; }
 .rail-sep { width: 28px; border-top: 1px solid var(--line); margin: 4px 0; }
+/* 侧栏底部：连接状态、语言（宽屏；手机上它们在顶栏）。侧栏裁掉溢出，弹出框往上开、不超出侧栏 */
+.side-foot { flex: none; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0 -12px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.side-foot .relay-pop { top: auto; bottom: calc(100% + 8px); left: 0; right: auto; width: 248px; }
+/* 图标栏：连接状态只留色点；弹出框贴在图标栏右边（图标栏也会裁掉溢出） */
+.rail-foot { margin-top: auto; padding-top: 6px; }
+.side-rail .conn-chip { width: 40px; padding: 0; justify-content: center; }
+.side-rail .conn-chip > span:not(.dot) { display: none; }
+.side-rail .relay-pop { position: fixed; top: auto; bottom: 12px; left: 68px; right: auto; }
+.side-rail .device-pill { width: 40px; min-height: 40px; padding: 0; justify-content: center; border-radius: 11px; }
+.side-rail .device-pill > .ellipsis, .side-rail .device-chev { display: none; }
+.side-rail .device-menu { position: fixed; top: 12px; left: 68px; right: auto; }
+.side-rail .device-tip { display: none; }
+@media (max-width: 899px) { .side-foot { display: none; } }
 @media (min-width: 900px) {
   .console { grid-template-columns: 272px minmax(0, 1fr); }
   .console-rail { grid-template-columns: 60px minmax(0, 1fr); }
-  .side { position: sticky; top: 60px; height: calc(100vh - 60px); }
+  .side { position: sticky; top: var(--topbar-h); height: calc(100vh - var(--topbar-h)); }
   .topbar .menu-btn, .side .side-close { display: none; }
 }
 @media (max-width: 899px) {
@@ -1187,6 +1218,31 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .ssh-ai { display: flex; align-items: flex-start; gap: 14px; padding: 12px 14px; margin: 4px 0 14px; border-radius: 12px; background: var(--panel-2); }
 .ssh-ai b { display: inline-flex; align-items: center; gap: 6px; }
 .ssh-ai p { margin: 4px 0 0; }
+/* SSH 主机从另一台电脑导入（SshTransfer.jsx） */
+.sshx { display: flex; flex-direction: column; gap: 12px; }
+.sshx-list { display: flex; flex-direction: column; gap: 8px; max-height: 52vh; overflow-y: auto; }
+.sshx-source { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.sshx-source:hover:not(:disabled) { border-color: var(--brand); }
+.sshx-source:disabled { opacity: .55; cursor: not-allowed; }
+.sshx-host { border: 1px solid var(--line); border-radius: var(--radius-sm); padding: 10px 12px; }
+.sshx-host.on { border-color: color-mix(in srgb, var(--brand) 45%, var(--line)); }
+.sshx-host-head { gap: 10px; cursor: pointer; }
+.sshx-host-head b, .sshx-host-head .mono { display: inline; }
+.sshx-host-body { display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0 26px; }
+.sshx-agent, .sshx-remote { gap: 10px; }
+.sshx-clash { display: flex; flex-direction: column; gap: 8px; }
+.sshx-steps { display: flex; flex-wrap: wrap; gap: 6px 16px; margin: 0; padding: 0; list-style: none; font-size: 13px; color: var(--muted); }
+.sshx-steps li.done { color: var(--ok); }
+.sshx-steps li.now { color: var(--text); font-weight: 600; }
+.sshx-code-box { text-align: center; padding: 16px; border-radius: var(--radius-sm); background: var(--brand-soft); }
+.sshx-code { font-size: 40px; font-weight: 700; letter-spacing: .12em; margin: 8px 0; }
+.sshx-code-input { font-size: 22px; letter-spacing: .2em; text-align: center; }
+.sshx-results { display: flex; flex-direction: column; gap: 10px; }
+.sshx-result { display: flex; flex-direction: column; gap: 6px; }
+.sshx-approve-list { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 6px; max-height: 36vh; overflow-y: auto; }
+.sshx-panel { display: flex; flex-direction: column; gap: 10px; }
+.sshx-panel .block { display: block; }
+.sshx-log { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
 .ssh-card { display: flex; flex-direction: column; gap: 12px; }
 .ssh-card-head { display: flex; gap: 12px; align-items: center; min-width: 0; }
 .ssh-card-head h3 { margin: 0; font-size: 16px; }
@@ -1714,7 +1770,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .fab:disabled { opacity: .55; }
 
 /* ---------- 开始页（新会话） ---------- */
-.start { min-height: calc(100vh - 60px); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 32px 20px 40px; }
+.start { min-height: calc(100vh - var(--topbar-h)); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 32px 20px 40px; }
 .start-back.btn { align-self: flex-start; gap: 4px; min-height: 36px; padding: 0 8px; margin: -8px 0 -4px -6px; }
 .start-title { margin: 0; font-size: 26px; font-weight: 650; text-align: center; text-wrap: balance; }
 .start > .composer, .start > .note, .start-foot { width: 100%; max-width: 720px; }
@@ -1807,7 +1863,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .conv-acts { display: flex; flex-wrap: wrap; gap: 6px; }
 .conv-empty { margin: 0; padding: 14px; font-size: 13px; color: var(--muted); text-align: center; }
 /* 所有以前的对话：左边筛选、中间列表、右边完整预览 */
-.hist-page { display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 0; min-height: calc(100vh - 60px); }
+.hist-page { display: grid; grid-template-columns: 232px minmax(0, 1fr); gap: 0; min-height: calc(100vh - var(--topbar-h)); }
 .hist-page.with-detail { grid-template-columns: 232px minmax(0, 1fr) minmax(380px, 38%); }
 .hist-main { display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 18px 22px 40px; }
 .hist-main > section, .hist-main > .hist-group { display: grid; }
@@ -1817,7 +1873,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .hist-filter-btn { display: none; }
 .hist-filter-btn.on { color: var(--brand); }
 .hist-more { justify-self: center; align-self: center; }
-.hfilters { position: sticky; top: 60px; align-self: start; max-height: calc(100vh - 60px); overflow-y: auto; display: grid; gap: 14px; padding: 18px 10px 24px 14px; border-right: 1px solid var(--line); }
+.hfilters { position: sticky; top: var(--topbar-h); align-self: start; max-height: calc(100vh - var(--topbar-h)); overflow-y: auto; display: grid; gap: 14px; padding: 18px 10px 24px 14px; border-right: 1px solid var(--line); }
 .hfilters-head { display: flex; align-items: center; justify-content: space-between; min-height: 28px; font-size: 14px; }
 .hfacet { display: grid; gap: 1px; }
 .hfacet-title { margin: 0 0 4px; padding: 0 6px; font-size: 12px; font-weight: 600; letter-spacing: .03em; color: var(--muted); }
@@ -1848,7 +1904,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .hrow:hover .hrow-acts, .hrow-acts:focus-within { visibility: visible; }
 .hrow-acts .btn-icon { width: 30px; min-height: 30px; border-radius: 7px; }
 .hrow-acts [aria-pressed="true"] { color: var(--warn); }
-.hdetail { position: sticky; top: 60px; align-self: start; height: calc(100vh - 60px); display: flex; flex-direction: column; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); }
+.hdetail { position: sticky; top: var(--topbar-h); align-self: start; height: calc(100vh - var(--topbar-h)); display: flex; flex-direction: column; min-width: 0; border-left: 1px solid var(--line); background: var(--panel); }
 .hdetail-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 12px 12px 16px; border-bottom: 1px solid var(--line); }
 .hdetail-head > .lucide, .hdetail-head > .brand-icon { flex: none; margin-top: 3px; }
 .hdetail-titles { flex: 1; min-width: 0; display: grid; gap: 4px; }

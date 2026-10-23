@@ -34,6 +34,7 @@ import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
 import { ConnChip } from './shared/RelayStatus.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
+import { TransferBanner } from './pages/SshTransfer.jsx';
 
 const StatusCtx = createContext({ status: null, reload: () => {} });
 
@@ -281,6 +282,7 @@ function ToolGroup({ path }) {
 function SideNav({ open, onClose, rail, onRail, path }) {
   const { t } = useTranslation();
   const { status } = useStatus();
+  const devices = useDevices();
   const ui = useSessionUi();
   const sessions = useSessions();
   const userMenu = useUserMenu();
@@ -296,14 +298,18 @@ function SideNav({ open, onClose, rail, onRail, path }) {
   }, [open]);
   if (rail) {
     const attn = sessions.items.filter((i) => sessionState(i) === 'attn');
+    const switcher = (devices.multi || devices.localOnly) && DEVICE_PAGES.includes(path);
     return (
       <aside className="side side-rail" id="side-nav" aria-label={t('nav.main')}>
-        <button type="button" className="btn btn-plain btn-icon" onClick={() => onRail(false)} aria-label={t('sess.expand_side')} title={`${t('sess.expand_side')} (Ctrl+Shift+S)`}>
-          <PanelLeftOpen size={18} />
+        {/* 收起时点 logo 展开侧栏（移上去变成“展开”图标）；展开时点 logo 回首页 */}
+        <button type="button" className="side-brand rail-brand" onClick={() => onRail(false)} aria-label={t('sess.expand_side')} title={`${t('sess.expand_side')} (Ctrl+Shift+S)`}>
+          <BrandMark size={30} />
+          <PanelLeftOpen size={18} className="rail-brand-open" aria-hidden="true" />
         </button>
         <PopMenu items={userMenu} className="btn btn-plain btn-icon" label={s.user.nickname}>
           <Initial name={s.user.nickname} />
         </PopMenu>
+        {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
         <button type="button" className="btn btn-icon rail-new" onClick={() => ui.newSession()} disabled={!allowed} aria-label={t('sess.new')} title={`${t('sess.new')} (Ctrl+Shift+O)`}>
           <Plus size={18} />
         </button>
@@ -327,6 +333,9 @@ function SideNav({ open, onClose, rail, onRail, path }) {
             {x.badge === 'update' && shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
           </Link>
         ))}
+        <span className="rail-foot">
+          <ConnChip />
+        </span>
       </aside>
     );
   }
@@ -334,6 +343,10 @@ function SideNav({ open, onClose, rail, onRail, path }) {
     <>
       {open && <div className="side-backdrop" onClick={onClose} aria-hidden="true" />}
       <aside className={`side ${open ? 'open' : ''}`} id="side-nav" aria-label={t('nav.main')}>
+        <Link to="/" className="brand side-brand">
+          <BrandMark size={28} />
+          <span className="brand-text">{t('brand')}</span>
+        </Link>
         <div className="side-head">
           <PopMenu items={userMenu} className="side-me" label={s.user.nickname}>
             <Initial name={s.user.nickname} />
@@ -362,6 +375,10 @@ function SideNav({ open, onClose, rail, onRail, path }) {
         <ToolGroup path={path} />
         <div className="side-sessions">
           <SessionList currentId={current} />
+        </div>
+        <div className="side-foot">
+          <ConnChip />
+          <LangSwitch />
         </div>
       </aside>
     </>
@@ -404,7 +421,8 @@ function ConsoleLayout({ path, stale, children }) {
   const sess = path.match(SESS)?.[1] ?? null;
   return (
     <>
-      <header className="topbar">
+      {/* 手机上的顶栏；宽屏上这些都在侧栏里（连接、语言在侧栏底部），不再占一整行 */}
+      <header className="topbar topbar-console">
         <span className="inline" style={{ flexWrap: 'nowrap', gap: 4 }}>
           <button type="button" className="btn btn-plain btn-icon menu-btn" onClick={() => setOpen(true)} aria-label={t('nav.menu')} aria-expanded={open} aria-controls="side-nav">
             <Menu size={22} />
@@ -430,6 +448,7 @@ function ConsoleLayout({ path, stale, children }) {
         </span>
       </header>
       <GateBanner />
+      <TransferBanner />
       <UpdateBanner />
       <JustUpdatedBanner />
       <RelayHint />
