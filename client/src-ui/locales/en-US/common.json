@@ -1517,7 +1517,9 @@
     "res_open": "View full size",
     "res_made": "Files it produced ({{n}})",
     "side_toggle_codex": "Changes, resources and usage",
-    "compacting": "Compacting the conversation…"
+    "compacting": "Compacting the conversation…",
+    "detached_terminal_only_title": "The chat can't reach Codex right now; the terminal still works",
+    "detached_terminal_only_body": "Looklook's Codex background service was unavailable, so the terminal is running the same conversation directly. Keep using it in the Terminal tab. After you quit Codex in the terminal (Ctrl+C twice), the chat reconnects."
   },
   "sess": {
     "new": "New session",

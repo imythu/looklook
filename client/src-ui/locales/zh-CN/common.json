@@ -1517,7 +1517,9 @@
     "res_open": "查看原图",
     "res_made": "产出的文件（{{n}}）",
     "side_toggle_codex": "改动、资源和用量",
-    "compacting": "正在压缩上下文…"
+    "compacting": "正在压缩上下文…",
+    "detached_terminal_only_title": "对话页暂时连不上 Codex，终端照常能用",
+    "detached_terminal_only_body": "看看的 Codex 后台服务刚才用不了，终端里改成直接运行同一段对话，可以继续在“终端”标签里用。在终端里退出 Codex（Ctrl+C 两次）后，对话页会重新接上。"
   },
   "sess": {
     "new": "新会话",

@@ -196,7 +196,8 @@ export function ToastProvider({ children }) {
   const push = useCallback((text, kind = 'ok', action = null) => {
     const id = Math.random();
     const drop = () => setItems((xs) => xs.filter((x) => x.id !== id));
-    setItems((xs) => [...xs, { id, text, kind, action, drop }]);
+    // 同样的提示已经在显示（例如连不上时每个请求都报一次）：不再叠一条
+    setItems((xs) => (!action && xs.some((x) => x.text === text && x.kind === kind && !x.action) ? xs : [...xs, { id, text, kind, action, drop }]));
     setTimeout(drop, action ? 6000 : 2400);
   }, []);
   return (

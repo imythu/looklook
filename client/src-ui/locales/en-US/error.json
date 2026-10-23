@@ -206,5 +206,6 @@
   "CHAT_FOREIGN": "The {{agent}} in the terminal wasn't opened by Looklook, so the chat view can't be used",
   "CODEX_APP_SERVER": "Couldn't reach the Codex background service. Please try again",
   "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer",
-  "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}"
+  "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}",
+  "CHAT_TERMINAL_ONLY": "The chat can't reach Codex right now; use the terminal for now"
 }

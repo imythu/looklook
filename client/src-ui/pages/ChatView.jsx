@@ -1500,14 +1500,23 @@ function usePoll(url, { enabled = true, every = 0, deps = [] } = {}) {
     if (!enabled) return undefined;
     let alive = true;
     let timer = null;
+    let misses = 0;
     const load = async () => {
       try {
         const d = await api.get(url);
         if (!alive) return;
         setData(d);
         setError(null);
+        misses = 0;
       } catch (e) {
-        if (alive) setError(e);
+        if (!alive) return;
+        setError(e);
+        // 连不上（客户端在重启、更新、网络断了）：过一会儿自己再取，不用等用户重新打开
+        if (e.code === 'CLIENT_UNREACHABLE' || e.code === 'NETWORK') {
+          misses += 1;
+          timer = setTimeout(load, Math.min(2000 * misses, 15000));
+          return;
+        }
       }
       if (alive && every) timer = setTimeout(load, document.hidden ? every * 3 : every);
     };
@@ -2073,11 +2082,12 @@ const readSide = () => {
  * onTab(tab)：切到终端的别的标签（例如右侧“改动”里的“在 Git 里查看”）。
  * 对话页里不出现终端：Claude Code 的选择框显示成弹窗，界面做不了的就不做，用户自己切到“终端”标签去。
  */
-export default function ChatView({ id, active, touch, onTab }) {
+export default function ChatView({ id, launch, active, touch, onTab }) {
   const router = useRouter();
   const chat = useChat(id);
   const { status, items } = chat;
-  const agentId = status?.agent ?? 'claude';
+  // 状态还没取到（刚切过来、连不上）时按终端的启动类型，不能先显示成 Claude Code
+  const agentId = status?.agent ?? (AGENT_NAMES[launch] ? launch : 'claude');
   const agentName = AGENT_NAMES[agentId] ?? AGENT_NAMES.claude;
   const { t } = useT(agentName);
   const caps = status?.caps;

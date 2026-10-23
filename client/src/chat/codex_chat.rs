@@ -205,11 +205,15 @@ impl Chat {
         }
         let (tx, rx) = mpsc::unbounded_channel();
         let server = AppServer::start(&self.paths.home.join("run"), program, env.as_ref(), signature, tx).await?;
-        self.codex.generation.fetch_add(1, Ordering::SeqCst);
+        let gen = self.codex.generation.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.codex.threads).clear();
         *slot = Some(server.clone());
         if let Some(me) = self.me.upgrade() {
-            tokio::spawn(me.codex_events(rx));
+            tokio::spawn(me.clone().codex_events(rx));
+            // 不是第一次连（app-server 换过进程）：终端里重连上来的 TUI 要用的会话先加载好
+            if gen > 1 {
+                tokio::spawn(me.codex_reload_terminals(server.clone(), gen));
+            }
         }
         Ok(server)
     }
@@ -223,9 +227,11 @@ impl Chat {
     /// 让这个终端的 thread 在当前 app-server 里加载着（打开对话、发消息、回答之前调用）。
     /// 还没有会话时什么都不做：第一条消息时再 `thread/start`。
     pub(super) async fn codex_attach(&self, id: &str) -> Result<Arc<AppServer>, LocalError> {
-        // 终端里跑着不是看看打开的 Codex（旧版本留下的、用户自己在终端里开的）：两边会同时写一个会话，对话界面不接
-        if self.codex_foreign(id).await {
-            return Err(LocalError::new("CHAT_FOREIGN"));
+        // 终端里跑着的 Codex 不是接在看看 app-server 上的：两边会同时写一个会话，对话界面不接
+        match self.codex_terminal_kind(id).await {
+            TermCodex::Foreign => return Err(LocalError::new("CHAT_FOREIGN")),
+            TermCodex::Local => return Err(LocalError::new("CHAT_TERMINAL_ONLY")),
+            TermCodex::None | TermCodex::Remote => {}
         }
         let server = self.codex_server().await?;
         let gen = self.codex.generation.load(Ordering::SeqCst);
@@ -809,14 +815,54 @@ impl Chat {
 
     // ---------------- 不是看看打开的 Codex ----------------
 
-    /// 终端里跑着 Codex、但不是看看打开的那种（看看开的都带 `--remote`，接在看看的 app-server 上）
-    async fn codex_foreign(&self, id: &str) -> bool {
-        let Some(pane) = self.instances.pane(id).await else { return false };
-        match tokio::task::block_in_place(|| super::find_under(pane.pid, &["codex"])) {
-            Some(args) => !args.iter().any(|a| a == "--remote"),
-            None => false,
+    /// 终端里跑的是哪种 Codex：看看开的、接在 app-server 上的（`--remote`）；app-server 用不了时看看开的
+    /// 本机版（`--no-daemon resume <这个会话>`，不带旧版本的 `-p`）；别的都算不是看看开的
+    async fn codex_terminal_kind(&self, id: &str) -> TermCodex {
+        let Some(pane) = self.instances.pane(id).await else { return TermCodex::None };
+        let Some(args) = tokio::task::block_in_place(|| super::find_under(pane.pid, &["codex"])) else { return TermCodex::None };
+        let has = |s: &str| args.iter().any(|a| a == s);
+        if has("--remote") {
+            return TermCodex::Remote;
         }
-    }}
+        let thread = lock(&self.inst(id).st).binding.as_ref().map(|b| b.session_id.clone());
+        let ours = has("--no-daemon") && !has("-p") && !has("--profile") && thread.as_deref().is_none_or(|t| has(t));
+        if ours {
+            TermCodex::Local
+        } else {
+            TermCodex::Foreign
+        }
+    }
+
+    /// app-server 换了一个进程（崩了、配置变了）之后：终端里接着的 TUI 会自己重连到同一个端口，
+    /// 但新进程里还没有这些会话（TUI 会显示“只读或不可用”），先替它们加载上
+    async fn codex_reload_terminals(self: Arc<Self>, server: Arc<AppServer>, gen: u64) {
+        let Ok(rows) = self.store.instances() else { return };
+        for row in rows {
+            let Some(b) = crate::chat::binding(&self.store, &row.id) else { continue };
+            if !self.instances.codex_app_mode(&row) || !matches!(self.codex_terminal_kind(&row.id).await, TermCodex::Remote) {
+                continue;
+            }
+            // 直接用这个新进程加载（不经 codex_attach：那里可能又起 app-server，会绕回这里）
+            let mut params = json!({ "threadId": b.session_id, "cwd": row.workdir, "excludeTurns": true });
+            merge(&mut params, self.codex_policy(&row.id));
+            match server.call("thread/resume", params).await {
+                Ok(r) => self.codex_loaded(&self.inst(&row.id), &r, gen),
+                Err(e) => tracing::debug!(id = %row.id, error = ?e, "终端里的 Codex 会话没能重新加载"),
+            }
+        }
+    }
+}
+
+/// 终端里跑着的 Codex
+enum TermCodex {
+    None,
+    /// 看看开的、接在 app-server 上（和对话界面同步）
+    Remote,
+    /// 看看开的、app-server 用不了时本机直接运行的（对话界面暂时不可用）
+    Local,
+    /// 别人开的（旧版本留下的、用户在终端里自己开的）
+    Foreign,
+}
 
 fn merge(a: &mut Value, b: Value) {
     if let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) {

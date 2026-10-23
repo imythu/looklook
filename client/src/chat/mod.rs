@@ -639,6 +639,9 @@ impl Chat {
                 if e.code == "CHAT_FOREIGN" {
                     // 不是看看打开的：界面上说明，不算出错
                     Self::set_phase(&inst, &mut st, Phase::Detached, Some("not_attached"));
+                } else if e.code == "CHAT_TERMINAL_ONLY" {
+                    // 后台连不上时终端在本机直接跑：说明对话暂时不可用，终端照常能用
+                    Self::set_phase(&inst, &mut st, Phase::Detached, Some("terminal_only"));
                 } else {
                     st.error = Some(format!("{:?}", e).chars().take(500).collect());
                     Self::set_phase(&inst, &mut st, Phase::Detached, Some("app_server"));

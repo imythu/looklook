@@ -159,7 +159,11 @@ impl AppServer {
                 if let Some(pid) = saved_pid {
                     kill_pid(pid);
                 }
-                let port = free_port().ok_or_else(|| LocalError::new("CODEX_APP_SERVER").with("detail", "no free port"))?;
+                // 尽量用原来的端口：终端里的 TUI 断线后会自己重连（实测 0.159），端口和口令不变就能接回来
+                let port = saved_port
+                    .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
+                    .or_else(free_port)
+                    .ok_or_else(|| LocalError::new("CODEX_APP_SERVER").with("detail", "no free port"))?;
                 let pid = spawn(run, &program, env, port, &token_file)?;
                 let deadline = tokio::time::Instant::now() + START_WAIT;
                 while !ready(port).await {
@@ -216,6 +220,8 @@ impl AppServer {
                 reader.dispatch(msg, &tx);
             }
             reader.alive.store(false, Ordering::SeqCst);
+            // 连接断了：在重新连上之前，终端不再按这个地址拼命令（改用本机直接运行的 Codex，见 instances.rs）
+            *lock(&ENDPOINT) = None;
             for (_, w) in lock(&reader.waiting).drain() {
                 let _ = w.send(Err(json!({ "message": "app-server connection closed" })));
             }
@@ -339,6 +345,15 @@ fn spawn(run: &Path, program: &Path, env: Option<&crate::model::LaunchEnv>, port
     Ok(pid)
 }
 
+/// app-server 用不了时终端里直接运行的 Codex（同一个会话，`--no-daemon`）：对话界面暂时不可用，但终端照常能用。
+/// 对话界面据此认出“这是看看开的、只是暂时走终端”（[`super::codex_chat`]），不当成别人开的。
+pub fn local_command(base: &str, thread: Option<&str>) -> String {
+    match thread.filter(|t| crate::history::valid_id(t)) {
+        Some(t) => format!("{base} --no-daemon resume {t}"),
+        None => format!("{base} --no-daemon"),
+    }
+}
+
 /// 终端里接到同一个 app-server 的 Codex TUI：`<codex 命令> resume <thread> --remote <地址> --remote-auth-token-env …`；
 /// 还没有会话时开一个新的（app-server 会通知看看）。`base` 是 `codex` / `codex --yolo`。
 pub fn tui_command(base: &str, ep: &Endpoint, thread: Option<&str>) -> String {
@@ -366,5 +381,7 @@ mod tests {
         assert_eq!(tui_command("codex", &ep, Some("01a1-b2")), "codex resume 01a1-b2 --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
         assert_eq!(tui_command("codex --yolo", &ep, None), "codex --yolo --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
         assert!(!tui_command("codex", &ep, Some("x; rm -rf /")).contains("rm"), "会话号不合法时不拼进命令");
+        assert_eq!(local_command("codex", Some("01a1-b2")), "codex --no-daemon resume 01a1-b2");
+        assert_eq!(local_command("codex --yolo", None), "codex --yolo --no-daemon");
     }
 }

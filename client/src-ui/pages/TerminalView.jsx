@@ -363,7 +363,7 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, 
         {/* 对话一直挂着（切到别的标签时只是隐藏）：切回来时内容和滚动位置都还在 */}
         {running && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} active={active && tab === 'chat'} touch={false} onTab={setTab} />
+            <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} onTab={setTab} />
           </div>
         )}
       </div>
@@ -579,7 +579,7 @@ export default function TerminalView({ id }) {
         )}
         {live && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} active={tab === 'chat'} touch={touch} onTab={setTab} />
+            <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} onTab={setTab} />
           </div>
         )}
       </div>

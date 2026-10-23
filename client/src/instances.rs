@@ -938,10 +938,11 @@ impl Instances {
         if self.container(&row.id).is_some() {
             return cmd.to_string();
         }
-        if self.codex_app_mode(row) {
-            return match (cmd.contains("--remote"), codex_token_env()) {
-                (true, Some(e)) => e.wrap(cmd, family),
-                _ => cmd.to_string(),
+        // 接到 app-server 的 TUI：服务商在 app-server 那边，只加连接口令；本机直接运行时照常加服务商
+        if self.codex_app_mode(row) && cmd.contains("--remote") {
+            return match codex_token_env() {
+                Some(e) => e.wrap(cmd, family),
+                None => cmd.to_string(),
             };
         }
         match crate::model::launch_env(&self.store, &self.paths.home, &row.launch) {
@@ -1006,11 +1007,14 @@ impl Instances {
 
     /// 对话模式的 Codex 终端里跑的 TUI：`codex [--yolo] resume <会话> --remote ws://127.0.0.1:<端口> …`，
     /// 接到看看起的 app-server 上（见 `chat::codex_app`）。app-server 还没起时 None。
+    /// app-server 用不了（起不来、连不上）时改成本机直接运行同一个会话的 Codex：对话界面暂时不可用，终端照常能用。
     fn codex_tui_command(&self, row: &InstanceRow) -> Option<String> {
-        let ep = crate::chat::codex_app::endpoint()?;
         let base = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
         let thread = crate::chat::binding(&self.store, &row.id).map(|b| b.session_id);
-        Some(crate::chat::codex_app::tui_command(&base, &ep, thread.as_deref()))
+        Some(match crate::chat::codex_app::endpoint() {
+            Some(ep) => crate::chat::codex_app::tui_command(&base, &ep, thread.as_deref()),
+            None => crate::chat::codex_app::local_command(&base, thread.as_deref()),
+        })
     }
 
     /// 在终端已有的 shell 里接着打开同一个会话的 Codex TUI（用户退出了 TUI、或者终端是先开的 shell）：
@@ -1023,7 +1027,7 @@ impl Instances {
         let cmd = self.codex_tui_command(&row)?;
         let shell = crate::shells::resolve(&row.shell, &Settings::load(&self.store).default_shell).ok()?;
         let cmd = with_launch_program(&row, &cmd, shell.family);
-        Some(codex_token_env().map_or(cmd.clone(), |e| e.wrap(&crate::shells::adapt_for(&cmd, shell.family), shell.family)))
+        Some(self.model_wrap(&row, &crate::shells::adapt_for(&cmd, shell.family), shell.family))
     }
 
     /// 对话界面“以对话模式重新启动”：在面板的 shell 里接着某个会话启动 Claude Code / Codex（带 hooks、全部权限等原来的参数）。
