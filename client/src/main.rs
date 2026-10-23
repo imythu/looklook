@@ -55,6 +55,7 @@ mod transfer;
 mod desktop;
 mod updater;
 mod util;
+mod versions;
 
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
@@ -157,6 +158,10 @@ enum Cmd {
     /// ssh 的 ProxyCommand：经跳板机连接时由看看自己连上跳板机（内部使用）/ ProxyCommand for jump hosts (internal)
     #[command(hide = true)]
     SshProxy { jump: String, host: String, port: u16 },
+    /// 安装脚本用（Linux）：把安装包目录放进数据目录的 versions/，删掉更高的版本，稳定入口 bin/looklook 指向它
+    /// For installers (Linux): put the package into versions/ in the data directory and point bin/looklook at it
+    #[command(hide = true)]
+    InstallVersion { from: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -190,6 +195,9 @@ enum CodeAction {
 }
 
 fn main() -> Result<()> {
+    // Linux：数据目录里有更高的版本时换成它运行（src/versions.rs）。最先做：hook、askpass 在内的所有子命令都和客户端用同一个版本
+    versions::jump();
+    let _ = versions::entry(); // 跳转过来的：记下原来的入口，不传给终端里的程序
     // Claude Code 调用的 hook（对话界面，src/chat/hooks.rs）：最先处理，不做别的初始化，启动要快
     {
         let mut args = std::env::args().skip(1);
@@ -283,6 +291,12 @@ fn main() -> Result<()> {
                     Ok(())
                 }
             }
+        }
+        Some(Cmd::InstallVersion { from }) => {
+            let paths = Paths::discover(cli.home)?;
+            let dir = versions::install_explicit(&paths.home, &from).map_err(anyhow::Error::msg)?;
+            println!("{}", dir.display());
+            Ok(())
         }
         Some(Cmd::SshProxy { jump, host, port }) => {
             let paths = Paths::discover(cli.home)?;
@@ -416,7 +430,8 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     }
     let no_browser = no_browser || restarted;
     hardening::probe_debugger();
-    tracing::info!(home = %paths.home.display(), version = account::VERSION, target = paths::target(), "看看客户端启动");
+    let entry = versions::entry().map(|p| p.display().to_string());
+    tracing::info!(home = %paths.home.display(), version = account::VERSION, target = paths::target(), exe = ?updater::exe_path(), entry, "看看客户端启动");
     if paths.ttyd.is_none() {
         tracing::warn!("没有找到 ttyd，终端无法启动；请使用完整安装包，或设置 TTYD_BIN");
     }
@@ -468,7 +483,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     }
     updater::rescue_mux_backups(); // 要在第一次调用会话保持程序之前
     updater::settle_trzsz();
-    paths.trzsz = paths::find_trzsz();
+    paths.trzsz = paths::find_trzsz().map(|d| versions::stable_trzsz(&paths.home, d));
     let instances = Instances::new(store.clone(), paths.clone());
     let updater = updater::Updater::new(store.clone(), paths.clone(), account.clone(), shutdown.clone());
     let metrics = metrics::Metrics::new();
@@ -525,6 +540,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(account.clone().report_terminals_loop(instances.subscribe())),
         tokio::spawn(instances.clone().supervise(account.clone())),
         tokio::spawn(updater.clone().run()),
+        tokio::spawn(updater.clone().keep_versions()),
         tokio::spawn(metrics.run()),
         tokio::spawn(relay_watch.run(shutdown.clone())),
         tokio::spawn(transfers.run(store.clone())),

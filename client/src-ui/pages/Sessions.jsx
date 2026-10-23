@@ -2,7 +2,7 @@
 // 像 ChatGPT：点“新会话”进开始页，选好类型和项目、写一句话（可以不写），回车就启动并打开；项目上的 + 一下就新建。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, Container, X, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderOpen, FolderPlus, History, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, Container, X, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderOpen, FolderPlus, History, Plus, Search, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -18,7 +18,7 @@ import { useRouter } from '../shared/router.jsx';
 import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Modal, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { PrevConversations } from './History.jsx';
-import { BackendNote, FolderPicker, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
+import { BackendNote, FolderPicker, InstallProgress, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
 
 // 开始页能选的类型（DSH 一台电脑只有一个，已经有了就是打开它）
@@ -40,6 +40,23 @@ export function fullAccessFor(p, settings) {
 }
 // 第一句话能用在哪些类型上（AI 工具作为第一条消息，普通终端当作启动后运行的命令）
 const PROMPT_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
+// 开始页直接摆出来的类型个数，其余收进“更多”；没用过时先摆这几个
+const SHOWN_TYPES = 3;
+const DEFAULT_TYPES = ['claude', 'codex', 'shell'];
+
+/**
+ * 开始页摆出来的类型：当前选中的 + 用得最多的（按各台电脑上的会话数），不够的用默认的补上，其余收进“更多”。
+ * 顺序按 START_LAUNCHES 固定，不随选中的变来变去。
+ */
+export function shownTypes(launches, items, current) {
+  const count = new Map();
+  for (const i of items) count.set(i.launch, (count.get(i.launch) ?? 0) + 1);
+  const ranked = [...launches].sort((a, b) => (count.get(b) ?? 0) - (count.get(a) ?? 0) || DEFAULT_TYPES.indexOf(a) - DEFAULT_TYPES.indexOf(b));
+  const pick = new Set(launches.includes(current) ? [current] : []);
+  for (const l of ranked) if (pick.size < SHOWN_TYPES && ((count.get(l) ?? 0) > 0 || DEFAULT_TYPES.includes(l))) pick.add(l);
+  for (const l of DEFAULT_TYPES) if (pick.size < SHOWN_TYPES && launches.includes(l)) pick.add(l);
+  return { shown: launches.filter((l) => pick.has(l)), more: launches.filter((l) => !pick.has(l)) };
+}
 
 const FOLD_KEY = 'looklook.fold';
 const GROUP_KEY = 'looklook.groupby';
@@ -778,7 +795,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
     fullChosen.current = true;
     setFullAccessState(v);
   };
-  const [rootOk, setRootOk] = useState(false);
   const [autoStart, setAutoStart] = useState(Boolean(project?.auto_start));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
@@ -822,18 +838,57 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   }, [device, status?.settings?.default_full_access]);
   const missing = (l) => (container ? AI_TOOLS.includes(l) && Array.isArray(container.tools) && !container.tools.includes(l) : AI_TOOLS.includes(l) && tools && !tools.tools?.[l]);
   const dshRow = launch === 'dsh' ? s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device)) : null;
-  const isRoot = Boolean(status.capabilities?.root);
   const canFull = FULL_ACCESS.includes(launch);
-  const needRoot = canFull && fullAccess && isRoot && !rootOk && !container;
   const allowed = selectedStatus.account.allowed;
   const devObj = devices.multi ? devices.byId(device) : null;
   const offline = devices.multi && !devObj?.online;
   const takesText = PROMPT_LAUNCHES.includes(launch) || launch === 'custom';
+  // 没装的工具：点开始就先在后台装（npm），装好后自动接着开始，不用另开窗口
+  const [job, setJob] = useState(null);
+  const [mirror, setMirror] = useState('npmmirror');
+  const [afterInstall, setAfterInstall] = useState(false);
+  useEffect(() => {
+    setJob(null);
+    setAfterInstall(false);
+  }, [launch, device]);
+  useEffect(() => {
+    if (job?.state !== 'running') return undefined;
+    const timer = setTimeout(async () => {
+      const j = await client.get(`/tools/install/${launch}`).catch(() => null);
+      // 一次没取到（网络抖了）：接着问
+      setJob(j ?? { ...job });
+      if (j?.state === 'ok') reloadTools();
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [job]);
+  const canInstall = !container && AI_TOOLS.includes(launch) && Boolean(tools?.tools?.npm);
+  const install = async () => {
+    setError(null);
+    try {
+      setJob(await client.post('/tools/install', { tool: launch, mirror }));
+      setAfterInstall(true);
+    } catch (e) {
+      setError(e);
+    }
+  };
+  // 装好了、工具列表也刷新了：接着开始
+  const installed = afterInstall && job?.state === 'ok' && !missing(launch);
+  useEffect(() => {
+    if (!installed) return;
+    setAfterInstall(false);
+    go();
+  }, [installed]);
+  // 开始按钮点不了的原因：写在按钮旁边，不让人对着灰按钮猜
+  const where = container ? container.dir.trim() : workdir.trim();
+  const blocked = !allowed ? t('sess.why_locked') : offline ? t('sess.device_offline') : !where ? t('sess.why_no_folder') : null;
   const go = async () => {
     if (busy || !allowed || offline) return;
     setError(null);
     if (missing(launch)) {
-      if (!container) ui.install(launch, device, workdir);
+      // 能直接装的就装，装好后自动开始；没有 npm（要先装 Node.js）时打开说明怎么装的窗口
+      if (canInstall) {
+        if (job?.state !== 'running') install();
+      } else if (!container) ui.install(launch, device, workdir);
       return;
     }
     if (dshRow) {
@@ -842,10 +897,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
     }
     if (launch === 'custom' && !text.trim()) {
       input.current?.focus();
-      return;
-    }
-    if (needRoot) {
-      setAdv(true);
       return;
     }
     const prompt = PROMPT_LAUNCHES.includes(launch) ? text.trim() : '';
@@ -863,7 +914,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
         shell: shell.trim(),
         auto_start: autoStart,
         full_access: canFull && fullAccess,
-        root_confirmed: canFull && fullAccess && isRoot && rootOk,
         start: true,
       });
       if (device && r.id) rememberTerminals(device, [r]);
@@ -884,6 +934,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   const placeholder = dshRow ? t('sess.ph_dsh_open') : t(`sess.ph_${launch}`, { tool: t(`launch.${launch}.title`) });
   const projName = container ? container.name : baseName(workdir) || workdir || '…';
   const launches = container ? START_LAUNCHES.filter((l) => l !== 'dsh') : START_LAUNCHES;
+  const types = shownTypes(launches, s.items, launch);
   return (
     <div className="start">
       {!opensInPage() && !inModal && (
@@ -901,13 +952,27 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
         }}
       >
         <div className="start-types" role="group" aria-label={t('form.launch')}>
-          {launches.map((l) => (
+          {types.shown.map((l) => (
             <button key={l} type="button" className="start-type" aria-pressed={launch === l} onClick={() => setLaunch(l)} title={t(`launch.${l}.desc`)}>
               <LaunchIcon launch={l} size={16} />
               {t(`launch.${l}.title`)}
               {missing(l) && <span className="start-miss">{t('sess.not_installed')}</span>}
             </button>
           ))}
+          {types.more.length > 0 && (
+            <PopMenu
+              className="start-type"
+              text={t('sess.more_types')}
+              icon={Plus}
+              label={t('sess.more_types')}
+              items={types.more.map((l) => ({
+                icon: (p) => <LaunchIcon launch={l} {...p} />,
+                label: t(`launch.${l}.title`),
+                hint: missing(l) ? t('sess.not_installed') : t(`launch.${l}.desc`),
+                onClick: () => setLaunch(l),
+              }))}
+            />
+          )}
         </div>
         {takesText && !dshRow ? (
           <textarea
@@ -944,6 +1009,13 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
             {picking && <ProjectPicker projects={s.projects} device={device} workdir={workdir} container={container} onPick={pickProject} onClose={() => setPicking(false)} />}
           </span>
           <DockerChip device={device} active={Boolean(container)} onPick={(c) => pickProject(device, '', c)} />
+          {/* 全部权限一眼就能看到、点一下就切换（以前藏在“高级”里） */}
+          {canFull && (
+            <button type="button" className="btn btn-plain start-adv" aria-pressed={fullAccess} onClick={() => setFullAccess(!fullAccess)} title={t(`form.full_access_hint_${launch}`)}>
+              <ShieldCheck size={15} aria-hidden="true" />
+              {t('sess.full_access_chip')}
+            </button>
+          )}
           {launch !== 'dsh' && (
             <button type="button" className="btn btn-plain start-adv" onClick={() => setAdv(!adv)} aria-expanded={adv}>
               <SlidersHorizontal size={15} aria-hidden="true" />
@@ -951,11 +1023,35 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
             </button>
           )}
           <span className="grow" />
-          {missing(launch) && <span className="small muted">{t(container ? 'sess.container_missing' : 'sess.install_first', { tool: t(`launch.${launch}.title`) })}</span>}
-          <button type="submit" className="start-go" disabled={busy || !allowed || offline || !(container ? container.dir.trim() : workdir.trim())} aria-label={t('sess.start')} title={t('sess.start_hint')}>
-            {busy ? <Spinner size={18} /> : dshRow ? <ExternalLink size={18} /> : <ArrowUp size={20} />}
+          {blocked ? (
+            <span className="small muted">{blocked}</span>
+          ) : (
+            missing(launch) &&
+            job?.state !== 'running' && (
+              <span className="small muted start-install">
+                {t(container ? 'sess.container_missing' : canInstall ? 'sess.install_then_start' : 'sess.install_first', { tool: t(`launch.${launch}.title`) })}
+                {canInstall && (
+                  <select value={mirror} onChange={(e) => setMirror(e.target.value)} aria-label={t('tools.mirror')}>
+                    {['npmmirror', 'tencent', 'official'].map((m) => (
+                      <option key={m} value={m}>
+                        {t(`tools.mirrors.${m}`)}
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </span>
+            )
+          )}
+          <button type="submit" className="start-go" disabled={busy || Boolean(blocked)} aria-label={t('sess.start')} title={blocked ?? t('sess.start_hint')}>
+            {busy || job?.state === 'running' ? <Spinner size={18} /> : dshRow ? <ExternalLink size={18} /> : <ArrowUp size={20} />}
           </button>
         </div>
+        {job?.tool === launch && job.state !== 'ok' && (
+          <div className="start-install-log">
+            <InstallProgress job={job} tool={t(`launch.${launch}.title`)} onRetry={install} busy={false} />
+            {job.state === 'running' && <p className="small muted">{t('sess.install_auto_start')}</p>}
+          </div>
+        )}
         {container && (
           <div className="start-container">
             <label className="start-container-dir">
@@ -983,24 +1079,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
               <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={t('sess.name_ph')} />
             </label>
             <ShellPicker value={shell} onChange={setShell} data={shells} inherit={status.settings?.default_shell || null} />
-            {canFull && (
-              <label className="start-check">
-                <input type="checkbox" checked={fullAccess} onChange={(e) => setFullAccess(e.target.checked)} />
-                <span>
-                  <b>{t('form.full_access')}</b>
-                  <span className="field-hint">{t(`form.full_access_hint_${launch}`)}</span>
-                </span>
-              </label>
-            )}
-            {canFull && fullAccess && isRoot && !container && (
-              <label className="start-check">
-                <input type="checkbox" checked={rootOk} onChange={(e) => setRootOk(e.target.checked)} />
-                <span>
-                  <b>{t('form.root_confirm')}</b>
-                  <span className="field-hint">{t('form.root_confirm_hint')}</span>
-                </span>
-              </label>
-            )}
             {status.capabilities?.persistent && (
               <div className="between">
                 <span className="grow">
@@ -1016,7 +1094,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
         )}
       </form>
       <ErrorNote error={error} />
-      {offline && <p className="small muted">{t('sess.device_offline')}</p>}
       {missing(launch) && !container && (
         <button type="button" className="btn btn-plain small" onClick={reloadTools}>
           {t('tools.recheck')}
@@ -1133,13 +1210,15 @@ export function SessionStage({ activeId }) {
   return (
     <div className="sstage" ref={ref} hidden={!activeId} style={height ? { height } : undefined}>
       {ids.map((id) => {
-        const inst = s.byId(id);
+        // 电脑离线时用最后一次看到的：终端不卸载，内容还能看
+        const inst = s.known(id);
         return (
           <TermPane
             key={id}
             id={id}
             inst={inst}
             missing={missing(id)}
+            offline={s.offline(id)}
             active={id === activeId}
             lead={inst && <LaunchIcon launch={inst.launch} size={16} />}
             sub={<SessionLead inst={inst} />}

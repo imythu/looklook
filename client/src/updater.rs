@@ -4,12 +4,15 @@
 //! - 手动更新：用户在管理台点“更新”后才下载。安装包来自平台 `/updates/latest` 给出的地址，校验大小与 SHA-256，
 //!   解压到数据目录的 `updates/`，然后逐个替换安装目录里的文件：旧文件先改名为 `*.old`（运行中的程序也能改名），
 //!   新文件写好再改名到位；中途出错就把改名的文件挪回去。会话保持程序例外，见 `backup_name`。
+//!   Linux 不动安装目录：整个安装包放成数据目录里的 `versions/<版本>`，启动时跳过去（见 src/versions.rs），
+//!   容器只映射数据目录也能保留更新；程序装在只读的 `/opt` 里也能更新。
 //! - 重启：由 systemd（`INVOCATION_ID`）或带 `KeepAlive` 的 launchd 登录项（`XPC_SERVICE_NAME`）管着时以非零状态退出，让它们用新文件拉起；
 //!   否则（Windows 托盘、手动运行）先启动新版本再退出，新版本等旧进程释放单实例锁后接手。
 //!   终端里的会话（looklook-mux）不受影响，新版本启动后自动接回。
 //! - 提醒：界面显示角标/横幅；用户关掉后同一个版本不再提醒（记在本机数据库，手机和电脑上都一样），有更新的版本时再提醒。
 //! - 自动更新（设置里的“自动更新”，默认开）：有新版本、且已经 10 分钟没有打开的终端时自动安装并重启，
-//!   不会在用户正在用终端时打断。同一个版本自动安装失败后不再自动重试（直到出了更新的版本或客户端重启），可以手动更新。
+//!   不会在用户正在用终端时打断。同一个版本自动安装失败、或者装好后启动不起来（Linux 的坏版本）后不再自动重试
+//!   （记在本机数据库，重启后也记得；直到出了更新的版本），可以手动更新。
 //! - 更新完成：新版本启动后界面提示“已更新到 x.y.z”并可查看更新说明（包括用安装包手动更新的情况）。
 
 use std::path::{Path, PathBuf};
@@ -30,6 +33,10 @@ const DISMISSED_KEY: &str = "update_dismissed";
 const LAST_VERSION_KEY: &str = "last_version";
 /// 刚更新完的提示：`JustUpdated`，用户看过后删除
 const JUST_UPDATED_KEY: &str = "just_updated";
+/// 已经自动安装过的版本（成功会重启，所以留下来的都是失败的）
+const AUTO_TRIED_KEY: &str = "update_auto_tried";
+/// 装好后启动不起来、被清理掉的版本（Linux，见 src/versions.rs），自动更新不再装它们
+const BAD_KEY: &str = "update_bad_versions";
 /// 没有打开的终端多久之后才自动更新
 const AUTO_IDLE_MS: i64 = 10 * 60 * 1000;
 /// 安装包大小上限（防止异常的下载占满磁盘）
@@ -140,8 +147,6 @@ pub struct Updater {
     check_error: Mutex<Option<String>>,
     job: Mutex<Job>,
     locale: Mutex<String>,
-    /// 已经自动安装过（成功会重启，所以留下来的都是失败的）的版本
-    auto_tried: Mutex<Option<String>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -204,7 +209,6 @@ impl Updater {
             check_error: Mutex::new(None),
             job: Mutex::new(Job::Idle),
             locale: Mutex::new("zh-CN".into()),
-            auto_tried: Mutex::new(None),
         })
         .tap_version()
     }
@@ -286,7 +290,7 @@ impl Updater {
             }
             if let Some(version) = self.auto_due() {
                 tracing::info!(%version, "空闲中，自动安装新版本");
-                *lock(&self.auto_tried) = Some(version);
+                let _ = self.store.set(AUTO_TRIED_KEY, &version);
                 if let Err(e) = self.start_install_as(true) {
                     tracing::warn!(code = %e.code, "无法自动更新");
                 }
@@ -295,13 +299,14 @@ impl Updater {
         }
     }
 
-    /// 现在该不该自动更新：开了自动更新、有本平台的新版本、可以就地更新、这个版本还没自动装过，且终端空闲够久。
+    /// 现在该不该自动更新：开了自动更新、有本平台的新版本、可以更新、这个版本还没自动装过也不是坏版本，且终端空闲够久。
     fn auto_due(&self) -> Option<String> {
         if !crate::settings::Settings::load(&self.store).auto_update || self.busy() {
             return None;
         }
         let l = lock(&self.latest).clone().filter(|l| l.available && l.packages.iter().any(|p| p.package == package_kind()))?;
-        if lock(&self.auto_tried).as_deref() == Some(l.version.as_str()) || install_dir().is_err() {
+        let tried = self.store.get::<String>(AUTO_TRIED_KEY).ok().flatten().as_deref() == Some(l.version.as_str());
+        if tried || self.is_bad(&l.version) || self.target().is_err() {
             return None;
         }
         terminals_idle_ms().filter(|ms| *ms >= AUTO_IDLE_MS).map(|_| l.version)
@@ -316,7 +321,7 @@ impl Updater {
     pub fn view(&self) -> Value {
         let latest = lock(&self.latest).clone();
         let dismissed: Option<String> = self.store.get(DISMISSED_KEY).ok().flatten();
-        let can = install_dir();
+        let can = self.target();
         let available = latest.as_ref().is_some_and(|l| l.available);
         let version = latest.as_ref().map(|l| l.version.clone());
         let has_package = latest.as_ref().is_some_and(|l| l.packages.iter().any(|p| p.package == package_kind()));
@@ -375,11 +380,11 @@ impl Updater {
         if self.busy() {
             return Err(LocalError::new("UPDATE_BUSY"));
         }
-        let dir = install_dir().map_err(|r| LocalError::new("UPDATE_UNSUPPORTED").with("reason", r))?;
+        let dir = self.target().map_err(|r| LocalError::new("UPDATE_UNSUPPORTED").with("reason", r))?;
         self.set_job(Job::Downloading { version: String::new(), done: 0, total: None });
         let me = self.clone();
         tokio::spawn(async move {
-            match me.install(&dir, auto).await {
+            match me.install(dir.as_deref(), auto).await {
                 Ok(version) => {
                     tracing::info!(%version, "更新已安装，正在重启");
                     me.set_job(Job::Restarting { version });
@@ -398,7 +403,49 @@ impl Updater {
         Ok(())
     }
 
-    async fn install(&self, dir: &Path, auto: bool) -> Result<String, LocalError> {
+    /// 能不能更新、装到哪：Linux 是数据目录里的 `versions/`（`None`），只要它能写；其他平台是程序所在目录（见 `install_dir`）。
+    fn target(&self) -> Result<Option<PathBuf>, &'static str> {
+        if crate::versions::enabled() {
+            return if crate::versions::writable(&self.paths.home) { Ok(None) } else { Err("readonly") };
+        }
+        install_dir().map(Some)
+    }
+
+    fn is_bad(&self, version: &str) -> bool {
+        let bad: Vec<String> = self.store.get(BAD_KEY).ok().flatten().unwrap_or_default();
+        bad.iter().any(|v| v == version) || crate::versions::is_bad(&self.paths.home, version)
+    }
+
+    /// Linux：把当前版本放进数据目录、运行稳定后记下“能用”，之后每天清理一次旧版本（见 src/versions.rs）。
+    pub async fn keep_versions(self: Arc<Self>) {
+        if !crate::versions::enabled() || crate::versions::suppressed() {
+            return;
+        }
+        let home = self.paths.home.clone();
+        let h = home.clone();
+        let _ = tokio::task::spawn_blocking(move || crate::versions::seed(&h)).await;
+        // 这么久没有退出（崩溃、被重启）才算这个版本能用
+        tokio::time::sleep(crate::versions::OK_AFTER).await;
+        crate::versions::mark_ok(&home);
+        loop {
+            let h = home.clone();
+            if let Ok(r) = tokio::task::spawn_blocking(move || crate::versions::cleanup(&h, crate::versions::in_use)).await {
+                if !r.removed.is_empty() || !r.busy.is_empty() {
+                    tracing::info!(removed = ?r.removed, busy = ?r.busy, "清理了数据目录里的旧版本（有程序在运行的留到下次）");
+                }
+                if !r.bad.is_empty() {
+                    tracing::warn!(versions = ?r.bad, "这些版本装好后启动不起来，已删除，不再自动安装");
+                    let mut bad: Vec<String> = self.store.get(BAD_KEY).ok().flatten().unwrap_or_default();
+                    bad.extend(r.bad);
+                    let skip = bad.len().saturating_sub(10);
+                    let _ = self.store.set(BAD_KEY, &bad[skip..].to_vec());
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(86400)).await;
+        }
+    }
+
+    async fn install(&self, dir: Option<&Path>, auto: bool) -> Result<String, LocalError> {
         let latest = self.check().await?;
         if !latest.available {
             return Err(LocalError::new("UPDATE_NONE"));
@@ -433,8 +480,24 @@ impl Updater {
         if !src.join(exe).is_file() || !src.join(crate::paths::TERM_EXE).is_file() {
             return Err(LocalError::new("UPDATE_FAILED").with("detail", "incomplete package"));
         }
-        let (src2, dir2) = (src.clone(), dir.to_path_buf());
-        tokio::task::spawn_blocking(move || apply(&src2, &dir2)).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))??;
+        if !auto {
+            // 用户手动安装：之前判定为坏的版本也再试一次
+            let mut bad: Vec<String> = self.store.get(BAD_KEY).ok().flatten().unwrap_or_default();
+            bad.retain(|v| *v != version);
+            let _ = self.store.set(BAD_KEY, &bad);
+        }
+        match dir {
+            Some(dir) => {
+                let (src2, dir2) = (src.clone(), dir.to_path_buf());
+                tokio::task::spawn_blocking(move || apply(&src2, &dir2)).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))??;
+            }
+            None => {
+                let (src2, home, v) = (src.clone(), self.paths.home.clone(), version.clone());
+                let placed = tokio::task::spawn_blocking(move || crate::versions::install_staged(&home, &src2, &v)).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))?;
+                let placed = placed.map_err(fail)?;
+                tracing::info!(dir = %placed.display(), "新版本已放进数据目录");
+            }
+        }
         let _ = std::fs::remove_dir_all(&work);
         // 运行文件自校验的基准随新版本重新记录（否则新版本启动时会报“运行文件被改过”）
         let _ = self.store.remove("self_hash");

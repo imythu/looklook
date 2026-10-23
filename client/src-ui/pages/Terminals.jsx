@@ -112,7 +112,10 @@ export function RemoteCard() {
         onClick={() => setOpen(!open)}
       >
         <MonitorSmartphone size={16} aria-hidden="true" />
-        <b className="grow">{t("terminals.remote_title")}</b>
+        <b>{t("terminals.remote_title")}</b>
+        {/* 收起时也露出专属地址：很多人不知道自己有这个地址 */}
+        {!open && !lan && host && <span className="remote-host ellipsis">{host}</span>}
+        <span className="grow" />
         <ChevronDown className="remote-chev" size={16} aria-hidden="true" />
       </button>
       {open && (
@@ -838,7 +841,7 @@ export function ShellPicker({ value, onChange, data, inherit }) {
 
 /** 新建 / 编辑终端。 */
 /** 后台安装的进度：最后几十行输出，自动滚到底；结束后给出结果。 */
-function InstallProgress({ job, tool, onRetry, busy }) {
+export function InstallProgress({ job, tool, onRetry, busy }) {
   const { t } = useTranslation();
   const ref = useRef(null);
   const lines = job.output.split("\n");
@@ -894,7 +897,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const [workdir, setWorkdir] = useState("");
   const [autoStart, setAutoStart] = useState(false);
   const [fullAccess, setFullAccess] = useState(false);
-  const [rootOk, setRootOk] = useState(false);
   const [chatUi, setChatUi] = useState(true);
   const [mirror, setMirror] = useState("npmmirror");
   const { busy, error, setError, run } = useAction();
@@ -916,7 +918,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
     workdirTouched.current = Boolean(wantWorkdir);
     setAutoStart(initial?.auto_start ?? false);
     setFullAccess(initial?.full_access ?? false);
-    setRootOk(initial?.root_confirmed ?? false);
     setChatUi(initial?.chat_ui ?? true);
     setError(null);
   }, [open]);
@@ -928,7 +929,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
     workdirTouched.current = true;
     setWorkdir(v);
   };
-  const isRoot = Boolean(status.capabilities?.root);
   const canFull = FULL_ACCESS.includes(launch);
   // 对话界面要靠会话保持（tmux）往同一个 Claude Code 里送输入
   const canChat = CHAT_LAUNCHES.includes(launch) && Boolean(status.capabilities?.persistent);
@@ -936,12 +936,10 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const launches = editing
     ? LAUNCHES.filter((l) => (l === "dsh") === (initial.launch === "dsh"))
     : LAUNCHES;
-  const needRoot = canFull && fullAccess && isRoot && !rootOk;
   const missing =
     tools && AI_TOOLS.includes(launch) && !tools.tools[launch];
   const submit = async (e) => {
     e.preventDefault();
-    if (needRoot) return;
     const body = {
       name,
       workdir,
@@ -950,7 +948,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
       shell: shell.trim(),
       auto_start: autoStart,
       full_access: canFull && fullAccess,
-      root_confirmed: canFull && fullAccess && isRoot && rootOk,
       chat_ui: canChat && chatUi,
     };
     const r = await run(() =>
@@ -1124,31 +1121,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
                 </span>
               </span>
             </label>
-            {fullAccess && isRoot && (
-              <Note kind="warn">
-                <label
-                  className="row"
-                  style={{
-                    alignItems: "flex-start",
-                    gap: 8,
-                    cursor: "pointer",
-                  }}
-                >
-                  <input
-                    type="checkbox"
-                    checked={rootOk}
-                    onChange={(e) => setRootOk(e.target.checked)}
-                    style={{ marginTop: 3 }}
-                  />
-                  <span>
-                    <b>{t("form.root_confirm")}</b>
-                    <span style={{ display: "block" }}>
-                      {t("form.root_confirm_hint")}
-                    </span>
-                  </span>
-                </label>
-              </Note>
-            )}
           </div>
         )}
         {canChat && (
@@ -1191,7 +1163,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
           <Button variant="ghost" onClick={onClose}>
             {t("action.cancel")}
           </Button>
-          <Button type="submit" busy={busy} disabled={needRoot}>
+          <Button type="submit" busy={busy}>
             {t(editing ? "action.save" : "form.create")}
           </Button>
         </div>

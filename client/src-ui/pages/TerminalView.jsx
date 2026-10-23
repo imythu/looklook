@@ -3,7 +3,7 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页右边打开的每个会话是一个 TermPane（见 Sessions.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon } from 'lucide-react';
+import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, WifiOff } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -11,7 +11,7 @@ import { useStatus } from '../App.jsx';
 import { api, selectedDevice, terminalDevice } from '../shared/api.js';
 import { CHAT_LAUNCHES } from '../shared/chat.js';
 import { usePaths } from '../shared/paths.jsx';
-import { termFit, termFocus, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn } from '../shared/termFrame.js';
+import { termFit, termFocus, termOffline, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn, useTermConn } from '../shared/termFrame.js';
 import { errorText } from '../shared/i18n.js';
 import { AI_LAUNCHES } from '../shared/keys.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
@@ -193,6 +193,28 @@ function TermTabBar({ tab, onChange, chat }) {
   );
 }
 
+/**
+ * 终端所在的电脑离线了：终端（和对话）照样显示、能翻看，但不能输入；告诉终端页面别再显示它自己的重连提示，
+ * 电脑回来后让它马上重连。`offline`：电脑连不上；终端自己的连接还通着（例如局域网直连）时不提示、照常能输入。
+ */
+function useOffline(frame, offline, loaded) {
+  const conn = useTermConn(frame);
+  useEffect(() => {
+    if (loaded) termOffline(frame, offline);
+  }, [offline, loaded]);
+  return offline && (!conn || !loaded);
+}
+
+function OfflineNote() {
+  const { t } = useTranslation();
+  return (
+    <div className="term-offline" role="status">
+      <WifiOff size={15} aria-hidden="true" />
+      <span>{t('term.offline')}</span>
+    </div>
+  );
+}
+
 /** 终端没在运行 / 找不到时，终端区域里的提示。 */
 function PaneNotice({ title, body, children }) {
   return (
@@ -211,7 +233,7 @@ function PaneNotice({ title, body, children }) {
  * 不是当前标签时只是隐藏（iframe 不卸载、会话保持连接），切回来时让终端重新适配大小并聚焦。
  * 最大化：铺满整个浏览器窗口（盖住侧栏和标签栏），但不进系统全屏；双击工具栏空白处也能切换。
  */
-export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, focusN = 0 }) {
+export function TermPane({ id, inst, active, missing, offline = false, onStart, lead, sub, menu, focusN = 0 }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const wrap = useRef(null);
@@ -228,6 +250,7 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, 
   const link = { src: termSrc(id) };
   const allowed = status.account.allowed;
   const running = Boolean(inst?.running && allowed);
+  const cut = useOffline(frame, Boolean(offline && running), loaded);
   // 把焦点交给当前标签的输入框：对话标签是对话输入框，其他是终端
   const focusInput = () => {
     if (isTouch()) return;
@@ -278,6 +301,9 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, 
   let body;
   if (missing) {
     body = <PaneNotice title={t('term.missing_title')} body={t('sess.missing_body')} />;
+  } else if (!inst && offline) {
+    // 电脑离线、这次打开页面后还没见过这个会话：没有可显示的内容，说明一下
+    body = <PaneNotice title={t('term.offline_title')} body={t('term.offline_body')} />;
   } else if (!inst) {
     body = <TermConnecting onRetry={reload} />;
   } else if (!allowed) {
@@ -348,6 +374,7 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, 
       </header>
       <div className="term-frame">
         {body}
+        {cut && <OfflineNote />}
         {tab !== 'chat' && files.layer}
         {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); termFocus(frame); }} />}
         {running && tab === 'git' && (
@@ -363,7 +390,7 @@ export function TermPane({ id, inst, active, missing, onStart, lead, sub, menu, 
         {/* 对话一直挂着（切到别的标签时只是隐藏）：切回来时内容和滚动位置都还在 */}
         {running && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} onTab={setTab} />
+            <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} offline={offline} onTab={setTab} />
           </div>
         )}
       </div>
@@ -399,6 +426,9 @@ export default function TerminalView({ id }) {
   const allowed = status.account.allowed;
   const running = inst?.running;
   const live = Boolean(running && allowed);
+  // 连不上电脑（重连中、网络断了、电脑离线）：终端内容照样显示，只是不能输入
+  const offline = Boolean(transient && inst);
+  const cut = useOffline(frame, offline && live, loaded);
   // 底部标签栏：手机和窄屏用；键盘弹起时让给终端
   const bottomTabs = live && (touch || narrow) && !inst?.container;
   const tabbarShown = bottomTabs && !mobile.ime.up;
@@ -565,6 +595,7 @@ export default function TerminalView({ id }) {
       </header>
       <div className="term-frame">
         {body}
+        {cut && <OfflineNote />}
         {tab !== 'chat' && files.layer}
         {live && tab === 'files' && (
           <div className="term-files-tab">
@@ -579,7 +610,7 @@ export default function TerminalView({ id }) {
         )}
         {live && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} onTab={setTab} />
+            <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} offline={offline} onTab={setTab} />
           </div>
         )}
       </div>

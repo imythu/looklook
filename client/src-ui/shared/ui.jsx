@@ -1,5 +1,5 @@
 // 基础组件：按钮、输入、开关、卡片、提示、弹窗、确认框、轻提示、骨架屏、空状态、时间。
-import { AlertTriangle, Check, CheckCircle2, ChevronDown, Copy, Eye, EyeOff, Info, Languages, Loader2, XCircle } from 'lucide-react';
+import { AlertTriangle, Check, CheckCircle2, ChevronDown, Copy, Eye, EyeOff, Info, Languages, Loader2, X, XCircle } from 'lucide-react';
 import qrcode from 'qrcode-generator';
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -263,6 +263,51 @@ export function Modal({ open, onClose, title, wide, className = '', children }) 
         {title && <h2>{title}</h2>}
         {children}
       </div>
+    </div>,
+    document.body,
+  );
+}
+
+/**
+ * 抽屉：设置、电脑、账户、会员这类页面从右边滑出来，盖在会话上面而不是换掉它（终端照常连着、关掉就回到原处）。
+ * 宽屏是右侧一栏，手机上铺满整屏。Esc 关掉最上面的一层（和弹窗共用一个栈）；点左边露出来的会话也关掉。
+ * `head`：标题右边的东西（例如电脑切换）。
+ */
+export function Drawer({ open, onClose, title, head, wide, children }) {
+  const { t } = useTranslation();
+  const ref = useRef(null);
+  const close = useRef(onClose);
+  close.current = onClose;
+  useEffect(() => {
+    if (!open) return undefined;
+    const me = {};
+    modalStack.push(me);
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || modalStack[modalStack.length - 1] !== me) return;
+      e.stopPropagation();
+      close.current?.();
+    };
+    window.addEventListener('keydown', onKey);
+    ref.current?.focus({ preventScroll: true });
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      modalStack.splice(modalStack.indexOf(me), 1);
+    };
+  }, [open]);
+  if (!open) return null;
+  return createPortal(
+    <div className="drawer-backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose?.()}>
+      <aside className={`drawer ${wide ? 'drawer-wide' : ''}`} role="dialog" aria-modal="true" aria-label={title} ref={ref} tabIndex={-1}>
+        <header className="drawer-head">
+          <h2 className="ellipsis">{title}</h2>
+          {head}
+          <span className="grow" />
+          <button type="button" className="btn btn-plain btn-icon" onClick={onClose} aria-label={t('action.close')} title={`${t('action.close')} (Esc)`}>
+            <X size={20} />
+          </button>
+        </header>
+        <div className="drawer-body">{children}</div>
+      </aside>
     </div>,
     document.body,
   );

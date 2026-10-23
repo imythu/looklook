@@ -4,7 +4,7 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, Link2, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -28,7 +28,7 @@ import { Link, Router, useCanonicalPath, useRouter } from './shared/router.jsx';
 import PopMenu from './shared/PopMenu.jsx';
 import { sessionState, SessionsProvider, useSessions } from './shared/sessions.jsx';
 import { daysLeft, formatTime } from './shared/time.js';
-import { BrandMark, Button, FoldNote, LangSwitch, Note, Skeleton, useConfirm, useToast } from './shared/ui.jsx';
+import { BrandMark, Button, Drawer, FoldNote, LangSwitch, Note, Skeleton, useConfirm, useToast } from './shared/ui.jsx';
 import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
@@ -92,6 +92,9 @@ const TERM = /^\/t\/([a-z2-7]{8})$/;
 const SESS = /^\/s\/([a-z2-7]{8})$/;
 // 用户菜单里的账户页面
 const ACCOUNT_PAGES = ['/devices', '/membership', '/account'];
+// 从右边滑出来的抽屉（地址照旧，链接、刷新都能直接打开）：盖在会话上面，不换掉它。文件、SSH 这类要干活的工具还是整页
+const DRAWER_PAGES = { '/settings': 'nav.settings', '/devices': 'acct.computers', '/account': 'acct.account', '/membership': 'acct.membership' };
+const isDrawer = (p) => Object.hasOwn(DRAWER_PAGES, p);
 const PAGES = ['/', '/new', '/history', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
 // 开源仓库（MIT）
 export const SOURCE_URL = 'https://github.com/imythu/looklook';
@@ -202,9 +205,22 @@ function useUserMenu() {
   const { navigate } = useRouter();
   const logout = useLogout();
   const openReport = useReportDialog();
+  const toast = useToast();
   const open = (url) => () => window.open(url, '_blank', 'noopener');
   const left = daysLeft(status.account.session?.membership_expires_at);
+  // 专属地址：手机、外面的电脑打开它就能用；菜单里一直看得到，点一下复制
+  const addr = status.account.session?.user_host_url;
+  const copyAddr = async () => {
+    try {
+      await navigator.clipboard.writeText(addr);
+      toast(t('acct.address_copied'));
+    } catch {
+      window.prompt('', addr);
+    }
+  };
   return [
+    addr && { icon: Link2, label: t('acct.address'), hint: addr.replace(/^https?:\/\//, '').replace(/\/$/, ''), onClick: copyAddr },
+    addr && 'sep',
     { icon: Laptop, label: t('acct.computers'), onClick: () => navigate('/devices') },
     { icon: CalendarClock, label: t('acct.membership'), hint: left > 0 ? t('account.days_left', { n: left }) : t('account.expired'), onClick: () => navigate('/membership') },
     { icon: ShieldCheck, label: t('acct.account'), onClick: () => navigate('/account') },
@@ -399,7 +415,9 @@ function ConsoleLayout({ path, stale, children }) {
   };
   const railRef = useRef(rail);
   railRef.current = rail;
-  useEffect(() => setOpen(false), [path]);
+  // 换了页面（包括打开抽屉，它不改主区域的 path）时收起手机上的侧栏
+  const { path: here } = useRouter();
+  useEffect(() => setOpen(false), [here]);
   // Ctrl+Shift+O 新会话，Ctrl+Shift+S 收起 / 展开侧栏（焦点在终端里时由终端自己处理按键）
   useEffect(() => {
     const onKey = (e) => {
@@ -476,6 +494,35 @@ function ConsoleLayout({ path, stale, children }) {
   );
 }
 
+/** 设置、电脑、账户、会员的抽屉。设置按电脑分：多台电脑时标题旁边能切换，换电脑时等那台的状态到了再显示 */
+function PageDrawer({ path, behind, onClose, stale, children }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const devices = useDevices();
+  const sessions = useSessions();
+  const perDevice = path === '/settings' && (devices.multi || devices.localOnly);
+  const close = () => {
+    onClose();
+    // 回到会话：焦点交还给它的输入框
+    const id = behind.match(SESS)?.[1];
+    if (id) setTimeout(() => sessions.requestFocus(id), 0);
+  };
+  return (
+    <Drawer open={Boolean(path)} onClose={close} title={path ? t(DRAWER_PAGES[path]) : ''} wide={path === '/settings'} head={perDevice && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}>
+      <Fragment key={perDevice ? devices.selected : 'all'}>
+        {perDevice && stale ? (
+          <div className="stack">
+            <Skeleton height={60} />
+            <Skeleton height={180} />
+          </div>
+        ) : (
+          children
+        )}
+      </Fragment>
+    </Drawer>
+  );
+}
+
 function PublicLayout({ children }) {
   const { t } = useTranslation();
   return (
@@ -510,8 +557,38 @@ function Unreachable({ onRetry }) {
   );
 }
 
+/**
+ * 抽屉页面下面露出来的是哪一页：打开抽屉之前所在的那页（一般是会话）；直接打开抽屉的地址时是首页。
+ * 关掉：从那页打开的就后退回去（浏览器的后退、手机的返回手势也一样关掉）；直接打开的换成那页的地址。
+ */
+function useDrawerRoute(path) {
+  const { navigate, pop, replace } = useRouter();
+  const behind = useRef(isDrawer(path) ? '/' : path);
+  // 从下面那页打开抽屉以来压进历史的条数（在抽屉里点链接到别的抽屉页也算）：关掉时后退这么多步
+  const pushed = useRef(0);
+  const prev = useRef(path);
+  if (!isDrawer(path)) behind.current = path;
+  useEffect(() => {
+    if (prev.current === path) return;
+    if (!isDrawer(path)) pushed.current = 0;
+    else if (pop) pushed.current = Math.max(0, pushed.current - 1);
+    else if (!replace) pushed.current += 1;
+    prev.current = path;
+  }, [path]);
+  const close = () => {
+    const n = pushed.current;
+    pushed.current = 0;
+    if (n > 0 && window.history.length > n) window.history.go(-n);
+    else navigate(behind.current, { replace: true });
+  };
+  return { drawer: isDrawer(path) ? path : null, behind: behind.current, close };
+}
+
 function Shell() {
-  const path = useCanonicalPath(isKnown);
+  const path0 = useCanonicalPath(isKnown);
+  const route = useDrawerRoute(path0);
+  // 抽屉开着时，主区域显示它下面的那页（会话不卸载、不隐藏）
+  const path = route.drawer ? route.behind : path0;
   const [status, setStatus] = useState(undefined);
   const [down, setDown] = useState(false);
   // 状态来自哪台电脑（多设备时随顶栏的选择）
@@ -581,13 +658,17 @@ function Shell() {
     // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
     const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
     const home = opensInPage() ? <StartPane key={`start:${login}`} /> : <SessionHome />;
-    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/history': <HistoryPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System />, '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[path];
+    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/history': <HistoryPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
+    const drawerPage = route.drawer && { '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[route.drawer];
     body = (
       <SessionsProvider key={login} enabled>
         <SessionUiProvider>
           <ConsoleLayout path={path} stale={devices.multi && statusDevice !== devices.selected}>
             {page}
           </ConsoleLayout>
+          <PageDrawer path={route.drawer} behind={route.behind} onClose={route.close} stale={devices.multi && statusDevice !== devices.selected}>
+            {drawerPage}
+          </PageDrawer>
         </SessionUiProvider>
       </SessionsProvider>
     );

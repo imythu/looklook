@@ -126,10 +126,15 @@ fn detect_debugger() -> Option<&'static str> {
 }
 
 /// 运行文件的 SHA-256 基线：第一次运行时记下来（存在本地 `kv` 表的 `self_hash`），以后不一致
-/// 就记一条警告。诚实说明：这只是“文件被换过一个字节就能发现”的速度提示——正常的自动升级
-/// 也会改哈希（需要手动清掉 `self_hash` 重新建立基线，这里没有做自动识别“是不是自己升级的”），
+/// 就记一条警告。诚实说明：这只是“文件被换过一个字节就能发现”的速度提示——版本号变了就重新建立基线
+/// （升级、跳到数据目录里的版本都会换程序文件），同一个版本的文件被换掉才会提醒，
 /// 真要防篡改需要代码签名 + 操作系统级完整性校验，这个模块做不到，见 docs/FAQ.md。
 pub fn check_self_integrity(store: &Store) {
+    // 版本变了（自动更新、启动时跳到数据目录里的新版本、镜像换了新版本）：重新建立基线，不误报
+    if store.get::<String>("self_hash_version").ok().flatten().as_deref() != Some(crate::account::VERSION) {
+        let _ = store.remove("self_hash");
+        let _ = store.set("self_hash_version", &crate::account::VERSION.to_string());
+    }
     let Ok(hash) = current_exe_hash() else { return };
     match store.get::<String>("self_hash") {
         Ok(Some(baseline)) if baseline != hash => {

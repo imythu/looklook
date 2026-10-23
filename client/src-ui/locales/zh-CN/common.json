@@ -129,7 +129,7 @@
   },
   "terminals": {
     "remote_title": "用手机或另一台电脑打开",
-    "remote_body": "不在家也能用：扫码或输入专属地址，登录看看账户即可继续。无论身在何处，数据都经加密通道送达。",
+    "remote_body": "下面是你的专属地址（每个账户一个，不会变）。在手机或任何电脑的浏览器里打开它、登录看看账户，就能接着用这台电脑上的会话，手机上什么都不用装。数据全程经加密通道送达。",
     "remote_paused": "远程访问暂时不可用，原因见页面顶部的提示。",
     "no_ttyd": "安装包不完整，缺少终端组件，终端无法启动。请重新下载安装看看。",
     "not_persistent": {
@@ -246,8 +246,6 @@
     "full_access_hint_codex": "使用 --yolo：不再询问确认，且不启用沙箱。",
     "full_access_hint_claude": "使用 --dangerously-skip-permissions：跳过所有权限确认。",
     "full_access_hint_opencode": "使用 --auto：没有明确拒绝的权限都自动同意。",
-    "root_confirm": "我确认以 root 身份、带全部权限启动",
-    "root_confirm_hint": "当前客户端以 root 运行，AI 工具将拥有整台机器的最高权限，请谨慎使用。",
     "chat_ui": "对话界面",
     "chat_ui_hint": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片；终端里的功能一个不少，随时可以切过去。",
     "chat_ui_hint_restart": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片。开启后要重启这个终端才生效。",
@@ -288,7 +286,10 @@
     "stopped_title": "这个终端还没有启动",
     "stopped_body": "启动后就可以使用。",
     "newline_hint": "换行",
-    "newline_title": "按 Shift+Enter 在输入框里换行，Enter 发送"
+    "newline_title": "按 Shift+Enter 在输入框里换行，Enter 发送",
+    "offline": "电脑已离线：终端内容可以查看，暂时不能输入；电脑重新上线后会自动重连",
+    "offline_title": "电脑已离线",
+    "offline_body": "这个会话所在的电脑现在连不上。电脑重新上线后会自动打开，终端里的任务不受影响。"
   },
   "pages": {
     "title": "本机网页",
@@ -646,7 +647,12 @@
     "just_updated_auto": "看看已在空闲时自动从 {{from}} 更新到 {{version}}。",
     "whats_new": "更新内容",
     "whats_new_title": "{{version}} 更新内容",
-    "got_it": "知道了"
+    "got_it": "知道了",
+    "background": "在后台更新",
+    "background_hint": "可以关掉这个窗口继续使用，进度会显示在页面顶部；完成后页面自动刷新。",
+    "banner_progress": "正在更新到 {{version}}",
+    "slow_restart": "重启比平时久。如果看看已经在运行，刷新页面就好；还是打不开时，请在电脑上重新打开看看。",
+    "reload_page": "刷新页面"
   },
   "report": {
     "title": "报告问题",
@@ -1601,7 +1607,10 @@
     "side_toggle_codex": "改动、资源和用量",
     "compacting": "正在压缩上下文…",
     "detached_terminal_only_title": "对话页暂时连不上 Codex，终端照常能用",
-    "detached_terminal_only_body": "看看的 Codex 后台服务刚才用不了，终端里改成直接运行同一段对话，可以继续在“终端”标签里用。在终端里退出 Codex（Ctrl+C 两次）后，对话页会重新接上。"
+    "detached_terminal_only_body": "看看的 Codex 后台服务刚才用不了，终端里改成直接运行同一段对话，可以继续在“终端”标签里用。在终端里退出 Codex（Ctrl+C 两次）后，对话页会重新接上。",
+    "placeholder_offline": "电脑已离线，暂时不能发送；电脑重新上线后会自动重连",
+    "suggest_hint": "{{agent}} 推荐的下一句：点一下（或按 Tab）填进输入框，可以改了再发",
+    "load_full_input": "查看完整参数"
   },
   "sess": {
     "new": "新会话",
@@ -1690,7 +1699,13 @@
     "tab_close": "关闭标签（终端继续运行）",
     "tabs_close_all": "全部关闭",
     "tabs_close_others": "关闭其他",
-    "tabs_close_right": "关闭右侧"
+    "tabs_close_right": "关闭右侧",
+    "full_access_chip": "全部权限",
+    "why_locked": "账户暂时不能新建会话，原因见页面顶部",
+    "why_no_folder": "先选一个项目文件夹",
+    "more_types": "更多",
+    "install_then_start": "还没安装 {{tool}}：点开始会先自动安装，装好后接着开始",
+    "install_auto_start": "装好后会自动开始，不用再点。"
   },
   "acct": {
     "computers": "电脑",
@@ -1764,7 +1779,7 @@
     "nickname": "显示名称",
     "edit_nickname": "改显示名称",
     "nickname_hint": "1–32 个字符，只用于显示",
-    "address": "专属地址",
+    "address": "复制我的专属地址",
     "username": "专属地址名",
     "fixed": "不能修改",
     "address_hint": "在手机或其他电脑的浏览器里打开专属地址，就能用这个账户下的所有电脑。",
@@ -1784,7 +1799,8 @@
     "signed_out": "已退出",
     "sign_out_all": "全部退出",
     "others_signed_out": "其他浏览器已退出",
-    "computers_lead_single": "已登录 {{n}} 台，最多 {{max}} 台。现在只能管理这台电脑；其他电脑点“在浏览器里打开”。"
+    "computers_lead_single": "已登录 {{n}} 台，最多 {{max}} 台。现在只能管理这台电脑；其他电脑点“在浏览器里打开”。",
+    "address_copied": "已复制专属地址：在手机或其他电脑的浏览器里打开就能用"
   },
   "conn": {
     "title": "连接",

@@ -114,6 +114,39 @@ pub fn classify(capture: &str) -> Screen {
     Screen::Input { text: text.trim().to_string(), busy }
 }
 
+/// 输入框空着时灰色的占位文字不是推荐回复：`Try "…"` 是 Claude Code 的示例提示；
+/// 推荐回复生成不出来时它也会把这句话灰着显示出来（testdata/bg-shell.txt），不能当成建议给用户点。
+const NOT_SUGGESTIONS: &[&str] = &["Try \"", "I have no obvious next step"];
+
+/// Claude Code 跑完一轮后在空输入框里灰着显示的推荐回复（终端里按 Tab / → 就能用）。
+/// 只认空闲、用户什么都没打时 ❯ 后面整段暗淡的文字（折行的续行也是暗淡的）；示例提示不算。
+pub fn suggestion(capture: &str) -> Option<String> {
+    if classify(capture) != (Screen::Input { text: String::new(), busy: false }) {
+        return None;
+    }
+    let lines: Vec<(String, String)> = capture.lines().map(strip).collect();
+    let bottom = lines.iter().rposition(|(p, _)| is_rule(p))?;
+    let top = lines[..bottom].iter().rposition(|(p, _)| is_rule(p))?;
+    let mut text = String::new();
+    for (n, (plain, bright)) in lines[top + 1..bottom].iter().enumerate() {
+        let plain = if n == 0 { plain.trim_start().strip_prefix('❯').or_else(|| plain.trim_start().strip_prefix('>')).unwrap_or(plain) } else { plain };
+        let bright = bright.trim().trim_start_matches(['❯', '>']).trim();
+        // 有不暗淡的字：不是推荐回复
+        if !bright.is_empty() {
+            return None;
+        }
+        let t = plain.trim();
+        if !t.is_empty() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(t);
+        }
+    }
+    let text = text.trim().to_string();
+    (!text.is_empty() && !NOT_SUGGESTIONS.iter().any(|p| text.starts_with(p))).then_some(text)
+}
+
 /// 输入框上下的状态信息：权限模式、思考强度、后台任务个数（`⏸ manual mode on · 1 shell · ↓ to manage`）。
 /// hooks 只在下一个事件时才带权限模式，后台任务个数更是只有屏幕上有。
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
@@ -454,6 +487,24 @@ mod tests {
     fn dim_suggestion_is_not_input() {
         let s = format!("{RULE}\n❯ \x1b[2mTry \"write a test for <filepath>\"\x1b[0m\n{RULE}\n  ? for shortcuts\n");
         assert_eq!(classify(&s), Screen::Input { text: String::new(), busy: false });
+    }
+
+    #[test]
+    fn suggestions() {
+        let s = format!("● 改好了\n\n{RULE}\n❯ \x1b[2mcommit this\x1b[0m\n{RULE}\n  ? for shortcuts\n");
+        assert_eq!(suggestion(&s).as_deref(), Some("commit this"));
+        // 折行的推荐回复接成一行
+        let s = format!("{RULE}\n❯ \x1b[2mrun the tests and fix\x1b[0m\n  \x1b[2many failures\x1b[0m\n{RULE}\n  ? for shortcuts\n");
+        assert_eq!(suggestion(&s).as_deref(), Some("run the tests and fix any failures"));
+        // 用户打了字、在运行、示例提示、空着：都没有
+        let s = format!("{RULE}\n❯ 你好\n{RULE}\n  ? for shortcuts\n");
+        assert_eq!(suggestion(&s), None);
+        let s = format!("{RULE}\n❯ \x1b[2mcommit this\x1b[0m\n{RULE}\n  ⏵⏵ auto mode on · esc to interrupt\n");
+        assert_eq!(suggestion(&s), None);
+        assert_eq!(suggestion(include_str!("testdata/idle.txt")), None);
+        assert_eq!(suggestion(include_str!("testdata/bg-shell.txt")), None);
+        assert_eq!(suggestion(include_str!("testdata/stream12.txt")), None);
+        assert_eq!(suggestion(include_str!("testdata/model.txt")), None);
     }
 
     /// 实际抓到的屏幕（`capture-pane -p -e`，Claude Code 2.1.302）

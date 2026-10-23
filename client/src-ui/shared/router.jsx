@@ -4,10 +4,11 @@ import { createContext, useContext, useEffect, useState } from 'react';
 const Ctx = createContext({ path: '/', search: '', hash: '', navigate: () => {} });
 
 export function Router({ children }) {
-  const here = () => ({ path: window.location.pathname, search: window.location.search, hash: window.location.hash });
+  // pop：这次变化是浏览器的前进 / 后退（不是 navigate），抽屉据此算关掉时要后退几步
+  const here = (pop = false) => ({ path: window.location.pathname, search: window.location.search, hash: window.location.hash, pop });
   const [loc, setLoc] = useState(here);
   useEffect(() => {
-    const on = () => setLoc(here());
+    const on = () => setLoc(here(true));
     window.addEventListener('popstate', on);
     window.addEventListener('hashchange', on);
     return () => {
@@ -19,7 +20,7 @@ export function Router({ children }) {
     if (replace) window.history.replaceState(null, '', to);
     else window.history.pushState(null, '', to);
     const u = new URL(to, window.location.origin);
-    setLoc({ path: u.pathname, search: u.search, hash: u.hash });
+    setLoc({ path: u.pathname, search: u.search, hash: u.hash, pop: false, replace });
     window.scrollTo(0, 0);
   };
   return <Ctx.Provider value={{ ...loc, navigate }}>{children}</Ctx.Provider>;

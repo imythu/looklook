@@ -1128,7 +1128,8 @@ fn ssh_launch_line(exe: &str, id: &str, family: crate::shells::Family) -> String
 async fn ssh_open(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
     let h = crate::ssh::list(&app.store).into_iter().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
-    let exe = crate::updater::exe_path().ok_or_else(|| LocalError::new("SSH_FAILED").with("detail", "exe"))?.display().to_string();
+    // 稳定入口（Linux 的 bin/looklook）：命令留在终端里、shell 历史里，版本目录被清理后按 ↑ 回车也要能重连
+    let exe = crate::versions::stable_exe(&app.paths.home).ok_or_else(|| LocalError::new("SSH_FAILED").with("detail", "exe"))?.display().to_string();
     let family = crate::shells::resolve("", &Settings::load(&app.store).default_shell)?.family;
     let input = Input {
         name: Some(format!("SSH · {}", h.name)),

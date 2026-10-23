@@ -1,5 +1,5 @@
 // 终端 iframe：地址与通信。终端始终同源打开（/i/{id}/）；远程打开时经 WebRTC，多台电脑时由启动页或本机客户端按 __lldev 转给终端所在的电脑。
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { selectedDevice, terminalDevice } from './api.js';
 
@@ -75,6 +75,28 @@ export function useFocusWhenReady(frame, enabled = true) {
     window.addEventListener('message', on);
     return () => window.removeEventListener('message', on);
   }, [enabled]);
+}
+
+/**
+ * 终端所在的电脑连不上了（`on`）/ 又能连上了：连接断着时终端不接受输入、不再显示它自己的“正在重新连接”（外面已经说明了）；
+ * 能连上时马上重连，不用等退避。见 term-inject.js 的 setOffline。
+ */
+export function termOffline(frame, on) {
+  frame.current?.contentWindow?.postMessage({ type: 'looklook:offline', data: Boolean(on) }, frameOrigin(frame));
+}
+
+/** 终端的连接状态（term-inject.js 发的 `looklook:conn`）：连着为 true，断开、重连中为 false。 */
+export function useTermConn(frame) {
+  const [ok, setOk] = useState(true);
+  useEffect(() => {
+    const on = (e) => {
+      if (e.data?.type !== 'looklook:conn' || !frame.current || e.source !== frame.current.contentWindow) return;
+      setOk(Boolean(e.data.ok));
+    };
+    window.addEventListener('message', on);
+    return () => window.removeEventListener('message', on);
+  }, []);
+  return ok;
 }
 
 export function termFit(frame) {

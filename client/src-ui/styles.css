@@ -820,6 +820,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 @keyframes bounce { 0%, 80%, 100% { transform: scale(.6); opacity: .5; } 40% { transform: scale(1); opacity: 1; } }
 .link-btn { background: none; border: 0; padding: 0; color: var(--brand); font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; }
 .term-connecting { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 16px; color: var(--term-fg, #c5cad6); background: var(--term-bg, #11131a); z-index: 1; animation: fade .2s; }
+/* 电脑离线：终端照样显示，顶上一枚提示（不挡翻看、不挡选文字） */
+.term-offline { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); z-index: 6; display: flex; align-items: center; gap: 8px; max-width: calc(100% - 24px); padding: 6px 14px; border-radius: 999px; background: rgba(24, 26, 36, .92); color: #f5c36b; font-size: 13px; line-height: 1.5; box-shadow: 0 4px 18px rgba(0, 0, 0, .3); border: 1px solid rgba(255, 255, 255, .08); pointer-events: none; animation: fade .2s; }
+.term-offline svg { flex: none; }
 .term-connecting .dots i { background: var(--term-accent, #8b93ff); width: 8px; height: 8px; }
 .term-connecting p { margin: 12px 0 0; }
 .term-connecting .small { color: var(--term-muted, #8a91a3); }
@@ -828,7 +831,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .guide li::marker { color: var(--brand); font-weight: 700; }
 @media (prefers-reduced-motion: reduce) { .dots i, .dot.bad, .relay-connected, .keybar-mods { animation: none; } }
 .remote-toggle { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; background: none; border: 0; padding: 0; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
-.remote-toggle b { font-weight: 500; }
+.remote-toggle b { font-weight: 500; flex: none; }
+.remote-host { min-width: 0; padding: 1px 8px; border-radius: 999px; background: var(--brand-soft); color: var(--brand); font: 12.5px var(--mono); }
 .remote-chev { transition: transform .15s; }
 .remote-toggle[aria-expanded="true"] .remote-chev { transform: rotate(180deg); }
 .remote-collapsed { padding-top: 10px; padding-bottom: 10px; }
@@ -1397,6 +1401,21 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-view .md pre { overflow-x: auto; }
 .chat-pre { margin: 0; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow-y: auto; }
 .chat-pre.cmd { color: var(--text); font-weight: 600; }
+.chat-pre a { color: var(--brand); text-decoration: underline; text-underline-offset: 2px; }
+/* 格式化的 JSON：右上角复制 */
+.chat-json { position: relative; }
+.chat-json .chat-pre { padding-right: 40px; }
+.chat-json-copy { position: absolute; top: 2px; right: 2px; }
+.chat-json-copy .btn { min-height: 30px; padding: 0 8px; opacity: .7; }
+.chat-json-copy .btn:hover { opacity: 1; }
+/* 认不出的工具的参数：一项一行；长的、JSON 单独成块 */
+.chat-fields { margin: 0 0 8px; display: grid; gap: 4px; font-size: 13px; }
+.chat-field-row { display: flex; gap: 8px; align-items: baseline; min-width: 0; }
+.chat-field-row.wide { flex-direction: column; align-items: stretch; gap: 3px; }
+.chat-field-row dt { flex: none; color: var(--muted); font-size: 12px; }
+.chat-field-row dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.chat-field-row dd code { font: 12.5px var(--mono); }
+.chat-field-row dd > a { color: var(--brand); font-size: 12.5px; overflow-wrap: anywhere; }
 .chat-pre.err { color: var(--danger); }
 .chat-command { color: var(--muted); background: transparent; border-left: 2px solid var(--line); border-radius: 0; padding: 2px 10px; }
 .chat-thinking { font-size: 13px; color: var(--muted); }
@@ -1530,6 +1549,11 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-send.btn-primary:disabled { opacity: .45; }
 .chat-stop { background: var(--text); color: var(--panel); border: 0; }
 .chat-files { display: flex; gap: 6px; flex-wrap: wrap; }
+/* Claude Code 推荐的下一句：输入框上面一枚，点一下填进输入框 */
+.chat-suggest { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; align-self: flex-start; min-height: 30px; padding: 0 10px; border: 1px dashed var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font: 13px var(--font); cursor: pointer; }
+.chat-suggest:hover { color: var(--text); border-color: var(--brand); }
+.chat-suggest svg { flex: none; color: var(--brand); }
+.chat-suggest kbd { flex: none; font: 11px var(--mono); padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; }
 .chat-file { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; }
 .chat-file img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .chat-file[data-state="up"] img { opacity: .5; }
@@ -1788,6 +1812,11 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
   border: 1px solid var(--line); background: var(--panel); color: var(--text); font: 500 14px/1 var(--font); cursor: pointer;
 }
 .start-type:hover { border-color: color-mix(in srgb, var(--brand) 40%, var(--line)); }
+/* 没装的工具：提示旁边选 npm 源；安装进度在输入框下面 */
+.start-install { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.start-install select { min-height: 30px; padding: 0 6px; font-size: 13px; }
+.start-install-log { padding: 10px 2px 0; }
+.start-install-log .small { margin: 6px 0 0; }
 .start-type[aria-pressed="true"] { border-color: var(--brand); background: var(--brand-soft); font-weight: 600; }
 .start-miss { font-size: 11.5px; color: var(--warn); font-weight: 500; }
 .start-input, .start-input:focus, .start-input:hover { width: 100%; min-height: 72px; resize: none; border: 0; padding: 6px 6px; background: none; box-shadow: none; font: inherit; font-size: 16px; line-height: 1.55; }
@@ -2028,3 +2057,34 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .pull-arrow { display: inline-block; transition: transform .15s; color: var(--brand); font-weight: 700; }
 .pull-arrow.ready { transform: rotate(180deg); }
 @media (hover: none) and (pointer: coarse) { html, body { overscroll-behavior-y: none; } }
+
+/* ---------- 抽屉：设置、电脑、账户、会员（盖在会话上面，见 App.jsx 的 PageDrawer） ---------- */
+.drawer-backdrop { position: fixed; inset: 0; z-index: 45; background: rgba(10, 12, 20, .28); display: flex; justify-content: flex-end; animation: fade .15s; }
+.drawer {
+  width: min(600px, 100%); height: 100%; display: flex; flex-direction: column; background: var(--bg); color: var(--text);
+  box-shadow: var(--shadow-lg); border-left: 1px solid var(--line); outline: none; animation: drawer-in .2s ease-out;
+}
+.drawer-wide { width: min(760px, 100%); }
+.drawer-head {
+  display: flex; align-items: center; gap: 10px; flex: none; min-height: 56px;
+  padding: calc(8px + env(safe-area-inset-top)) 12px 8px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+}
+.drawer-head h2 { margin: 0; font-size: 17px; min-width: 0; }
+.drawer-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 20px calc(24px + env(safe-area-inset-bottom)); }
+/* 标题已经在抽屉顶上：页面自己的大标题不再重复（旁边的说明、来源标签照样显示） */
+.drawer-body .page-head h1 { display: none; }
+.drawer-body .page-head:not(:has(> :not(h1))) { display: none; }
+/* 抽屉里地方窄：设置的分类一律放在上面一行（宽屏整页时是左边一列） */
+.drawer .settings { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.drawer .settings-nav { flex-direction: row; gap: 4px; margin: 0 -20px; padding: 0 20px 2px; border-bottom: 1px solid var(--line); overflow-x: auto; position: static; }
+.drawer .settings-tab { min-height: 44px; border-radius: 0; border-bottom: 2px solid transparent; margin-bottom: -3px; background: none; }
+.drawer .settings-tab.active { border-bottom-color: var(--brand); background: none; }
+.drawer .settings-tab .dot-badge { top: 9px; right: 4px; transform: none; }
+/* 手机：铺满整屏 */
+@media (max-width: 639px) {
+  .drawer, .drawer-wide { width: 100%; border-left: 0; }
+  .drawer-body { padding: 14px 16px calc(24px + env(safe-area-inset-bottom)); }
+  .drawer .settings-nav { margin: 0 -16px; padding: 0 16px 2px; }
+}
+@keyframes drawer-in { from { transform: translateX(32px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }

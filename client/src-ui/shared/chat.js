@@ -87,10 +87,57 @@ export function toolSummary(name, input = {}) {
     case 'TodoWrite':
       return `${(i.todos ?? []).filter((x) => x.status === 'completed').length}/${(i.todos ?? []).length}`;
     default: {
+      // MCP 等认不出的工具（Artifact、文档、浏览器……）：先挑常见的说明性参数，再取第一个字符串参数
+      const key = SUMMARY_KEYS.find((k) => typeof i[k] === 'string' && i[k].trim());
+      if (key) return /(^|_)path$/.test(key) ? tail(i[key]) : short(i[key]);
       const first = Object.values(i).find((v) => typeof v === 'string' && v.trim());
       return first ? short(first) : '';
     }
   }
+}
+const SUMMARY_KEYS = ['file_path', 'path', 'url', 'query', 'command', 'title', 'name', 'description', 'action'];
+
+// ---------------- 工具参数与结果里的富文本 ----------------
+
+/** 整段是 JSON 对象 / 数组时解析出来（MCP 工具的结果常是一整段 JSON），不是就返回 null */
+export function parseJson(text) {
+  const s = typeof text === 'string' ? text.trim() : '';
+  if (!/^[[{]/.test(s) || !/[\]}]$/.test(s)) return null;
+  try {
+    const v = JSON.parse(s);
+    return v && typeof v === 'object' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+/** 文字里的网址拆出来：[{ text }, { text, url }, …]（末尾的标点不算网址） */
+export function splitLinks(text) {
+  const s = String(text ?? '');
+  const out = [];
+  let at = 0;
+  for (const m of s.matchAll(URL_RE)) {
+    // 紧跟在网址后面的中文（“……/abc。完成”）不算网址
+    const url = m[0].replace(/[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef].*$/, '').replace(/[.,;:!?]+$/, '');
+    if (!url) continue;
+    if (m.index > at) out.push({ text: s.slice(at, m.index) });
+    out.push({ text: url, url });
+    at = m.index + url.length;
+  }
+  if (at < s.length) out.push({ text: s.slice(at) });
+  return out;
+}
+
+/**
+ * 工具参数的一个值怎么显示：json（对象、数组、整段 JSON 字符串，格式化成多行）、block（多行或很长的文字）、
+ * link（网址）、inline（短的文字、数字、开关）。
+ */
+export function fieldKind(v) {
+  if (v && typeof v === 'object') return 'json';
+  if (typeof v !== 'string') return 'inline';
+  if (parseJson(v)) return 'json';
+  if (/^https?:\/\/\S+$/.test(v.trim())) return 'link';
+  return v.includes('\n') || v.length > 120 ? 'block' : 'inline';
 }
 
 /**
@@ -277,6 +324,8 @@ export function chatRows(items, used = toolUseIds(items)) {
     (item.blocks ?? []).forEach((b, n) => {
       const key = b.id ?? `${item.key}:${n}`;
       if (b.t === 'tool_use') {
+        // 参数被截断的：记下所在的条目，卡片上可以按它取完整参数
+        if (b.truncated && !b.item) b.item = item.key;
         const cls = toolClass(b.name);
         if (cls && group?.cls === cls) {
           group.calls.push(b);

@@ -327,6 +327,20 @@ export function SessionsProvider({ enabled, children }) {
     if (dev) return loaded(dev);
     return devices.items.length > 0 && devices.items.every((d) => d.online && loaded(d.id));
   };
+  /**
+   * 会话所在的电脑连不上：多台时那台电脑离线、或者取它的会话列表出了网络错误；单台时取列表出了网络错误。
+   * 打开着的标签不关、终端不卸载，内容照样能看（只是不能输入），电脑回来后终端自己重连。
+   */
+  const transient = (e) => Boolean(e) && (!e.status || e.status >= 500);
+  const offline = (id) => {
+    if (!multi) return transient(singleError);
+    const dev = terminalDevice(id) ?? (tabDev[id] !== 'self' ? tabDev[id] : null);
+    if (!dev) return false;
+    return devices.byId(dev)?.online === false || transient(grouped?.groups?.[dev]?.error);
+  };
+  // 离线电脑上的会话从列表里没了：记下最后一次看到的样子，打开着的标签照样显示
+  const lastSeen = useRef(new Map());
+  for (const i of items) lastSeen.current.set(i.id, i);
   // 电脑上点会话 / 标签后要把焦点交给它的输入框（终端或对话输入框）；同一个会话再点也要，所以带个计数
   const [focusReq, setFocusReq] = useState({ id: null, n: 0 });
   const requestFocus = (id) => setFocusReq((f) => ({ id, n: f.n + 1 }));
@@ -351,6 +365,9 @@ export function SessionsProvider({ enabled, children }) {
     focusReq,
     requestFocus,
     byId: (id) => items.find((i) => i.id === id) ?? null,
+    /** 同 byId；电脑离线时给最后一次看到的（只用来显示） */
+    known: (id) => items.find((i) => i.id === id) ?? (offline(id) ? lastSeen.current.get(id) ?? null : null),
+    offline,
     gone,
     projectOf: (i) => projects.find((p) => p.items.includes(i)) ?? null,
   };

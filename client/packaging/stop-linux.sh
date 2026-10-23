@@ -3,12 +3,20 @@
 # 只结束看看本身：终端里的会话（looklook-mux）和其中的任务继续运行，终端里运行的 `looklook ssh` 等命令也不碰。
 # Stops the running Looklook (`looklook run`) where there is no systemd. Terminal sessions keep running.
 # 参数：安装目录（默认是这个脚本所在的目录）/ Optional argument: install directory
+# 数据目录里的版本（versions/<版本>/looklook，自动更新装的、启动时跳过去的）也算。
 PREFIX=${1:-$(cd "$(dirname "$0")" && pwd)}
+if [ -n "${LOOKLOOK_HOME:-}" ]; then DATA=$LOOKLOOK_HOME; else DATA=${XDG_DATA_HOME:-$HOME/.local/share}/looklook; fi
+# /proc/*/exe 是解析过软链的真实路径
+DATA=$(cd "$DATA" 2>/dev/null && pwd -P || echo "$DATA")
 pids=
 for d in /proc/[0-9]*; do
   exe=$(readlink "$d/exe" 2>/dev/null) || continue
   # 升级后旧进程的程序文件已被替换：显示为 looklook.old… 或 “(deleted)”
-  case $exe in "$PREFIX/looklook" | "$PREFIX/looklook (deleted)" | "$PREFIX"/looklook.old*) ;; *) continue ;; esac
+  case $exe in
+    "$PREFIX/looklook" | "$PREFIX/looklook (deleted)" | "$PREFIX"/looklook.old*) ;;
+    "$DATA"/versions/*/looklook | "$DATA"/versions/*/looklook" (deleted)") ;;
+    *) continue ;;
+  esac
   tr '\0' '\n' <"$d/cmdline" 2>/dev/null | grep -qx run || continue
   pids="$pids ${d#/proc/}"
 done

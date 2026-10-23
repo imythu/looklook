@@ -1,6 +1,7 @@
 // 检查更新与一键更新。后台自动检查（客户端定期向平台查询），有新版本时菜单上出现角标、页面顶部出现横幅；
 // 用户关掉横幅后同一个版本不再提醒（记在客户端本机数据库里，手机上关掉电脑上也不再提醒），有更新的版本时再提醒。
 // 下载、替换文件、重启在用户点“立即更新”后进行；开了“自动更新”（默认开）时，客户端也会在没有打开的终端 10 分钟后自己更新。
+// 更新在后台进行：弹窗可以随时关掉（“在后台更新”），进度改在顶部横幅里显示，页面照常可以操作。
 // 重启后页面自动刷新到新版本，并提示“已更新到 x.y.z”（可查看更新说明）。
 import { ArrowRight, CheckCircle2, Download, RefreshCw, Sparkles, X } from 'lucide-react';
 import { createContext, useContext, useEffect, useState } from 'react';
@@ -13,6 +14,8 @@ import { formatTime } from './time.js';
 import { Button, ErrorNote, Modal, Note, Switch, useAction, useToast } from './ui.jsx';
 
 const ACTIVE = ['downloading', 'installing', 'restarting'];
+/** 重启超过这么久还没换成新版本：提示刷新页面看看（可能新版本没能自己启动） */
+const SLOW_RESTART_MS = 60_000;
 
 /** 要不要提醒（角标、横幅）：有新版本且没被关掉；必须更新的版本关不掉。 */
 export function shouldRemind(u) {
@@ -28,6 +31,7 @@ export function useUpdateDialog() {
 
 export function UpdateProvider({ children }) {
   const [open, setOpen] = useState(false);
+  useUpdateProgress();
   return (
     <DialogCtx.Provider value={() => setOpen(true)}>
       {children}
@@ -44,10 +48,7 @@ function fmtSize(n) {
 function Progress({ job }) {
   const { t } = useTranslation();
   const pct = job.state === 'downloading' && job.total ? Math.min(100, Math.round((job.done / job.total) * 100)) : null;
-  const label =
-    job.state === 'downloading'
-      ? t('update.downloading', { done: fmtSize(job.done) || '0 KB', total: fmtSize(job.total) || '?' })
-      : t(`update.${job.state}`);
+  const label = progressText(t, job);
   return (
     <div className="update-progress" role="status" aria-live="polite">
       <div className="update-bar" data-indeterminate={pct == null || undefined}>
@@ -56,6 +57,50 @@ function Progress({ job }) {
       <p className="small muted">{label}</p>
     </div>
   );
+}
+
+/**
+ * 更新进行中：每秒刷新进度；重启期间连不上是正常的，版本变了就刷新页面。
+ * 放在 Provider 里而不是弹窗里：弹窗关掉（在后台更新）后进度照样走，换了版本照样自动刷新。
+ */
+function useUpdateProgress() {
+  const { status, reload } = useStatus();
+  const active = ACTIVE.includes(status.update?.job?.state);
+  useEffect(() => {
+    if (!active) return undefined;
+    const from = status.version;
+    const id = setInterval(async () => {
+      try {
+        const s = await api.get('/status');
+        if (s.version !== from) window.location.reload();
+        else reload();
+      } catch {
+        /* 正在重启 */
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [active]);
+}
+
+/** 进度的一句话：“正在下载 3.2 MB / 12 MB（27%）”“正在安装…”“正在重启…” */
+function progressText(t, job) {
+  if (job.state !== 'downloading') return t(`update.${job.state}`);
+  const pct = job.total ? Math.min(100, Math.round((job.done / job.total) * 100)) : null;
+  const text = t('update.downloading', { done: fmtSize(job.done) || '0 KB', total: fmtSize(job.total) || '?' });
+  return pct == null ? text : `${text} · ${pct}%`;
+}
+
+/** 正在重启：过了一分钟还没换成新版本，给出“刷新页面”（新版本可能没能自己启动，或者页面没收到） */
+function useSlowRestart(job) {
+  const [slow, setSlow] = useState(false);
+  const restarting = job.state === 'restarting';
+  useEffect(() => {
+    setSlow(false);
+    if (!restarting) return undefined;
+    const timer = setTimeout(() => setSlow(true), SLOW_RESTART_MS);
+    return () => clearTimeout(timer);
+  }, [restarting]);
+  return slow;
 }
 
 function UpdateDialog({ open, onClose }) {
@@ -71,21 +116,7 @@ function UpdateDialog({ open, onClose }) {
     setError(null);
     run(() => api.get(`/update?locale=${i18n.language}`)).then((r) => r && reload());
   }, [open]);
-  // 更新进行中：每秒刷新进度；重启期间连不上是正常的，版本变了就刷新页面
-  useEffect(() => {
-    if (!active) return undefined;
-    const from = status.version;
-    const id = setInterval(async () => {
-      try {
-        const s = await api.get('/status');
-        if (s.version !== from) window.location.reload();
-        else reload();
-      } catch {
-        /* 正在重启 */
-      }
-    }, 1000);
-    return () => clearInterval(id);
-  }, [active]);
+  const slow = useSlowRestart(job);
   const install = () => run(() => api.post('/update/install')).then((r) => r && reload());
   const later = async () => {
     if (u.available && !u.required && u.version) await api.post('/update/dismiss', { version: u.version }).catch(() => {});
@@ -93,7 +124,7 @@ function UpdateDialog({ open, onClose }) {
     onClose();
   };
   return (
-    <Modal open={open} onClose={active ? undefined : onClose} title={t('update.title')}>
+    <Modal open={open} onClose={onClose} title={t('update.title')}>
       {!u.available ? (
         <>
           <Note kind={u.check_error ? 'warn' : 'ok'}>
@@ -117,7 +148,11 @@ function UpdateDialog({ open, onClose }) {
             </Note>
           )}
           {active ? (
-            <Progress job={job} />
+            <>
+              <Progress job={job} />
+              <p className="small muted">{t('update.background_hint')}</p>
+              {slow && <Note kind="warn">{t('update.slow_restart')}</Note>}
+            </>
           ) : !u.can_install ? (
             <Note>{t(`update.manual.${u.cannot_reason ?? 'unsupported'}`)}</Note>
           ) : (
@@ -139,7 +174,18 @@ function UpdateDialog({ open, onClose }) {
               {t('settings.check_update')}
             </Button>
           </>
-        ) : active ? null : (
+        ) : active ? (
+          <>
+            {slow && (
+              <Button variant="secondary" icon={RefreshCw} onClick={() => window.location.reload()}>
+                {t('update.reload_page')}
+              </Button>
+            )}
+            <Button variant="ghost" onClick={onClose}>
+              {t('update.background')}
+            </Button>
+          </>
+        ) : (
           <>
             <Button variant="ghost" onClick={later}>
               {t(u.required ? 'action.close' : 'update.later')}
@@ -161,12 +207,34 @@ function UpdateDialog({ open, onClose }) {
   );
 }
 
-/** 顶部横幅：有新版本时提醒；× 关掉后这个版本不再提醒。 */
+/** 顶部横幅：有新版本时提醒；× 关掉后这个版本不再提醒。正在更新时显示进度（弹窗关掉后也看得到）。 */
 export function UpdateBanner() {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
   const openUpdate = useUpdateDialog();
   const u = status.update;
+  const job = u?.job ?? { state: 'idle' };
+  const slow = useSlowRestart(job);
+  if (ACTIVE.includes(job.state)) {
+    return (
+      <div className="banner banner-info" role="status" aria-live="polite">
+        <RefreshCw size={18} aria-hidden="true" className="spin" style={{ flex: 'none' }} />
+        <span className="grow">
+          {t('update.banner_progress', { version: job.version || u.version || '' })} · {progressText(t, job)}
+          {slow && <span style={{ display: 'block' }}>{t('update.slow_restart')}</span>}
+        </span>
+        {slow ? (
+          <Button variant="ghost" onClick={() => window.location.reload()}>
+            {t('update.reload_page')}
+          </Button>
+        ) : (
+          <Button variant="ghost" onClick={openUpdate}>
+            {t('update.view')}
+          </Button>
+        )}
+      </div>
+    );
+  }
   if (!shouldRemind(u)) return null;
   const dismiss = async () => {
     await api.post('/update/dismiss', { version: u.version }).catch(() => {});

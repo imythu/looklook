@@ -9,7 +9,7 @@
 #
 # Windows / macOS 另外生成桌面应用安装程序（Tauri，见 src/desktop.rs 与 tauri.conf.json），给普通用户双击安装：
 #   looklook-{版本}-windows-x86_64-setup.exe   NSIS 安装程序（装到 %LOCALAPPDATA%\Looklook，开始菜单、登录自启）
-#   looklook-{版本}-darwin-aarch64.dmg         拖进“应用程序”的 Looklook.app（ad-hoc 签名，没有 Apple 公证）
+#   looklook-{版本}-darwin-aarch64.dmg         拖进“应用程序”的 Looklook.app（没有 Apple 公证，签名见下面的 LOOKLOOK_MACOS_SIGN_IDENTITY）
 # 压缩包里的 looklook 就是同一个桌面应用程序，仍然用于自动更新（src/updater.rs 只认 zip / tar.gz）。
 # 额外需要：Tauri CLI（npm ci 装的 @tauri-apps/cli，或 cargo-tauri）；在 Linux 上打 Windows 包还要
 # x86_64-w64-mingw32-windres（binutils-mingw-w64-x86-64，嵌入图标与清单；预处理用 zig，见 scripts/windres-zig.sh）和 makensis（nsis）；
@@ -21,6 +21,9 @@
 # 静态分析成本，不是加密，见 docs/FAQ.md）。
 # 可选加固（任务 3）：LOOKLOOK_PACK=1 额外用 upx 压一遍可执行文件（没装 upx 会跳过并警告；
 # 默认不压 macOS 二进制，会影响代码签名，见 pack_upx() 和 docs/FAQ.md）。
+# macOS 签名：LOOKLOOK_MACOS_SIGN_IDENTITY 是钥匙串里一个代码签名证书的名字或 SHA-1（自签名的就行，
+# 生成见 scripts/macos-sign-cert.sh）。每个版本都用同一张证书签，macOS 才认得出升级后还是同一个应用：
+# “允许访问文稿 / 桌面 / 下载文件夹”这类授权按签名记，ad-hoc 签名（不设时的默认）每个版本都不一样，升级一次就要重新问一次。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -108,6 +111,21 @@ pack_upx() { # pack_upx <平台> <可执行文件路径>
   upx --best "$2" || echo "  upx 压缩失败，继续用未压缩的可执行文件" >&2
 }
 
+# macOS 代码签名：每个可执行文件都用同一张证书、固定的标识签（标识和 tauri.conf.json 的 identifier 一致）。
+# 没有证书时 ad-hoc 签名（和以前一样能用，但升级后系统会重新询问文件夹访问权限）。
+MAC_ID=com.looklook.client
+mac_sign() { # mac_sign <文件> <标识>
+  local who=${LOOKLOOK_MACOS_SIGN_IDENTITY:--}
+  codesign --force --sign "$who" --identifier "$2" --timestamp=none "$1"
+}
+mac_sign_helpers() { # mac_sign_helpers <stage 目录>：随包的终端服务、会话保持程序、trz / tsz
+  local f
+  mac_sign "$1/looklook-term" "$MAC_ID.term"
+  mac_sign "$1/looklook-mux" "$MAC_ID.mux"
+  for f in "$1"/trzsz/*; do [[ -f $f && -x $f ]] && mac_sign "$f" "$MAC_ID.$(basename "$f")"; done
+  return 0
+}
+
 tauri_cli() {
   if [[ -x node_modules/.bin/tauri ]]; then node_modules/.bin/tauri "$@"
   elif command -v cargo-tauri >/dev/null 2>&1; then cargo tauri "$@"
@@ -180,6 +198,12 @@ for t in "$@"; do
     windows-*) bat packaging/install-windows.bat "$stage/install.bat"; bat packaging/uninstall-windows.bat "$stage/uninstall.bat" ;;
   esac
   chmod 0755 "$stage/$term" "$stage/$muxout" "$stage"/*.sh 2>/dev/null || true
+  if [[ $t == darwin-* ]]; then
+    [[ -n ${LOOKLOOK_MACOS_SIGN_IDENTITY:-} ]] || echo "  （没有设置 LOOKLOOK_MACOS_SIGN_IDENTITY：ad-hoc 签名，升级后 macOS 会重新询问文件夹访问权限）" >&2
+    # 先签随包程序，Tauri 打进 .app 的就是签好的；.app 本身由 Tauri 用同一张证书签（APPLE_SIGNING_IDENTITY）
+    mac_sign_helpers "$stage"
+    [[ -n ${LOOKLOOK_MACOS_SIGN_IDENTITY:-} ]] && export APPLE_SIGNING_IDENTITY=$LOOKLOOK_MACOS_SIGN_IDENTITY
+  fi
   case $t in
     # macOS 在 macOS 上原生编译（要链接 Apple 系统框架，zig 交叉编译需要 macOS SDK，Linux 上没有）
     windows-* | darwin-*) desktop "$t" "$triple" "$stage" ;;
@@ -188,6 +212,8 @@ for t in "$@"; do
   cp "target/$triple/release/$exe" "$stage/$exe"
   chmod 0755 "$stage/$exe"
   pack_upx "$t" "$stage/$exe"
+  # 压缩包里的程序用于自动更新（替换 .app 里的那个）：签成和 .app 主程序一样的标识和证书，更新后系统还认得
+  [[ $t == darwin-* ]] && mac_sign "$stage/$exe" "$MAC_ID"
   name=looklook-$VERSION-$t
   if [[ $t == windows-* ]]; then
     (cd "$DIST/stage/$t" && python3 -c 'import os,sys,zipfile

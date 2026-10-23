@@ -63,7 +63,7 @@ impl Paths {
     pub fn discover(home_override: Option<PathBuf>) -> Result<Self> {
         let home = match home_override {
             Some(h) => h,
-            None => dirs::data_dir().context("无法确定数据目录，请设置 LOOKLOOK_HOME")?.join("looklook"),
+            None => default_home().context("无法确定数据目录，请设置 LOOKLOOK_HOME")?,
         };
         std::fs::create_dir_all(&home).with_context(|| format!("无法创建数据目录 {}", home.display()))?;
         // 数据目录里有登录状态与通道令牌，只允许当前用户访问。
@@ -82,7 +82,8 @@ impl Paths {
             .map(PathBuf::from)
             .or_else(|| dirs.iter().flat_map(|d| [d.join(MUX_EXE), d.join(LEGACY_MUX_EXE)]).find(|p| p.is_file()));
         let fonts = dirs.iter().map(|d| d.join("fonts")).find(|p| p.join("fonts.css").is_file());
-        Ok(Self { home, ttyd, mux, fonts, trzsz: find_trzsz() })
+        let trzsz = find_trzsz().map(|d| crate::versions::stable_trzsz(&home, d));
+        Ok(Self { home, ttyd, mux, fonts, trzsz })
     }
 
     pub fn db(&self) -> PathBuf {
@@ -123,6 +124,11 @@ impl Paths {
         }
         std::env::join_paths(v).ok()
     }
+}
+
+/// 没有指定（`--home` / `LOOKLOOK_HOME`）时的数据目录。启动时跳转版本（`versions::jump`）也按这个规则找，不能各写一套。
+pub fn default_home() -> Option<PathBuf> {
+    dirs::data_dir().map(|d| d.join("looklook"))
 }
 
 /// 随包 trzsz 所在的目录。

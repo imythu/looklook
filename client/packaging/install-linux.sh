@@ -9,6 +9,8 @@
 #   ./looklook/install.sh --no-start 只安装
 #
 # 没有 systemd 时（Docker 容器、WSL 等）用 nohup 在后台启动；再次运行会先结束旧版本（stop.sh）再启动新版本。
+# 这一版同时放进数据目录（LOOKLOOK_HOME，默认 ~/.local/share/looklook）的 versions/，自动更新也装在那里：
+# 容器只映射数据目录就能保留程序和更新，重建容器后用 {数据目录}/bin/looklook 启动。
 # LOOKLOOK_CONTAINER=1：由 Docker 主机上的一键安装（/install-docker.sh）调用，只安装、不装服务，启动由它负责。
 set -eu
 
@@ -54,6 +56,11 @@ rm -rf "$PREFIX/trzsz" && { cp -R "$SRC/trzsz" "$PREFIX/" 2>/dev/null || true; }
 cp "$SRC/uninstall.sh" "$PREFIX/uninstall.sh" 2>/dev/null || true
 cp "$SRC/stop.sh" "$PREFIX/stop.sh" 2>/dev/null && chmod 0755 "$PREFIX/stop.sh" || true
 ln -sf "$PREFIX/looklook" "$BIN/looklook"
+# 放进数据目录的 versions/<版本>，稳定入口 {数据目录}/bin/looklook 指向它。用户主动安装的版本（包括降级）为准：
+# 数据目录里更高的版本一起删掉，否则启动时又会跳过去。LOOKLOOK_NO_VERSIONS：运行刚装的这一版本身，不跳到数据目录里的版本。
+if ! LOOKLOOK_NO_VERSIONS=1 "$PREFIX/looklook" install-version "$PREFIX" >/dev/null; then
+  say "提示：没能把程序放进数据目录，自动更新后的版本在重建容器后可能会丢失 / Note: couldn't put the program into the data directory"
+fi
 
 # 第一次安装时默认允许局域网访问：服务器、NAS 往往没有屏幕，同一网络里的手机、电脑可以直接打开管理台。
 # 已经装过的不改（保留用户自己的选择）。容器里不开：端口映射后来源地址都像局域网。

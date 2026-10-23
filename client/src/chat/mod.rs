@@ -143,6 +143,8 @@ struct State {
     title: Option<String>,
     /// TUI 上的选择框（phase 为 tui 时）
     dialog: Option<screen::Dialog>,
+    /// 空闲时输入框里灰色的推荐回复（Claude Code 跑完一轮后给的下一步建议）
+    suggestion: Option<String>,
     /// Codex（app-server）的这一轮、上下文窗口、累计 token
     codex: codex_chat::CodexSt,
     /// 连续几次抓屏都认不出输入框、也读不出选择框（重绘、缩放到一半时会抓到这种半截屏幕）
@@ -299,6 +301,7 @@ impl Chat {
                         context: None,
                         title: None,
                         dialog: None,
+                        suggestion: None,
                         codex: Default::default(),
                         odd_screens: 0,
                         compacting: None,
@@ -361,6 +364,7 @@ impl Chat {
             "title": st.title,
             "dialog": st.dialog,
             "effort": st.effort,
+            "suggestion": st.suggestion,
             "background": st.background.iter().map(|(n, kind)| json!({ "n": n, "kind": kind })).collect::<Vec<_>>(),
             "agents": st.agents.len(),
             "error": st.error,
@@ -393,6 +397,9 @@ impl Chat {
             }
             if phase != Phase::Tui {
                 st.dialog = None;
+            }
+            if phase != Phase::Idle {
+                st.suggestion = None;
             }
             Self::emit_status(inst, st);
         }
@@ -788,6 +795,12 @@ impl Chat {
                         st.background = f.background;
                         Self::emit_status(inst, &st);
                     }
+                }
+                // 空闲时输入框里的推荐回复：界面上显示成一点就能用的建议（只认 Claude Code 的输入框）
+                let sug = capture.as_deref().filter(|_| st.phase == Phase::Idle && inst.agent.launch() == "claude").and_then(screen::suggestion);
+                if st.suggestion != sug {
+                    st.suggestion = sug;
+                    Self::emit_status(inst, &st);
                 }
                 // 运行中：把屏幕上正在输出的内容推给界面（transcript 要等整段写完才有）
                 if st.phase == Phase::Running {

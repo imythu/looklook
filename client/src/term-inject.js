@@ -14,6 +14,8 @@
 // 10. 复制：⌘C（macOS）/ Ctrl+Shift+C（Windows / Linux）复制选中的文字。见 setupCopy。
 //     链接：⌘ / Ctrl + 点击直接打开；普通点击在旁边弹出“打开 / 复制链接”。见 setupLinks。
 // 15. 连接状态告诉管理台（looklook:conn）；连不上、正在连接时手机上可以下拉刷新整页。见 setupPullRefresh。
+//     管理台说终端所在的电脑离线了（looklook:offline）：连接断着时终端只能看、不能输入，提示由管理台显示；
+//     电脑回来后马上重连。见 setOffline。
 // 11. 切到别的窗口再回来时重新适配、整屏重画，免得只画了一部分。见 refitOnReturn。
 // 12. 选择文字：手机上长按终端时通知管理台打开“选择文字”（用浏览器自己的选择，见 src-ui/shared/TextSelect.jsx）；
 //     提供 window.looklookText() 读出终端缓冲区的文字（没有 tmux 时用）。tmux 里拖选后浏览器不让直接写剪贴板时给一个“复制”按钮。
@@ -48,6 +50,8 @@
   // 在 ttyd 创建 WebSocket 之前包一层，只观察 /ws 连接的开闭。
   var overlay = null, banner = null, everOpen = false, socket = null;
   var lostAt = 0, failures = 0, retryAt = 0, wake = null, bannerTimer = 0, ended = false;
+  // 管理台说电脑离线了；TERM：准备好的终端（setup 之后才有）
+  var parentOffline = false, TERM = null;
   var css = document.createElement('style');
   css.textContent =
     '@keyframes llb{0%,80%,100%{transform:scale(.6);opacity:.5}40%{transform:scale(1);opacity:1}}' +
@@ -85,6 +89,8 @@
     if (banner) { banner.remove(); banner = null; }
   }
   function renderBanner() {
+    // 电脑离线：管理台那边已经说明了，这里不再叠一个“正在重新连接”
+    if (parentOffline && !ended) return hideBanner();
     if (!banner) banner = mount(document.createElement('div'));
     banner.className = 'll-pill';
     banner.setAttribute('role', 'status');
@@ -106,6 +112,7 @@
     if (!lostAt) lostAt = Date.now();
     ended = clean;
     document.documentElement.classList.add('ll-down');
+    readOnly();
     clearTimeout(bannerTimer);
     if (banner || clean) renderBanner();
     else bannerTimer = setTimeout(renderBanner, 1000);
@@ -116,6 +123,7 @@
     connState(true);
     lostAt = 0; failures = 0; retryAt = 0; ended = false;
     document.documentElement.classList.remove('ll-down');
+    readOnly();
     hideConnecting();
     hideBanner();
     if (was && document.body) toast(tr('back'));
@@ -135,6 +143,19 @@
     });
   }
   function kick() { retryAt = 0; if (wake) wake(); }
+  /** 电脑离线、连接也断着时终端不接受输入（打的字没处送，免得以为发出去了）；内容照样能看、能翻、能选 */
+  function readOnly() {
+    if (TERM && TERM.options) TERM.options.disableStdin = parentOffline && !connOk;
+  }
+  /** 管理台告诉我们电脑离线了 / 又在线了（looklook:offline） */
+  function setOffline(on) {
+    if (parentOffline === on) return;
+    parentOffline = on;
+    readOnly();
+    if (on) { if (!ended) hideBanner(); return; }
+    // 电脑回来了：断着的话马上重连，不等退避
+    if (!connOk && everOpen) { kick(); if (lostAt) renderBanner(); }
+  }
   function retryNow() {
     // 正常结束、或者 ttyd 没在等重连（不在退避中）时整页重开
     if (ended || !wake) return void location.reload();
@@ -918,9 +939,15 @@
     if (fromParent(e) && e.data && e.data.type === 'looklook:focus') wantFocus = true;
   }
   window.addEventListener('message', earlyFocus);
+  // 电脑离线 / 在线：终端还没准备好时也要记下（准备好时 setup 按它决定能不能输入）
+  window.addEventListener('message', function (e) {
+    if (fromParent(e) && e.data.type === 'looklook:offline') setOffline(Boolean(e.data.data));
+  });
 
   function setup(term) {
     window.removeEventListener('message', earlyFocus);
+    TERM = term;
+    readOnly();
     // 要求过聚焦，或者页面已经有焦点：交给终端（手机上不主动弹键盘）
     if (wantFocus || (!touch && document.hasFocus())) term.focus();
     refitOnReturn(term);

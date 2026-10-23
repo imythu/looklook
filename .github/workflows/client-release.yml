@@ -211,6 +211,41 @@ jobs:
           mkdir -p "$RUNNER_TEMP/zig" && tar -C "$RUNNER_TEMP/zig" -xJf /tmp/zig.tar.xz
           echo "$RUNNER_TEMP/zig/zig-aarch64-macos-$ZIG_VERSION" >> "$GITHUB_PATH"
 
+      # 代码签名：每个版本都用同一张（自签名）证书签，macOS 才把升级后的看看认成同一个应用，不再重新询问文件夹访问权限。
+      # 证书由 client/scripts/macos-sign-cert.sh 生成一次，放在 secrets 里；没有时 ad-hoc 签名（照常能用，只是升级后会再问）。
+      - name: 导入签名证书
+        env:
+          MACOS_SIGN_P12: ${{ secrets.MACOS_SIGN_P12 }}
+          MACOS_SIGN_P12_PASSWORD: ${{ secrets.MACOS_SIGN_P12_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z ${MACOS_SIGN_P12:-} ]]; then
+            echo "::warning::没有设置 MACOS_SIGN_P12：ad-hoc 签名，用户升级后 macOS 会重新询问文件夹访问权限"
+            exit 0
+          fi
+          kc=$RUNNER_TEMP/sign.keychain-db
+          kcpw=$(openssl rand -hex 16)
+          printf '%s' "$MACOS_SIGN_P12" | base64 --decode >"$RUNNER_TEMP/sign.p12"
+          security create-keychain -p "$kcpw" "$kc"
+          security set-keychain-settings -lut 21600 "$kc"
+          security unlock-keychain -p "$kcpw" "$kc"
+          security import "$RUNNER_TEMP/sign.p12" -k "$kc" -P "$MACOS_SIGN_P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/sign.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$kcpw" "$kc" >/dev/null
+          # shellcheck disable=SC2046
+          security list-keychains -d user -s "$kc" $(security list-keychains -d user | tr -d '"')
+          # 自签名证书要先被信任为代码签名证书，codesign 才肯用
+          security find-certificate -a -p "$kc" >"$RUNNER_TEMP/sign.pem"
+          sudo security add-trusted-cert -d -r trustRoot -p codeSign -k /Library/Keychains/System.keychain "$RUNNER_TEMP/sign.pem"
+          id=$(security find-identity -v -p codesigning "$kc" | awk '$2 ~ /^[0-9A-F]{40}$/ { print $2; exit }')
+          if [[ -z $id ]]; then
+            echo "::error::钥匙串里没有可用的代码签名证书"
+            security find-identity -p codesigning "$kc"
+            exit 1
+          fi
+          echo "签名证书 $id"
+          echo "LOOKLOOK_MACOS_SIGN_IDENTITY=$id" >>"$GITHUB_ENV"
+
       - name: 打包
         env:
           LOOKLOOK_SERVER_URL: ${{ secrets.LOOKLOOK_SERVER_URL }}
@@ -222,6 +257,8 @@ jobs:
           [[ -n $LOOKLOOK_PLATFORM_KEYS ]] || unset LOOKLOOK_PLATFORM_KEYS
           npm ci --no-audit --no-fund
           scripts/package.sh darwin-aarch64
+          # 签名的标识和证书：升级前后要一样（见 scripts/package.sh 的 mac_sign）
+          codesign -dvv "$(find target/aarch64-apple-darwin/release/bundle/macos -maxdepth 1 -name '*.app' | head -1)" 2>&1 | grep -E '^(Identifier|Authority|Signature)=' || true
 
       - name: 暂存安装包
         env:

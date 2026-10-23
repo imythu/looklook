@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, questionAnswers, slashAction, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -144,4 +144,34 @@ test('conversationResources: 链接、搜索、图片，最近的在前、去重
     ],
   );
   assert.equal(r[0].title, '');
+});
+
+test('工具参数与结果：认出 JSON、网址，长文字单独成块', () => {
+  assert.deepEqual(parseJson(' {"url": "https://a.b/c", "ok": true} '), { url: 'https://a.b/c', ok: true });
+  assert.deepEqual(parseJson('[1, 2]'), [1, 2]);
+  assert.equal(parseJson('Published: {"a": 1}'), null);
+  assert.equal(parseJson('{bad json}'), null);
+  assert.equal(parseJson('42'), null);
+  assert.deepEqual(splitLinks('已发布到 https://claude.ai/artifact/abc。完成'), [{ text: '已发布到 ' }, { text: 'https://claude.ai/artifact/abc', url: 'https://claude.ai/artifact/abc' }, { text: '。完成' }]);
+  assert.deepEqual(splitLinks('see https://x.y/z.'), [{ text: 'see ' }, { text: 'https://x.y/z', url: 'https://x.y/z' }, { text: '.' }]);
+  assert.deepEqual(splitLinks('no links'), [{ text: 'no links' }]);
+  assert.equal(fieldKind({ a: 1 }), 'json');
+  assert.equal(fieldKind('{"a": 1}'), 'json');
+  assert.equal(fieldKind('https://claude.ai/x'), 'link');
+  assert.equal(fieldKind('line 1\nline 2'), 'block');
+  assert.equal(fieldKind('x'.repeat(200)), 'block');
+  assert.equal(fieldKind('publish'), 'inline');
+  assert.equal(fieldKind(3), 'inline');
+});
+
+test('认不出的工具：标题挑说明性的参数', () => {
+  assert.equal(toolSummary('Artifact', { icon: 'chart', file_path: '/tmp/a/report.html' }), 'a/report.html');
+  assert.equal(toolSummary('mcp__docs__create', { kind: 'doc', title: '周报' }), '周报');
+  assert.equal(toolSummary('mcp__x__y', { foo: 'bar' }), 'bar');
+});
+
+test('参数被截断的工具调用记下所在的条目', () => {
+  const items = [{ key: 'k1', k: 'assistant', blocks: [{ t: 'tool_use', id: 't1', name: 'Artifact', input: {}, truncated: true }] }];
+  const rows = chatRows(items);
+  assert.equal(rows[0].block.item, 'k1');
 });

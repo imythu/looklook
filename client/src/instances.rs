@@ -501,11 +501,8 @@ impl Instances {
             opts.root_confirmed = false;
             return Ok(());
         }
-        if !opts.full_access {
-            opts.root_confirmed = false;
-        } else if crate::platform::is_root() && !opts.root_confirmed {
-            return Err(LocalError::invalid("root_confirmed", "required"));
-        }
+        // 选了“以全部权限打开”就是确认：以 root 运行时不再另外确认（Claude Code 自动加上 IS_SANDBOX=1）
+        opts.root_confirmed = opts.full_access;
         Ok(())
     }
 
@@ -1977,7 +1974,8 @@ mod tests {
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(!o.root_confirmed);
         let mut o = Opts { full_access: true, root_confirmed: false, web_port: None, chat_ui: false, name_custom: false };
-        assert_eq!(Instances::validate_opts(&r, &mut o).is_err(), crate::platform::is_root());
+        Instances::validate_opts(&r, &mut o).unwrap();
+        assert!(o.root_confirmed, "全部权限就是确认，root 下不用再确认");
         r.launch = "dsh".into();
         let mut o = Opts { full_access: true, root_confirmed: true, web_port: None, chat_ui: false, name_custom: false };
         assert!(Instances::validate_opts(&r, &mut o).is_err(), "DSH 必须有网页端口");

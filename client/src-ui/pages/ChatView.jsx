@@ -54,12 +54,15 @@ import {
   diffLines,
   diffStat,
   duration,
+  fieldKind,
   latestTodos,
   modelLabel,
   modelView,
+  parseJson,
   questionAnswers,
   resultsById,
   slashAction,
+  splitLinks,
   tokens,
   toolCounts,
   toolSummary,
@@ -69,7 +72,7 @@ import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { runUpload } from '../shared/uploader.js';
-import { Button, useConfirm, useToast } from '../shared/ui.jsx';
+import { Button, CopyButton, useConfirm, useToast } from '../shared/ui.jsx';
 
 // ---------------- 数据 ----------------
 
@@ -167,6 +170,98 @@ function Pre({ text, className = '' }) {
   return <pre className={`chat-pre ${className}`}>{text}</pre>;
 }
 
+/** 文字里的网址可以点（工具结果里常有：发布出来的页面、创建的文档……） */
+function Linked({ text }) {
+  return splitLinks(text).map((p, n) =>
+    p.url ? (
+      // eslint-disable-next-line react/no-array-index-key -- 片段没有别的标识
+      <a key={n} href={p.url} target="_blank" rel="noopener noreferrer">
+        {p.text}
+      </a>
+    ) : (
+      p.text
+    ),
+  );
+}
+
+/** 格式化好的 JSON，右上角可以复制（复制的是完整的原文） */
+function JsonBlock({ value, raw, className = '' }) {
+  const text = JSON.stringify(value, null, 2);
+  return (
+    <div className="chat-json">
+      <pre className={`chat-pre ${className}`}>
+        <Linked text={text} />
+      </pre>
+      <span className="chat-json-copy">
+        <CopyButton text={raw ?? text} label={false} variant="plain" />
+      </span>
+    </div>
+  );
+}
+
+/** 工具结果、参数里的一段文字：整段是 JSON 时格式化显示，网址可以点 */
+function RichText({ text, className = '' }) {
+  if (!text) return null;
+  const json = parseJson(text);
+  if (json) return <JsonBlock value={json} raw={text} className={className} />;
+  return (
+    <pre className={`chat-pre ${className}`}>
+      <Linked text={text} />
+    </pre>
+  );
+}
+
+/**
+ * 认不出的工具（MCP、Artifact、文档、浏览器……）的参数：一项一行。短的值跟在名字后面，
+ * 长文字、多行文字、JSON 单独成块（JSON 格式化），网址可以点。
+ */
+function FieldList({ input }) {
+  const entries = Object.entries(input ?? {});
+  if (!entries.length) return null;
+  return (
+    <dl className="chat-fields">
+      {entries.map(([k, v]) => {
+        const kind = fieldKind(v);
+        return (
+          <div key={k} className={`chat-field-row ${kind === 'json' || kind === 'block' ? 'wide' : ''}`}>
+            <dt className="mono">{k}</dt>
+            <dd>
+              {kind === 'json' ? (
+                <JsonBlock value={typeof v === 'string' ? parseJson(v) : v} raw={typeof v === 'string' ? v : undefined} />
+              ) : kind === 'block' ? (
+                <RichText text={v} />
+              ) : kind === 'link' ? (
+                <a href={v.trim()} target="_blank" rel="noopener noreferrer" className="mono">
+                  {v.trim()}
+                </a>
+              ) : (
+                <code>{typeof v === 'string' ? v : JSON.stringify(v)}</code>
+              )}
+            </dd>
+          </div>
+        );
+      })}
+    </dl>
+  );
+}
+
+/** 参数被截断（太长）时：按所在的条目取完整的参数 */
+function useFullInput(id, block) {
+  const [full, setFull] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const load = async () => {
+    setBusy(true);
+    try {
+      const raw = await api.get(`/instances/${id}/chat/item?key=${encodeURIComponent(block.item)}`);
+      const b = (raw?.message?.content ?? []).find?.((x) => x?.type === 'tool_use' && x.id === block.id);
+      if (b?.input && typeof b.input === 'object') setFull(b.input);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return { input: full ?? block.input ?? {}, truncated: Boolean(block.truncated && !full), canLoad: Boolean(block.item), busy, load };
+}
+
 function DiffView({ lines }) {
   const { t } = useT();
   const [all, setAll] = useState(false);
@@ -223,7 +318,7 @@ function ResultText({ id, result }) {
   };
   return (
     <>
-      <Pre text={full ?? result.content} className={result.is_error ? 'err' : ''} />
+      <RichText text={full ?? result.content} className={result.is_error ? 'err' : ''} />
       {result.images > 0 && <p className="chat-note">{t('chat.images', { n: result.images })}</p>}
       {result.truncated && full == null && (
         <button type="button" className="chat-more" onClick={more} disabled={busy}>
@@ -341,14 +436,30 @@ function ToolBody({ id, block, result }) {
         </>
       );
     default:
-      return (
-        <>
-          {Object.keys(input).length > 0 && <Pre text={JSON.stringify(input, null, 2)} />}
-          {block.truncated && <p className="chat-note">{t('chat.input_truncated')}</p>}
-          <ResultText id={id} result={result} />
-        </>
-      );
+      return <OtherToolBody id={id} block={block} result={result} />;
   }
+}
+
+/** 认不出的工具：参数一项一行（JSON 格式化、网址可点），被截断的参数可以取完整的；结果同样认出 JSON 和网址 */
+function OtherToolBody({ id, block, result }) {
+  const { t } = useT();
+  const full = useFullInput(id, block);
+  return (
+    <>
+      <FieldList input={full.input} />
+      {full.truncated && (
+        <p className="chat-note">
+          {t('chat.input_truncated')}{' '}
+          {full.canLoad && (
+            <button type="button" className="chat-more" onClick={full.load} disabled={full.busy}>
+              {t('chat.load_full_input')}
+            </button>
+          )}
+        </p>
+      )}
+      <ResultText id={id} result={result} />
+    </>
+  );
 }
 
 /** 对话生成的图片的地址（`chat/file`）：放进 <img>、查看原图、下载都用它 */
@@ -1042,7 +1153,7 @@ function ContextRing({ used, window: win, onClick }) {
   );
 }
 
-function Composer({ id, status, phase, touch, models, usage, onAction }) {
+function Composer({ id, status, phase, touch, offline, models, usage, onAction }) {
   const { t } = useT();
   // 权限模式只有 Claude Code 有；模型、思考强度、上下文用量按工具的能力（caps）显示
   const { id: agentId, caps } = useContext(AgentCtx);
@@ -1053,7 +1164,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
   const [menu, setMenu] = useState(null);
   const area = useRef(null);
   const picker = useRef(null);
-  const disabled = phase === 'tui' || phase === 'approval' || phase === 'detached';
+  const disabled = offline || phase === 'tui' || phase === 'approval' || phase === 'detached';
   const running = phase === 'running';
   const view = modelView(status, models?.options ?? []);
   useEffect(() => {
@@ -1139,6 +1250,10 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
     } else if (slash.length && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
       e.preventDefault();
       setSlashPick((p) => ((p ?? -1) + (e.key === 'ArrowDown' ? 1 : -1) + slash.length) % slash.length);
+    } else if (e.key === 'Tab' && !e.shiftKey && !text && suggestion) {
+      // 和 Claude Code 一样：Tab 用上推荐回复（填进输入框，可以改了再发）
+      e.preventDefault();
+      applySuggestion();
     } else if (e.key === 'Tab' && e.shiftKey && !text && caps.mode !== false) {
       // 和 Claude Code 一样：Shift+Tab 轮换权限模式
       e.preventDefault();
@@ -1177,6 +1292,17 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
     setText(`${c.name} `);
     area.current?.focus();
   };
+  // Claude Code 跑完一轮后推荐的下一句（终端里灰着显示在输入框里）：空闲、输入框空着时显示，点一下或按 Tab 填进来
+  const suggestion = phase === 'idle' && !offline && !text && !files.length ? status?.suggestion || null : null;
+  const applySuggestion = () => {
+    setText(suggestion);
+    requestAnimationFrame(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  };
   const modeText = status?.mode ? t(`chat.mode_${MODE_CHOICES.includes(status.mode) || status.mode === 'dontAsk' ? status.mode : 'other'}`, { mode: status.mode }) : t('chat.mode');
   const ready = phase === 'idle' || phase === 'running';
   const showStop = running && !text.trim() && !files.length;
@@ -1198,6 +1324,13 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
       )}
       {menu === 'model' && <ModelMenu id={id} status={status} models={models} view={view} onClose={() => setMenu(null)} />}
       {menu === 'mode' && <ModeMenu id={id} status={status} onClose={() => setMenu(null)} />}
+      {suggestion && slash.length === 0 && (
+        <button type="button" className="chat-suggest" onClick={applySuggestion} title={t('chat.suggest_hint')}>
+          <Sparkle size={13} aria-hidden="true" />
+          <span className="ellipsis">{suggestion}</span>
+          {!touch && <kbd>Tab</kbd>}
+        </button>
+      )}
       {files.length > 0 && (
         <div className="chat-files">
           {files.map((f) => (
@@ -1228,7 +1361,7 @@ function Composer({ id, status, phase, touch, models, usage, onAction }) {
           rows={1}
           value={text}
           disabled={disabled}
-          placeholder={t(disabled ? `chat.placeholder_${phase}` : running ? 'chat.placeholder_running' : touch ? 'chat.placeholder_touch' : 'chat.placeholder')}
+          placeholder={suggestion ?? t(offline ? 'chat.placeholder_offline' : disabled ? `chat.placeholder_${phase}` : running ? 'chat.placeholder_running' : touch ? 'chat.placeholder_touch' : 'chat.placeholder')}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKey}
           onPaste={(e) => {
@@ -2079,10 +2212,10 @@ const readSide = () => {
 
 /**
  * id：终端；active：当前显示的是“对话”标签；touch：手机（回车换行，用按钮发送）；
- * onTab(tab)：切到终端的别的标签（例如右侧“改动”里的“在 Git 里查看”）。
+ * offline：终端所在的电脑连不上（对话照样显示，连不上时不能发送）；onTab(tab)：切到终端的别的标签（例如右侧“改动”里的“在 Git 里查看”）。
  * 对话页里不出现终端：Claude Code 的选择框显示成弹窗，界面做不了的就不做，用户自己切到“终端”标签去。
  */
-export default function ChatView({ id, launch, active, touch, onTab }) {
+export default function ChatView({ id, launch, active, touch, offline = false, onTab }) {
   const router = useRouter();
   const chat = useChat(id);
   const { status, items } = chat;
@@ -2223,7 +2356,7 @@ export default function ChatView({ id, launch, active, touch, onTab }) {
           )}
           {phase === 'detached' && <Detached id={id} status={status} />}
           <StatusLine status={status} online={chat.online} side={side} onSide={setSide} onTerm={() => onTab?.('term')} />
-          <Composer id={id} status={status} phase={phase} touch={touch} models={models} usage={usage} onAction={onAction} />
+          <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} onAction={onAction} />
         </div>
       </div>
       {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} />}
