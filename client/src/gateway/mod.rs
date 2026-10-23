@@ -148,7 +148,8 @@ pub async fn local_guard(State(app): State<App>, mut req: Request, next: Next) -
     // 没有连接信息只会出现在测试里，按本机处理。
     let conn = req.extensions().get::<ConnectInfo<Conn>>().map(|c| c.0);
     let peer_ip = conn.map(|c| c.remote.ip().to_canonical()).unwrap_or(IpAddr::from([127, 0, 0, 1]));
-    let same_host = conn.and_then(|c| c.local).is_some_and(|l| l.ip().to_canonical() == peer_ip);
+    // 连接两端是同一个 IP，或者是启动时指定也当作本机的来源（Docker 里运行时宿主机经网关连进来）
+    let same_host = conn.and_then(|c| c.local).is_some_and(|l| l.ip().to_canonical() == peer_ip) || access::local_from(peer_ip);
     let cfg = app.access();
     let mut peer = access::classify(peer_ip, &cfg, same_host, &app.resolved.ips(&cfg));
     // 白名单域名的 IP 可能刚变（DDNS）：重新解析一次再判断

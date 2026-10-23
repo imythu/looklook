@@ -55,7 +55,7 @@ mod desktop;
 mod updater;
 mod util;
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -85,6 +85,10 @@ struct Cli {
     /// 管理台监听地址，默认 0.0.0.0:1234（被占用时依次 +10）/ Console address, default 0.0.0.0:1234 (steps up by 10 if taken)
     #[arg(long, env = "LOOKLOOK_LISTEN", global = true)]
     listen: Option<SocketAddr>,
+    /// 也当作这台电脑的来源 IP 或网段，逗号分隔（默认只有 127.0.0.1）；Docker 里运行时填宿主机连进来的网关，如 172.17.0.1
+    /// Also treat these source IPs or ranges as this computer, comma-separated (default: only 127.0.0.1); in Docker, the gateway the host connects through, e.g. 172.17.0.1
+    #[arg(long, env = "LOOKLOOK_LOCAL_FROM", global = true, value_delimiter = ',', value_parser = parse_local_from)]
+    local_from: Vec<(IpAddr, u8)>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -96,6 +100,9 @@ const HELP_EXAMPLES: &str = "\
   looklook status           查看登录状态 / Show sign-in status
   looklook upgrade          升级到最新版本 / Upgrade to the latest version
   looklook access lan on    允许局域网设备打开管理台 / Let LAN devices open the console
+  looklook --local-from 172.17.0.1
+                            在 Docker 里运行：宿主机上打开管理台也算这台电脑
+                            In Docker: opening the console from the host counts as this computer
 
 子命令的帮助 / Help for a command: looklook <command> -h";
 
@@ -202,6 +209,7 @@ fn main() -> Result<()> {
     }
     let _ = updater::exe_path(); // 记下程序路径（更新替换文件后重启要用）
     let cli = Cli::parse();
+    gateway::access::set_local_from(cli.local_from.clone());
     let rt = tokio::runtime::Runtime::new()?;
     // 命令行子命令优先读正在运行的客户端写下的 run/endpoint，这里只是找不到时的后备
     let cli_listen = cli.listen.unwrap_or(listen::DEFAULT);
@@ -336,6 +344,14 @@ async fn cli_update(home: &Option<PathBuf>, listen: SocketAddr, check_only: bool
         }
     }
     bail!("等了 15 分钟还没完成，运行 looklook status 查看客户端状态\nNot finished after 15 minutes; run looklook status to check the client")
+}
+
+fn parse_local_from(s: &str) -> std::result::Result<(IpAddr, u8), String> {
+    gateway::access::parse_net(s).map_err(|e| match e {
+        "ip_too_wide" => "网段太大 / range too wide".to_string(),
+        "ip_loopback" => "127.0.0.1 本来就算这台电脑 / loopback is always this computer".to_string(),
+        _ => "不是 IP 或网段 / not an IP or range".to_string(),
+    })
 }
 
 /// `None`（直接双击/开机启动）与 `looklook run` 走同一条路：Windows/macOS 是桌面应用（窗口 + 托盘，

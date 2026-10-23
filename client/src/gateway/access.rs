@@ -2,6 +2,8 @@
 //!
 //! 管理台默认监听 `0.0.0.0:1234`，但按来源 IP 放行：
 //! - **这台机器自己**（127.0.0.1 / ::1，或连接两端是同一个 IP）：总是放行，不需要访问码；
+//!   在 Docker 等环境里运行时，宿主机的浏览器是经网关（如 172.17.0.1）连进来的，可以在启动时用
+//!   `--local-from` / `LOOKLOOK_LOCAL_FROM` 指定也当作这台机器的 IP 或网段（见 [`set_local_from`]），默认没有；
 //! - **局域网**（192.168.x.x、10.x.x.x、172.16–31.x.x、100.64/10、169.254/16、fc00::/7、fe80::/10）：
 //!   打开“允许局域网访问”后放行；
 //! - **白名单**：用户自己添加的 IP、网段或域名（例如公司固定公网 IP；动态 IP 用 DDNS 域名，按解析结果放行，见 [`Resolved`]）；
@@ -15,7 +17,7 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::{Mutex, RwLock};
+use std::sync::{Mutex, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -116,6 +118,18 @@ impl Peer {
     pub fn needs_code(self, cfg: &AccessConfig) -> bool {
         matches!(self, Peer::Lan | Peer::Listed) && cfg.code_enabled
     }
+}
+
+/// 启动时指定、也当作这台机器的来源（`--local-from`），只设置一次。
+static LOCAL_FROM: OnceLock<Vec<(IpAddr, u8)>> = OnceLock::new();
+
+pub fn set_local_from(nets: Vec<(IpAddr, u8)>) {
+    let _ = LOCAL_FROM.set(nets);
+}
+
+/// 来源是不是启动时指定也当作这台机器的 IP 或网段。
+pub fn local_from(ip: IpAddr) -> bool {
+    LOCAL_FROM.get().is_some_and(|nets| nets.iter().any(|(net, len)| in_net(ip, *net, *len)))
 }
 
 /// 判断来源。`same_host`：连接两端是同一个 IP（从这台机器用自己的局域网地址打开），也算本机。
@@ -419,6 +433,15 @@ mod tests {
         assert!(!Peer::Local.needs_code(&AccessConfig { code_enabled: true, ..c.clone() }));
         assert!(Peer::Lan.needs_code(&AccessConfig { code_enabled: true, ..c.clone() }));
         assert!(!Peer::Lan.needs_code(&c));
+    }
+
+    #[test]
+    fn local_from_nets() {
+        assert!(!local_from(ip("172.17.0.1")));
+        set_local_from(vec![parse_net("172.17.0.1").unwrap(), parse_net("192.168.65.0/24").unwrap()]);
+        assert!(local_from(ip("172.17.0.1")));
+        assert!(local_from(ip("::ffff:192.168.65.3")));
+        assert!(!local_from(ip("172.17.0.2")));
     }
 
     #[test]

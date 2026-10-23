@@ -1206,7 +1206,7 @@
   "ai": {
     "title": "AI tools & access",
     "intro": "AI assistants such as Claude Code and Codex use Looklook through its MCP interface. Set the interface up here and see and control what they can do.",
-    "local_only": "The MCP token and installation can only be viewed and changed when the console is opened directly on this computer. The host switches below also work remotely.",
+    "local_only": "The MCP token and installation can only be viewed and changed when the console is opened directly on this computer (running in Docker? start with --local-from to count the host as this computer). The host switches below also work remotely.",
     "tools_title": "Tools AI assistants can use",
     "tools_intro": "The MCP interface is on; AI assistants can use the tools that are on below.",
     "tools_off": "The MCP interface is off, so AI assistants can't use any tools right now. The tools below apply once it is on.",
