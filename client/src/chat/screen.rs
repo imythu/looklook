@@ -34,10 +34,13 @@ fn is_rule(line: &str) -> bool {
 }
 
 /// `capture-pane -p -e` 的输出（带 SGR 转义）：去掉转义，同时记下哪些字符是“暗淡”（推荐提示）的。
+/// 光标（反色的一个字）压在推荐提示的第一个字上时（2.1.310：`❯ ␛[7mm␛[0;2make median…`），这个字跟着后面算暗淡。
 pub(super) fn strip(line: &str) -> (String, String) {
     let mut plain = String::new();
     let mut bright = String::new();
-    let mut dim = false;
+    let (mut dim, mut reverse) = (false, false);
+    // 反色的字先放着，看后面紧跟的字是不是暗淡的再决定
+    let mut held: Option<char> = None;
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
@@ -47,12 +50,20 @@ pub(super) fn strip(line: &str) -> (String, String) {
                 for p in chars.by_ref() {
                     if p.is_ascii_alphabetic() {
                         if p == 'm' {
-                            for code in params.split(';') {
-                                match code {
+                            let codes: Vec<&str> = params.split(';').collect();
+                            let mut i = 0;
+                            while i < codes.len() {
+                                match codes[i] {
                                     "2" => dim = true,
-                                    "0" | "" | "22" => dim = false,
+                                    "7" => reverse = true,
+                                    "27" => reverse = false,
+                                    "0" | "" => (dim, reverse) = (false, false),
+                                    "22" => dim = false,
+                                    // 颜色：`38;5;n`、`38;2;r;g;b` 后面的数字不是属性（不然 `38;2;…` 里的 2 会被当成暗淡）
+                                    "38" | "48" | "58" => i += if codes.get(i + 1) == Some(&"2") { 4 } else { 2 },
                                     _ => {}
                                 }
+                                i += 1;
                             }
                         }
                         break;
@@ -62,10 +73,24 @@ pub(super) fn strip(line: &str) -> (String, String) {
             }
             continue;
         }
+        if let Some(h) = held.take() {
+            plain.push(h);
+            if !dim {
+                bright.push(h);
+            }
+        }
+        if reverse && !dim {
+            held = Some(c);
+            continue;
+        }
         plain.push(c);
         if !dim {
             bright.push(c);
         }
+    }
+    if let Some(h) = held {
+        plain.push(h);
+        bright.push(h);
     }
     (plain, bright)
 }
@@ -365,6 +390,38 @@ pub struct DialogOption {
     pub current: bool,
 }
 
+/// 额度用完时 Claude Code 的菜单（`/rate-limit-options`，标题 “What do you want to do?”，2.1.310 实测）。
+/// 关掉了 `autoContinueAtUsageLimit` 时才有“等重置后自动继续”这一项：`… at 3pm`、`… shortly`、`… when the limit resets`；
+/// 开着时（默认）不弹菜单，直接等，屏幕上是 [`limit_wait`] 那一行
+pub const LIMIT_AUTO: &str = "Wait here, then continue automatically";
+const LIMIT_STOP: &str = "Stop and wait for limit to reset";
+
+impl Dialog {
+    /// 是额度用完时的菜单
+    pub fn is_limit(&self) -> bool {
+        self.options.iter().any(|o| o.label.starts_with(LIMIT_AUTO) || o.label == LIMIT_STOP)
+    }
+
+    /// 额度用完的菜单里“等重置后自动继续”在第几项
+    pub fn limit_auto(&self) -> Option<usize> {
+        self.options.iter().position(|o| o.label.starts_with(LIMIT_AUTO))
+    }
+}
+
+/// 已经在等额度重置、到点自动继续：屏幕上的 `Usage limit reached · continuing automatically at 3pm · esc to cancel`
+/// （再次用完时是 `Usage limit reached again · …`，等待中是 `Continuing automatically …`），返回中间的 `at 3pm`
+pub fn limit_wait(capture: &str) -> Option<String> {
+    const KEY: &str = "ontinuing automatically ";
+    capture.lines().rev().map(|l| strip(l).0).find_map(|t| {
+        let i = t.find(KEY)?;
+        if !t.contains("esc to cancel") {
+            return None;
+        }
+        let when = t[i + KEY.len()..].split('·').next()?.trim();
+        (!when.is_empty()).then(|| when.to_string())
+    })
+}
+
 /// 选项前面的编号（`1. `、`12.  `）：返回编号后面的文字
 fn numbered(t: &str) -> Option<&str> {
     let (n, rest) = t.split_once('.')?;
@@ -406,6 +463,12 @@ pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
     let sel = lines.iter().rposition(|l| l.trim_start().starts_with(cursor))?;
     let (_, sel_text) = unmark(&lines[sel], cursor);
     let is_num = numbered(sel_text).is_some();
+    // 输入框（光标行上面紧挨着横线、下面几行内又是横线）不是选择框：重绘到一半被认成“别的界面”时，
+    // 输入框里的推荐回复会被读成只有一项的选择框，弹出来又马上消失
+    let in_box = sel > 0 && is_rule(&lines[sel - 1]) && lines[sel + 1..].iter().take(21).find(|l| !l.trim().is_empty() && !l.starts_with(' ')).is_some_and(|l| is_rule(l));
+    if in_box && !is_num {
+        return None;
+    }
     // 选项：编号的就找所有带编号的行；不带编号的找和光标那一行文字对齐（缩进相同）、连在一起的行
     let text_col = lines[sel].chars().count() - sel_text.chars().count();
     let is_opt = |l: &str| -> bool {
@@ -444,7 +507,8 @@ pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
         }
         out.options.push(DialogOption { label, hint, current });
     }
-    if out.options.is_empty() || out.options.len() > 30 {
+    // 只有一项的不是选择框（真的选择框至少有两项可选）
+    if out.options.len() < 2 || out.options.len() > 30 {
         return None;
     }
     // 选项上面到最近的横线（最多 16 行）：第一行是标题，其余是说明
@@ -623,6 +687,43 @@ mod tests {
         assert_eq!(d.selected, 0);
     }
 
+    /// 额度用完的菜单（2.1.310 实测，没用完时用 /rate-limit-options 打开的；用完时才多出“等重置后自动继续”）
+    #[test]
+    fn limit_menu() {
+        let d = dialog(include_str!("testdata/limit-menu.txt")).unwrap();
+        assert_eq!(d.title, "What do you want to do?");
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Stop and wait for limit to reset", "Switch to usage credits", "Upgrade your plan"]);
+        assert!(d.is_limit());
+        assert_eq!(d.limit_auto(), None);
+        let cap = format!("{RULE}\n  What do you want to do?\n  ❯ 1. Stop and wait for limit to reset\n    2. Wait here, then continue automatically at 3pm (Asia/Shanghai)\n    3. Upgrade your plan\n  Enter to confirm · Esc to cancel\n");
+        let d = dialog(&cap).unwrap();
+        assert_eq!(d.limit_auto(), Some(1));
+        assert!(!dialog(&format!("{RULE}\n Bash command\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n")).unwrap().is_limit());
+    }
+
+    #[test]
+    fn limit_wait_line() {
+        let cap = format!("● 我先跑一下测试\n\n  Usage limit reached · continuing automatically at 3pm (Asia/Shanghai) · esc to cancel\n{RULE}\n❯ \n{RULE}\n");
+        assert_eq!(limit_wait(&cap).as_deref(), Some("at 3pm (Asia/Shanghai)"));
+        assert_eq!(limit_wait("  Continuing automatically when your usage limit resets · esc to cancel\n").as_deref(), Some("when your usage limit resets"));
+        // 对话内容里提到这句话不算（没有 esc to cancel）
+        assert_eq!(limit_wait("● Claude Code shows continuing automatically at 3pm in the footer\n"), None);
+    }
+
+    /// 2.1.310：光标压在推荐回复的第一个字上（反色、不暗淡），整段仍是推荐回复；输入框不能被读成选择框
+    #[test]
+    fn suggestion_under_cursor() {
+        let c = include_str!("testdata/suggestion-cursor.txt");
+        assert_eq!(classify(c), Screen::Input { text: String::new(), busy: false });
+        assert_eq!(suggestion(c).as_deref(), Some("make median raise ValueError on empty like mean"));
+        assert_eq!(dialog(c), None);
+        // 光标在用户自己打的字中间：反色的那个字是用户的
+        let typed = format!("{RULE}\n❯ ab\x1b[7mc\x1b[0mde\n{RULE}\n");
+        assert_eq!(classify(&typed), Screen::Input { text: "abcde".into(), busy: false });
+        // 24 位色里的 2 不是“暗淡”
+        assert_eq!(strip("\x1b[38;2;10;20;30mhi\x1b[0m").1, "hi");
+    }
+
     #[test]
     fn dialogs_parsed() {
         let permission = format!("● Creating empty file\n  ⎿  $ touch x\n{RULE}\n Bash command\n\n   touch x\n   Create file\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. Yes, and don't ask again for touch commands in /tmp\n   3. No\n\n Esc to cancel · Tab to amend\n");
@@ -673,3 +774,4 @@ mod tests {
     }
 
 }
+

@@ -17,9 +17,49 @@ const ACTIVE = ['downloading', 'installing', 'restarting'];
 /** 重启超过这么久还没换成新版本：提示刷新页面看看（可能新版本没能自己启动） */
 const SLOW_RESTART_MS = 60_000;
 
+/**
+ * 这个浏览器里关掉过的提示（`dismiss:<版本>`、`seen:<版本>`）。关掉时先记在这里、马上藏起来，
+ * 不等服务端：关之前发出的状态请求晚回来、或者关的请求没送到时，提示不会又冒出来。服务端记的仍然是准的（别的设备也不再提醒）。
+ */
+const CLOSED_KEY = 'looklook.update-closed';
+function closedSet() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(CLOSED_KEY) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
+function markClosed(key) {
+  try {
+    localStorage.setItem(CLOSED_KEY, JSON.stringify([...closedSet(), key].slice(-20)));
+  } catch {
+    /* 隐私模式等存不了：只靠服务端 */
+  }
+  window.dispatchEvent(new Event(CLOSED_KEY));
+}
+/** 关掉提示后让用到它的组件重新渲染 */
+function useClosed() {
+  const [, bump] = useState(0);
+  useEffect(() => {
+    const on = () => bump((n) => n + 1);
+    window.addEventListener(CLOSED_KEY, on);
+    window.addEventListener('storage', on);
+    return () => {
+      window.removeEventListener(CLOSED_KEY, on);
+      window.removeEventListener('storage', on);
+    };
+  }, []);
+}
+
 /** 要不要提醒（角标、横幅）：有新版本且没被关掉；必须更新的版本关不掉。 */
 export function shouldRemind(u) {
-  return Boolean(u?.available && (u.required || !u.dismissed));
+  return Boolean(u?.available && (u.required || (!u.dismissed && !closedSet().has(`dismiss:${u.version}`))));
+}
+
+/** 关掉“发现新版本”：先在本机藏起来，再告诉服务端；没送到时提示 */
+async function dismissVersion(version, toast, t) {
+  markClosed(`dismiss:${version}`);
+  await api.post('/update/dismiss', { version }).catch((e) => toast?.(errorText(t, e), 'error'));
 }
 
 const DialogCtx = createContext(() => {});
@@ -119,7 +159,7 @@ function UpdateDialog({ open, onClose }) {
   const slow = useSlowRestart(job);
   const install = () => run(() => api.post('/update/install')).then((r) => r && reload());
   const later = async () => {
-    if (u.available && !u.required && u.version) await api.post('/update/dismiss', { version: u.version }).catch(() => {});
+    if (u.available && !u.required && u.version) await dismissVersion(u.version);
     reload();
     onClose();
   };
@@ -211,6 +251,8 @@ function UpdateDialog({ open, onClose }) {
 export function UpdateBanner() {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
+  const toast = useToast();
+  useClosed();
   const openUpdate = useUpdateDialog();
   const u = status.update;
   const job = u?.job ?? { state: 'idle' };
@@ -237,7 +279,7 @@ export function UpdateBanner() {
   }
   if (!shouldRemind(u)) return null;
   const dismiss = async () => {
-    await api.post('/update/dismiss', { version: u.version }).catch(() => {});
+    await dismissVersion(u.version, toast, t);
     reload();
   };
   return (
@@ -260,12 +302,16 @@ export function UpdateBanner() {
 export function JustUpdatedBanner() {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
+  const toast = useToast();
   const [open, setOpen] = useState(false);
+  useClosed();
   const j = status.update?.just_updated;
-  if (!j) return null;
+  const key = `seen:${status.version}`;
+  if (!j || closedSet().has(key)) return null;
   const seen = async () => {
     setOpen(false);
-    await api.post('/update/seen').catch(() => {});
+    markClosed(key);
+    await api.post('/update/seen').catch((e) => toast(errorText(t, e), 'error'));
     reload();
   };
   return (

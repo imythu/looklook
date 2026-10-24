@@ -356,11 +356,16 @@ pub fn local_command(base: &str, thread: Option<&str>) -> String {
 
 /// 终端里接到同一个 app-server 的 Codex TUI：`<codex 命令> resume <thread> --remote <地址> --remote-auth-token-env …`；
 /// 还没有会话时开一个新的（app-server 会通知看看）。`base` 是 `codex` / `codex --yolo`。
-pub fn tui_command(base: &str, ep: &Endpoint, thread: Option<&str>) -> String {
+/// 新开时要带 `--cd <工作目录>`：`--remote` 下不带的话，新对话的目录是 app-server 进程的目录，不是终端的。
+/// 目录用双引号括起来（PowerShell、bash 都认）；里面有引号、`$`、反引号时用 `.`（TUI 就在这个目录里启动）。
+pub fn tui_command(base: &str, ep: &Endpoint, thread: Option<&str>, cwd: &str) -> String {
     let remote = format!("--remote {} --remote-auth-token-env {TOKEN_ENV}", ep.url);
     match thread.filter(|t| crate::history::valid_id(t)) {
         Some(t) => format!("{base} resume {t} {remote}"),
-        None => format!("{base} {remote}"),
+        None => {
+            let dir = if cwd.is_empty() || cwd.contains(['"', '$', '`']) { ".".to_string() } else { format!("\"{cwd}\"") };
+            format!("{base} --cd {dir} {remote}")
+        }
     }
 }
 
@@ -378,9 +383,14 @@ mod tests {
     #[test]
     fn tui_commands() {
         let ep = Endpoint { url: "ws://127.0.0.1:40123".into(), token_file: PathBuf::from("t") };
-        assert_eq!(tui_command("codex", &ep, Some("01a1-b2")), "codex resume 01a1-b2 --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
-        assert_eq!(tui_command("codex --yolo", &ep, None), "codex --yolo --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
-        assert!(!tui_command("codex", &ep, Some("x; rm -rf /")).contains("rm"), "会话号不合法时不拼进命令");
+        assert_eq!(tui_command("codex", &ep, Some("01a1-b2"), r"F:\p"), "codex resume 01a1-b2 --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
+        assert_eq!(
+            tui_command("codex --yolo", &ep, None, r"F:\my proj"),
+            r#"codex --yolo --cd "F:\my proj" --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN"#,
+            "新开时带上工作目录"
+        );
+        assert!(tui_command("codex", &ep, None, "/tmp/a$b").contains("--cd . "), "目录里有特殊字符时用当前目录");
+        assert!(!tui_command("codex", &ep, Some("x; rm -rf /"), "/p").contains("rm"), "会话号不合法时不拼进命令");
         assert_eq!(local_command("codex", Some("01a1-b2")), "codex --no-daemon resume 01a1-b2");
         assert_eq!(local_command("codex --yolo", None), "codex --yolo --no-daemon");
     }

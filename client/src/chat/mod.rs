@@ -15,7 +15,6 @@ pub mod agent;
 pub mod codex_app;
 pub mod codex_artifacts;
 pub mod codex_chat;
-pub mod codex_compat;
 pub mod codex_launch;
 pub mod codex_rollout;
 pub mod codex_screen;
@@ -58,6 +57,12 @@ const QUIET: Duration = Duration::from_secs(3);
 const COMPACT_MAX: Duration = Duration::from_secs(600);
 /// claude 在运行却一直没有 SessionStart：没带 hooks 启动，或者 hooks 被用户配置关掉了
 const ATTACH_GRACE: Duration = Duration::from_secs(10);
+/// 额度用完的菜单多久没人选，就替用户选“等重置后自动继续”
+/// Claude Code 从这个版本起有“立即发送”（`chat:sendNow`，Ctrl+X Ctrl+S）
+const SEND_NOW_SINCE: (u32, u32, u32) = (2, 1, 275);
+const LIMIT_AUTO_AFTER: Duration = Duration::from_secs(60);
+/// 额度用完（StopFailure）后多久还没看到菜单，就不再等它
+const LIMIT_MENU_WAIT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -141,6 +146,12 @@ struct State {
     /// 最近一条回复时上下文里的 token 数
     context: Option<u64>,
     title: Option<String>,
+    /// 运行中发的、还在 Claude Code 队列里的消息
+    queued: Vec<String>,
+    /// 额度用完、正在等重置后自动继续：屏幕上 `continuing automatically at 3pm` 里的 `at 3pm`
+    limit_wait: Option<String>,
+    /// 额度用完的菜单没人选时，看看在这个时间（毫秒）替用户选“等重置后自动继续”
+    limit_auto_at: Option<i64>,
     /// TUI 上的选择框（phase 为 tui 时）
     dialog: Option<screen::Dialog>,
     /// 空闲时输入框里灰色的推荐回复（Claude Code 跑完一轮后给的下一步建议）
@@ -212,6 +223,8 @@ pub struct Inst {
     watching: AtomicBool,
     /// 收到的 `UserPromptSubmit` 个数（确认输入送达）
     prompts: watch::Sender<u64>,
+    /// 正在看着额度用完的菜单（[`Chat::guard_limit`]）
+    limit_guard: AtomicBool,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -300,6 +313,9 @@ impl Chat {
                         model_set_at: None,
                         context: None,
                         title: None,
+                        queued: vec![],
+                        limit_wait: None,
+                        limit_auto_at: None,
                         dialog: None,
                         suggestion: None,
                         codex: Default::default(),
@@ -312,6 +328,7 @@ impl Chat {
                     viewers: AtomicUsize::new(0),
                     watching: AtomicBool::new(false),
                     prompts: watch::channel(0).0,
+                    limit_guard: AtomicBool::new(false),
                 })
             })
             .clone()
@@ -348,7 +365,6 @@ impl Chat {
         json!({
             "agent": inst.agent.launch(),
             "caps": inst.agent.caps(),
-            "untested_version": st.version.as_deref().is_some_and(|v| inst.agent.untested(v)),
             "dialog": st.dialog,
             "phase": st.phase,
             "reason": st.reason,
@@ -362,6 +378,8 @@ impl Chat {
             "model_chosen": st.model_set_at.is_some(),
             "context": st.context,
             "title": st.title,
+            "queued": st.queued,
+            "limit": (st.limit_wait.is_some() || st.limit_auto_at.is_some()).then(|| json!({ "waiting": st.limit_wait, "auto_at": st.limit_auto_at })),
             "dialog": st.dialog,
             "effort": st.effort,
             "suggestion": st.suggestion,
@@ -472,6 +490,8 @@ impl Chat {
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                 }
                 "StopFailure" => {
+                    // 额度用完时 Claude Code 可能弹菜单问怎么办：没人管的时候替用户选“等重置后自动继续”
+                    self.guard_limit(&inst);
                     Self::drop_pending(&mut st);
                     st.compacting = None;
                     st.error = ev["error"].as_str().or_else(|| ev["message"].as_str()).map(|s| s.chars().take(500).collect());
@@ -603,6 +623,7 @@ impl Chat {
         // 标题、实际用的模型、上下文占用：只有 Claude Code 的 transcript 有
         let claude = tr.as_ref().and_then(Reader::claude);
         let title = claude.and_then(|t| t.title.clone());
+        let queued = claude.map(|t| t.queued.clone()).unwrap_or_default();
         let (model, model_msg) = claude.map(|t| (t.model.clone(), t.model_msg.clone())).unwrap_or_default();
         let context = claude.and_then(|t| t.usage.as_ref()).map(|u| ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().map(|k| u[*k].as_u64().unwrap_or(0)).sum::<u64>());
         let is_claude = claude.is_some();
@@ -612,8 +633,9 @@ impl Chat {
             // 别的工具（Codex）的标题、模型、上下文由 app-server 给，这里只更新版本
             let (title, model_msg, context) = if is_claude { (title, model_msg, context) } else { (st.title.clone(), st.model_msg.clone(), st.context) };
             let version = if is_claude { version } else { version.or(st.version.clone()) };
-            if st.version != version || st.title != title || st.model_msg != model_msg || st.context != context {
+            if st.version != version || st.title != title || st.model_msg != model_msg || st.context != context || st.queued != queued {
                 st.version = version;
+                st.queued = queued;
                 st.title = title;
                 if model_msg.is_some() {
                     st.actual_model = model;
@@ -707,6 +729,9 @@ impl Chat {
                 // Codex 的状态来自 app-server，不用看屏幕
                 if tick.is_multiple_of(3) && inst.agent.launch() != "codex" {
                     self.check_screen(&inst).await;
+                    if lock(&inst.st).dialog.as_ref().is_some_and(screen::Dialog::is_limit) {
+                        self.guard_limit(&inst);
+                    }
                 }
                 tick = tick.wrapping_add(1);
                 tokio::time::sleep(Duration::from_millis(300)).await;
@@ -735,6 +760,7 @@ impl Chat {
             return;
         }
         let quiet = st.last_hook.is_none_or(|t| t.elapsed() >= QUIET);
+        let mut adopt = false;
         match (&pane, screen) {
             (None, _) => {
                 st.claude_since = None;
@@ -771,7 +797,11 @@ impl Chat {
                     (Phase::Running, Screen::Modal) if !quiet => {}
                     (_, Screen::Modal) if st.odd_screens == 1 => {}
                     (_, Screen::Modal) => Self::set_phase(inst, &mut st, Phase::Tui, None),
-                    (_, Screen::Input { .. }) if !attached => Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached")),
+                    (_, Screen::Input { busy, ref text }) if !attached => {
+                        Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached"));
+                        // 以前的 Claude（不是带着看看的 hooks 启动的）空闲着：接着同一段对话转到对话模式
+                        adopt = unhooked && !busy && text.trim().is_empty() && inst.agent.launch() == "claude";
+                    }
                     // 压缩中（最多算 10 分钟，防止丢了 PostCompact 一直卡着）
                     (Phase::Running, Screen::Input { .. }) if st.compacting.is_some_and(|t| t.elapsed() < COMPACT_MAX) => {}
                     (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),
@@ -796,6 +826,12 @@ impl Chat {
                         Self::emit_status(inst, &st);
                     }
                 }
+                // 额度用完、正在等重置后自动继续（只有 Claude Code 有）
+                let wait = capture.as_deref().filter(|_| inst.agent.launch() == "claude").and_then(screen::limit_wait);
+                if st.limit_wait != wait {
+                    st.limit_wait = wait;
+                    Self::emit_status(inst, &st);
+                }
                 // 空闲时输入框里的推荐回复：界面上显示成一点就能用的建议（只认 Claude Code 的输入框）
                 let sug = capture.as_deref().filter(|_| st.phase == Phase::Idle && inst.agent.launch() == "claude").and_then(screen::suggestion);
                 if st.suggestion != sug {
@@ -813,6 +849,12 @@ impl Chat {
                         Self::emit_status(inst, &st);
                     }
                 }
+            }
+        }
+        drop(st);
+        if adopt {
+            if let Some(me) = self.me.upgrade() {
+                me.claude_adopt_later(&inst.id);
             }
         }
     }
@@ -863,12 +905,28 @@ impl Chat {
     /// 发消息：文字按“打字”的方式送进去，图片路径用粘贴（TUI 才会变成图片附件），再按回车。
     /// 返回是否确认送达（收到了对应的 UserPromptSubmit）；没接上 hooks 时为 null。
     pub async fn input(self: &Arc<Self>, id: &str, text: &str, images: &[String]) -> Result<Value, LocalError> {
+        self.submit(id, text, images, false).await
+    }
+
+    /// 立即发送：Claude Code 的 `chat:sendNow`（Ctrl+X Ctrl+S，2.1.275 起）。排着的消息连同这条马上发出：
+    /// Claude 在跑命令、子代理时，这些转到后台接着跑，Claude 在这一轮里马上读到；
+    /// 只在写回复、或者在做转不到后台的事时，打断这一轮、先回应。没在运行时就是普通发送。
+    /// `text` 可以为空：只把排着的发出去。
+    pub async fn send_now(self: &Arc<Self>, id: &str, text: &str, images: &[String]) -> Result<Value, LocalError> {
+        self.submit(id, text, images, true).await
+    }
+
+    async fn submit(self: &Arc<Self>, id: &str, text: &str, images: &[String], now: bool) -> Result<Value, LocalError> {
         self.require(id)?;
         let inst = self.inst(id);
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let text = text.trim_end();
-        if text.is_empty() && images.is_empty() {
+        let now = now && inst.agent.launch() == "claude" && lock(&inst.st).phase == Phase::Running;
+        if text.is_empty() && images.is_empty() && !now {
             return Err(LocalError::invalid("text", "required"));
+        }
+        if now && lock(&inst.st).version.as_deref().is_some_and(|v| !version_at_least(v, SEND_NOW_SINCE)) {
+            return Err(LocalError::new("CHAT_SEND_NOW_UNAVAILABLE"));
         }
         for p in images {
             if !Path::new(p).is_file() {
@@ -878,14 +936,14 @@ impl Chat {
         if inst.agent.launch() == "codex" {
             return self.codex_input(id, text, images).await;
         }
-        let hooked = {
+        let (hooked, running) = {
             let st = lock(&inst.st);
             match st.phase {
                 Phase::Detached => return Err(LocalError::new("CHAT_NOT_RUNNING")),
                 Phase::Tui | Phase::Approval => return Err(LocalError::new("CHAT_BUSY")),
                 _ => {}
             }
-            st.binding.is_some() || inst.agent.session_starts_on_prompt()
+            (st.binding.is_some() || inst.agent.session_starts_on_prompt(), st.phase == Phase::Running)
         };
         // 确认输入框是普通输入框（选择器打开时打进去的字母会被当成快捷键）。
         // 刚启动时 SessionStart 比输入框先到，多看几次。
@@ -922,21 +980,54 @@ impl Chat {
             self.instances.paste(id, &format!(" {p}")).await?;
         }
         tokio::time::sleep(Duration::from_millis(80)).await;
+        if now {
+            return self.confirm_send_now(&inst, id, text, prompts).await;
+        }
         self.instances.send_keys(id, &["Enter"]).await?;
         // 斜杠命令（/clear、/new、/compact……）不会有 UserPromptSubmit：不等、不补按回车（补按会把下一条也送出去）
         if !hooked || text.starts_with('/') {
             return Ok(json!({ "delivered": null }));
         }
-        if tokio::time::timeout(inst.agent.delivery_wait(), prompts.changed()).await.is_ok() {
+        // 运行中发的：Claude Code 先放进队列（没有 UserPromptSubmit），这一步做完再并进对话。进了队列就算送达
+        let first: String = text.lines().next().unwrap_or("").chars().take(20).collect();
+        if running && inst.agent.launch() == "claude" {
+            let deadline = Instant::now() + inst.agent.delivery_wait();
+            while Instant::now() < deadline {
+                self.poll(&inst).await;
+                if lock(&inst.st).queued.iter().any(|q| q.starts_with(&first)) {
+                    return Ok(json!({ "delivered": true, "queued": true }));
+                }
+                if tokio::time::timeout(Duration::from_millis(250), prompts.changed()).await.is_ok() {
+                    return Ok(json!({ "delivered": true }));
+                }
+            }
+        } else if tokio::time::timeout(inst.agent.delivery_wait(), prompts.changed()).await.is_ok() {
             return Ok(json!({ "delivered": true }));
         }
         // 没收到：文字还在输入框里就再按一次回车（TUI 刚启动、刚结束一轮时偶尔会吞掉回车）
-        let first: String = text.lines().next().unwrap_or("").chars().take(20).collect();
         let still_there = matches!(self.instances.screen(id).await.map(|s| inst.agent.classify(&s)), Some(Screen::Input { text: t, .. }) if !first.is_empty() && t.contains(&first));
         if still_there {
             self.instances.send_keys(id, &["Enter"]).await?;
             if tokio::time::timeout(inst.agent.delivery_wait(), prompts.changed()).await.is_ok() {
                 return Ok(json!({ "delivered": true }));
+            }
+        }
+        Ok(json!({ "delivered": false }))
+    }
+
+    /// 按下立即发送，看它送出去没有：打断了这一轮的会有 UserPromptSubmit；转后台、在这一轮里读到的没有，
+    /// 就看输入框里的字还在不在。不补按（补按会把后面打的也发出去）。
+    async fn confirm_send_now(&self, inst: &Inst, id: &str, text: &str, mut prompts: watch::Receiver<u64>) -> Result<Value, LocalError> {
+        self.instances.send_keys(id, &["C-x", "C-s"]).await?;
+        let first: String = text.lines().next().unwrap_or("").chars().take(20).collect();
+        let deadline = Instant::now() + inst.agent.delivery_wait();
+        while Instant::now() < deadline {
+            if tokio::time::timeout(Duration::from_millis(300), prompts.changed()).await.is_ok() {
+                return Ok(json!({ "delivered": true }));
+            }
+            match self.instances.screen(id).await.map(|s| inst.agent.classify(&s)) {
+                Some(Screen::Input { text: shown, .. }) if first.is_empty() || !shown.contains(&first) => return Ok(json!({ "delivered": true })),
+                _ => {}
             }
         }
         Ok(json!({ "delivered": false }))
@@ -978,9 +1069,14 @@ impl Chat {
         }
         let inst = self.inst(id);
         // 已经停下来时不按：输入框空着时连按两次 Esc 会打开回退（Rewind）菜单
+        // 额度用完、正在等重置后自动继续时也按（Esc 取消等待；这时输入框是空闲的）
         let idle = matches!(lock(&inst.st).phase, Phase::Idle | Phase::Detached);
-        if idle && !matches!(self.instances.screen(id).await.map(|s| inst.agent.classify(&s)), Some(Screen::Input { busy: true, .. })) {
-            return Ok(());
+        if idle {
+            let cap = self.instances.screen(id).await;
+            let busy = matches!(cap.as_deref().map(|s| inst.agent.classify(s)), Some(Screen::Input { busy: true, .. }));
+            if !busy && cap.as_deref().and_then(screen::limit_wait).is_none() {
+                return Ok(());
+            }
         }
         self.instances.send_keys(id, &["Escape"]).await?;
         lock(&inst.st).last_hook = None;
@@ -1070,6 +1166,85 @@ impl Chat {
         let cmd = self.instances.chat_relaunch_command(id, session.as_deref())?;
         self.instances.send_literal(id, &cmd).await?;
         self.instances.send_keys(id, &["Enter"]).await
+    }
+
+    // ---------------- 以前的会话转到对话模式 ----------------
+
+    /// 界面上的“现在就转过来”：不等空闲，退出终端里以前的 Claude Code / Codex，接着同一段对话转到对话模式
+    pub async fn adopt(&self, id: &str) -> Result<(), LocalError> {
+        self.require(id)?;
+        if self.is_codex(id) {
+            return self.codex_adopt(id, true).await.map(|_| ());
+        }
+        self.claude_adopt(id, true).await
+    }
+
+    /// 以前的 Claude Code（不是带着看看的 hooks 启动的）空闲时：后台转到对话模式。同一个终端同时只跑一个。
+    fn claude_adopt_later(self: Arc<Self>, id: &str) {
+        if !lock(&self.codex.adopting).insert(id.to_string()) {
+            return;
+        }
+        let id = id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = self.claude_adopt(&id, false).await {
+                tracing::warn!(id, error = ?e, "没能把以前的 Claude Code 会话转到对话模式");
+            }
+            lock(&self.codex.adopting).remove(&id);
+        });
+    }
+
+    /// 退出终端里以前的 Claude Code，用带 hooks 的命令接着同一段对话重新启动（`--resume <会话>`）。
+    /// 找不到是哪段对话时：自动转的不转（免得丢了上下文）；“现在就转过来”就开一段新的。
+    async fn claude_adopt(&self, id: &str, force: bool) -> Result<(), LocalError> {
+        let inst = self.inst(id);
+        let pane = self.instances.pane(id).await.ok_or_else(|| LocalError::new("CHAT_NOT_RUNNING"))?;
+        let Some((args, started_ms)) = tokio::task::block_in_place(|| proc_under(pane.pid, inst.agent.process_names())) else { return Ok(()) };
+        if !force {
+            let idle = self.instances.screen(id).await.map(|s| inst.agent.classify(&s));
+            if !matches!(idle, Some(Screen::Input { busy: false, ref text }) if text.trim().is_empty()) {
+                return Ok(());
+            }
+        }
+        let session = self.claude_session_of(id, &args, started_ms).await;
+        if session.is_none() && !force {
+            return Ok(());
+        }
+        Self::set_phase(&inst, &mut lock(&inst.st), Phase::Detached, Some("adopting"));
+        // Claude Code 连按两次 Ctrl+C 退出（在跑的话第一次是中断）
+        for _ in 0..3 {
+            let _ = self.instances.send_keys(id, &["C-c"]).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = self.instances.send_keys(id, &["C-c"]).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+            if self.instances.pane(id).await.is_some_and(|p| agent_state(inst.agent, &p).is_none()) {
+                break;
+            }
+        }
+        if self.instances.pane(id).await.is_some_and(|p| agent_state(inst.agent, &p).is_some()) {
+            return Err(LocalError::new("CHAT_CLAUDE_RUNNING"));
+        }
+        let cmd = self.instances.chat_relaunch_command(id, session.as_deref())?;
+        self.instances.send_literal(id, &cmd).await?;
+        self.instances.send_keys(id, &["Enter"]).await
+    }
+
+    /// 以前的 Claude Code 用的是哪段对话：命令行里的 `--resume` / `-r` / `--session-id`；已经记着的；
+    /// 都没有时取这个文件夹里最近的、没被别的终端接着的那段，正在写的优先。
+    async fn claude_session_of(&self, id: &str, args: &[String], started_ms: i64) -> Option<String> {
+        let ok = |s: &String| s.len() >= 32 && crate::history::valid_id(s);
+        for flag in ["--resume", "-r", "--session-id"] {
+            if let Some(s) = args.iter().skip_while(|a| a.as_str() != flag).nth(1).filter(|s| ok(s)) {
+                return Some(s.clone());
+            }
+            if let Some(s) = args.iter().find_map(|a| a.strip_prefix(&format!("{flag}="))).map(String::from).filter(ok) {
+                return Some(s);
+            }
+        }
+        if let Some(b) = lock(&self.inst(id).st).binding.clone() {
+            return Some(b.session_id);
+        }
+        let row = self.store.instance(id).ok()??;
+        guess_conversation(&self.store, id, &row.workdir, "claude", started_ms).await
     }
 
     // ---------------- 快捷设置 ----------------
@@ -1327,6 +1502,57 @@ impl Chat {
         Ok(json!({ "files": files.iter().map(|(path, add, del, ts)| json!({ "path": path, "add": add, "del": del, "ts": ts })).collect::<Vec<_>>() }))
     }
 
+    // ---------------- 额度用完 ----------------
+
+    /// 额度用完时 Claude Code 弹的菜单（关掉了 autoContinueAtUsageLimit 时才有“等重置后自动继续”）：
+    /// [`LIMIT_AUTO_AFTER`] 没人选就替用户选这一项，任务不会因为没人在电脑前一直停着。
+    /// 不管有没有人开着对话页都要看（关着页面时没有抓屏），所以单独跑：每 2 秒看一眼，菜单不在了或者一直没出现就结束。
+    fn guard_limit(self: &Arc<Self>, inst: &Arc<Inst>) {
+        if inst.agent.launch() != "claude" || inst.limit_guard.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (me, inst) = (self.clone(), inst.clone());
+        tokio::spawn(async move {
+            let start = Instant::now();
+            let mut seen: Option<Instant> = None;
+            loop {
+                let d = me.instances.screen(&inst.id).await.as_deref().and_then(|c| inst.agent.dialog(c)).filter(screen::Dialog::is_limit);
+                match d {
+                    Some(d) => {
+                        // 没有“自动继续”这一项（例如已经在等）：留给人选
+                        let Some(n) = d.limit_auto() else { break };
+                        let first = *seen.get_or_insert_with(Instant::now);
+                        {
+                            let mut st = lock(&inst.st);
+                            if st.limit_auto_at.is_none() {
+                                st.limit_auto_at = Some(crate::util::system_ms() + LIMIT_AUTO_AFTER.as_millis() as i64);
+                                Self::emit_status(&inst, &st);
+                            }
+                        }
+                        if first.elapsed() >= LIMIT_AUTO_AFTER {
+                            tracing::info!(id = %inst.id, option = %d.options[n].label, "额度用完的菜单没人选，替用户选“等重置后自动继续”");
+                            if let Err(e) = me.dialog_choose(&inst.id, &d.title, &d.options[n].label, n).await {
+                                tracing::warn!(code = %e.code, "没能替用户选“等重置后自动继续”");
+                            }
+                            break;
+                        }
+                    }
+                    // 有人选过了，或者一直没出现
+                    None if seen.is_some() || start.elapsed() >= LIMIT_MENU_WAIT => break,
+                    None => {}
+                }
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+            {
+                let mut st = lock(&inst.st);
+                if st.limit_auto_at.take().is_some() {
+                    Self::emit_status(&inst, &st);
+                }
+            }
+            inst.limit_guard.store(false, Ordering::SeqCst);
+        });
+    }
+
     // ---------------- TUI 上的选择框 ----------------
 
     /// 在界面上选了选择框的第 `index` 项：再抓一次屏，标题和选项数都对得上才按方向键移过去、回车。
@@ -1372,7 +1598,8 @@ impl Chat {
 
     // ---------------- 后台任务和子代理 ----------------
 
-    /// “任务”面板：这个会话的子代理（`<会话>/subagents/agent-*.meta.json`）和后台命令（`run_in_background` 的 Bash）。
+    /// “任务”面板：这个会话的子代理（`<会话>/subagents/agent-*.meta.json`）和后台命令
+    /// （`run_in_background` 的 Bash，以及跑到一半转到后台的，见 [`transcript::moved_to_background`]）。
     pub async fn tasks(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
         let inst = self.inst(id);
@@ -1392,7 +1619,7 @@ impl Chat {
         let age = |ts: Option<&str>| ts.and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()).map(|t| (now - t).whole_seconds());
 
         let mut shells: Vec<Value> = vec![];
-        for c in calls.iter().filter(|c| c.name == "Bash" && c.input["run_in_background"] == true) {
+        for c in calls.iter().filter(|c| c.is_background_shell()) {
             let note = t.notes.get(c.id);
             let failed = matches!(c.result.map(|r| &r.body), Some(transcript::Body::ToolResult { is_error: true, .. }));
             let state = match (note, failed) {
@@ -1503,7 +1730,10 @@ impl Chat {
         cache.retain(|p, _| listed.contains(p));
         // 运行中的排前面，其余按开始时间新的在前（列表已经按最后修改时间排过）
         agents.sort_by_key(|a| a["state"] != "running");
-        Ok(json!({ "agents": agents, "shells": shells }))
+        // 状态栏上说在跑、这段对话记录里却找不到的（子代理启动的、/clear 之前启动的）：告诉界面有几个
+        let listed = shells.iter().filter(|s| s["state"] == "running").count();
+        let unlisted = if alive { live_shells.unwrap_or(0).saturating_sub(listed) } else { 0 };
+        Ok(json!({ "agents": agents, "shells": shells, "unlisted_shells": unlisted }))
     }
 
     /// 后台命令的输出（最后 32 KB）。输出文件的路径来自 transcript，不接受界面传路径。
@@ -1646,6 +1876,15 @@ fn find_subagent(dir: &Path, prompt: &str) -> Option<PathBuf> {
 }
 
 /// 输入框里显示的内容是不是送进去的那段（只比开头，不算空白：折行、续行的缩进都会变）
+/// `2.1.310` 这样的版本号不低于 `min`（认不出来的当作够新）
+fn version_at_least(v: &str, min: (u32, u32, u32)) -> bool {
+    let mut it = v.trim().split('.').map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u32>());
+    match (it.next(), it.next(), it.next()) {
+        (Some(Ok(a)), Some(Ok(b)), Some(Ok(c))) => (a, b, c) >= min,
+        _ => true,
+    }
+}
+
 fn typed_ok(shown: &str, sent: &str) -> bool {
     let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).take(24).collect::<String>();
     let (shown, sent) = (squash(shown), squash(sent));
@@ -1703,14 +1942,18 @@ fn agent_state(agent: &dyn Agent, pane: &crate::instances::Pane) -> Option<Optio
 
 /// `root` 的子孙里叫这些名字的进程（不分大小写，不带 `.exe`）：返回它的命令行参数
 fn find_under(root: u32, names: &[&str]) -> Option<Vec<String>> {
+    proc_under(root, names).map(|(args, _)| args)
+}
+
+/// 同 [`find_under`]，另外给出进程的启动时间（毫秒）
+fn proc_under(root: u32, names: &[&str]) -> Option<(Vec<String>, i64)> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     sys.refresh_processes_specifics(ProcessesToUpdate::All, true, ProcessRefreshKind::nothing());
     let root = Pid::from_u32(root);
     let pid = sys.processes().values().find_map(|p| {
         let name = p.name().to_string_lossy().to_ascii_lowercase();
-        let name = name.strip_suffix(".exe").unwrap_or(&name);
-        if !names.contains(&name) {
+        if !names.contains(&exe_stem(&name)) {
             return None;
         }
         let mut cur = p.parent();
@@ -1724,7 +1967,16 @@ fn find_under(root: u32, names: &[&str]) -> Option<Vec<String>> {
         None
     })?;
     sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), false, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
-    Some(sys.process(pid).map(|p| p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect()).unwrap_or_default())
+    let p = sys.process(pid)?;
+    Some((p.cmd().iter().map(|a| a.to_string_lossy().into_owned()).collect(), p.start_time() as i64 * 1000))
+}
+
+/// 终端里以前的那个 Claude Code / Codex 用的是哪段对话（命令行里没有会话号、看看也没记着时）：这个文件夹里
+/// 没被别的终端接着的对话中，正在写的、或者在它启动之后还更新过的，取最近的一段。都没有说明它开着还没聊过，返回 None。
+async fn guess_conversation(store: &crate::store::Store, id: &str, workdir: &str, agent: &str, started_ms: i64) -> Option<String> {
+    let taken: HashSet<String> = store.instances().ok()?.iter().filter(|r| r.id != id).filter_map(|r| binding(store, &r.id)).map(|b| b.session_id).collect();
+    let q = crate::history::Query { workdir: Some(workdir.to_string()), agent: Some(agent.to_string()), limit: Some(20), ..Default::default() };
+    crate::history::list(q).await.into_iter().filter(|c| !taken.contains(&c.id)).find(|c| c.live || c.updated_ms >= started_ms).map(|c| c.id)
 }
 
 /// 一次改动的增删行数：有 Claude Code 给的 structuredPatch 就数它，没有就按参数估
@@ -1745,6 +1997,16 @@ fn diff_stat(name: &str, input: &Value, extra: Option<&Value>) -> (u64, u64) {
         "Write" => (lines(input["content"].as_str().unwrap_or("")), 0),
         "Edit" => (lines(input["new_string"].as_str().unwrap_or("")), lines(input["old_string"].as_str().unwrap_or(""))),
         _ => input["edits"].as_array().into_iter().flatten().fold((0, 0), |(a, d), e| (a + lines(e["new_string"].as_str().unwrap_or("")), d + lines(e["old_string"].as_str().unwrap_or("")))),
+    }
+}
+
+/// 进程名去掉 `.exe` 及后面的部分。Windows 上 Claude Code 自己更新时，会把正在运行的程序改名成
+/// `claude.exe.old.<时间>.<进程号>`（新版本放到 `claude.exe`），这个进程还在跑，名字已经变了；
+/// 只去掉结尾的 `.exe` 就认不出它，对话界面会以为 Claude Code 退出了。
+fn exe_stem(name: &str) -> &str {
+    match name.find(".exe") {
+        Some(i) => &name[..i],
+        None => name,
     }
 }
 
@@ -1778,6 +2040,24 @@ fn screen_plain(line: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn exe_stem_sees_claude_after_self_update() {
+        assert_eq!(exe_stem("claude.exe"), "claude");
+        assert_eq!(exe_stem("claude.exe.old.1792799554136.91188"), "claude");
+        assert_eq!(exe_stem("claude"), "claude");
+        assert_eq!(exe_stem("codex.exe"), "codex");
+    }
+
+    #[test]
+    fn send_now_needs_2_1_275() {
+        assert!(version_at_least("2.1.310", SEND_NOW_SINCE));
+        assert!(version_at_least("2.1.275", SEND_NOW_SINCE));
+        assert!(!version_at_least("2.1.274", SEND_NOW_SINCE));
+        assert!(!version_at_least("2.0.99", SEND_NOW_SINCE));
+        assert!(version_at_least("3.0.0-beta", SEND_NOW_SINCE));
+        assert!(version_at_least("weird", SEND_NOW_SINCE));
+    }
 
     #[test]
     fn finds_subagent_by_prompt() {
@@ -2019,6 +2299,135 @@ mod tests {
         drop(viewer);
         instances.stop(&id).await.unwrap();
         let _ = std::fs::remove_file(format!("{dir}/chat-e2e.txt"));
+    }
+
+    /// 端到端：运行中排队、立即发送（Claude Code 的 Ctrl+X Ctrl+S）。用 haiku（项目里 `.claude/settings.local.json` 定模型）：
+    /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_send_now -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn chat_e2e_send_now() {
+        let bin = std::env::var("CHAT_E2E_BIN").expect("CHAT_E2E_BIN");
+        let dir = std::env::var("CHAT_E2E_DIR").expect("CHAT_E2E_DIR");
+        std::env::set_var("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap_or_default()));
+        std::env::set_var("ANTHROPIC_MODEL", "haiku");
+        // 自己的 tmux 服务器：`-L looklook` 这个名字和正在用的看看客户端是同一个，不能碰它
+        let tmux_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("TMUX_TMPDIR", tmux_dir.path());
+        std::env::remove_var("TMUX");
+        std::fs::create_dir_all(format!("{dir}/.claude")).unwrap();
+        std::fs::write(format!("{dir}/.claude/settings.local.json"), r#"{"model":"haiku","permissions":{"allow":["Bash"]}}"#).unwrap();
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("looklook");
+        assert!(exe.is_file(), "先 cargo build");
+        std::env::set_var("LOOKLOOK_HOOK_EXE", exe);
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let store = Arc::new(Store::memory().unwrap());
+        let instances = Instances::new(store.clone(), paths.clone());
+        let input = crate::instances::Input { name: Some("e2e-now".into()), workdir: Some(dir.clone()), launch: Some("claude".into()), ..Default::default() };
+        let id = instances.create(input).await.unwrap().row.id;
+        let chat = Chat::new(store.clone(), paths.clone(), instances.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let c2 = chat.clone();
+        let app = axum::Router::new().route(
+            hooks::PATH,
+            axum::routing::post(move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let chat = c2.clone();
+                async move {
+                    let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    if !chat.token_ok(&h(hooks::TOKEN_HEADER)) {
+                        return String::new();
+                    }
+                    chat.hook(&h(hooks::INSTANCE_HEADER), serde_json::from_slice(&body).unwrap_or_default()).await
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        chat.publish(addr).unwrap();
+        let row = store.instance(&id).unwrap().unwrap();
+        instances.ensure_session(&row).await.unwrap();
+        let (_rx, viewer) = chat.subscribe(&id).unwrap();
+        async fn wait(chat: &Arc<Chat>, id: &str, what: &str, secs: u64, f: impl Fn(&Value) -> bool) -> Value {
+            for _ in 0..secs * 4 {
+                let s = chat.snapshot(id).await.unwrap();
+                if f(&s) {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!("等不到：{what}；最后的状态 {}", chat.snapshot(id).await.unwrap()["status"]);
+        }
+        let texts = |s: &Value| -> String {
+            s["items"].as_array().unwrap().iter().filter(|i| i["k"] == "assistant").map(|i| i.to_string()).collect::<Vec<_>>().join("\n")
+        };
+        // 首次启动的引导（主题、信任目录）：替用户按
+        for _ in 0..60 {
+            let s = chat.snapshot(&id).await.unwrap();
+            if s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle" {
+                break;
+            }
+            let cap = instances.screen(&id).await.unwrap_or_default();
+            let cap = cap.lines().map(|l| screen::strip(l).0).collect::<Vec<_>>().join("\n");
+            if cap.contains("trust this folder") {
+                instances.send_keys(&id, &["Down"]).await.unwrap();
+                tokio::time::sleep(Duration::from_millis(800)).await;
+                instances.send_keys(&id, &["Enter"]).await.unwrap();
+            } else if cap.contains("Press Enter to continue") || cap.contains("Dark mode") || cap.contains("Enter to confirm") {
+                instances.send_keys(&id, &["Enter"]).await.unwrap();
+            } else {
+                println!("---- 屏幕\n{}", cap.lines().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));
+            }
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+        let s = wait(&chat, &id, "SessionStart", 30, |s| s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle").await;
+        println!("已接上：{}", s["status"]["version"]);
+
+        // 1. 跑一条 40 秒的前台命令，中途“立即发送”：命令转到后台接着跑，Claude 在这一轮里马上回答
+        let cmd = "用 Bash 在前台执行这条命令（不要放后台）：for i in $(seq 1 40); do echo tick $i; sleep 1; done 。执行完只回复 done";
+        assert_eq!(chat.input(&id, cmd, &[]).await.unwrap()["delivered"], true);
+        let s = wait(&chat, &id, "开始跑命令", 60, |s| s["status"]["tool"] == "Bash" && s["status"]["actual_model"].is_string()).await;
+        let model = s["status"]["actual_model"].as_str().unwrap_or("").to_string();
+        assert!(model.contains("haiku"), "要用 haiku 测：{model}");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let t0 = Instant::now();
+        let r = chat.send_now(&id, "先别管那条命令，现在马上告诉我 7+8 等于几，只回复数字", &[]).await.unwrap();
+        println!("立即发送：{r}，{:?}", t0.elapsed());
+        assert_eq!(r["delivered"], true, "{r}");
+        let s = wait(&chat, &id, "马上回答 15", 25, |s| texts(s).contains("15")).await;
+        let took = t0.elapsed();
+        println!("{took:?} 后回答了 15");
+        assert!(took < Duration::from_secs(30), "没等那条 40 秒的命令跑完");
+        assert!(s["items"].as_array().unwrap().iter().any(|i| i["k"] == "user" && i["mid"] == true && i["text"].as_str().is_some_and(|t| t.contains("7+8"))), "并进了这一轮");
+        let moved = s["items"].as_array().unwrap().iter().any(|i| i["k"] == "tool_result" && i.to_string().contains("background"));
+        println!("命令转到后台：{moved}");
+        assert!(moved);
+        wait(&chat, &id, "这一轮结束", 90, |s| s["status"]["phase"] == "idle").await;
+
+        // 2. 先排队（回车），再空着输入框点“立即发送”：排着的那条马上发出
+        assert_eq!(chat.input(&id, cmd, &[]).await.unwrap()["delivered"], true);
+        wait(&chat, &id, "又开始跑命令", 60, |s| s["status"]["tool"] == "Bash").await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let r = chat.input(&id, "顺便告诉我 2+3 等于几，只回复数字", &[]).await.unwrap();
+        assert_eq!(r["delivered"], true, "{r}");
+        // 运行中回车是排队：在 Claude Code 的队列里等这一步做完（命令要跑 40 秒）
+        wait(&chat, &id, "进了队列", 10, |s| s["status"]["queued"].as_array().is_some_and(|q| q.iter().any(|t| t.as_str().is_some_and(|t| t.contains("2+3"))))).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_eq!(chat.snapshot(&id).await.unwrap()["status"]["phase"], "running", "排队时不打断这一轮");
+        let t0 = Instant::now();
+        let r = chat.send_now(&id, "", &[]).await.unwrap();
+        assert_eq!(r["delivered"], true, "{r}");
+        wait(&chat, &id, "马上回答 5", 25, |s| {
+            let a = s["items"].as_array().unwrap();
+            let at = a.iter().rposition(|i| i["k"] == "user" && i["text"].as_str().is_some_and(|t| t.contains("2+3")));
+            at.is_some_and(|n| a[n..].iter().any(|i| i["k"] == "assistant" && i.to_string().contains('5')))
+        })
+        .await;
+        println!("{:?} 后回答了 5", t0.elapsed());
+        assert!(t0.elapsed() < Duration::from_secs(30));
+        wait(&chat, &id, "这一轮结束", 90, |s| s["status"]["phase"] == "idle").await;
+
+        drop(viewer);
+        instances.stop(&id).await.unwrap();
     }
 
     /// 端到端：快捷设置（权限模式、思考强度、模型）、后台命令（列表、输出、停止）、子代理列表。

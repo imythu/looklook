@@ -9,6 +9,7 @@
 import {
   Activity,
   ArrowDown,
+  ArrowRight,
   ArrowLeft,
   ArrowUp,
   Asterisk,
@@ -19,10 +20,12 @@ import {
   ChevronRight,
   CircleDashed,
   CircleStop,
+  CornerDownRight,
   FilePen,
   FileText,
   GitBranch,
   Globe,
+  Hourglass,
   Image as ImageIcon,
   Layers,
   ListTodo,
@@ -39,11 +42,13 @@ import {
   TriangleAlert,
   Wrench,
   X,
+  Zap,
 } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, fetchRaw, plainLinksWork } from '../shared/api.js';
+import { spinnerText } from '../shared/spinner.js';
 import {
   CODEX_COMMANDS,
   COMMANDS,
@@ -77,7 +82,7 @@ import {
 import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { spanText } from '../shared/time.js';
+import { formatTime, parseInstant, spanText } from '../shared/time.js';
 import { runUpload } from '../shared/uploader.js';
 import { Button, CopyButton, useConfirm, useToast } from '../shared/ui.jsx';
 
@@ -95,10 +100,10 @@ const artifactUrl = (id, path, download) => `/api/instances/${id}/chat/artifact?
 
 /** 和 useTranslation 一样，但文案里的 {{agent}} 换成这个对话的 AI 工具（`name` 给了就用它，否则看上层的 AgentCtx） */
 function useT(name) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const ctx = useContext(AgentCtx);
   const agent = name ?? ctx.name;
-  return { t: useCallback((key, opts) => t(key, { agent, ...opts }), [t, agent]) };
+  return { t: useCallback((key, opts) => t(key, { agent, ...opts }), [t, agent]), i18n };
 }
 
 /** Codex（app-server）：`thinking` → 正在思考；其余是正在运行的命令，原样显示 */
@@ -168,6 +173,9 @@ function useChat(id) {
 
 // ---------------- 条目 ----------------
 
+/** 工具的种类：卡片、时间线节点按种类上色 */
+const TOOL_KINDS = { Bash: 'run', BashOutput: 'run', KillShell: 'run', Read: 'read', Edit: 'edit', MultiEdit: 'edit', Write: 'edit', NotebookEdit: 'edit', Grep: 'search', Glob: 'search', WebFetch: 'web', WebSearch: 'web', Task: 'agent', Agent: 'agent', TodoWrite: 'todo', ImageGen: 'image' };
+const toolKind = (name) => TOOL_KINDS[name] ?? (name.startsWith('mcp__') ? 'mcp' : 'other');
 const TOOL_ICONS = { ImageGen: ImageIcon, Bash: SquareTerminal, Read: FileText, Edit: FilePen, MultiEdit: FilePen, Write: FilePen, NotebookEdit: FilePen, Grep: Search, Glob: Search, WebFetch: Globe, WebSearch: Globe, TodoWrite: ListTodo, Task: Bot, Agent: Bot };
 const DIFF_TOOLS = ['Edit', 'MultiEdit', 'Write'];
 const DIFF_LIMIT = 400;
@@ -558,16 +566,16 @@ function ToolCallCard({ id, block, result, live }) {
   const out = block.name === 'Bash' && result?.content ? result.content.replace(/\s+$/, '') : '';
   const outLines = out ? out.split('\n').length : 0;
   return (
-    <div className="chat-tool" data-state={state}>
+    <div className="chat-tool" data-state={state} data-kind={toolKind(block.name)}>
       <button type="button" className="chat-tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
         {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-        <Icon size={15} aria-hidden="true" />
+        <Icon size={15} className="chat-tool-icon" aria-hidden="true" />
         <b>{name}</b>
         <span className={`chat-tool-sum ellipsis ${cmd || block.name === 'Task' || block.name === 'Agent' ? 'plain' : ''}`} title={block.input?.file_path ?? undefined}>
           {toolSummary(block.name, block.input)}
         </span>
         {!open && outLines > 0 && <span className="chat-tool-lines">{t('chat.output_lines', { count: outLines })}</span>}
-        {block.input?.run_in_background === true && <span className="badge">{t('chat.agent_background')}</span>}
+        {(block.input?.run_in_background === true || Boolean(result?.extra?.backgroundTaskId)) && <span className="badge">{t('chat.agent_background')}</span>}
         {stat && (stat.add > 0 || stat.del > 0) && (
           <DiffStat stat={stat} />
         )}
@@ -599,9 +607,14 @@ function ToolGroup({ id, row, results, live }) {
   const state = states.includes('run') ? 'run' : states.includes('err') ? 'err' : states.every((x) => x === 'ok') ? 'ok' : 'idle';
   const kinds = toolCounts(calls);
   const Icon = kinds.length === 1 ? TOOL_ICONS[calls[0].name] ?? Wrench : Layers;
-  const label = kinds
-    .map(([name, n]) => t(`chat.count.${name}`, { count: n, name: name.startsWith('mcp__') ? name.split('__').slice(1).join(' · ') : name, defaultValue: '{{name}} ×{{count}}' }))
-    .join(' · ');
+  // 每种工具一段，按种类上色
+  const label = kinds.map(([name, n], i) => (
+    <span key={name} data-kind={toolKind(name)}>
+      {i > 0 && ' · '}
+      {t(`chat.count.${name}`, { count: n, name: name.startsWith('mcp__') ? name.split('__').slice(1).join(' · ') : name, defaultValue: '{{name}} ×{{count}}' })}
+    </span>
+  ));
+  const groupKind = new Set(calls.map((b) => toolKind(b.name))).size === 1 ? toolKind(calls[0].name) : 'mix';
   // 正在运行时显示正在做的那一步；只有一种工具时列出涉及的文件、命令（几种混在一起时列出来太乱）
   const running = calls.find((b, n) => states[n] === 'run');
   const sums = running ? [toolSummary(running.name, running.input)] : kinds.length === 1 ? [...new Set(calls.map((b) => toolSummary(b.name, b.input)).filter(Boolean))] : [];
@@ -612,10 +625,10 @@ function ToolGroup({ id, row, results, live }) {
     stat = { add: (stat?.add ?? 0) + d.add, del: (stat?.del ?? 0) + d.del };
   }
   return (
-    <div className="chat-tool chat-group" data-state={state}>
+    <div className="chat-tool chat-group" data-state={state} data-kind={groupKind}>
       <button type="button" className="chat-tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
         {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
-        <Icon size={15} aria-hidden="true" />
+        <Icon size={15} className="chat-tool-icon" aria-hidden="true" />
         <b>{label}</b>
         <span className="chat-tool-sum ellipsis">{sums.join(', ')}</span>
         {stat && (stat.add > 0 || stat.del > 0) && (
@@ -716,7 +729,14 @@ function Item({ id, item }) {
   switch (item.k) {
     case 'user':
       return (
-        <div className="chat-user">
+        <div className="chat-user" data-mid={item.mid ? '' : undefined}>
+          {/* Claude 在忙时发的：这一步做完就并进了这一轮 */}
+          {item.mid && (
+            <span className="chat-mid-tag">
+              <CornerDownRight size={12} aria-hidden="true" />
+              {t('chat.mid_tag')}
+            </span>
+          )}
           <div className="chat-bubble">
             {item.text}
             {item.images > 0 && <span className="chat-note">{t('chat.images', { n: item.images })}</span>}
@@ -968,13 +988,93 @@ function PendingCard({ id, pending, active }) {
  * Claude Code 显示了选择框（信任文件夹、切换模型的确认、/rewind……）：读出来的选项显示成弹窗，选中的那项按方向键移过去再回车。
  * 读不出选项时只能取消（Esc）。
  */
-function TuiDialog({ id, dialog }) {
+// ---------------- 额度用完 ----------------
+
+/**
+ * Claude Code 额度用完时的菜单（`/rate-limit-options`，2.1.310）：标题、选项是英文，这里换成中文。
+ * “等重置后自动继续”只在关掉了 autoContinueAtUsageLimit 时出现（开着时不弹菜单，直接等）。
+ */
+const LIMIT_AUTO = 'Wait here, then continue automatically';
+const LIMIT_OPTIONS = {
+  'Stop and wait for limit to reset': 'stop',
+  Stop: 'stop',
+  'Switch to usage credits': 'credits',
+  'Upgrade your plan': 'upgrade',
+  'Ask your admin for more usage': 'admin',
+  'Don\u2019t continue automatically': 'no_auto',
+  "Don't continue automatically": 'no_auto',
+};
+const isLimitDialog = (d) => Boolean(d?.options?.some((o) => o.label.startsWith(LIMIT_AUTO) || o.label === 'Stop and wait for limit to reset'));
+function limitOption(t, label) {
+  if (label.startsWith(LIMIT_AUTO)) return t('chat.limit.opt_auto');
+  const k = LIMIT_OPTIONS[label];
+  return k ? t(`chat.limit.opt_${k}`) : label;
+}
+
+/** 额度什么时候重置：用量接口给的准确时间（用完的那个窗口；都没满时取最近的），按浏览器时区显示 */
+function LimitReset({ id }) {
+  const { data } = usePoll(`/instances/${id}/chat/usage`);
+  const wins = [data?.limits?.five_hour, data?.limits?.seven_day].filter((w) => w?.resets_at);
+  const full = wins.find((w) => w.used >= 100);
+  const at = (full ?? wins.sort((a, b) => parseInstant(a.resets_at) - parseInstant(b.resets_at))[0])?.resets_at;
+  return at ? <ResetAt at={at} /> : null;
+}
+
+/** 看看替用户选“自动继续”的倒计时 */
+function AutoIn({ at }) {
+  const { t } = useT();
+  const [, tick] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    const iv = setInterval(tick, 1000);
+    return () => clearInterval(iv);
+  }, []);
+  const s = Math.max(0, Math.ceil((at - Date.now()) / 1000));
+  return <p className="chat-limit-auto">{t('chat.limit.auto_in', { s })}</p>;
+}
+
+/** 额度用完、正在等重置后自动继续：输入框上面一张卡片，可以取消 */
+function LimitWait({ id, waiting }) {
+  const { t } = useT();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const cancel = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/instances/${id}/chat/interrupt`);
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="chat-limit" role="status">
+      <span className="chat-limit-head">
+        <Hourglass size={15} aria-hidden="true" />
+        {t('chat.limit.waiting')}
+      </span>
+      <div className="chat-limit-when">
+        <LimitReset id={id} />
+        <span className="chat-note">{t('chat.limit.terminal_says', { when: waiting })}</span>
+      </div>
+      <p className="chat-note">{t('chat.limit.keep_open')}</p>
+      <div className="chat-acts">
+        <Button variant="ghost" onClick={cancel} busy={busy}>
+          {t('chat.limit.cancel_wait')}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function TuiDialog({ id, dialog, limit }) {
   const { t } = useT();
   const toast = useToast();
   const [pick, setPick] = useState(dialog?.selected ?? 0);
   const [busy, setBusy] = useState(false);
   const box = useRef(null);
   const sig = dialog ? `${dialog.title}|${dialog.options.map((o) => o.label).join('|')}` : '';
+  const isLimit = isLimitDialog(dialog);
   useEffect(() => {
     setPick(dialog?.selected ?? 0);
   }, [sig]);
@@ -1010,8 +1110,14 @@ function TuiDialog({ id, dialog }) {
       <div className="chat-dialog" role="dialog" aria-modal="true" aria-label={dialog?.title || t('chat.dialog_title')} tabIndex={-1} ref={box} onKeyDown={onKey}>
         {dialog ? (
           <>
-            <h3>{dialog.title}</h3>
+            <h3>{isLimit ? t('chat.limit.title') : dialog.title}</h3>
             {dialog.body.length > 0 && <p className="chat-dialog-body">{dialog.body.join('\n').trim()}</p>}
+            {isLimit && (
+              <div className="chat-limit-when">
+                <LimitReset id={id} />
+              </div>
+            )}
+            {isLimit && limit?.auto_at > 0 && <AutoIn at={limit.auto_at} />}
             <div className="chat-dialog-opts" role="radiogroup">
               {dialog.options.map((o, n) => (
                 // eslint-disable-next-line react/no-array-index-key -- 选项按位置对应 TUI 里的顺序
@@ -1019,9 +1125,10 @@ function TuiDialog({ id, dialog }) {
                   <span className="chat-opt-dot" aria-hidden="true" />
                   <span className="chat-opt-text">
                     <b>
-                      {o.label}
+                      {isLimit ? limitOption(t, o.label) : o.label}
                       {o.current && <Check size={13} className="chat-opt-cur" aria-label={t('chat.dialog_current')} />}
                     </b>
+                    {isLimit && o.label !== limitOption(t, o.label) && <span className="chat-note">{o.label}</span>}
                     {o.hint && <span className="chat-note">{o.hint}</span>}
                   </span>
                 </button>
@@ -1205,6 +1312,15 @@ function ModeMenu({ id, status, onClose }) {
   );
 }
 
+/** `2.1.310` 这样的版本号不低于 min（不知道版本时当作够新，服务端还会再查） */
+function versionAtLeast(v, min) {
+  if (!v) return true;
+  const p = String(v).split('.').map((x) => parseInt(x, 10));
+  if (p.length < 3 || p.some(Number.isNaN)) return true;
+  for (let i = 0; i < 3; i++) if (p[i] !== min[i]) return p[i] > min[i];
+  return true;
+}
+
 /** 上下文用量的小圆环（点开右侧的“用量”） */
 function ContextRing({ used, window: win, onClick }) {
   const { t } = useT();
@@ -1224,14 +1340,56 @@ function ContextRing({ used, window: win, onClick }) {
   );
 }
 
+/**
+ * 输入框里还没发出去的字，在这个浏览器里按会话各存一份：手机把后台的页面回收了、登录过期自动刷新、
+ * 下拉刷新之后，重新打开还在（只在本机，不同步到别的设备）。发出去后清掉；7 天没动的不要了。
+ */
+const DRAFT_KEY = (id) => `looklook.chat-draft.${id}`;
+const DRAFT_MAX_AGE = 7 * 86_400_000;
+function readDraft(id) {
+  try {
+    const d = JSON.parse(localStorage.getItem(DRAFT_KEY(id)) || 'null');
+    return d && typeof d.text === 'string' && Date.now() - d.at < DRAFT_MAX_AGE ? d.text : '';
+  } catch {
+    return '';
+  }
+}
+function writeDraft(id, text) {
+  try {
+    if (text.trim()) localStorage.setItem(DRAFT_KEY(id), JSON.stringify({ text, at: Date.now() }));
+    else localStorage.removeItem(DRAFT_KEY(id));
+  } catch {
+    /* 隐私模式等存不了：不影响输入 */
+  }
+}
+
 function Composer({ id, status, phase, touch, offline, models, usage, onAction, onSide }) {
   const { t } = useT();
   // 权限模式只有 Claude Code 有；模型、思考强度、上下文用量按工具的能力（caps）显示
   const { id: agentId, caps } = useContext(AgentCtx);
   const toast = useToast();
-  const [text, setText] = useState('');
+  const [text, setText] = useState(() => readDraft(id));
   const [files, setFiles] = useState([]);
   const [sending, setSending] = useState(false);
+  // 停手 0.3 秒存一次；页面要被收起、关掉时马上存
+  // 正在发送的那段：输入框已经清空，但确认送到之前存着的仍是它（发送途中页面被回收也不丢）
+  const inflight = useRef('');
+  const latest = useRef(text);
+  latest.current = text;
+  useEffect(() => {
+    const timer = setTimeout(() => writeDraft(id, text || inflight.current), 300);
+    return () => clearTimeout(timer);
+  }, [id, text]);
+  useEffect(() => {
+    const flush = () => writeDraft(id, latest.current || inflight.current);
+    const onHide = () => document.visibilityState === 'hidden' && flush();
+    window.addEventListener('pagehide', flush);
+    document.addEventListener('visibilitychange', onHide);
+    return () => {
+      window.removeEventListener('pagehide', flush);
+      document.removeEventListener('visibilitychange', onHide);
+    };
+  }, [id]);
   const [menu, setMenu] = useState(null);
   const area = useRef(null);
   const picker = useRef(null);
@@ -1281,10 +1439,11 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
       return f.filter((y) => y.key !== key);
     });
   const uploading = files.some((f) => !f.path && !f.failed);
-  const send = async () => {
+  // now：Claude Code 的“立即发送”（Ctrl+Enter）。不带 now 时运行中发的是排队
+  const send = async (now = false) => {
     const body = text.trim();
     const images = files.filter((f) => f.path).map((f) => f.path);
-    if ((!body && !images.length) || sending || uploading || disabled) return;
+    if ((!body && !images.length && !now) || sending || uploading || disabled) return;
     // 界面自己能做的命令（/model、/resume、/context……）不送进去
     const action = !images.length && slashAction(body);
     if (action) {
@@ -1297,13 +1456,17 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
     if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission().catch?.(() => {});
     setSending(true);
     // 先清空输入框（斜杠命令也一样）；没送出去时再放回来，不丢用户打的字
+    inflight.current = body;
     setText('');
     try {
-      const r = await api.post(`/instances/${id}/chat/input`, { text: body, images });
+      const r = await api.post(`/instances/${id}/chat/input`, now && canNow ? { text: body, images, now: true } : { text: body, images });
+      inflight.current = '';
+      writeDraft(id, latest.current);
       files.forEach((f) => URL.revokeObjectURL(f.url));
       setFiles([]);
       if (r?.delivered === false) toast(t('chat.not_delivered'), 'error');
     } catch (e) {
+      inflight.current = '';
       setText((cur) => cur || body);
       toast(errorText(t, e), 'error');
     } finally {
@@ -1318,7 +1481,11 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
     }
   };
   const onKey = (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !touch) {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && canNow) {
+      // 和 Claude Code 一样：Ctrl+Enter 立即发送
+      e.preventDefault();
+      send(true);
+    } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !touch) {
       e.preventDefault();
       if (slash.length && slashPick != null) {
         pickSlash(slash[slashPick]);
@@ -1387,8 +1554,13 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
   const modeText = status?.mode ? t(`chat.mode_${MODE_CHOICES.includes(status.mode) || status.mode === 'dontAsk' ? status.mode : 'other'}`, { mode: status.mode }) : t('chat.mode');
   const ready = phase === 'idle' || phase === 'running';
   const showStop = running && !text.trim() && !files.length;
+  const canSend = !!text.trim() || files.some((f) => f.path);
+  // 运行中能不能“立即发送”：Claude Code 2.1.275 起才有
+  const canNow = running && agentId === 'claude' && versionAtLeast(status?.version, [2, 1, 275]);
+  // 运行中打了字：讲清楚“排队”和“立即发送”
+  const twoWays = running && canSend && !disabled;
   return (
-    <div className="chat-composer" data-running={running ? '' : undefined}>
+    <div className="chat-composer" data-running={running ? '' : undefined} data-ways={twoWays && canNow ? '' : undefined}>
       {slash.length > 0 && (
         <ul className="chat-slash" role="listbox">
           {slash.map((c, n) => (
@@ -1405,13 +1577,42 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
       )}
       {menu === 'model' && <ModelMenu id={id} status={status} models={models} view={view} onClose={() => setMenu(null)} />}
       {menu === 'mode' && <ModeMenu id={id} status={status} onClose={() => setMenu(null)} />}
-      {/* 推荐回复：电脑上是输入框里的灰字（Tab 填入）；手机没有 Tab，上面放一枚点一下填入 */}
-      {suggestion && touch && slash.length === 0 && (
-        <button type="button" className="chat-suggest" onClick={applySuggestion} title={t('chat.suggest_hint')}>
-          <Sparkle size={13} aria-hidden="true" />
-          <span className="ellipsis">{suggestion}</span>
-          {!touch && <kbd>Tab</kbd>}
-        </button>
+      {/* 运行中发的、还在 Claude Code 队列里的消息：这一步做完会并进对话 */}
+      {status?.queued?.length > 0 && (
+        <div className="chat-queued" role="status">
+          <span className="chat-queued-head">
+            <i aria-hidden="true" />
+            <b>{t('chat.queued_title')}</b>
+            <span className="chat-note">{t('chat.queued_hint')}</span>
+            {canNow && !canSend && (
+              <button type="button" className="btn btn-plain btn-sm chat-now-btn" onClick={() => send(true)} disabled={sending} title={t('chat.way_now_hint')}>
+                <Zap size={13} aria-hidden="true" />
+                {t('chat.way_now')}
+              </button>
+            )}
+          </span>
+          {status.queued.map((q, n) => (
+            <p key={n} className="chat-queued-text">
+              {q}
+            </p>
+          ))}
+        </div>
+      )}
+      {twoWays && (
+        <div className="chat-ways" role="note">
+          <span>
+            {touch ? <ArrowUp size={13} aria-hidden="true" /> : <kbd>Enter</kbd>}
+            <b>{t('chat.way_queue')}</b>
+            {t('chat.way_queue_hint')}
+          </span>
+          {canNow && (
+            <span>
+              {touch ? <Zap size={13} aria-hidden="true" /> : <kbd>Ctrl+Enter</kbd>}
+              <b>{t('chat.way_now')}</b>
+              {t('chat.way_now_hint')}
+            </span>
+          )}
+        </div>
       )}
       {files.length > 0 && (
         <div className="chat-files">
@@ -1506,9 +1707,17 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
               <Square size={14} fill="currentColor" />
             </button>
           ) : (
-            <button type="button" className="btn btn-primary btn-icon chat-send" onClick={send} disabled={disabled || sending || uploading || (!text.trim() && !files.some((f) => f.path))} aria-label={t('chat.send')} title={t('chat.send')}>
-              {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={18} />}
-            </button>
+            <>
+              {twoWays && canNow && (
+                <button type="button" className="btn btn-plain chat-chip chat-now-btn" onClick={() => send(true)} disabled={sending || uploading} title={t('chat.way_now_title')}>
+                  <Zap size={14} aria-hidden="true" />
+                  {t('chat.way_now')}
+                </button>
+              )}
+              <button type="button" className="btn btn-primary btn-icon chat-send" onClick={() => send()} disabled={disabled || sending || uploading || !canSend} aria-label={running ? t('chat.way_queue') : t('chat.send')} title={running ? t('chat.send_queue') : t('chat.send')}>
+                {sending ? <LoaderCircle size={18} className="spin" /> : <ArrowUp size={18} />}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -1570,37 +1779,42 @@ function Detached({ id, status }) {
     }
   };
   const relaunch = () => run(`/instances/${id}/chat/relaunch`);
-  // 开启对话界面之前就在运行、或者在终端里手动开的：重启这个终端，带着 hooks 重新启动
-  const restart = () => run(`/instances/${id}/restart`);
+  // 以前的会话（升级前开的、在终端里自己开的 Claude Code / Codex）：后台等它这一轮做完自动转到对话模式、
+  // 接着同一段对话，也可以现在就转
+  const adoptable = reason === 'not_attached';
+  const key = adoptable ? 'adopt_wait' : reason;
+  const adoptNow = () => run(`/instances/${id}/chat/adopt`);
   return (
     <div className="chat-detached">
-      {reason === 'starting' && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
-      <b>{t(`chat.detached_${reason}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
-      <p className="muted">{t(`chat.detached_${reason}_body`, { defaultValue: '' })}</p>
-      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server') && (
-        <div className="chat-acts">
-          <Button busy={busy} onClick={relaunch}>
-            {t(reason === 'app_server' ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
-          </Button>
-        </div>
-      )}
-      {reason === 'not_attached' && (
+      {(reason === 'starting' || reason === 'adopting' || adoptable) && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
+      <b>{t(`chat.detached_${key}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
+      <p className="muted">{t(`chat.detached_${key}_body`, { defaultValue: '' })}</p>
+      {adoptable && (
         <div className="chat-acts">
           {confirming ? (
             <>
               <p className="chat-note" style={{ flexBasis: '100%', margin: 0 }}>
-                {t('chat.restart_attach_confirm')}
+                {t('chat.adopt_now_confirm')}
               </p>
-              <Button variant="danger" busy={busy} onClick={restart}>
-                {t('chat.restart_attach')}
+              <Button busy={busy} onClick={adoptNow}>
+                {t('chat.adopt_now')}
               </Button>
               <Button variant="ghost" onClick={() => setConfirming(false)}>
                 {t('action.cancel')}
               </Button>
             </>
           ) : (
-            <Button onClick={() => setConfirming(true)}>{t('chat.restart_attach')}</Button>
+            <Button variant="ghost" onClick={() => setConfirming(true)}>
+              {t('chat.adopt_now')}
+            </Button>
           )}
+        </div>
+      )}
+      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server') && (
+        <div className="chat-acts">
+          <Button busy={busy} onClick={relaunch}>
+            {t(reason === 'app_server' ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
+          </Button>
         </div>
       )}
     </div>
@@ -1812,7 +2026,7 @@ function TasksTab({ id }) {
   const agent = agents.find((a) => a.id === agentId);
   if (agent) return <AgentDetail id={id} agent={agent} onBack={() => setAgentId(null)} />;
   const runningAgents = agents.filter((a) => a.state === 'running').length;
-  const runningShells = shells.filter((s) => s.state === 'running').length;
+  const runningShells = shells.filter((s) => s.state === 'running').length + (data?.unlisted_shells ?? 0);
   return (
     <>
       {!data && !error && <LoaderCircle size={16} className="spin" />}
@@ -1858,8 +2072,10 @@ function TasksTab({ id }) {
             <Activity size={15} aria-hidden="true" /> {t('chat.shells_title')}
             <span className="chat-note">{runningShells ? t('chat.n_running', { count: runningShells }) : shells.length || ''}</span>
           </h4>
+          {/* 状态栏上说在跑、对话记录里找不到的（子代理启动的、/clear 之前启动的） */}
+          {data?.unlisted_shells > 0 && <p className="chat-note chat-unlisted">{t('chat.shells_unlisted', { count: data.unlisted_shells })}</p>}
           {shells.length === 0 ? (
-            <p className="chat-note">{t('chat.shells_empty')}</p>
+            !data?.unlisted_shells && <p className="chat-note">{t('chat.shells_empty')}</p>
           ) : (
             <ul className="chat-tasks">
               {shells.map((s) => (
@@ -1889,10 +2105,26 @@ function Meter({ label, value, sub }) {
   );
 }
 
-const resetText = (t, iso) => {
-  const ms = Date.parse(iso) - Date.now();
-  return Number.isFinite(ms) && ms > 0 ? t('chat.usage_resets', { in: spanText(t, ms) }) : '';
-};
+/** 重置时间：具体时间（浏览器时区，带偏移）和还剩多久，每半分钟更新 */
+function ResetAt({ at }) {
+  const { t } = useT();
+  const [, tick] = useReducer((n) => n + 1, 0);
+  useEffect(() => {
+    const iv = setInterval(tick, 30_000);
+    return () => clearInterval(iv);
+  }, []);
+  // 给的是 17:59:59.94 这种，按整分钟显示（18:00）
+  const when = Math.round(parseInstant(at) / 60_000) * 60_000;
+  const ms = when - Date.now();
+  if (!Number.isFinite(ms) || ms <= 0) return null;
+  return (
+    <span className="chat-reset" title={new Date(when).toString()}>
+      <span>{t('chat.usage_reset_at', { at: formatTime(when) })}</span>
+      <b>{t('chat.usage_left', { in: spanText(t, ms) })}</b>
+    </span>
+  );
+}
+const resetText = (_t, iso) => (iso ? <ResetAt at={iso} /> : '');
 
 function UsageTab({ id, status, onCompact }) {
   const { t } = useT();
@@ -2148,8 +2380,24 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
  * 运行中：屏幕上的状态行（例如“Symbioting… (6s · ↓ 274 tokens)”）和正在输出的那段回复（灰色）。
  * transcript 要等整段写完才有，写进来之后这里自动不再显示。
  */
+/** 和终端里一样轮换的小星星（· ✢ ✳ ✶ ✻ ✽，再倒回来） */
+const GLYPHS = ['·', '✢', '✳', '✶', '✻', '✽', '✻', '✶', '✳', '✢'];
+function SpinGlyph() {
+  const [n, setN] = useState(0);
+  useEffect(() => {
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return undefined;
+    const iv = setInterval(() => setN((x) => (x + 1) % GLYPHS.length), 120);
+    return () => clearInterval(iv);
+  }, []);
+  return (
+    <span className="chat-working-mark" aria-hidden="true">
+      {GLYPHS[n]}
+    </span>
+  );
+}
+
 function Live({ status, items, since }) {
-  const { t } = useT();
+  const { t, i18n } = useT();
   // 已经跑了多久，每秒更新
   const [, tick] = useReducer((n) => n + 1, 0);
   useEffect(() => {
@@ -2162,12 +2410,16 @@ function Live({ status, items, since }) {
   const lastText = (last?.blocks ?? []).filter((b) => b.t === 'text').map((b) => b.text).join('\n');
   const head = preview.slice(0, 30);
   const shown = preview && !(head && lastText.replace(/\s+/g, '').includes(head.replace(/\s+/g, '')));
+  // Claude Code 的状态行（`Unraveling… (8s · ↓ 22 tokens)`）：中文界面把动词换成中文；Codex 的另有说法
+  const act = status?.agent === 'claude' || !status?.agent ? spinnerText(status?.activity, i18n.language) : { text: activityText(t, status?.activity) ?? '', detail: '', orig: '' };
   return (
     <>
       {shown && <div className="chat-preview">{preview}</div>}
       <p className="chat-working">
-        <Asterisk size={16} className="chat-working-mark" aria-hidden="true" />
-        <span className="ellipsis">{activityText(t, status?.activity) || (status?.tool ? t('chat.running_tool', { tool: status.tool }) : t('chat.working'))}</span>
+        <SpinGlyph />
+        <span className="ellipsis">{act.text || (status?.tool ? t('chat.running_tool', { tool: status.tool }) : t('chat.working'))}</span>
+        {act.orig && <span className="chat-working-orig" lang="en">{act.orig}</span>}
+        {act.detail && <span className="chat-working-detail">{act.detail}</span>}
         {secs > 0 && <span className="chat-working-time">{duration(secs * 1000)}</span>}
       </p>
     </>
@@ -2414,11 +2666,6 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
         <div className="chat-main">
           <div className="chat-list" ref={list} onScroll={onScroll} tabIndex={-1}>
             <div className="chat-items" ref={inner}>
-              {status?.untested_version && (
-                <p className="chat-event chat-warn">
-                  <TriangleAlert size={13} aria-hidden="true" /> {t('chat.untested_version', { version: status.version })}
-                </p>
-              )}
               {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
               {!items.length && status && phase !== 'detached' && (
                 <div className="chat-empty">
@@ -2439,6 +2686,17 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
               )}
               <Rows id={id} items={items} live={live} />
               {phase === 'running' && <Live status={status} items={items} since={since} />}
+              {/* 推荐的下一句放在对话最后：点一下填进输入框（电脑上也可以按 Tab） */}
+              {phase === 'idle' && status?.suggestion && items.length > 0 && (
+                <div className="chat-next-row">
+                  <button type="button" className="chat-next" onClick={() => window.dispatchEvent(new CustomEvent(`ll-chat-fill:${id}`, { detail: status.suggestion }))} title={t('chat.suggest_hint')}>
+                    <Sparkle size={14} aria-hidden="true" />
+                    <span className="chat-next-label">{t('chat.next_step')}</span>
+                    <span className="ellipsis">{status.suggestion}</span>
+                    <ArrowRight size={14} aria-hidden="true" />
+                  </button>
+                </div>
+              )}
               {status?.pending && <PendingCard id={id} pending={status.pending} active={active} />}
               {/* 这一轮做完了，后台还有命令、子代理在跑 */}
               {phase === 'idle' && (bg.shell > 0 || bg.subagent > 0) && (
@@ -2461,7 +2719,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
             </button>
           )}
           {status && <SideToggle side={side} onSide={setSide} />}
-          {phase === 'tui' && <TuiDialog id={id} dialog={status?.dialog ?? null} />}
+          {phase === 'tui' && <TuiDialog id={id} dialog={status?.dialog ?? null} limit={status?.limit} />}
         </div>
         <div className="chat-dock">
           {todos && todos.some((x) => x.status !== 'completed') && (
@@ -2474,6 +2732,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
             </details>
           )}
           {phase === 'detached' && <Detached id={id} status={status} />}
+          {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
           <StatusNotice status={status} online={chat.online} />
           <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} onAction={onAction} onSide={setSide} />
         </div>

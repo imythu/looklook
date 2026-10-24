@@ -1381,7 +1381,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 @media (prefers-color-scheme: dark) { .chat-view { --claude: #e08a68; } }
 .chat-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .chat-main { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
-.chat-list { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 20px 12px; overscroll-behavior: contain; overflow-anchor: none; outline: 0; }
+.chat-list { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 20px 20px 12px; overscroll-behavior: contain; overflow-anchor: none; outline: 0; }
 .chat-items { display: flex; flex-direction: column; gap: 14px; }
 .chat-list > *, .chat-items > * { width: 100%; max-width: var(--chat-w); margin-left: auto; margin-right: auto; }
 .chat-event, .chat-turn, .chat-working, .chat-divider { margin: 0; font-size: 13px; color: var(--muted); }
@@ -1434,7 +1434,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-tool-head { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 0; border: 0; background: none; color: var(--muted); font: 13.5px/1.3 var(--font); text-align: left; cursor: pointer; border-radius: 6px; }
 .chat-tool-head:hover { color: var(--text); }
 .chat-tool-head > svg { flex: none; }
-.chat-tool-head b { flex: none; font-weight: 500; color: var(--text); }
+.chat-tool-head b { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; color: var(--text); }
 .chat-tool-sum { flex: 1; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 12.5px; }
 .chat-tool-sum.plain { font-family: var(--font); font-size: 13.5px; }
 .chat-tool-lines { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; opacity: .8; }
@@ -1562,10 +1562,6 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-stop { background: var(--text); color: var(--panel); border: 0; }
 .chat-files { display: flex; gap: 6px; flex-wrap: wrap; }
 /* Claude Code 推荐的下一句：输入框上面一枚，点一下填进输入框 */
-.chat-suggest { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; align-self: flex-start; min-height: 30px; padding: 0 10px; border: 1px dashed var(--line); border-radius: 999px; background: var(--panel); color: var(--muted); font: 13px var(--font); cursor: pointer; }
-.chat-suggest:hover { color: var(--text); border-color: var(--brand); }
-.chat-suggest svg { flex: none; color: var(--brand); }
-.chat-suggest kbd { flex: none; font: 11px var(--mono); padding: 0 5px; border: 1px solid var(--line); border-radius: 5px; }
 .chat-file { position: relative; width: 56px; height: 56px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); display: inline-flex; align-items: center; justify-content: center; }
 .chat-file img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .chat-file[data-state="up"] img { opacity: .5; }
@@ -2104,7 +2100,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 /* 窄屏（手机、开着侧栏的窄窗口）：工具卡片更紧凑，去掉图标、命令行、行号 */
 @container (max-width: 560px) {
   .chat-tool-head { gap: 5px; font-size: 13px; }
-  .chat-tool-head > svg + svg { display: none; }
+  .chat-tool-head > svg:first-child { display: none; }
   .chat-tool-cmd, .chat-tool-lines, .chat-diff-no { display: none; }
   .chat-tool-sum { font-size: 12px; }
   .chat-diff { font-size: 11.5px; }
@@ -2116,9 +2112,22 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
   --claude-soft: color-mix(in srgb, var(--claude) 12%, transparent);
   /* 回复正文：英文用衬线体（和 Claude 桌面端一样好读），中文落到系统黑体 */
   --prose: Charter, "Bitstream Charter", "Iowan Old Style", "Source Serif 4", "Source Serif Pro", Georgia, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", serif;
+  /* 工具的种类色：命令青、读取蓝、修改琥珀、搜索紫、网页天蓝、子代理玫红、待办绿 */
+  --k-run: #0d9488; --k-read: #2f6fe4; --k-edit: #d97706; --k-search: #7c3aed; --k-web: #0891b2; --k-agent: #db2777; --k-todo: #16a34a; --k-mcp: #4f46e5; --k-image: #e11d48; --k-other: var(--muted);
   background:
-    radial-gradient(900px 360px at 50% -120px, color-mix(in srgb, var(--claude) 9%, transparent), transparent 70%),
+    radial-gradient(700px 320px at 15% -80px, color-mix(in srgb, var(--claude) 13%, transparent), transparent 70%),
+    radial-gradient(640px 300px at 90% -60px, color-mix(in srgb, var(--k-search) 8%, transparent), transparent 70%),
+    radial-gradient(520px 260px at 55% 108%, color-mix(in srgb, var(--k-read) 6%, transparent), transparent 70%),
     var(--bg);
+  background-size: 160% 160%, 160% 160%, 140% 140%, auto;
+  animation: chat-aurora 26s ease-in-out infinite alternate;
+}
+@keyframes chat-aurora {
+  0% { background-position: 0% 0%, 100% 0%, 50% 100%, 0 0; }
+  100% { background-position: 60% 20%, 40% 30%, 20% 80%, 0 0; }
+}
+@media (prefers-color-scheme: dark) {
+  .chat-view { --k-run: #2dd4bf; --k-read: #6ea2ff; --k-edit: #fbbf24; --k-search: #a78bfa; --k-web: #22d3ee; --k-agent: #f472b6; --k-todo: #4ade80; --k-mcp: #818cf8; --k-image: #fb7185; }
 }
 .chat-items { gap: 16px; }
 .chat-items > .md, .chat-reply-end > .md, .chat-sub-body > .md, .chat-preview { font-family: var(--prose); font-size: 16px; line-height: 1.72; letter-spacing: .003em; }
@@ -2132,7 +2141,13 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-view .md th { font-family: var(--font); font-size: 13px; font-weight: 600; color: var(--muted); }
 
 /* 用户消息：带一点 Claude 橙的气泡 */
-.chat-bubble { background: color-mix(in srgb, var(--claude) 8%, var(--panel-2)); border-radius: 20px 20px 6px 20px; padding: 10px 16px; }
+.chat-bubble {
+  background: linear-gradient(135deg, color-mix(in srgb, var(--claude) 78%, #ffb38a), var(--claude) 55%, color-mix(in srgb, var(--claude) 85%, #c2410c));
+  color: #fff; border-radius: 20px 20px 6px 20px; padding: 10px 16px;
+  box-shadow: 0 8px 22px -10px color-mix(in srgb, var(--claude) 75%, transparent), inset 0 1px 0 rgba(255, 255, 255, .22);
+}
+.chat-bubble .chat-note { color: rgba(255, 255, 255, .8); }
+@media (prefers-color-scheme: dark) { .chat-bubble { background: linear-gradient(135deg, color-mix(in srgb, var(--claude) 80%, #000), color-mix(in srgb, var(--claude) 62%, #000)); } }
 
 /* 新出现的一条从下面浮上来 */
 .chat-items > :last-child { animation: rise .32s cubic-bezier(.2, .8, .2, 1) both; }
@@ -2150,7 +2165,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-items > .chat-tool[data-state="err"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
 .chat-tool-head { min-height: 34px; }
 .chat-tool-head b { font-weight: 600; }
-.chat-tool-cmd { margin: -6px 0 6px 43px; }
+.chat-tool-cmd { margin: -6px 0 6px 51px; }
 .chat-group-body { position: relative; padding: 2px 0 8px 22px; }
 .chat-group-body::before { content: ""; position: absolute; left: 7px; top: 4px; bottom: 14px; width: 1.5px; border-radius: 2px; background: linear-gradient(var(--line), color-mix(in srgb, var(--line) 30%, transparent)); }
 .chat-group-body > .chat-tool { position: relative; }
@@ -2173,8 +2188,12 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 
 /* —— 正在工作：转动的 Claude 星号 + 扫过文字的流光 —— */
 .chat-working { font-size: 14px; color: var(--muted); min-width: 0; }
-.chat-working-mark { flex: none; color: var(--claude); animation: spin 2.8s linear infinite; }
+.chat-working-mark { flex: none; width: 18px; text-align: center; color: var(--claude); font-size: 17px; line-height: 1; text-shadow: 0 0 10px color-mix(in srgb, var(--claude) 60%, transparent); }
+.chat-working-orig { flex: none; font-size: 12px; font-style: italic; color: var(--muted); opacity: .75; }
+.chat-working-detail { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: 999px; background: var(--claude-soft); color: color-mix(in srgb, var(--claude) 75%, var(--text)); }
+/* 单行截断要 overflow:hidden，行高给够，不然 g、y 的下半截被切掉 */
 .chat-working .ellipsis {
+  flex: 0 1 auto; line-height: 1.6; padding-block: 1px; font-weight: 500;
   background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 38%, var(--claude) 50%, var(--muted) 62%, var(--muted) 100%);
   background-size: 250% 100%;
   -webkit-background-clip: text; background-clip: text; color: transparent;
@@ -2183,6 +2202,11 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 @keyframes chat-shine { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 .chat-working-time { flex: none; font-size: 12.5px; font-variant-numeric: tabular-nums; opacity: .7; }
 .chat-preview { color: var(--muted); }
+
+/* 额度的重置时间：一行具体时间，一行还剩多久 */
+.chat-reset { display: flex; flex-direction: column; }
+.chat-reset > * { white-space: nowrap; }
+.chat-reset b { font-weight: 500; color: var(--text); }
 
 /* —— 回复结尾：复制、用时 —— */
 .chat-reply-acts { align-items: center; gap: 6px; }
@@ -2194,6 +2218,8 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 
 /* —— 输入框：毛玻璃；Claude 在忙时边缘有一圈流动的光 —— */
 .chat-main::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 26px; background: linear-gradient(transparent, var(--bg)); pointer-events: none; z-index: 1; }
+/* 列表底部留出比渐隐更高的空白：最后一行（正在工作的那行）不能落在渐隐里，看起来像被遮住 */
+.chat-list { padding-bottom: 34px; }
 .chat-input-box {
   position: relative;
   border-radius: 22px;
@@ -2216,7 +2242,9 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-send { border-radius: 12px; transition: transform .15s, filter .15s; }
 .chat-send.btn-primary:not(:disabled) { background: linear-gradient(135deg, color-mix(in srgb, var(--claude) 80%, #fff), var(--claude) 60%); box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--claude) 70%, transparent); }
 .chat-send:not(:disabled):hover { transform: translateY(-1px); }
-.chat-send.btn-primary:disabled { opacity: .35; }
+.chat-send.btn-primary:disabled { opacity: .55; filter: saturate(.7); }
+.chat-send.btn-primary:not(:disabled) { animation: chat-ready .5s cubic-bezier(.3, 1.6, .5, 1) both; }
+@keyframes chat-ready { from { transform: scale(.82); } }
 /* 推荐回复在输入框里是灰字，右上角一枚 Tab */
 .chat-suggest-key { position: absolute; top: 10px; right: 12px; border: 0; background: none; padding: 0; cursor: pointer; }
 .chat-suggest-key kbd { font: 11px var(--mono); padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; color: var(--muted); background: var(--panel); }
@@ -2248,6 +2276,92 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-starters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 560px; }
 .chat-starter { border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 80%, transparent); color: var(--text); font: 13.5px var(--font); padding: 8px 14px; border-radius: 999px; cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s; }
 .chat-starter:hover { border-color: color-mix(in srgb, var(--claude) 60%, var(--line)); transform: translateY(-1px); box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--claude) 60%, transparent); }
+
+/* ================= 活力层（2026-10-24 第二轮）：按种类上色、推荐的下一步、排队的消息 ================= */
+.chat-tool[data-kind="run"] { --kind: var(--k-run); } .chat-tool[data-kind="read"] { --kind: var(--k-read); }
+.chat-tool[data-kind="edit"] { --kind: var(--k-edit); } .chat-tool[data-kind="search"] { --kind: var(--k-search); }
+.chat-tool[data-kind="web"] { --kind: var(--k-web); } .chat-tool[data-kind="agent"] { --kind: var(--k-agent); }
+.chat-tool[data-kind="todo"] { --kind: var(--k-todo); } .chat-tool[data-kind="mcp"] { --kind: var(--k-mcp); }
+.chat-tool[data-kind="image"] { --kind: var(--k-image); } .chat-tool[data-kind="other"] { --kind: var(--k-other); }
+.chat-tool[data-kind="mix"] { --kind: var(--claude); }
+/* 图标放进一块带种类色的小圆角方块 */
+.chat-tool-icon { flex: none; box-sizing: content-box; padding: 4px; border-radius: 8px; color: var(--kind, var(--muted)); background: color-mix(in srgb, var(--kind, var(--muted)) 14%, transparent); }
+.chat-group[data-kind="mix"] > .chat-tool-head .chat-tool-icon { color: #fff; background: linear-gradient(135deg, var(--k-read), var(--k-search) 50%, var(--claude)); }
+.chat-tool-head b > span[data-kind="run"] { color: var(--k-run); } .chat-tool-head b > span[data-kind="read"] { color: var(--k-read); }
+.chat-tool-head b > span[data-kind="edit"] { color: var(--k-edit); } .chat-tool-head b > span[data-kind="search"] { color: var(--k-search); }
+.chat-tool-head b > span[data-kind="web"] { color: var(--k-web); } .chat-tool-head b > span[data-kind="mcp"] { color: var(--k-mcp); }
+.chat-items > .chat-tool:hover, .chat-sub-body > .chat-tool:hover { border-color: color-mix(in srgb, var(--kind, var(--line)) 40%, var(--line)); box-shadow: 0 8px 24px -14px color-mix(in srgb, var(--kind, #000) 55%, transparent); transform: translateY(-1px); }
+.chat-items > .chat-tool { transition: border-color .2s, box-shadow .2s, background .2s, transform .2s; }
+/* 时间线：成功的节点用这一步的种类色 */
+.chat-group-body > .chat-tool[data-state="ok"]::before { border-color: var(--kind); background: var(--kind); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kind) 18%, transparent); }
+.chat-group-body::before { background: linear-gradient(color-mix(in srgb, var(--claude) 35%, var(--line)), color-mix(in srgb, var(--k-search) 25%, transparent)); }
+
+/* 推荐的下一步：对话最后一枚发光的胶囊，点一下填进输入框 */
+.chat-next-row { display: flex; }
+.chat-next {
+  max-width: 100%;
+  display: inline-flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 14px 0 12px;
+  border: 1px solid color-mix(in srgb, var(--claude) 35%, var(--line)); border-radius: 999px;
+  background: linear-gradient(var(--panel), var(--panel)) padding-box, linear-gradient(120deg, var(--claude), var(--k-search), var(--k-read)) border-box;
+  border-color: transparent;
+  color: var(--text); font: 14px var(--font); cursor: pointer;
+  box-shadow: 0 10px 28px -16px color-mix(in srgb, var(--claude) 80%, transparent);
+  transition: transform .18s cubic-bezier(.3, 1.4, .5, 1), box-shadow .18s;
+  animation: rise .45s .15s cubic-bezier(.2, .8, .2, 1) both;
+}
+.chat-next:hover { transform: translateY(-2px); box-shadow: 0 14px 32px -14px color-mix(in srgb, var(--claude) 85%, transparent); }
+.chat-next:active { transform: scale(.98); }
+.chat-next > svg:first-child { flex: none; color: var(--claude); animation: chat-twinkle 2.4s ease-in-out infinite; }
+.chat-next > svg:last-child { flex: none; color: var(--muted); transition: transform .18s; }
+.chat-next:hover > svg:last-child { transform: translateX(3px); color: var(--claude); }
+.chat-next-label { flex: none; font-size: 12px; font-weight: 600; color: var(--claude); }
+@keyframes chat-twinkle { 0%, 100% { transform: scale(1) rotate(0); } 50% { transform: scale(1.25) rotate(20deg); } }
+
+/* 回复结尾：做完了，复制按钮和用时轻轻弹出来 */
+.chat-reply-acts { animation: chat-pop .4s .1s cubic-bezier(.3, 1.6, .5, 1) both; }
+@keyframes chat-pop { from { opacity: 0; transform: translateY(4px) scale(.9); } }
+
+/* 排队的消息：输入框上面一张虚线卡片，左边一颗呼吸的点 */
+.chat-queued { display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border: 1px dashed color-mix(in srgb, var(--claude) 45%, var(--line)); border-radius: 14px; background: var(--claude-soft); animation: rise .3s cubic-bezier(.2, .8, .2, 1) both; }
+.chat-queued-head { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--claude); }
+.chat-queued-head i { width: 7px; height: 7px; border-radius: 50%; background: var(--claude); animation: chat-node 1.4s ease-out infinite; }
+.chat-queued-head { flex-wrap: wrap; row-gap: 0; }
+.chat-queued-head b { font-weight: 600; white-space: nowrap; }
+.chat-queued-head .chat-note { font-weight: 400; }
+.chat-queued-head .chat-now-btn { margin-left: auto; min-height: 24px; padding: 0 8px; font-size: 12px; }
+
+/* 运行中打了字：回车排队、Ctrl+Enter 立即发送，各一行讲清楚（和 Claude Code 的规则一样） */
+.chat-ways { display: flex; flex-direction: column; gap: 3px; padding: 0 6px; font-size: 12px; line-height: 1.5; color: var(--muted); animation: rise .2s ease-out both; }
+.chat-ways span { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
+.chat-ways b { flex: none; font-weight: 600; color: var(--text); }
+.chat-ways kbd, .chat-ways svg { flex: none; align-self: center; }
+.chat-ways kbd { min-width: 72px; text-align: center; padding: 0 5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; font: 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text); background: var(--panel); }
+.chat-now-btn { flex: none; color: var(--claude); border: 1px solid color-mix(in srgb, var(--claude) 40%, var(--line)); }
+/* 手机上运行中打字时：权限、模型两个按钮先收起来，给“立即发送”让位 */
+@media (max-width: 520px) {
+  .chat-composer[data-ways] .chat-chip-mode, .chat-composer[data-ways] .chat-input-tools > .chat-chip[aria-expanded] { display: none; }
+}
+.chat-queued-text { margin: 0; max-height: 6.5em; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; color: var(--text); }
+
+/* 额度用完：等重置后自动继续的卡片；菜单里的重置时间、倒计时 */
+.chat-limit { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--warn) 9%, var(--panel)); animation: rise .3s cubic-bezier(.2, .8, .2, 1) both; }
+.chat-limit-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
+.chat-limit-head svg { flex: none; color: var(--warn); animation: chat-hourglass 2.4s ease-in-out infinite; }
+@keyframes chat-hourglass { 0%, 40% { transform: rotate(0); } 60%, 100% { transform: rotate(180deg); } }
+.chat-limit-when { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); }
+.chat-limit .chat-acts { justify-content: flex-end; }
+.chat-limit .chat-note, .chat-limit p { margin: 0; }
+.chat-limit-auto { margin: 4px 0 0; padding: 6px 10px; border-radius: 10px; font-size: 13px; background: var(--claude-soft); color: color-mix(in srgb, var(--claude) 80%, var(--text)); font-variant-numeric: tabular-nums; }
+
+/* 运行中插话、已并进这一轮的消息：气泡上面一行小标签，气泡带一圈虚线 */
+.chat-user[data-mid] { flex-direction: column; align-items: flex-end; gap: 4px; }
+.chat-mid-tag { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--claude); }
+.chat-user[data-mid] .chat-bubble { outline: 1.5px dashed color-mix(in srgb, #fff 55%, transparent); outline-offset: -4px; }
+
+/* 空白对话：常用开头带一点种类色 */
+.chat-starter:nth-child(1) { border-color: color-mix(in srgb, var(--k-read) 35%, var(--line)); }
+.chat-starter:nth-child(2) { border-color: color-mix(in srgb, var(--k-search) 35%, var(--line)); }
+.chat-starter:nth-child(3) { border-color: color-mix(in srgb, var(--k-run) 35%, var(--line)); }
 
 /* 不想要动效的人：全部停下 */
 @media (prefers-reduced-motion: reduce) {

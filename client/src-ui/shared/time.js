@@ -11,9 +11,21 @@ export function offsetLabel(d) {
   return `UTC${sign}${pad(Math.floor(a / 60))}:${pad(a % 60)}`;
 }
 
+/**
+ * 时间点 → 毫秒。接受 ISO 字符串（小数秒超过 3 位的截到 3 位，有的浏览器解析不了 `.943648`；
+ * 没写时区的按 UTC）、秒或毫秒数。解析不了时 NaN。
+ */
+export function parseInstant(v) {
+  if (typeof v === 'number') return v < 1e12 ? v * 1000 : v;
+  if (typeof v !== 'string' || !v) return NaN;
+  let s = v.trim().replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1');
+  if (/T\d{2}:\d{2}/.test(s) && !/(Z|[+-]\d{2}:?\d{2})$/i.test(s)) s += 'Z';
+  return Date.parse(s);
+}
+
 export function formatTime(iso, { seconds = false } = {}) {
-  if (!iso) return '—';
-  const d = new Date(iso);
+  if (!iso && iso !== 0) return '—';
+  const d = new Date(parseInstant(iso));
   if (Number.isNaN(d.getTime())) return '—';
   const date = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const time = `${pad(d.getHours())}:${pad(d.getMinutes())}${seconds ? `:${pad(d.getSeconds())}` : ''}`;

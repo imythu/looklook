@@ -1,0 +1,40 @@
+[38;5;174m ▐[48;5;16m▛███▛█[39m[49m   [1mClaude[0m [1mCode[0m [38;5;246mv2.1.310[39m
+[38;5;174m▝▜[48;5;16m█████[49m█▀[39m  [38;5;246mHaiku[39m [38;5;246m5.5[39m [38;5;246m·[39m [38;5;246mClaude[39m [38;5;246mPro[39m
+[38;5;174m ▝▝[39m   [38;5;174m▝▝[39m   [38;5;246m/…/-workspace-looklook/77213e7a-0dfb-4efb-925e-4137b11bc764/scratchpad/demo-proj[39m
+
+[38;5;174m▎[39m [1mAuto[0m [1mmode[0m [1mis[0m [1mnow[0m [1mClaude[0m [1mCode's[0m [1mdefault[0m [1mpermission[0m [1mmode.[0m
+[38;5;174m▎[39m [38;5;246mAuto[39m [38;5;246mmode[39m [38;5;246mlets[39m [38;5;246mClaude[39m [38;5;246mhandle[39m [38;5;246mpermission[39m [38;5;246mprompts[39m [38;5;246mautomatically.[39m [38;5;246mClaude[39m [38;5;246mchecks[39m [38;5;246meach[39m [38;5;246mtool[39m [38;5;246mcall[39m [38;5;246mfor[39m
+[38;5;174m▎[39m [38;5;246mrisky[39m [38;5;246mactions[39m [38;5;246mand[39m [38;5;246mprompt[39m [38;5;246minjection[39m [38;5;246mbefore[39m [38;5;246mexecuting,[39m [38;5;246mruns[39m [38;5;246mthe[39m [38;5;246mones[39m [38;5;246mit[39m [38;5;246massesses[39m [38;5;246mas[39m [38;5;246mlower-risk,[39m [38;5;246mand[39m
+[38;5;174m▎[39m [38;5;246mblocks[39m [38;5;246mthe[39m [38;5;246mrest.[39m
+[38;5;174m▎[39m [38;5;246m]8;id=awvmy8;https://code.claude.com/docs/en/permission-modes\https://code.claude.com/docs/en/permission-modes[39m]8;;\
+  [38;5;246m1[39m [38;5;246mmore[39m [38;5;246mnotice[39m [38;5;246mhidden[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mList the python files here with ls, then say how many there are in one short sentence.[39m
+
+[49m  [38;5;246mListed [1m2[0m[38;5;246m directories (ctrl+o to expand)[39m
+
+[38;5;231m●[39m [38;5;153mstats_cli.py[39m
+  [38;5;153mstats.py[39m
+  [38;5;153mtest_stats.py[39m
+
+  There are 3 Python files in this directory.
+
+[38;5;246m✻[39m [38;5;246mWorked for 10s · done 7:57 AM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231mRead stats.py and tell me in one sentence whether median() looks right.[39m
+
+[49m  [38;5;246mRead [1m1[0m[38;5;246m file (ctrl+o to expand)[39m
+
+[38;5;231m●[39m Yes, [38;5;153mmedian()[39m is correct for normal inputs: it sorts, takes the middle value for odd lengths, and
+  averages the two middle values for even lengths, but an empty list raises an [38;5;153mIndexError[39m rather
+  than the [38;5;153mValueError[39m that [38;5;153mmean()[39m gives.
+
+[38;5;246m✻[39m [38;5;246mChurned for 5s · done 7:58 AM[39m
+
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m❯ [7mm[0;2make median raise ValueError on empty like mean[0m
+[38;5;244m────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [38;5;220m⏵⏵ auto mode on[38;5;246m (shift+tab to cycle)[39m
+
+
+

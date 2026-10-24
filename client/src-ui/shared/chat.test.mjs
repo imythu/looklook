@@ -180,3 +180,22 @@ test('参数被截断的工具调用记下所在的条目', () => {
   const rows = chatRows(items);
   assert.equal(rows[0].block.item, 'k1');
 });
+
+test('运行中的状态行：中文界面换成中文动词，去掉时间；表里没有的原样显示', async () => {
+  const { spinnerText, SPINNER_ZH } = await import('./spinner.js');
+  assert.deepEqual(spinnerText('Unraveling… (8s · ↓ 22 tokens · thinking)', 'zh-CN'), { text: '抽丝剥茧…', detail: '↓ 22 tokens · 思考中', orig: 'Unraveling' });
+  assert.deepEqual(spinnerText('Unraveling… (1m 3s)', 'en-US'), { text: 'Unraveling…', detail: '', orig: '' });
+  assert.deepEqual(spinnerText('Manifesting… (thought for 1s)', 'zh-CN'), { text: '心想事成…', detail: '想了 1s', orig: 'Manifesting' });
+  assert.deepEqual(spinnerText('Running tests…', 'zh-CN'), { text: 'Running tests…', detail: '', orig: '' });
+  assert.equal(spinnerText("Beboppin'…", 'zh-CN').text, '踏歌而行…');
+  assert.ok(Object.keys(SPINNER_ZH).length >= 187);
+});
+
+test('时间点解析：微秒、没写时区、秒数', async () => {
+  const { parseInstant } = await import('./time.js');
+  assert.equal(parseInstant('2026-10-24T17:59:59.943648+00:00'), Date.UTC(2026, 9, 24, 17, 59, 59, 943));
+  assert.equal(parseInstant('2026-10-24T17:59:59'), Date.UTC(2026, 9, 24, 17, 59, 59));
+  assert.equal(parseInstant('2026-10-24T18:00:00+08:00'), Date.UTC(2026, 9, 24, 10));
+  assert.equal(parseInstant(1792583484), 1792583484000);
+  assert.ok(Number.isNaN(parseInstant('junk')));
+});

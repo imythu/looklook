@@ -27,6 +27,16 @@ const PREVIEW_GAP: Duration = Duration::from_millis(120);
 /// 模型列表、账号用量的缓存
 const MODELS_TTL: Duration = Duration::from_secs(300);
 const LIMITS_TTL: Duration = Duration::from_secs(30);
+/// 以前的 Codex 会话等它空闲转到对话模式：多久看一次、最多等多久
+const ADOPT_POLL: Duration = Duration::from_secs(5);
+const ADOPT_WAIT: Duration = Duration::from_secs(30 * 60);
+/// TUI 不带会话号启动后，多久之内它开的对话算这个终端的
+const TUI_CLAIM: Duration = Duration::from_secs(120);
+
+/// 这个终端的对话已经有记录文件（聊过至少一轮）：TUI 能接、app-server 能 resume
+fn has_rollout(st: &super::State) -> bool {
+    st.binding.as_ref().is_some_and(|b| b.transcript_path.is_file())
+}
 /// 界面上能选的思考强度（app-server 的 `ReasoningEffort`）
 pub const EFFORTS: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"];
 
@@ -45,6 +55,10 @@ pub struct Hub {
     artifacts: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
     /// 已经自动打开过 TUI 的终端：只在第一次打开终端标签时自动接上，之后用“重新连接终端”
     term_opened: Mutex<HashSet<String>>,
+    /// 正在等着转到对话模式的终端（见 [`Chat::codex_adopt_later`]），同一个终端同时只有一个
+    pub(super) adopting: Mutex<HashSet<String>>,
+    /// 刚让 TUI 不带会话号启动、等它自己开一段对话的终端（终端 id → 什么时候开始等）
+    tui_waiting: Mutex<HashMap<String, Instant>>,
 }
 
 /// Codex 这边每个终端多记的状态
@@ -229,10 +243,15 @@ impl Chat {
     /// 让这个终端的 thread 在当前 app-server 里加载着（打开对话、发消息、回答之前调用）。
     /// 还没有会话时什么都不做：第一条消息时再 `thread/start`。
     pub(super) async fn codex_attach(&self, id: &str) -> Result<Arc<AppServer>, LocalError> {
-        // 终端里跑着的 Codex 不是接在看看 app-server 上的：两边会同时写一个会话，对话界面不接
+        // 终端里跑着的 Codex 不是接在看看 app-server 上的：两边会同时写一个会话，现在不接；
+        // 在后台等它空闲时转到对话模式（接着同一段对话），转好后界面自己刷新
         match self.codex_terminal_kind(id).await {
-            TermCodex::Foreign => return Err(LocalError::new("CHAT_FOREIGN")),
-            TermCodex::Local => return Err(LocalError::new("CHAT_TERMINAL_ONLY")),
+            kind @ (TermCodex::Foreign | TermCodex::Local) => {
+                if let Some(me) = self.me.upgrade() {
+                    me.codex_adopt_later(id);
+                }
+                return Err(LocalError::new(if matches!(kind, TermCodex::Foreign) { "CHAT_FOREIGN" } else { "CHAT_TERMINAL_ONLY" }));
+            }
             TermCodex::None | TermCodex::Remote => {}
         }
         let server = self.codex_server().await?;
@@ -246,6 +265,20 @@ impl Chat {
             return Ok(server);
         }
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        // 终端里的 TUI 刚开的、还没聊过的对话：app-server 里有它，但没有记录文件，resume 不了。
+        // 先记下对应关系（状态通知能找到这个终端），第一轮写出记录后收到 thread/status/changed 再接（见 codex_note）
+        let unwritten = {
+            let st = lock(&inst.st);
+            st.binding.as_ref().is_some_and(|b| !b.transcript_path.as_os_str().is_empty() && !b.transcript_path.is_file())
+        };
+        if let (Some(t), true) = (&thread, unwritten) {
+            lock(&self.codex.threads).insert(t.clone(), id.to_string());
+            let mut st = lock(&inst.st);
+            if st.phase == Phase::Detached {
+                Self::set_phase(&inst, &mut st, Phase::Idle, None);
+            }
+            return Ok(server);
+        }
         match thread {
             Some(t) => {
                 let mut params = json!({ "threadId": t, "cwd": row.workdir, "excludeTurns": true });
@@ -377,9 +410,26 @@ impl Chat {
                     lock(&self.codex.patches).insert(item.to_string(), p["item"]["changes"].clone());
                 }
             }
+            "thread/started" => {
+                self.codex_claim_thread(p);
+                return;
+            }
             _ => {}
         }
         let Some(inst) = self.codex_inst_of(p) else { return };
+        // 认领来的对话第一轮写出记录了：让界面重新加载，重新加载时 codex_attach 会 resume 它，
+        // 之后逐条输出、审批才会推给看看（这里直接调 codex_attach 会让 async 的类型绕回自己）
+        if method == "thread/status/changed" {
+            let gen = self.codex.generation.load(Ordering::SeqCst);
+            let late = {
+                let st = lock(&inst.st);
+                st.codex.generation != gen && has_rollout(&st)
+            };
+            if late {
+                let _ = inst.tx.send(super::Event::Reset);
+            }
+            return;
+        }
         let mut poll = false;
         {
             let mut st = lock(&inst.st);
@@ -794,11 +844,8 @@ impl Chat {
     /// 终端标签连上之前：起好 app-server、加载好会话（还没有就建一个），这样终端里的 TUI 接的是同一个会话。
     pub async fn codex_prepare_terminal(&self, id: &str) {
         let r: Result<(), LocalError> = async {
-            let server = self.codex_attach(id).await?;
-            let inst = self.inst(id);
-            if lock(&inst.st).binding.is_none() {
-                self.codex_new_thread(&server, &inst).await?;
-            }
+            self.codex_attach(id).await?;
+            self.codex_expect_tui(id);
             Ok(())
         }
         .await;
@@ -821,6 +868,7 @@ impl Chat {
             return;
         }
         let Some(line) = self.instances.codex_tui_line(&id) else { return };
+        self.codex_expect_tui(&id);
         if self.instances.send_literal(&id, &line).await.is_ok() {
             let _ = self.instances.send_keys(&id, &["Enter"]).await;
         }
@@ -850,17 +898,138 @@ impl Chat {
             return Err(LocalError::new("CODEX_TERMINAL_BUSY"));
         }
         // 起好 app-server、加载好会话；--remote 要有地址
-        let server = self.codex_attach(id).await?;
-        let inst = self.inst(id);
-        if lock(&inst.st).binding.is_none() {
-            self.codex_new_thread(&server, &inst).await?;
-        }
+        self.codex_attach(id).await?;
         if codex_app::endpoint().is_none() {
             return Err(LocalError::new("CODEX_APP_SERVER"));
         }
         let line = self.instances.codex_tui_line(id).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
+        self.codex_expect_tui(id);
         self.instances.send_literal(id, &line).await?;
         self.instances.send_keys(id, &["Enter"]).await
+    }
+
+    /// 这个终端的对话还没有记录文件时，TUI 会不带会话号启动、自己开一段：记下来，等 thread/started 认领
+    fn codex_expect_tui(&self, id: &str) {
+        if !has_rollout(&lock(&self.inst(id).st)) {
+            lock(&self.codex.tui_waiting).insert(id.to_string(), Instant::now());
+        }
+    }
+
+    /// 不是看看开的对话开始了（终端里的 TUI 不带会话号启动后自己开的）：认领给在等它、同一个文件夹的终端；
+    /// 没登记过时，同一个文件夹里只有一个还没聊过的对话模式终端也算它的。对话页和终端从此是同一段。
+    fn codex_claim_thread(&self, p: &Value) {
+        let t = &p["thread"];
+        let (Some(tid), Some(cwd)) = (t["id"].as_str(), t["cwd"].as_str()) else { return };
+        if lock(&self.codex.threads).contains_key(tid) {
+            return;
+        }
+        let rows = self.store.instances().unwrap_or_default();
+        let fits = |id: &str| {
+            rows.iter().any(|r| r.id == id && self.instances.codex_app_mode(r) && crate::history::same_dir(&r.workdir, cwd)) && {
+                let inst = self.inst(id);
+                let st = lock(&inst.st);
+                st.codex.turn.is_none() && !has_rollout(&st)
+            }
+        };
+        let waiting: Vec<(String, Instant)> = lock(&self.codex.tui_waiting).iter().filter(|(_, at)| at.elapsed() < TUI_CLAIM).map(|(k, v)| (k.clone(), *v)).collect();
+        let pick = waiting.iter().filter(|(id, _)| fits(id)).max_by_key(|(_, at)| *at).map(|(id, _)| id.clone()).or_else(|| {
+            let c: Vec<&str> = rows.iter().map(|r| r.id.as_str()).filter(|id| fits(id)).collect();
+            (c.len() == 1).then(|| c[0].to_string())
+        });
+        let Some(id) = pick else { return };
+        lock(&self.codex.tui_waiting).remove(&id);
+        lock(&self.codex.threads).insert(tid.to_string(), id.clone());
+        let inst = self.inst(&id);
+        let path = t["path"].as_str().map(PathBuf::from).filter(|p| inst.agent.valid_transcript(p)).unwrap_or_default();
+        let b = Binding { session_id: tid.to_string(), transcript_path: path };
+        let mut st = lock(&inst.st);
+        let _ = self.store.set(&super::binding_key(&id), &b);
+        st.binding = Some(b);
+        st.codex.generation = 0;
+        if st.phase == Phase::Detached {
+            Self::set_phase(&inst, &mut st, Phase::Idle, None);
+        }
+        Self::emit_status(&inst, &st);
+        drop(st);
+        let _ = inst.tx.send(super::Event::Reset);
+    }
+
+    // ---------------- 以前的会话转到对话模式 ----------------
+
+    /// 终端里是旧版看看开的、用户自己开的、或者 app-server 用不了时改成本机直接运行的 Codex：在后台等它空闲
+    /// （输入框空着、没在干活），退出它，用 app-server 接着它那段对话，终端里换成 `--remote` 的 TUI。
+    /// 正在干活时每隔几秒再看，不打断；最多等 [`ADOPT_WAIT`]，之后下次打开对话页再试。
+    pub(super) fn codex_adopt_later(self: Arc<Self>, id: &str) {
+        if !lock(&self.codex.adopting).insert(id.to_string()) {
+            return;
+        }
+        let id = id.to_string();
+        // 装箱成 dyn：转接里会再走到 codex_attach，不装箱的话 async 函数的类型会绕回自己
+        let fut: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> = Box::pin(async move {
+            let deadline = Instant::now() + ADOPT_WAIT;
+            loop {
+                match self.codex_adopt(&id, false).await {
+                    Ok(false) if Instant::now() < deadline => tokio::time::sleep(ADOPT_POLL).await,
+                    Ok(_) => break,
+                    Err(e) => {
+                        tracing::warn!(id, error = ?e, "没能把以前的 Codex 会话转到对话模式");
+                        break;
+                    }
+                }
+            }
+            lock(&self.codex.adopting).remove(&id);
+        });
+        tokio::spawn(fut);
+    }
+
+    /// 转到对话模式：转好了（或者本来就不用转）返回 true，旧的 Codex 还在干活、这次没转返回 false。
+    /// `force`：不等空闲，直接退出旧的（界面上的“现在就转过来”，正在做的这一轮会被中断）。
+    pub async fn codex_adopt(&self, id: &str, force: bool) -> Result<bool, LocalError> {
+        if !matches!(self.codex_terminal_kind(id).await, TermCodex::Foreign | TermCodex::Local) {
+            return Ok(true);
+        }
+        let inst = self.inst(id);
+        if !force {
+            let idle = self.instances.screen(id).await.map(|s| inst.agent.classify(&s));
+            if !matches!(idle, Some(super::screen::Screen::Input { busy: false, ref text }) if text.trim().is_empty()) {
+                return Ok(false);
+            }
+        }
+        // 先确认 app-server 起得来，免得旧的退出了、新的又接不上
+        self.codex_server().await?;
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        if let Some(thread) = self.codex_foreign_thread(id, &row).await {
+            let mut st = lock(&inst.st);
+            if st.binding.as_ref().map(|b| b.session_id.as_str()) != Some(thread.as_str()) {
+                let b = Binding { session_id: thread, transcript_path: PathBuf::new() };
+                let _ = self.store.set(&super::binding_key(id), &b);
+                st.binding = Some(b);
+            }
+            st.codex.generation = 0;
+            Self::set_phase(&inst, &mut st, Phase::Detached, Some("adopting"));
+        }
+        self.codex_reconnect_terminal(id).await?;
+        let _ = inst.tx.send(super::Event::Reset);
+        Ok(true)
+    }
+
+    /// 终端里那个 Codex 用的是哪段对话：命令行里带着（`codex resume <id>`）就用它；已经记着的就用记着的；
+    /// 旧版看看开的（`-p looklook-chat`，命令行里没有）按 [`super::guess_conversation`] 猜；猜不到（开着还没聊过）时
+    /// 返回 None，转过去后开一段新的。
+    async fn codex_foreign_thread(&self, id: &str, row: &crate::store::InstanceRow) -> Option<String> {
+        let mut started_ms = 0;
+        if let Some(pane) = self.instances.pane(id).await {
+            if let Some((args, started)) = tokio::task::block_in_place(|| super::proc_under(pane.pid, &["codex"])) {
+                if let Some(t) = args.iter().skip_while(|a| a.as_str() != "resume").nth(1).filter(|a| a.len() >= 32 && crate::history::valid_id(a)) {
+                    return Some(t.clone());
+                }
+                started_ms = started;
+            }
+        }
+        if let Some(b) = lock(&self.inst(id).st).binding.clone() {
+            return Some(b.session_id);
+        }
+        super::guess_conversation(&self.store, id, &row.workdir, "codex", started_ms).await
     }
 
     // ---------------- 不是看看打开的 Codex ----------------

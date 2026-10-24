@@ -595,16 +595,21 @@ function Shell() {
   const [statusDevice, setStatusDevice] = useState(null);
   const devRef = useRef(null);
   const relayState = status?.relay?.state;
+  // 状态请求可能交错（定时、切回窗口、操作后各发一次）：只用最后发出的那次的结果，晚回来的旧结果不能盖掉新的
+  const reqSeq = useRef(0);
   const reload = useCallback(() => {
     const device = selectedDevice();
+    const n = ++reqSeq.current;
     return api
       .get('/status')
       .then((s) => {
+        if (n !== reqSeq.current) return;
         setStatus(s);
         setStatusDevice(device);
         setDown(false);
       })
       .catch(() => {
+        if (n !== reqSeq.current) return;
         // 选中的电脑连不上（例如刚离线）：回到默认的电脑，不要整页显示“连不上”
         const d = devRef.current;
         if (d?.multi && device && device !== d.def && d.def) {

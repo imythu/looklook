@@ -40,6 +40,9 @@ pub enum Body {
         images: u32,
         #[serde(skip_serializing_if = "std::ops::Not::not")]
         truncated: bool,
+        /// Claude 在忙时发的、这一步做完并进这一轮的消息（`queued_command`）
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        mid: bool,
     },
     Assistant {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -145,6 +148,9 @@ pub struct Transcript {
     /// 会话标题：`/rename` 起的（`custom-title`），没有就用 Claude Code 生成的（`ai-title`）
     pub title: Option<String>,
     custom_title: bool,
+    /// 运行中发的、还在 Claude Code 队列里的消息（`queue-operation`）。这一步做完会并进对话（`queued_command` 附件），
+    /// 或者这一轮结束后当成下一条消息发出去
+    pub queued: Vec<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
@@ -173,6 +179,24 @@ pub struct ToolCall<'a> {
     pub result: Option<&'a Item>,
 }
 
+/// 结果显示这次 Bash 已经转到后台继续跑（参数里没有 `run_in_background`，Claude Code 2.1.310）：
+/// 在终端里按了 Ctrl+B、运行中发来的消息要送达（`so that a message that arrived while it was running can reach you`）、
+/// 超时。结果里带 `backgroundTaskId`；同一条记录里有几个结果时没有这个字段，只能看文字。
+pub fn moved_to_background(result: Option<&Item>) -> bool {
+    const SAYS: [&str; 3] = ["Command was manually backgrounded", "Command was moved to the background", "was moved to the background"];
+    match result.map(|r| &r.body) {
+        Some(Body::ToolResult { content, extra, .. }) => extra.as_ref().is_some_and(|e| e["backgroundTaskId"].as_str().is_some_and(|s| !s.is_empty())) || SAYS.iter().any(|s| content.contains(s)),
+        _ => false,
+    }
+}
+
+impl ToolCall<'_> {
+    /// 在后台跑的 Bash：一开始就放到后台的，或者跑到一半转到后台的
+    pub fn is_background_shell(&self) -> bool {
+        self.name == "Bash" && (self.input["run_in_background"] == true || moved_to_background(self.result))
+    }
+}
+
 /// 从显示用的条目里配出每次工具调用和它的结果（别的工具的记录文件用，例如 Codex 的 rollout）
 pub fn tool_calls_in(items: &[Item]) -> Vec<ToolCall<'_>> {
     let results: HashMap<&str, &Item> = items
@@ -199,7 +223,7 @@ pub fn tool_calls_in(items: &[Item]) -> Vec<ToolCall<'_>> {
 
 impl Transcript {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), first_of_msg: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false }
+        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), first_of_msg: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false, queued: vec![] }
     }
 
     /// 子代理的 transcript
@@ -441,6 +465,11 @@ impl Transcript {
                     self.custom_title = true;
                 }
             }
+            "queue-operation" => self.queue_op(v),
+            // 压缩后上下文只剩摘要：用 `postTokens`（新版才写），没有就当作不知道，等下一条回复
+            "system" if v["subtype"] == "compact_boundary" && v["isSidechain"] != true => {
+                self.usage = v["compactMetadata"]["postTokens"].as_u64().map(|n| serde_json::json!({ "input_tokens": n }));
+            }
             "ai-title" if !self.custom_title => self.title = v["aiTitle"].as_str().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()),
             _ => {}
         }
@@ -483,6 +512,8 @@ impl Transcript {
                 }
             }
             "system" if !rec.sidechain => rec.items = system_items(v, &key, ts).into_iter().collect(),
+            // 运行中发的消息：这一步做完时并进对话，记成附件
+            "attachment" if !rec.sidechain && v["attachment"]["type"] == "queued_command" => rec.items = queued_items(&v["attachment"], &key, ts),
             "user" | "assistant" | "system" | "attachment" => {}
             _ => {
                 if uuid.is_none() {
@@ -496,6 +527,35 @@ impl Transcript {
         rec.uuid = uuid;
         Some(rec)
     }
+}
+
+impl Transcript {
+    fn queue_op(&mut self, v: &Value) {
+        let text = v["content"].as_str().filter(|s| !s.contains("<task-notification>") && !s.trim().is_empty());
+        match (v["operation"].as_str(), text) {
+            (Some("enqueue"), Some(t)) => self.queued.push(t.to_string()),
+            (Some("popAll" | "clear"), _) => self.queued.clear(),
+            (_, Some(t)) => {
+                if let Some(n) = self.queued.iter().position(|q| q == t) {
+                    self.queued.remove(n);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// 运行中发的消息并进对话时的附件（`attachment.type = queued_command`）：显示成用户消息。
+/// 后台任务的通知、别的来源（不是人发的）不显示
+fn queued_items(a: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) -> Vec<Item> {
+    if a["commandMode"].as_str().is_some_and(|m| m != "prompt") || a["origin"]["kind"].as_str().is_some_and(|k| k != "human") {
+        return vec![];
+    }
+    let (text, images, truncated) = join_text(&a["prompt"]);
+    if text.contains("<task-notification>") || (text.trim().is_empty() && images == 0) {
+        return vec![];
+    }
+    vec![Item { key: key(0), ts, body: Body::User { text, images, truncated, mid: true } }]
 }
 
 fn user_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) -> Vec<Item> {
@@ -547,7 +607,7 @@ fn user_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) -> V
     if trimmed.is_empty() && images == 0 {
         return vec![];
     }
-    vec![Item { key: key(0), ts, body: Body::User { text, images, truncated } }]
+    vec![Item { key: key(0), ts, body: Body::User { text, images, truncated, mid: false } }]
 }
 
 fn assistant_blocks(content: &Value) -> Vec<Block> {
@@ -737,6 +797,46 @@ mod tests {
         t.items(0, t.len()).iter().map(|i| serde_json::to_value(i).unwrap()["k"].as_str().unwrap().to_string()).collect()
     }
 
+    /// 运行中发的消息（Claude Code 2.1.310 实测）：先进队列，这一步做完时作为附件并进对话
+    #[test]
+    fn queued_message_absorbed_mid_turn() {
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("跑一下 sleep 20"));
+        s += &assistant("a1", "u1", "m1", json!({"type":"tool_use","id":"t1","name":"Bash","input":{"command":"sleep 20"}}));
+        s += &line(json!({"type":"queue-operation","operation":"enqueue","content":"顺便算一下 2+3"}));
+        t.feed(s.as_bytes());
+        assert_eq!(t.queued, ["顺便算一下 2+3"]);
+        let mut s = line(json!({"type":"queue-operation","operation":"remove","content":"顺便算一下 2+3","reason":"absorbed_mid_turn"}));
+        s += &line(json!({"type":"user","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"done"}]}}));
+        s += &line(json!({"type":"attachment","uuid":"q1","parentUuid":"r1","attachment":{"type":"queued_command","prompt":"顺便算一下 2+3","commandMode":"prompt","origin":{"kind":"human"}}}));
+        s += &assistant("a2", "q1", "m2", json!({"type":"text","text":"done，2+3=5"}));
+        t.feed(s.as_bytes());
+        assert!(t.queued.is_empty());
+        assert_eq!(kinds(&t), ["user", "assistant", "tool_result", "user", "assistant"]);
+        let Body::User { text, mid, .. } = &t.items(3, 4)[0].body else { panic!() };
+        assert_eq!(text, "顺便算一下 2+3");
+        assert!(mid);
+        // 按上键拿回去编辑：队列清空
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"x"})).as_bytes());
+        t.feed(line(json!({"type":"queue-operation","operation":"popAll"})).as_bytes());
+        assert!(t.queued.is_empty());
+    }
+
+    /// 跑到一半转到后台的命令（运行中发来消息、Ctrl+B、超时）也算后台命令
+    #[test]
+    fn bash_moved_to_background() {
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("跑测试"));
+        s += &assistant("a1", "u1", "m1", json!({"type":"tool_use","id":"t1","name":"Bash","input":{"command":"npm test"}}));
+        s += &line(json!({"type":"user","uuid":"r1","parentUuid":"a1","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"Command was moved to the background (ID: b7) so that a message that arrived while it was running can reach you; it was not interrupted. Output is being written to: /tmp/x"}]},"toolUseResult":{"backgroundTaskId":"b7","backgroundedToDeliverMessage":true}}));
+        s += &assistant("a2", "r1", "m2", json!({"type":"tool_use","id":"t2","name":"Bash","input":{"command":"ls"}}));
+        s += &line(json!({"type":"user","uuid":"r2","parentUuid":"a2","message":{"content":[{"type":"tool_result","tool_use_id":"t2","content":"a.txt"}]}}));
+        s += &assistant("a3", "r2", "m3", json!({"type":"tool_use","id":"t3","name":"Bash","input":{"command":"sleep 99","run_in_background":true}}));
+        t.feed(s.as_bytes());
+        let bg: Vec<&str> = t.tool_calls().into_iter().filter(|c| c.is_background_shell()).map(|c| c.id).collect();
+        assert_eq!(bg, ["t1", "t3"]);
+    }
+
     #[test]
     fn merges_assistant_blocks_and_pairs_tool_results() {
         let mut t = Transcript::new("/nonexistent".into());
@@ -865,6 +965,20 @@ mod tests {
         s += &user("u2", Some("s1"), json!("暗号是什么"));
         t.feed(s.as_bytes());
         assert_eq!(kinds(&t), ["user", "assistant", "divider", "summary", "user"]);
+    }
+
+    /// 手动压缩后（2.1.309 实测记录）：上下文用量换成 `postTokens`，不再是压缩前那条回复的
+    #[test]
+    fn compaction_resets_context_usage() {
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = user("u1", None, json!("你好"));
+        s += &line(json!({"type":"assistant","uuid":"a1","parentUuid":"u1","message":{"id":"m1","model":"claude-haiku-5-5","content":[{"type":"text","text":"好"}],"usage":{"input_tokens":3,"cache_read_input_tokens":452800}}}));
+        s += &line(json!({"type":"system","subtype":"compact_boundary","uuid":"c1","parentUuid":null,"logicalParentUuid":"a1","compactMetadata":{"trigger":"manual","preTokens":452804,"postTokens":20313}}));
+        t.feed(s.as_bytes());
+        assert_eq!(t.usage, Some(json!({"input_tokens": 20313})));
+        // 旧版没写 postTokens：不知道就不显示，等下一条回复
+        t.feed(line(json!({"type":"system","subtype":"compact_boundary","uuid":"c2","parentUuid":null,"logicalParentUuid":"c1","compactMetadata":{"trigger":"auto","preTokens":1}})).as_bytes());
+        assert_eq!(t.usage, None);
     }
 
     #[test]

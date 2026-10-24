@@ -119,6 +119,9 @@ pub struct InputReq {
     /// 附件目录里的图片（先经“发给 AI”上传）
     #[serde(default)]
     images: Vec<String>,
+    /// 立即发送（Claude Code 的 Ctrl+X Ctrl+S）：排着的连同这条马上发出；text 可以为空
+    #[serde(default)]
+    now: bool,
 }
 
 pub async fn input(State(app): State<App>, Path(id): Path<String>, Json(req): Json<InputReq>) -> R<Json<Value>> {
@@ -131,7 +134,17 @@ pub async fn input(State(app): State<App>, Path(id): Path<String>, Json(req): Js
     if req.images.iter().any(|p| !std::path::Path::new(p).starts_with(&dir) || p.contains("..")) {
         return Err(LocalError::invalid("images", "invalid"));
     }
+    if req.now {
+        return Ok(Json(app.chat.send_now(&id, &req.text, &req.images).await?));
+    }
     Ok(Json(app.chat.input(&id, &req.text, &req.images).await?))
+}
+
+/// 以前的会话“现在就转过来”：不等空闲，退出终端里以前的 Claude Code / Codex，接着同一段对话转到对话模式
+pub async fn adopt(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.adopt(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Codex 终端标签上的“重新连接终端”

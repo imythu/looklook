@@ -122,7 +122,7 @@ impl Rollout {
                 let text: Vec<&str> = parts.iter().filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect();
                 let images = parts.iter().filter(|c| c["type"].as_str().is_some_and(|t| t.contains("image"))).count() as u32;
                 let (text, truncated) = truncate(&text.join("\n"), TEXT_LIMIT);
-                self.push(line, 0, ts, Body::User { text, images, truncated });
+                self.push(line, 0, ts, Body::User { text, images, truncated, mid: false });
             }
             "AgentMessage" => {
                 let text: Vec<&str> = it["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect()).unwrap_or_default();
@@ -192,7 +192,15 @@ impl Rollout {
                 self.tools(line, ts, vec![(id, "ImageGen".into(), input, Outcome { content: String::new(), is_error: !ok, extra: None })]);
             }
             t if SKIPPED_ITEMS.contains(&t) => {}
-            _ => self.stats.unknown += 1,
+            "" => self.stats.unknown += 1,
+            // 新版本 Codex 加的、还不认识的条目：不丢掉，按它的类型名显示成一张普通的工具卡片（参数折叠着），
+            // 升级 Codex 后至少看得到它做了什么，不用等看看适配
+            t => {
+                self.stats.unknown += 1;
+                let content = ["aggregated_output", "output", "result", "text"].iter().find_map(|k| it[*k].as_str()).unwrap_or("").to_string();
+                let is_error = it["status"].as_str().is_some_and(|s| matches!(s, "failed" | "error" | "declined"));
+                self.tools(line, ts, vec![(id, t.to_string(), it.clone(), Outcome { content, is_error, extra: None })]);
+            }
         }
     }
 }
@@ -436,7 +444,7 @@ mod tests {
         assert_eq!(r.stats().unknown, 2);
         let items = r.items(0, r.len());
         assert_eq!(items[0].key, "r:2:0");
-        assert_eq!(items[0].body, Body::User { text: "跑测试".into(), images: 1, truncated: false });
+        assert_eq!(items[0].body, Body::User { text: "跑测试".into(), images: 1, truncated: false, mid: false });
         assert!(matches!(&items[1].body, Body::Assistant { blocks, .. } if blocks == &[Block::Text { text: "好的".into() }]), "空的思考摘要不显示");
         assert!(matches!(&items[2].body, Body::Assistant { blocks, .. } if matches!(&blocks[0], Block::ToolUse { name, input, .. } if name == "Bash" && input["command"] == "npm test")));
         assert!(matches!(&items[3].body, Body::ToolResult { is_error: true, content, .. } if content == "fail"));
@@ -447,8 +455,10 @@ mod tests {
         assert_eq!(extra["structuredPatch"][0], json!({ "oldStart": 2, "oldLines": 2, "newStart": 2, "newLines": 3, "lines": [" a", "-x", "+y", "+z"] }));
         assert!(items.iter().any(|i| matches!(&i.body, Body::Assistant { blocks, .. } if matches!(&blocks[0], Block::ToolUse { name, .. } if name == "mcp__looklook__add_page"))));
         assert_eq!(r.tool_input("i").unwrap()["file_path"], "C:/x/my pic.png");
-        let tail: Vec<&Body> = items.iter().rev().take(3).map(|i| &i.body).collect();
+        // 最后两条是不认识的新条目：显示成以它命名的工具卡片（和结果）
+        let tail: Vec<&Body> = items.iter().rev().skip(2).take(3).map(|i| &i.body).collect();
         assert_eq!(tail, [&Body::Turn { ms: 8558 }, &Body::Interrupt, &Body::Divider { kind: "compact".into() }]);
+        assert!(matches!(&items[items.len() - 2].body, Body::Assistant { blocks, .. } if matches!(&blocks[0], Block::ToolUse { name, .. } if name == "SomethingNew")));
     }
 
     #[test]
