@@ -156,8 +156,13 @@ fn main() {
             openssl_root_dir.to_path_buf().join("lib/libssl.a"),
         );
         cmake_conf.define("OPENSSL_USE_STATIC_LIBS", "TRUE");
-        // looklook: 交叉编译时别用宿主机 pkg-config 里的 openssl.pc（会带进 -lz），路径上面已经显式给了
-        cmake_conf.define("CMAKE_DISABLE_FIND_PACKAGE_PkgConfig", "TRUE");
+        // looklook: 交叉编译时别用宿主机 pkg-config 里的 openssl.pc（会带进 -lz），路径上面已经显式给了。
+        // 不能用 CMAKE_DISABLE_FIND_PACKAGE_PkgConfig：CMake 3.28 的 FindOpenSSL 不管它照样调 pkg_check_modules，
+        // 配置阶段直接报 “Unknown CMake command”。改成让 pkg-config 只在一个空目录里找，什么都找不到。
+        let no_pc = std::path::Path::new(&out_dir).join("no-pkgconfig");
+        std::fs::create_dir_all(&no_pc).unwrap();
+        cmake_conf.env("PKG_CONFIG_LIBDIR", &no_pc);
+        cmake_conf.env("PKG_CONFIG_PATH", "");
 
         cmake_conf.build();
 

@@ -173,14 +173,7 @@ pub fn launch_env(store: &Store, home: &Path, launch: &str) -> Option<LaunchEnv>
 
 fn env_for(agent: ModelAgent, base_url: &str, key: PathBuf) -> LaunchEnv {
     match agent {
-        ModelAgent::Claude => LaunchEnv {
-            vars: vec![
-                ("ANTHROPIC_BASE_URL", Val::Lit(base_url.into())),
-                ("ANTHROPIC_AUTH_TOKEN", Val::File(key)),
-                ("ANTHROPIC_API_KEY", Val::Unset),
-            ],
-            args: String::new(),
-        },
+        ModelAgent::Claude => claude_api_env(base_url, key),
         ModelAgent::Codex => LaunchEnv {
             vars: vec![(CODEX_KEY_ENV, Val::File(key))],
             args: [
@@ -197,7 +190,32 @@ fn env_for(agent: ModelAgent, base_url: &str, key: PathBuf) -> LaunchEnv {
     }
 }
 
+/// Claude Code 走第三方接口（官方格式）：`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`，并清空 `ANTHROPIC_API_KEY`
+/// （否则官方 Key 会一起发给第三方）。
+pub fn claude_api_env(base_url: &str, key: PathBuf) -> LaunchEnv {
+    LaunchEnv::new().lit("ANTHROPIC_BASE_URL", base_url).file("ANTHROPIC_AUTH_TOKEN", key).unset("ANTHROPIC_API_KEY")
+}
+
 impl LaunchEnv {
+    pub fn new() -> Self {
+        LaunchEnv { vars: vec![], args: String::new() }
+    }
+
+    pub fn lit(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.vars.push((key, Val::Lit(value.into())));
+        self
+    }
+
+    pub fn file(mut self, key: &'static str, path: PathBuf) -> Self {
+        self.vars.push((key, Val::File(path)));
+        self
+    }
+
+    pub fn unset(mut self, key: &'static str) -> Self {
+        self.vars.push((key, Val::Unset));
+        self
+    }
+
     /// 只设一个环境变量，值由 shell 从文件里读（口令、Key 不出现在命令行里）
     pub fn file_var(key: &'static str, path: PathBuf) -> Self {
         LaunchEnv { vars: vec![(key, Val::File(path))], args: String::new() }

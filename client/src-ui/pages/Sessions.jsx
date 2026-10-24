@@ -17,6 +17,7 @@ import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Modal, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
+import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
 import { PrevConversations } from './History.jsx';
 import { BackendNote, FolderPicker, InstallProgress, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
@@ -783,6 +784,8 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
     setLaunchState(l);
   };
   const [text, setText] = useState('');
+  // Claude Code 用哪个账号 / 接口：null 用那台电脑上的默认
+  const [profile, setProfile] = useState(null);
   const [picking, setPicking] = useState(Boolean(want.pick));
   const [dirPick, setDirPick] = useState(false);
   const [adv, setAdv] = useState(false);
@@ -914,6 +917,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
         shell: shell.trim(),
         auto_start: autoStart,
         full_access: canFull && fullAccess,
+        claude_profile: launch === 'claude' && !container && profile ? profile : undefined,
         start: true,
       });
       if (device && r.id) rememberTerminals(device, [r]);
@@ -1016,6 +1020,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
               {t('sess.full_access_chip')}
             </button>
           )}
+          {launch === 'claude' && !container && <ClaudeProfilePick client={client} device={device} value={profile} onChange={setProfile} />}
           {launch !== 'dsh' && (
             <button type="button" className="btn btn-plain start-adv" onClick={() => setAdv(!adv)} aria-expanded={adv}>
               <SlidersHorizontal size={15} aria-hidden="true" />

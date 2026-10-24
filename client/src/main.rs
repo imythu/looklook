@@ -25,6 +25,7 @@
 mod account;
 mod agents;
 mod chat;
+mod claude_profiles;
 mod clock;
 mod diag;
 mod docker;

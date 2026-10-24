@@ -162,6 +162,8 @@ pub struct View {
     pub agent_title: Option<String>,
     /// 在 Docker 容器里运行（docker.rs）
     pub container: Option<crate::docker::Container>,
+    /// Claude Code 用哪个账号 / 接口（claude_profiles.rs）；新建时记下的，没记下时 null
+    pub claude_profile: Option<String>,
 }
 
 /// 启动选项（不在 SQLite 的 instances 表里，单独存在 kv：`instance_opts.{id}`）。
@@ -240,6 +242,8 @@ pub struct Input {
     pub name_custom: Option<bool>,
     /// 在 Docker 容器里运行：容器名和容器里的目录（只在新建时有效）
     pub container: Option<ContainerInput>,
+    /// Claude Code 用哪个账号 / 接口（claude_profiles.rs）；不填用当前默认。只在新建时有效
+    pub claude_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -262,6 +266,7 @@ impl Instances {
         if matches!(backend, Backend::Tmux(_)) {
             enable_codex_chat_once(&store);
         }
+        crate::claude_profiles::migrate(&store, &paths.home);
         Arc::new(Self {
             store,
             paths,
@@ -330,6 +335,7 @@ impl Instances {
             chat_ui: opts.chat_ui,
             name_custom: opts.name_custom,
             agent_title: lock(&self.titles).1.get(&row.id).cloned(),
+            claude_profile: crate::claude_profiles::pinned(&self.store, &row.id),
             container: self.container(&row.id),
             running,
             task_alive: sessions.map(|_| sess.is_some()),
@@ -548,6 +554,12 @@ impl Instances {
         if row.launch == "dsh" && self.dsh()?.is_some() {
             return Err(LocalError::new("DSH_EXISTS"));
         }
+        let claude_profile = input.claude_profile.filter(|s| !s.is_empty());
+        if let Some(p) = &claude_profile {
+            if crate::claude_profiles::get(&self.store, p).is_none() {
+                return Err(LocalError::invalid("claude_profile", "not_found"));
+            }
+        }
         let mut opts = Opts {
             full_access: input.full_access.unwrap_or(false),
             root_confirmed: input.root_confirmed.unwrap_or(false),
@@ -590,6 +602,10 @@ impl Instances {
         self.store.set(&opts_key(&row.id), &opts)?;
         if let Some(c) = &container {
             self.store.set(&container_key(&row.id), c)?;
+        }
+        // Claude Code 会话（容器里的除外，它有自己的配置）记下用哪个账号，之后切换默认不影响它
+        if row.launch == "claude" && container.is_none() {
+            crate::claude_profiles::pin(&self.store, &row.id, claude_profile.as_deref())?;
         }
         if let Some(r) = input.resume {
             if !r.fork {
@@ -668,6 +684,7 @@ impl Instances {
         let _ = self.store.remove(&opts_key(id));
         let _ = self.store.remove(&container_key(id));
         let _ = self.store.remove(&resume_key(id));
+        crate::claude_profiles::unpin(&self.store, id);
         lock(&self.health).remove(id);
         lock(&self.first_prompt).remove(id);
         lock(&self.first_resume).remove(id);
@@ -928,7 +945,8 @@ impl Instances {
         })
     }
 
-    /// Claude Code / Codex 选了第三方模型服务商时，按 shell 的写法加上接口地址与 Key（见 model.rs）。
+    /// Claude Code 按会话记下的账号 / 第三方接口（claude_profiles.rs），Codex 选了第三方模型服务商时（model.rs），
+    /// 按 shell 的写法加上配置目录、接口地址与 Key。
     /// 容器里的会话不加（命令已经整个包在 docker exec 里）。
     /// 对话模式的 Codex 终端（接到 app-server 的 TUI）：服务商在 app-server 那边，这里只加连接口令。
     fn model_wrap(&self, row: &InstanceRow, cmd: &str, family: crate::shells::Family) -> String {
@@ -942,7 +960,12 @@ impl Instances {
                 None => cmd.to_string(),
             };
         }
-        match crate::model::launch_env(&self.store, &self.paths.home, &row.launch) {
+        let env = if row.launch == "claude" {
+            crate::claude_profiles::launch_env(&self.paths.home, &crate::claude_profiles::for_instance(&self.store, &row.id))
+        } else {
+            crate::model::launch_env(&self.store, &self.paths.home, &row.launch)
+        };
+        match env {
             Some(env) => env.wrap(cmd, family),
             None => cmd.to_string(),
         }

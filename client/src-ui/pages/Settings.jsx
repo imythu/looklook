@@ -12,6 +12,7 @@ import { LocalOnlyToggle, useDevices } from '../shared/devices.jsx';
 import { api } from '../shared/api.js';
 import AccessCard from './Access.jsx';
 import { AttachmentsCard } from '../shared/Attachments.jsx';
+import ClaudeProfilesCard from './ClaudeProfiles.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
@@ -62,8 +63,8 @@ const SECTIONS = [
   ['network', Globe],
   ['about', Info],
 ];
-// 别处链接用的锚点（#model、#relays、#access）落到所在的分区
-const ALIAS = { model: 'ai', [RELAYS_ANCHOR]: 'network', access: 'network' };
+// 别处链接用的锚点（#model、#claude-accounts、#relays、#access）落到所在的分区
+const ALIAS = { model: 'ai', 'claude-accounts': 'ai', [RELAYS_ANCHOR]: 'network', access: 'network' };
 
 function sectionOf(hash) {
   const h = hash.replace(/^#/, '');
@@ -229,7 +230,12 @@ export default function Settings() {
         </Card>
       </>
     ),
-    ai: <ModelProvidersCard />,
+    ai: (
+      <>
+        <ClaudeProfilesCard />
+        <ModelProvidersCard />
+      </>
+    ),
     network: (
       <>
         {(devices.localOnly || (devices.canLocalOnly && (!devices.multi || devices.selected === devices.def))) && (

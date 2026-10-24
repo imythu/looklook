@@ -155,6 +155,12 @@ pub fn routes(app: App) -> Router<App> {
         .route("/promotions", get(promotions))
         .route("/model-providers", get(get_model_providers))
         .route("/model-providers/{agent}", put(put_model_provider).delete(delete_model_provider))
+        .route("/claude-profiles", get(get_claude_profiles).post(add_claude_profile))
+        .route("/claude-profiles/default", put(set_default_claude_profile))
+        .route("/claude-profiles/{id}", put(update_claude_profile).delete(delete_claude_profile))
+        .route("/claude-profiles/{id}/status", get(claude_profile_status))
+        .route("/claude-profiles/{id}/login", get(claude_login_state).post(login_claude_profile).delete(cancel_claude_login))
+        .route("/claude-profiles/{id}/login/code", post(claude_login_code))
         .route("/metrics", get(metrics))
         .route("/update", get(update))
         .route("/update/install", post(update_install))
@@ -179,7 +185,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers" | "platform") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -1878,8 +1884,10 @@ async fn get_model_providers(State(app): State<App>, Query(q): Query<ModelQ>) ->
 
 fn model_view(app: &App, providers: Vec<Value>, error: Option<String>) -> Value {
     use crate::model::{self, ModelAgent};
+    // Claude Code 的第三方接口改在“Claude Code 账号”里管（claude_profiles.rs），这里只剩 Codex
     let agents: Vec<Value> = ModelAgent::ALL
         .iter()
+        .filter(|a| **a != ModelAgent::Claude)
         .map(|a| {
             json!({
                 "agent": a.id(),
@@ -1915,7 +1923,19 @@ struct ModelReq {
 }
 
 fn model_agent(s: &str) -> R<crate::model::ModelAgent> {
-    crate::model::ModelAgent::parse(s).ok_or_else(LocalError::not_found)
+    crate::model::ModelAgent::parse(s).filter(|a| *a != crate::model::ModelAgent::Claude).ok_or_else(LocalError::not_found)
+}
+
+/// 平台推荐的服务商给某个客户端的接口地址（以平台下发的为准，不信任请求里的）：返回 (名字, 地址)
+async fn platform_endpoint(app: &App, id: &str, client: &str) -> R<(String, String)> {
+    let list = platform_providers(app, "zh-CN").await?;
+    let p = list.iter().find(|p| p["id"].as_str() == Some(id)).ok_or_else(|| LocalError::new("MODEL_PROVIDER_GONE"))?;
+    let base_url = p["clients"]
+        .as_array()
+        .and_then(|cs| cs.iter().find(|c| c["client"].as_str() == Some(client)))
+        .and_then(|c| c["base_url"].as_str())
+        .ok_or_else(|| LocalError::new("MODEL_PROVIDER_GONE"))?;
+    Ok((p["name"].as_str().unwrap_or_default().into(), base_url.into()))
 }
 
 async fn put_model_provider(State(app): State<App>, Path(agent): Path<String>, Json(req): Json<ModelReq>) -> R<Json<Value>> {
@@ -1930,14 +1950,8 @@ async fn put_model_provider(State(app): State<App>, Path(agent): Path<String>, J
     let choice = match req.provider_id.as_deref().filter(|s| !s.is_empty()) {
         // 接口地址以平台下发的为准，不信任请求里的
         Some(id) => {
-            let list = platform_providers(&app, "zh-CN").await?;
-            let p = list.iter().find(|p| p["id"].as_str() == Some(id)).ok_or_else(|| LocalError::new("MODEL_PROVIDER_GONE"))?;
-            let base_url = p["clients"]
-                .as_array()
-                .and_then(|cs| cs.iter().find(|c| c["client"].as_str() == Some(client)))
-                .and_then(|c| c["base_url"].as_str())
-                .ok_or_else(|| LocalError::new("MODEL_PROVIDER_GONE"))?;
-            Choice { provider_id: Some(id.into()), name: p["name"].as_str().unwrap_or_default().into(), base_url: base_url.into(), selected_at: crate::util::now_rfc3339() }
+            let (name, base_url) = platform_endpoint(&app, id, client).await?;
+            Choice { provider_id: Some(id.into()), name, base_url, selected_at: crate::util::now_rfc3339() }
         }
         None => {
             let name: String = req.name.as_deref().unwrap_or("").trim().chars().filter(|c| !c.is_control()).take(40).collect();
@@ -1964,6 +1978,144 @@ async fn put_model_provider(State(app): State<App>, Path(agent): Path<String>, J
 async fn delete_model_provider(State(app): State<App>, Path(agent): Path<String>) -> R<Json<Value>> {
     crate::model::clear(&app.store, &app.paths.home, model_agent(&agent)?)?;
     Ok(Json(model_view(&app, vec![], None)))
+}
+
+// ---------------- Claude Code 账号切换（见 claude_profiles.rs） ----------------
+
+fn claude_profiles_view(app: &App) -> Value {
+    use crate::claude_profiles as cp;
+    let profiles: Vec<Value> = cp::list(&app.store)
+        .into_iter()
+        .map(|p| {
+            let mut v = json!(p);
+            if p.kind == cp::Kind::Api {
+                v["key_set"] = json!(cp::key_set(&app.paths.home, &p.id));
+            }
+            v
+        })
+        .collect();
+    json!({
+        "default": cp::default_id(&app.store),
+        "profiles": profiles,
+        "accepted_at": crate::model::disclaimer_accepted(&app.store),
+    })
+}
+
+async fn get_claude_profiles(State(app): State<App>) -> Json<Value> {
+    Json(claude_profiles_view(&app))
+}
+
+/// 登录状态（`claude auth status`，要一两秒）：界面每个账号单独问
+async fn claude_profile_status(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    Ok(Json(crate::claude_profiles::status(app.instances.shell(), &app.paths.home, &p).await))
+}
+
+#[derive(Deserialize)]
+struct ClaudeProfileReq {
+    #[serde(flatten)]
+    input: crate::claude_profiles::Input,
+    /// 同意免责声明（第一次添加第三方接口时必须）
+    #[serde(default)]
+    accept: bool,
+}
+
+/// 第三方接口：免责声明；选的是平台推荐的服务商时，地址和名字以平台下发的为准
+async fn claude_api_input(app: &App, req: &mut ClaudeProfileReq) -> R<()> {
+    if req.accept {
+        crate::model::accept_disclaimer(&app.store)?;
+    } else if crate::model::disclaimer_accepted(&app.store).is_none() {
+        return Err(LocalError::new("MODEL_DISCLAIMER_REQUIRED"));
+    }
+    if let Some(id) = req.input.provider_id.clone().filter(|s| !s.is_empty()) {
+        let (name, base_url) = platform_endpoint(app, &id, crate::model::ModelAgent::Claude.platform_client()).await?;
+        req.input.base_url = Some(base_url);
+        if req.input.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+            req.input.name = Some(name);
+        }
+        // 统计选用人数；失败不影响使用
+        let account = app.account.clone();
+        tokio::spawn(async move {
+            if let Err(e) = account.select_model_provider(&id, "claude_code").await {
+                tracing::debug!(error = %e, "模型服务商选用上报失败");
+            }
+        });
+    }
+    Ok(())
+}
+
+async fn add_claude_profile(State(app): State<App>, Json(mut req): Json<ClaudeProfileReq>) -> R<Json<Value>> {
+    if req.input.kind == Some(crate::claude_profiles::Kind::Api) {
+        claude_api_input(&app, &mut req).await?;
+    }
+    let p = crate::claude_profiles::add(&app.store, &app.paths.home, req.input)?;
+    let mut v = claude_profiles_view(&app);
+    v["added"] = json!(p.id);
+    Ok(Json(v))
+}
+
+async fn update_claude_profile(State(app): State<App>, Path(id): Path<String>, Json(mut req): Json<ClaudeProfileReq>) -> R<Json<Value>> {
+    let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    if p.kind == crate::claude_profiles::Kind::Api && (req.input.base_url.is_some() || req.input.provider_id.is_some()) {
+        claude_api_input(&app, &mut req).await?;
+    }
+    crate::claude_profiles::update(&app.store, &app.paths.home, &id, req.input)?;
+    Ok(Json(claude_profiles_view(&app)))
+}
+
+/// 删掉。另外登录的官方账号先让 Claude Code 自己退出登录（吊销令牌、删 macOS 钥匙串条目），失败也接着删目录。
+async fn delete_claude_profile(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    use crate::claude_profiles as cp;
+    let p = cp::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    if p.id == cp::OFFICIAL {
+        return Err(LocalError::invalid("id", "builtin"));
+    }
+    if p.kind == cp::Kind::Official {
+        if let Some(cli) = crate::agents::claude_cli(app.instances.shell()).await {
+            let dir = cp::account_dir(&app.paths.home, &id);
+            let r = crate::agents::cli_output(app.instances.shell(), &cli, &["auth", "logout"], &[("CLAUDE_CONFIG_DIR", Some(dir.as_os_str()))], std::time::Duration::from_secs(30)).await;
+            if let Err(e) = r {
+                tracing::warn!(error = %e, profile = %id, "claude auth logout 失败");
+            }
+        }
+    }
+    cp::remove(&app.store, &app.paths.home, &id)?;
+    Ok(Json(claude_profiles_view(&app)))
+}
+
+#[derive(Deserialize)]
+struct DefaultReq {
+    id: String,
+}
+
+async fn set_default_claude_profile(State(app): State<App>, Json(req): Json<DefaultReq>) -> R<Json<Value>> {
+    crate::claude_profiles::set_default(&app.store, &req.id)?;
+    Ok(Json(claude_profiles_view(&app)))
+}
+
+/// 登录官方账号：在后台运行 Claude Code 自己的 `claude auth login`（见 claude_profiles.rs 的“登录”），
+/// 返回授权页地址；界面上用户去登录，再把授权码贴回来。
+async fn login_claude_profile(State(app): State<App>, Path(id): Path<String>) -> R<Json<crate::claude_profiles::LoginView>> {
+    let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    Ok(Json(crate::claude_profiles::login_start(app.instances.shell(), &app.paths.home, &p).await?))
+}
+
+async fn claude_login_state(Path(id): Path<String>) -> R<Json<crate::claude_profiles::LoginView>> {
+    crate::claude_profiles::login_state(&id).map(Json).ok_or_else(LocalError::not_found)
+}
+
+#[derive(Deserialize)]
+struct LoginCodeReq {
+    code: String,
+}
+
+async fn claude_login_code(Path(id): Path<String>, Json(req): Json<LoginCodeReq>) -> R<Json<crate::claude_profiles::LoginView>> {
+    Ok(Json(crate::claude_profiles::login_code(&id, &req.code).await?))
+}
+
+async fn cancel_claude_login(Path(id): Path<String>) -> StatusCode {
+    crate::claude_profiles::login_cancel(&id);
+    StatusCode::NO_CONTENT
 }
 
 /// 立即检查更新（“检查更新”按钮）。`locale` 决定更新说明的语言。

@@ -1359,13 +1359,19 @@ impl Chat {
 
     // ---------------- 模型、用量、改动 ----------------
 
+    /// 这个会话的 Claude Code 配置目录和 `.claude.json`：跟着它用的账号（claude_profiles.rs）
+    fn claude_paths(&self, id: &str) -> (PathBuf, PathBuf) {
+        crate::claude_profiles::config_paths(&self.paths.home, &crate::claude_profiles::for_instance(&self.store, id))
+    }
+
     /// 读模型菜单要用的上下文：claude 进程的环境变量（读得到时）和 settings 里的 `env`
     async fn model_ctx<'a>(&self, id: &str, workdir: &'a Path) -> models::Ctx<'a> {
         let env = match self.instances.pane(id).await {
             Some(p) if !is_shell(&p.command) => tokio::task::block_in_place(|| models::claude_env(p.pid)),
             _ => HashMap::new(),
         };
-        let mut ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir, env };
+        let (config_dir, state_file) = self.claude_paths(id);
+        let mut ctx = models::Ctx { config_dir, state_file, workdir, env };
         models::merge_settings_env(&mut ctx);
         ctx
     }
@@ -1380,20 +1386,21 @@ impl Chat {
         let workdir = PathBuf::from(&row.workdir);
         let ctx = self.model_ctx(id, &workdir).await;
         let mut options = tokio::task::block_in_place(|| models::options(&ctx));
-        // 第三方接口：claude 进程环境里的地址（看看配置的服务商也是这样传进去的）；读不到进程环境时用看看的设置
-        let choice = crate::model::choice(&self.store, crate::model::ModelAgent::Claude);
-        let base = ctx.env.get("ANTHROPIC_BASE_URL").cloned().or_else(|| choice.as_ref().filter(|_| crate::model::launch_env(&self.store, &self.paths.home, "claude").is_some()).map(|c| c.base_url.clone()));
+        // 第三方接口：claude 进程环境里的地址（看看配置的接口也是这样传进去的）；读不到进程环境时用这个会话的配置
+        let profile = crate::claude_profiles::for_instance(&self.store, id);
+        let ours = profile.base_url.as_ref().filter(|_| crate::claude_profiles::launch_env(&self.paths.home, &profile).is_some());
+        let base = ctx.env.get("ANTHROPIC_BASE_URL").cloned().or_else(|| ours.cloned());
         let mut provider = Value::Null;
         if let Some(base) = base.filter(|b| !b.contains("api.anthropic.com")) {
-            let ours = choice.as_ref().filter(|c| c.base_url.trim_end_matches('/') == base.trim_end_matches('/'));
+            let ours = ours.filter(|u| u.trim_end_matches('/') == base.trim_end_matches('/')).map(|_| &profile);
             let token = ctx.env.get("ANTHROPIC_AUTH_TOKEN").or_else(|| ctx.env.get("ANTHROPIC_API_KEY")).cloned().or_else(|| {
-                ours.and_then(|_| std::fs::read_to_string(crate::model::key_path(&self.paths.home, crate::model::ModelAgent::Claude)).ok()).map(|k| k.trim().to_string())
+                ours.and_then(|p| std::fs::read_to_string(crate::claude_profiles::key_path(&self.paths.home, &p.id)).ok()).map(|k| k.trim().to_string())
             });
             if let Some(token) = token.filter(|t| !t.is_empty()) {
                 let ids = models::provider_models(&base, &token).await;
                 options.extend(models::provider_options(&options, &ids));
             }
-            provider = json!({ "name": ours.map(|c| c.name.clone()) });
+            provider = json!({ "name": ours.map(|p| p.name.clone()) });
         }
         let inst = self.inst(id);
         let st = lock(&inst.st);
@@ -1415,10 +1422,9 @@ impl Chat {
             let st = lock(&inst.st);
             (st.actual_model.clone(), st.context, st.version.clone())
         };
-        let ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir: &workdir, env: HashMap::new() };
-        let (window, cached) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
-        // 先问 Anthropic 要实时的（和 Claude 桌面版、`/usage` 一致），取不到才用 Claude Code 的缓存
-        let limits = models::live_limits(&ctx.config_dir).await.unwrap_or(cached);
+        let (config_dir, state_file) = self.claude_paths(id);
+        let ctx = models::Ctx { config_dir, state_file, workdir: &workdir, env: HashMap::new() };
+        let (window, limits) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
     }
 
@@ -1463,7 +1469,8 @@ impl Chat {
         self.require(id)?;
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         let workdir = PathBuf::from(&row.workdir);
-        let ctx = models::Ctx { config_dir: models::config_dir(), state_file: models::state_file(), workdir: &workdir, env: HashMap::new() };
+        let (config_dir, state_file) = self.claude_paths(id);
+        let ctx = models::Ctx { config_dir, state_file, workdir: &workdir, env: HashMap::new() };
         Ok(tokio::task::block_in_place(|| models::config(&ctx)))
     }
 

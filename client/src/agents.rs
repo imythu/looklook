@@ -91,7 +91,7 @@ fn claude_json() -> PathBuf {
 /// 找 `claude` 命令：先在登录 shell 的 PATH 里找；找不到再看官方安装脚本的固定位置
 /// （`~/.local/bin`，旧版的 `~/.claude/local`）——安装脚本只把它加进交互 shell 的配置，登录 shell 不一定有；
 /// 再找不到就用 Claude 桌面版自带的那一份（见 [`claude_desktop_bundled`]）。
-async fn claude_cli(shell: &str) -> Option<String> {
+pub async fn claude_cli(shell: &str) -> Option<String> {
     crate::tools::detect(shell).await.claude.or_else(claude_fallback)
 }
 
@@ -356,6 +356,26 @@ pub async fn uninstall(agent: Agent, shell: &str) -> Result<(), LocalError> {
 /// 运行助手自己的命令行。Unix 上经过登录 shell，PATH 与用户打开终端时一致（`claude` 通常要 node）；
 /// 参数作为位置参数传给 `exec "$0" "$@"`，不经过 shell 解析。
 async fn run_cli(shell: &str, cli: &str, args: &[&str]) -> Result<(), String> {
+    let out = cli_output(shell, cli, args, &[], Duration::from_secs(60)).await?;
+    if out.status.success() {
+        return Ok(());
+    }
+    let mut msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if msg.is_empty() {
+        msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    }
+    Err(msg.chars().take(300).collect())
+}
+
+/// 同 [`run_cli`]，另设环境变量（`None` 表示去掉），返回完整输出（不管退出码）。
+pub async fn cli_output(shell: &str, cli: &str, args: &[&str], env: &[(&str, Option<&std::ffi::OsStr>)], timeout: Duration) -> Result<std::process::Output, String> {
+    let mut cmd = cli_command(shell, cli, args, env);
+    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
+    tokio::time::timeout(timeout, cmd.output()).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())
+}
+
+/// 运行助手命令行的 [`Command`]（写法见 [`run_cli`]），标准输入输出由调用方设置。
+pub fn cli_command(shell: &str, cli: &str, args: &[&str], env: &[(&str, Option<&std::ffi::OsStr>)]) -> Command {
     let mut cmd = if cfg!(windows) {
         // where.exe 可能先列出 npm 给 Git Bash 用的无扩展名脚本，Windows 运行不了，换成旁边的 .cmd
         let p = Path::new(cli);
@@ -373,16 +393,13 @@ async fn run_cli(shell: &str, cli: &str, args: &[&str]) -> Result<(), String> {
         c.args(["-lc", "exec \"$0\" \"$@\"", cli]).args(args);
         c
     };
-    cmd.stdin(std::process::Stdio::null()).kill_on_drop(true);
-    let out = tokio::time::timeout(Duration::from_secs(60), cmd.output()).await.map_err(|_| "timed out".to_string())?.map_err(|e| e.to_string())?;
-    if out.status.success() {
-        return Ok(());
+    for (k, v) in env {
+        match v {
+            Some(v) => cmd.env(k, v),
+            None => cmd.env_remove(k),
+        };
     }
-    let mut msg = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if msg.is_empty() {
-        msg = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    }
-    Err(msg.chars().take(300).collect())
+    cmd
 }
 
 /// 改配置文件内容：拿到原文件和要写的 `(url, token)`（`None` 删除），返回新内容；没有要改的返回 `None`。

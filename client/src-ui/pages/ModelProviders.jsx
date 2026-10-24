@@ -1,4 +1,5 @@
-// 设置 → 模型服务商：给 Claude Code、Codex 各选一个第三方接口（中转站）并填 API Key，之后新建或重启的终端走这个接口。
+// 设置 → 模型服务商：给 Codex 选一个第三方接口（中转站）并填 API Key，之后新建或重启的终端走这个接口。
+// Claude Code 的第三方接口在“Claude Code 账号”里（ClaudeProfiles.jsx），可以有多个、新建会话时选。
 // 列表由平台下发（含推广）；Key 只保存在这台电脑上。第一次使用必须同意免责声明。
 import { Bot, Check, ExternalLink, PencilLine } from 'lucide-react';
 import { useEffect, useState } from 'react';
@@ -8,10 +9,10 @@ import { api } from '../shared/api.js';
 import { useRouter } from '../shared/router.jsx';
 import { Button, Card, ErrorNote, Field, FoldNote, Modal, Note, PasswordInput, Skeleton, useAction, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 
-const AGENT_NAME = { claude: 'Claude Code', codex: 'Codex' };
+const AGENT_NAME = { codex: 'Codex' };
 const CUSTOM = 'custom';
 
-function Disclaimer() {
+export function Disclaimer() {
   const { t } = useTranslation();
   return (
     <ul className="model-terms">
@@ -22,7 +23,7 @@ function Disclaimer() {
   );
 }
 
-function ProviderLogo({ p }) {
+export function ProviderLogo({ p }) {
   const [broken, setBroken] = useState(false);
   if (!p.logo_url || broken) return <span className="model-logo">{(p.name || '?').slice(0, 1).toUpperCase()}</span>;
   return <img className="model-logo" src={p.logo_url} alt="" onError={() => setBroken(true)} />;

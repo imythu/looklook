@@ -1216,6 +1216,18 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .model-terms { margin: 6px 0 10px; padding-left: 1.2em; display: grid; gap: 4px; font-size: 13px; line-height: 1.55; }
 .model-line { display: flex; align-items: flex-start; gap: 6px; margin: -6px 0 14px; }
 .model-line svg { flex: none; margin-top: 2px; }
+/* 设置 → Claude Code 账号（ClaudeProfiles.jsx） */
+.cprof-list li { gap: 10px; }
+.cprof-radio { flex: none; width: 18px; height: 18px; padding: 0; border-radius: 50%; border: 2px solid var(--muted); background: transparent; cursor: pointer; }
+.cprof-radio[aria-checked="true"] { border-color: var(--brand); background: radial-gradient(var(--brand) 0 4px, transparent 5px); cursor: default; }
+.cprof-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.cprof-name svg { flex: none; color: var(--muted); }
+.cprof-warn { color: var(--warn); }
+.cprof-models { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 0 12px; }
+.cprof-url { display: grid; gap: 8px; }
+.cprof-url code { display: block; max-height: 6.5em; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); font-size: 12px; line-height: 1.5; word-break: break-all; user-select: all; }
+.cprof-form-pick { margin: -6px 0 14px; max-width: 100%; }
+.start-adv .ellipsis { max-width: 12em; }
 
 /* ---------- SSH 主机 ---------- */
 .ssh-grid { display: grid; grid-template-columns: 1fr 110px 1fr; gap: 0 12px; }
