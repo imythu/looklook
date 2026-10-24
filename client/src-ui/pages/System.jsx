@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
+import { spanText } from '../shared/time.js';
 import { Card, ErrorNote, Skeleton } from '../shared/ui.jsx';
 import { Seg } from './Settings.jsx';
 
@@ -29,14 +30,7 @@ function fmtClock(ms, withSeconds) {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', ...(withSeconds ? { second: '2-digit' } : {}) });
 }
 
-function fmtUptime(t, secs) {
-  const d = Math.floor(secs / 86400);
-  const h = Math.floor((secs % 86400) / 3600);
-  const m = Math.floor((secs % 3600) / 60);
-  if (d > 0) return t('system.uptime_dh', { d, h });
-  if (h > 0) return t('system.uptime_hm', { h, m });
-  return t('system.uptime_m', { m });
-}
+const fmtUptime = (t, secs) => spanText(t, secs * 1000);
 
 /** 把最大值放大到好读的整数刻度（1、2、5 × 10ⁿ，按 1024 进位的字节数也适用）。 */
 function niceMax(v) {

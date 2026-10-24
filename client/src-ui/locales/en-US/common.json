@@ -20,6 +20,9 @@
   "time": {
     "ago": "{{n}} {{unit}} ago",
     "in": "in {{n}} {{unit}}",
+    "span_dh": "{{d}} d {{h}} h",
+    "span_hm": "{{h}} h {{m}} min",
+    "span_m": "{{m}} min",
     "unit": {
       "second": "s",
       "minute": "min",
@@ -274,6 +277,8 @@
   "term": {
     "back": "Back",
     "reload": "Reload",
+    "codex_reconnect": "Reconnect terminal",
+    "codex_reconnect_hint": "Reconnect the Codex in the terminal to the same conversation as the chat; anything still running in the terminal exits first",
     "keys": "Common keys",
     "full": "Full screen",
     "exit_full": "Exit full screen",
@@ -701,9 +706,6 @@
     "none": "None",
     "cores": "{{n}} cores",
     "uptime": "up {{when}}",
-    "uptime_dh": "{{d}} d {{h}} h",
-    "uptime_hm": "{{h}} h {{m}} min",
-    "uptime_m": "{{m}} min",
     "peak": "Peak {{v}} in this range",
     "summary": "{{name}}: min {{min}}, average {{avg}}, max {{max}}",
     "averaged": "The 24-hour charts show per-minute averages. Data is kept in memory on this computer only and starts over when Looklook restarts.",

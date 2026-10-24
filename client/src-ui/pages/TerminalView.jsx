@@ -3,7 +3,7 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页右边打开的每个会话是一个 TermPane（见 Sessions.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, WifiOff } from 'lucide-react';
+import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, PlugZap, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, WifiOff } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -127,6 +127,35 @@ const tabsFor = (chat) => (chat ? [CHAT_TAB, ...TABS] : TABS);
 
 /** 带对话界面的 Claude Code 终端（docs/CLAUDE_UI.md） */
 export const hasChat = (inst) => Boolean(CHAT_LAUNCHES.includes(inst?.launch) && inst?.chat_ui);
+
+/**
+ * 对话模式的 Codex：终端里的 TUI 接在看看起的 app-server 上（--remote）。第一次打开终端标签时自动接上，
+ * 之后断了、退出了、换成了本机版，用这个按钮重新接上（终端里还在跑的程序会先退出）。
+ */
+function useCodexReconnect(id, inst, frame) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const shown = inst?.launch === 'codex' && hasChat(inst) && !inst?.container;
+  const run = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/instances/${id}/chat/codex-terminal`);
+      termFocus(frame);
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const button = shown && (
+    <button type="button" className="btn btn-plain btn-sm" onClick={run} disabled={busy} title={t('term.codex_reconnect_hint')}>
+      <PlugZap size={15} />
+      {t('term.codex_reconnect')}
+    </button>
+  );
+  return { shown, busy, run, button };
+}
 
 /**
  * 当前标签，按终端记在浏览器里。带对话界面的终端默认打开“对话”。
@@ -263,6 +292,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   useRefitOnReturn(frame, running && active);
   useFocusWhenReady(frame, running && active && tab === 'term');
   const [selecting, setSelecting] = useTextSelect(frame, running && active && tab === 'term');
+  const reconnect = useCodexReconnect(id, inst, frame);
   useEffect(() => {
     if (!active) return undefined;
     const timer = setTimeout(() => {
@@ -348,6 +378,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
         </span>
         {running && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
         {tab === 'term' && <NewlineHint inst={inst} touch={false} />}
+        {running && tab === 'term' && reconnect.button}
         {running && (
           <button type="button" className={iconBtn} onClick={reload} aria-label={t('term.reload')} title={t('term.reload')}>
             <RefreshCw size={16} />
@@ -439,6 +470,7 @@ export default function TerminalView({ id }) {
   useRefitOnReturn(frame, live);
   useFocusWhenReady(frame, live && tab === 'term' && !touch);
   const [selecting, setSelecting] = useTextSelect(frame, live && tab === 'term');
+  const reconnect = useCodexReconnect(id, inst, frame);
   // 选择文字时收起手机键盘，屏幕留给文字
   useEffect(() => {
     if (selecting) mobile.ime.hide();
@@ -547,6 +579,7 @@ export default function TerminalView({ id }) {
   const more = [
     tab === 'term' && live && { icon: TextSelectIcon, label: t('select.toggle'), onClick: () => setSelecting(true) },
     tab === 'term' && live && { icon: RefreshCw, label: t('term.reload'), onClick: reloadTerm },
+    tab === 'term' && live && reconnect.shown && { icon: PlugZap, label: t('term.codex_reconnect'), onClick: reconnect.run },
     { icon: full ? Minimize2 : Maximize2, label: t(full ? 'term.exit_full' : 'term.full'), onClick: toggleFull },
     { icon: ExternalLink, label: t('instance.new_window'), onClick: newWindow },
   ];
@@ -564,6 +597,7 @@ export default function TerminalView({ id }) {
         </span>
         {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
         {live && !bottomTabs && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
+        {!compact && tab === 'term' && live && reconnect.button}
         {!compact && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onClick={() => setSelecting(!selecting)} aria-pressed={selecting} aria-label={t('select.toggle')} title={t('select.toggle')}>
             <TextSelectIcon size={18} />

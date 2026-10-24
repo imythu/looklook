@@ -20,6 +20,9 @@
   "time": {
     "ago": "{{n}} {{unit}}前",
     "in": "{{n}} {{unit}}后",
+    "span_dh": "{{d}} 天 {{h}} 小时",
+    "span_hm": "{{h}} 小时 {{m}} 分钟",
+    "span_m": "{{m}} 分钟",
     "unit": {
       "second": "秒",
       "minute": "分钟",
@@ -274,6 +277,8 @@
   "term": {
     "back": "返回",
     "reload": "刷新",
+    "codex_reconnect": "重新连接终端",
+    "codex_reconnect_hint": "让终端里的 Codex 重新接上对话页用的同一个会话；终端里还在跑的程序会先退出",
     "keys": "常用按键",
     "full": "全屏",
     "exit_full": "退出全屏",
@@ -701,9 +706,6 @@
     "none": "无",
     "cores": "{{n}} 核",
     "uptime": "已开机 {{when}}",
-    "uptime_dh": "{{d}} 天 {{h}} 小时",
-    "uptime_hm": "{{h}} 小时 {{m}} 分钟",
-    "uptime_m": "{{m}} 分钟",
     "peak": "这段时间最高 {{v}}",
     "summary": "{{name}}：最低 {{min}}，平均 {{avg}}，最高 {{max}}",
     "averaged": "24 小时曲线为每分钟的平均值。数据只保存在这台电脑的内存里，看看重启后重新开始。",
@@ -1557,7 +1559,7 @@
     "usage_out": "输出",
     "usage_5h": "5 小时额度",
     "usage_7d": "7 天额度",
-    "usage_resets": "{{in}} 后重置",
+    "usage_resets": "{{in}}后重置",
     "usage_limits_note": "额度是整个账号的，数字来自 Claude Code 最近一次更新。",
     "usage_compact": "压缩上下文",
     "config_rules": "权限规则",

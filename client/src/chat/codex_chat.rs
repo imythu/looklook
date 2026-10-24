@@ -7,7 +7,7 @@
 //! - 发消息是 `turn/start`（这一轮还在跑时是 `turn/steer`）；停止是 `turn/interrupt`；模型和思考强度随下一轮带上。
 //! - 开启对话界面之前就在终端里跑着 Codex TUI 的（旧版本留下的）：找出它在用的会话，关掉 TUI，换成 app-server 接着。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -43,6 +43,8 @@ pub struct Hub {
     limits: Mutex<Option<(Instant, Value)>>,
     /// 每个终端最近一次算出的“产出的文件”（取文件时核对用）
     artifacts: Mutex<HashMap<String, (Instant, Vec<PathBuf>)>>,
+    /// 已经自动打开过 TUI 的终端：只在第一次打开终端标签时自动接上，之后用“重新连接终端”
+    term_opened: Mutex<HashSet<String>>,
 }
 
 /// Codex 这边每个终端多记的状态
@@ -287,6 +289,16 @@ impl Chat {
         let active = t["status"]["type"] == "active";
         Self::set_phase(inst, &mut st, if active { Phase::Running } else { Phase::Idle }, None);
         Self::emit_status(inst, &st);
+        // 上下文用量：app-server 要等下一轮才发，先从记录文件里最后一次的用量填上（输入框旁的小圆环、“用量”栏）
+        let seed = st.context.is_none().then(|| st.binding.as_ref().map(|b| b.transcript_path.clone())).flatten().filter(|p| !p.as_os_str().is_empty());
+        drop(st);
+        if let Some(u) = seed.and_then(|p| super::codex_rollout::last_token_usage(&p)) {
+            let mut st = lock(&inst.st);
+            if st.context.is_none() {
+                set_usage(&mut st, &u);
+                Self::emit_status(inst, &st);
+            }
+        }
     }
 
     /// 还没有会话：建一个
@@ -440,10 +452,7 @@ impl Chat {
                     }
                 }
                 "thread/tokenUsage/updated" => {
-                    let u = &p["tokenUsage"];
-                    st.context = u["last"]["inputTokens"].as_u64();
-                    st.codex.window = u["modelContextWindow"].as_u64().or(st.codex.window);
-                    st.codex.totals = Some(u["total"].clone());
+                    set_usage(&mut st, &p["tokenUsage"]);
                     Self::emit_status(&inst, &st);
                 }
                 "thread/name/updated" => {
@@ -798,8 +807,12 @@ impl Chat {
         }
     }
 
-    /// 终端标签连上之后：终端里停在 shell 上（用户退出了 TUI、终端是先开的 shell）就替用户打开同一个会话的 TUI。
+    /// 第一次打开终端标签时：终端里停在 shell 上（终端是先开的 shell）就替用户打开同一个会话的 TUI。
+    /// 之后再打开标签不再自动打开，要接回去用 [`Self::codex_reconnect_terminal`]。
     pub async fn codex_terminal_attached(self: Arc<Self>, id: String) {
+        if !lock(&self.codex.term_opened).insert(id.clone()) {
+            return;
+        }
         // 等终端会话建好、刚启动的 TUI 跑起来
         tokio::time::sleep(Duration::from_millis(2500)).await;
         let Some(pane) = self.instances.pane(&id).await else { return };
@@ -811,6 +824,43 @@ impl Chat {
         if self.instances.send_literal(&id, &line).await.is_ok() {
             let _ = self.instances.send_keys(&id, &["Enter"]).await;
         }
+    }
+
+    /// 终端标签上的“重新连接终端”：终端里还在跑别的程序（断了线的 TUI、本机版、自己开的 Codex）就先退出它，
+    /// 再用 `--remote` 打开接在 app-server 上的同一个会话。
+    pub async fn codex_reconnect_terminal(&self, id: &str) -> Result<(), LocalError> {
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        if !self.instances.codex_app_mode(&row) {
+            return Err(LocalError::new("CHAT_UNAVAILABLE"));
+        }
+        lock(&self.codex.term_opened).insert(id.to_string());
+        // Codex TUI 空闲时要连按两次 Ctrl+C 才退出；在跑的话第一次是中断
+        for _ in 0..3 {
+            let pane = self.instances.pane(id).await.ok_or_else(|| LocalError::new("CODEX_TERMINAL_STOPPED"))?;
+            if super::is_shell(&pane.command) {
+                break;
+            }
+            let _ = self.instances.send_keys(id, &["C-c"]).await;
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let _ = self.instances.send_keys(id, &["C-c"]).await;
+            tokio::time::sleep(Duration::from_millis(1500)).await;
+        }
+        let pane = self.instances.pane(id).await.ok_or_else(|| LocalError::new("CODEX_TERMINAL_STOPPED"))?;
+        if !super::is_shell(&pane.command) {
+            return Err(LocalError::new("CODEX_TERMINAL_BUSY"));
+        }
+        // 起好 app-server、加载好会话；--remote 要有地址
+        let server = self.codex_attach(id).await?;
+        let inst = self.inst(id);
+        if lock(&inst.st).binding.is_none() {
+            self.codex_new_thread(&server, &inst).await?;
+        }
+        if codex_app::endpoint().is_none() {
+            return Err(LocalError::new("CODEX_APP_SERVER"));
+        }
+        let line = self.instances.codex_tui_line(id).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
+        self.instances.send_literal(id, &line).await?;
+        self.instances.send_keys(id, &["Enter"]).await
     }
 
     // ---------------- 不是看看打开的 Codex ----------------
@@ -868,6 +918,13 @@ fn merge(a: &mut Value, b: Value) {
     if let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) {
         a.extend(b);
     }
+}
+
+/// `thread/tokenUsage/updated` 的 `tokenUsage`（或从记录文件里换算的同样形状）
+fn set_usage(st: &mut super::State, u: &Value) {
+    st.context = u["last"]["inputTokens"].as_u64();
+    st.codex.window = u["modelContextWindow"].as_u64().or(st.codex.window);
+    st.codex.totals = Some(u["total"].clone());
 }
 
 #[cfg(test)]

@@ -352,9 +352,54 @@ impl TranscriptReader for Rollout {
     }
 }
 
+/// 记录里最后一条 `token_count`，换成 app-server `thread/tokenUsage/updated` 的 `tokenUsage` 的样子。
+/// 刚接上（看看重启、重新加载会话）时 app-server 要等下一轮才发用量，先用它把上下文用量填上。只读文件末尾一段。
+pub fn last_token_usage(path: &Path) -> Option<Value> {
+    const TAIL: u64 = 1 << 20;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    token_usage_in(&String::from_utf8_lossy(&buf))
+}
+
+fn token_usage_in(text: &str) -> Option<Value> {
+    text.lines().rev().filter(|l| l.contains("\"token_count\"")).find_map(|l| {
+        let v: Value = serde_json::from_str(l).ok()?;
+        let info = v["payload"]["info"].as_object()?;
+        let n = |u: &Value, k: &str| u[k].as_u64().unwrap_or(0);
+        let (last, total) = (&info["last_token_usage"], &info["total_token_usage"]);
+        Some(json!({
+            "last": { "inputTokens": n(last, "input_tokens") },
+            "total": { "inputTokens": n(total, "input_tokens"), "cachedInputTokens": n(total, "cached_input_tokens"), "outputTokens": n(total, "output_tokens") },
+            "modelContextWindow": info["model_context_window"],
+        }))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_usage_from_last_token_count() {
+        let text = concat!(
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":10,"cached_input_tokens":4,"output_tokens":2},"last_token_usage":{"input_tokens":10},"model_context_window":1000}}}"#, "
+",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":66424,"cached_input_tokens":34432,"output_tokens":253},"last_token_usage":{"input_tokens":21502},"model_context_window":258400}}}"#, "
+",
+            r#"{"type":"event_msg","payload":{"type":"token_count","info":null}}"#, "
+",
+            r#"{"type":"event_msg","payload":{"type":"task_complete"}}"#, "
+",
+        );
+        let u = token_usage_in(text).unwrap();
+        assert_eq!(u["last"]["inputTokens"], 21502);
+        assert_eq!(u["total"]["cachedInputTokens"], 34432);
+        assert_eq!(u["modelContextWindow"], 258400);
+        assert!(token_usage_in("{}").is_none());
+    }
 
     fn line(v: Value) -> String {
         format!("{v}\n")

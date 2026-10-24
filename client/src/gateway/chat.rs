@@ -134,6 +134,13 @@ pub async fn input(State(app): State<App>, Path(id): Path<String>, Json(req): Js
     Ok(Json(app.chat.input(&id, &req.text, &req.images).await?))
 }
 
+/// Codex 终端标签上的“重新连接终端”
+pub async fn codex_terminal(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.codex_reconnect_terminal(&id).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn interrupt(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
     require_allowed(&app)?;
     app.chat.interrupt(&id).await?;

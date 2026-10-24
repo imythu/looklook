@@ -225,5 +225,7 @@
   "CODEX_APP_SERVER": "连不上 Codex 的后台服务，请重试",
   "CODEX_NOT_FOUND": "没找到 Codex，请确认这台电脑装了 Codex",
   "CODEX_REQUEST_FAILED": "Codex 没能完成这个操作：{{detail}}",
-  "CHAT_TERMINAL_ONLY": "对话页暂时连不上 Codex，可以先在终端里用"
+  "CHAT_TERMINAL_ONLY": "对话页暂时连不上 Codex，可以先在终端里用",
+  "CODEX_TERMINAL_BUSY": "终端里的程序没有退出，请在终端里手动退出后再重新连接",
+  "CODEX_TERMINAL_STOPPED": "终端没在运行，请先启动"
 }

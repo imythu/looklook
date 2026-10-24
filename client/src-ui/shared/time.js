@@ -43,6 +43,17 @@ export function relativeTime(t, iso, now = Date.now()) {
   return t(diff < 0 ? 'time.ago' : 'time.in', { n, unit: t(`time.unit.${unit}`, { count: n }) });
 }
 
+/** 一段时长，最大到天：3 天 4 小时 / 2 小时 5 分钟 / 12 分钟（不足一分钟按一分钟算）。 */
+export function spanText(t, ms) {
+  const mins = Math.max(1, Math.ceil(ms / 60000));
+  const d = Math.floor(mins / 1440);
+  const h = Math.floor((mins % 1440) / 60);
+  const m = mins % 60;
+  if (d > 0) return t('time.span_dh', { d, h });
+  if (h > 0) return t('time.span_hm', { h, m });
+  return t('time.span_m', { m });
+}
+
 /** <input type="datetime-local"> 的本地值 ↔ ISO UTC。 */
 export function toLocalInput(iso) {
   if (!iso) return '';

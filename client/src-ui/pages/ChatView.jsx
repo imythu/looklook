@@ -71,6 +71,7 @@ import {
 import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
+import { spanText } from '../shared/time.js';
 import { runUpload } from '../shared/uploader.js';
 import { Button, CopyButton, useConfirm, useToast } from '../shared/ui.jsx';
 
@@ -1801,7 +1802,7 @@ function Meter({ label, value, sub }) {
 
 const resetText = (t, iso) => {
   const ms = Date.parse(iso) - Date.now();
-  return Number.isFinite(ms) && ms > 0 ? t('chat.usage_resets', { in: duration(ms) }) : '';
+  return Number.isFinite(ms) && ms > 0 ? t('chat.usage_resets', { in: spanText(t, ms) }) : '';
 };
 
 function UsageTab({ id, status, onCompact }) {
@@ -1849,7 +1850,7 @@ function UsageTab({ id, status, onCompact }) {
       {lim?.seven_day && <Meter label={t('chat.usage_7d')} value={lim.seven_day.used} sub={resetText(t, lim.seven_day.resets_at)} />}
       {lim?.reached && <p className="chat-note chat-warn">{t('chat.usage_reached')}</p>}
       {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{t(lim.account ? 'chat.usage_limits_note_codex' : lim.live ? 'chat.usage_limits_note_live' : 'chat.usage_limits_note')}</p>}
-      {!lim?.live && lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: duration(Date.now() - lim.fetched_at) })}</p>}
+      {!lim?.live && lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: spanText(t, Date.now() - lim.fetched_at) })}</p>}
       <Button variant="secondary" onClick={onCompact} disabled={status?.phase !== 'idle' || !used}>
         {t('chat.usage_compact')}
       </Button>
