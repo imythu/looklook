@@ -166,7 +166,6 @@ pub fn jump() {
     if run && !target.ok {
         let _ = std::fs::write(target.dir.join(TRIES_FILE), (target.tries + 1).to_string());
     }
-    use std::os::unix::process::CommandExt;
     let mut cmd = std::process::Command::new(target.exe());
     cmd.args(&args[1..]);
     if std::env::var_os(ENTRY_ENV).is_none() {
@@ -174,7 +173,10 @@ pub fn jump() {
             cmd.env(ENTRY_ENV, me);
         }
     }
-    let e = cmd.exec();
+    #[cfg(unix)]
+    let e = std::os::unix::process::CommandExt::exec(&mut cmd);
+    #[cfg(not(unix))]
+    let e = std::io::Error::from(std::io::ErrorKind::Unsupported);
     eprintln!("看看：无法启动 {}（{e}），继续运行 {VERSION} / Looklook: can't start {} ({e}); running {VERSION}", target.exe().display(), target.version);
 }
 
@@ -256,7 +258,7 @@ fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {
         }
         Ok(())
     } else if meta.file_type().is_symlink() {
-        std::os::unix::fs::symlink(std::fs::read_link(from)?, to)
+        symlink(&std::fs::read_link(from)?, to)
     } else {
         std::fs::copy(from, to).map(|_| ())
     }
@@ -275,6 +277,16 @@ pub fn install_staged(home: &Path, src: &Path, version: &str) -> Result<PathBuf,
     place_with(src, home, version, true, copy_tree).map_err(|e| e.to_string())
 }
 
+// 只有 Linux 用得到（见 `enabled`），别的平台只要能编译
+#[cfg(unix)]
+fn symlink(target: &Path, link: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, link)
+}
+#[cfg(not(unix))]
+fn symlink(_target: &Path, _link: &Path) -> std::io::Result<()> {
+    Err(std::io::ErrorKind::Unsupported.into())
+}
+
 /// 把 `bin/` 里的软链指向 `dir` 这个版本目录：每个软链先建成临时名再改名替换（原子）。
 fn link(home: &Path, dir: &Path) -> std::io::Result<()> {
     let bin = bin_dir(home);
@@ -288,7 +300,7 @@ fn link(home: &Path, dir: &Path) -> std::io::Result<()> {
         }
         let target = Path::new("..").join("versions").join(name).join(item);
         let tmp = bin.join(format!(".{item}.tmp-{}", crate::util::random_id(6)));
-        std::os::unix::fs::symlink(&target, &tmp)?;
+        symlink(&target, &tmp)?;
         std::fs::rename(&tmp, bin.join(item)).inspect_err(|_| {
             let _ = std::fs::remove_file(&tmp);
         })?;
