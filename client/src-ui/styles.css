@@ -1194,6 +1194,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .md table { border-collapse: collapse; display: block; overflow-x: auto; }
 .md th, .md td { padding: 6px 12px; border: 1px solid var(--line); text-align: left; }
 .md th { background: var(--panel-2); }
+.md td code, .md th code { white-space: nowrap; overflow-wrap: normal; }
 .md img { max-width: 100%; height: auto; margin: 4px 0; background: none; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 1.4em 0; }
 .md input[type="checkbox"] { margin-right: .4em; }
@@ -1392,6 +1393,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-turn { text-align: right; font-size: 12px; }
 .chat-working { display: flex; align-items: center; gap: 8px; }
 .chat-working svg { color: var(--claude); }
+.chat-reply-acts { display: flex; gap: 2px; margin-top: -6px; opacity: 0; transition: opacity .15s; }
+.chat-reply-end:hover .chat-reply-acts, .chat-reply-acts:focus-within { opacity: 1; }
+@media (hover: none) { .chat-reply-acts { opacity: 1; } }
 .chat-divider { display: flex; align-items: center; gap: 10px; }
 .chat-divider::before, .chat-divider::after { content: ""; flex: 1; border-top: 1px dashed var(--line); }
 .chat-note { display: block; margin: 4px 0 0; font-size: 12.5px; color: var(--muted); }
@@ -1419,18 +1423,22 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-pre.err { color: var(--danger); }
 .chat-command { color: var(--muted); background: transparent; border-left: 2px solid var(--line); border-radius: 0; padding: 2px 10px; }
 .chat-thinking { font-size: 13px; color: var(--muted); }
-.chat-thinking summary { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; padding: 2px 0; }
+.chat-thinking summary { cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 2px 0; max-width: 100%; }
+.chat-thinking summary > svg { flex: none; }
+.chat-thinking-peek { flex: 1; min-width: 0; font-style: italic; opacity: .75; }
+.chat-thinking[open] .chat-thinking-peek { display: none; }
 .chat-thinking .chat-pre { margin-top: 6px; font-family: var(--font); font-size: 13px; }
 
 /* 工具调用：一行摘要，点开看细节（左边一条细线，和正文区分开） */
-.chat-tool { border-left: 2px solid var(--line); padding-left: 10px; min-width: 0; }
-.chat-tool[data-state="err"] { border-left-color: color-mix(in srgb, var(--danger) 55%, var(--line)); }
-.chat-tool[data-state="run"] { border-left-color: var(--claude); }
+.chat-tool { min-width: 0; }
 .chat-tool-head { width: 100%; display: flex; align-items: center; gap: 7px; min-height: 30px; padding: 0; border: 0; background: none; color: var(--muted); font: 13.5px/1.3 var(--font); text-align: left; cursor: pointer; border-radius: 6px; }
 .chat-tool-head:hover { color: var(--text); }
 .chat-tool-head > svg { flex: none; }
 .chat-tool-head b { flex: none; font-weight: 500; color: var(--text); }
 .chat-tool-sum { flex: 1; min-width: 0; color: var(--muted); font-family: var(--mono); font-size: 12.5px; }
+.chat-tool-sum.plain { font-family: var(--font); font-size: 13.5px; }
+.chat-tool-lines { flex: none; color: var(--muted); font-size: 11.5px; font-variant-numeric: tabular-nums; opacity: .8; }
+.chat-tool-cmd { margin: -4px 0 4px 21px; color: var(--muted); font: 11.5px/1.5 var(--mono); opacity: .85; }
 .chat-stat { flex: none; font: 12px var(--mono); white-space: nowrap; }
 .chat-stat i { font-style: normal; }
 .chat-stat .add { color: var(--ok); }
@@ -1441,14 +1449,14 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-tool[data-state="run"] .chat-tool-state { color: var(--claude); }
 .chat-tool-body { padding: 4px 0 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .chat-tool-body .md { padding: 0; font-size: 14px; }
-.chat-group-body { padding: 2px 0 6px 6px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.chat-group-body .chat-tool { border-left-color: transparent; padding-left: 4px; }
+.chat-group-body { padding: 2px 0 6px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .chat-more { align-self: flex-start; border: 0; background: none; color: var(--brand); font: 13px var(--font); padding: 4px 0; cursor: pointer; }
 .chat-diff { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); font: 12.5px/1.5 var(--mono); overflow: auto; max-height: 420px; }
 .chat-diff-line { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 10px 0 4px; display: flex; gap: 6px; }
 .chat-diff-line > span { flex: none; width: 10px; color: var(--muted); user-select: none; }
 .chat-diff-line.dadd { background: color-mix(in srgb, var(--ok) 14%, transparent); }
 .chat-diff-line.ddel { background: color-mix(in srgb, var(--danger) 14%, transparent); }
+.chat-diff-line > .chat-diff-no { width: 3.2em; text-align: right; opacity: .7; font-variant-numeric: tabular-nums; }
 .chat-diff-line.dhunk { color: var(--muted); background: color-mix(in srgb, var(--brand) 8%, transparent); }
 .chat-todos { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 14px; }
 .chat-todos li { display: flex; align-items: flex-start; gap: 8px; }
@@ -1459,14 +1467,17 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-preview { color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; line-height: 1.6; }
 .chat-sub { display: flex; flex-direction: column; gap: 6px; }
 .chat-sub .chat-more { display: inline-flex; align-items: center; gap: 4px; }
-.chat-sub-body { display: flex; flex-direction: column; gap: 8px; padding: 8px 0 4px 12px; border-left: 2px solid var(--brand-soft); }
+.chat-sub-body { display: flex; flex-direction: column; gap: 8px; padding: 6px 0 4px 12px; border-left: 1px solid var(--line); }
+.chat-sub-body > .chat-more { align-self: flex-start; }
 .chat-bg-note { border: 0; background: none; padding: 2px 0; cursor: pointer; text-align: left; font: inherit; font-size: 13px; color: var(--muted); }
 .chat-bg-note .chat-more { padding: 0; }
 .chat-to-bottom { position: absolute; right: 18px; bottom: 14px; z-index: 2; width: 36px; height: 36px; border-radius: 50%; border: 1px solid var(--line); background: var(--panel); color: var(--text); box-shadow: var(--shadow); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 
 /* 等你处理的卡片 */
-.chat-ask { border: 1.5px solid var(--brand); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }
-.chat-ask > header { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: var(--brand-soft); color: var(--brand); font-size: 14px; }
+.chat-ask { border: 1.5px solid var(--claude); border-radius: 14px; background: var(--panel); box-shadow: var(--shadow); overflow: hidden; }
+.chat-ask > header { display: flex; align-items: center; gap: 8px; padding: 9px 14px; background: color-mix(in srgb, var(--claude) 12%, var(--panel)); color: var(--claude); font-size: 14px; }
+.chat-ask .btn-primary { background: var(--claude); color: #fff; }
+.chat-ask .btn-secondary { background: var(--panel-2); color: var(--text); }
 .chat-ask > header b { color: var(--text); }
 .chat-ask-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
 .chat-ask .chat-tool-head { min-height: 28px; }
@@ -1526,6 +1537,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-input-box:focus-within { border-color: color-mix(in srgb, var(--brand) 55%, var(--line)); }
 .chat-input-box textarea { width: 100%; min-width: 0; min-height: 44px; resize: none; border: 0; border-radius: 0; outline: 0; box-shadow: none; background: transparent; color: var(--text); font: 15px/1.5 var(--font); padding: 6px 6px 2px; max-height: 35vh; }
 .chat-input-box textarea:focus { background: transparent; box-shadow: none; }
+.chat-input-box textarea::placeholder { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chat-input-tools { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .chat-input-tools .btn-icon { width: 34px; min-height: 34px; flex: none; }
 .chat-input-tools .grow { flex: 1; }
@@ -1541,7 +1553,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-chip-mode[data-mode="auto"] { color: var(--warn); }
 .chat-chip-mode[data-mode="bypassPermissions"] { color: var(--danger); }
 .chat-warn { color: var(--warn); }
-.chat-ring { width: 30px !important; min-height: 30px !important; color: var(--muted); }
+.chat-ring { min-height: 30px !important; padding: 0 6px; gap: 5px; display: inline-flex; align-items: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .chat-ring[data-level="mid"] { color: var(--warn); }
 .chat-ring[data-level="high"] { color: var(--danger); }
 .chat-send { width: 34px !important; min-height: 34px !important; border-radius: 10px; margin-left: 2px; }
@@ -2088,3 +2100,157 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 }
 @keyframes drawer-in { from { transform: translateX(32px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .drawer { animation: none; } }
+
+/* 窄屏（手机、开着侧栏的窄窗口）：工具卡片更紧凑，去掉图标、命令行、行号 */
+@container (max-width: 560px) {
+  .chat-tool-head { gap: 5px; font-size: 13px; }
+  .chat-tool-head > svg + svg { display: none; }
+  .chat-tool-cmd, .chat-tool-lines, .chat-diff-no { display: none; }
+  .chat-tool-sum { font-size: 12px; }
+  .chat-diff { font-size: 11.5px; }
+}
+
+/* ================= 对话界面的视觉层（2026-10-24 重新设计） =================
+   原则：内容（回复正文）最显眼；工具调用退成一条时间线；Claude 在忙、等你处理时，界面本身会“动”起来告诉你。 */
+.chat-view {
+  --claude-soft: color-mix(in srgb, var(--claude) 12%, transparent);
+  /* 回复正文：英文用衬线体（和 Claude 桌面端一样好读），中文落到系统黑体 */
+  --prose: Charter, "Bitstream Charter", "Iowan Old Style", "Source Serif 4", "Source Serif Pro", Georgia, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", serif;
+  background:
+    radial-gradient(900px 360px at 50% -120px, color-mix(in srgb, var(--claude) 9%, transparent), transparent 70%),
+    var(--bg);
+}
+.chat-items { gap: 16px; }
+.chat-items > .md, .chat-reply-end > .md, .chat-sub-body > .md, .chat-preview { font-family: var(--prose); font-size: 16px; line-height: 1.72; letter-spacing: .003em; }
+.chat-items > .md h1, .chat-items > .md h2, .chat-items > .md h3, .chat-reply-end > .md h1, .chat-reply-end > .md h2, .chat-reply-end > .md h3 { font-weight: 600; letter-spacing: -.005em; }
+.chat-items > .md h2, .chat-reply-end > .md h2 { border-bottom: 0; font-size: 1.22em; }
+.chat-view .md code { font-size: .84em; }
+.chat-view .md table { border-radius: 10px; border: 1px solid var(--line); border-collapse: separate; border-spacing: 0; overflow: auto; }
+.chat-view .md th, .chat-view .md td { border: 0; border-bottom: 1px solid var(--line); }
+.chat-view .md tr:last-child td { border-bottom: 0; }
+.chat-view .md th + th, .chat-view .md td + td { border-left: 1px solid var(--line); }
+.chat-view .md th { font-family: var(--font); font-size: 13px; font-weight: 600; color: var(--muted); }
+
+/* 用户消息：带一点 Claude 橙的气泡 */
+.chat-bubble { background: color-mix(in srgb, var(--claude) 8%, var(--panel-2)); border-radius: 20px 20px 6px 20px; padding: 10px 16px; }
+
+/* 新出现的一条从下面浮上来 */
+.chat-items > :last-child { animation: rise .32s cubic-bezier(.2, .8, .2, 1) both; }
+
+/* —— 工具调用：一张轻卡片；组里的每一步是时间线上的一个节点 —— */
+.chat-items > .chat-tool, .chat-sub-body > .chat-tool {
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--panel) 72%, transparent);
+  padding: 3px 12px;
+  transition: border-color .2s, box-shadow .2s, background .2s;
+}
+.chat-items > .chat-tool:hover, .chat-sub-body > .chat-tool:hover { border-color: var(--line); background: var(--panel); }
+.chat-items > .chat-tool[data-state="run"], .chat-sub-body > .chat-tool[data-state="run"] { border-color: color-mix(in srgb, var(--claude) 55%, var(--line)); box-shadow: 0 0 0 4px var(--claude-soft); }
+.chat-items > .chat-tool[data-state="err"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.chat-tool-head { min-height: 34px; }
+.chat-tool-head b { font-weight: 600; }
+.chat-tool-cmd { margin: -6px 0 6px 43px; }
+.chat-group-body { position: relative; padding: 2px 0 8px 22px; }
+.chat-group-body::before { content: ""; position: absolute; left: 7px; top: 4px; bottom: 14px; width: 1.5px; border-radius: 2px; background: linear-gradient(var(--line), color-mix(in srgb, var(--line) 30%, transparent)); }
+.chat-group-body > .chat-tool { position: relative; }
+.chat-group-body > .chat-tool::before { content: ""; position: absolute; left: -19px; top: 13px; width: 8px; height: 8px; border-radius: 50%; background: var(--panel); border: 1.5px solid var(--muted); box-sizing: border-box; }
+.chat-group-body > .chat-tool[data-state="ok"]::before { border-color: var(--ok); background: var(--ok); }
+.chat-group-body > .chat-tool[data-state="err"]::before { border-color: var(--danger); background: var(--danger); }
+.chat-group-body > .chat-tool[data-state="run"]::before { border-color: var(--claude); background: var(--claude); animation: chat-node 1.4s ease-out infinite; }
+@keyframes chat-node { 0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--claude) 55%, transparent); } 100% { box-shadow: 0 0 0 7px transparent; } }
+.chat-group-body .chat-tool-head > svg + svg { display: none; }
+.chat-group-body .chat-tool-cmd { margin-left: 22px; }
+.chat-sub-body { border-left: 0; padding-left: 0; }
+
+/* 增删行数后面的五格比例条 */
+.chat-stat { display: inline-flex; align-items: center; gap: 4px; }
+.chat-stat-bar { display: inline-flex; gap: 1.5px; margin-left: 2px; }
+.chat-stat-bar b { width: 7px; height: 7px; border-radius: 2px; background: var(--line); }
+.chat-stat-bar b[data-k="add"] { background: var(--ok); }
+.chat-stat-bar b[data-k="del"] { background: var(--danger); }
+.chat-diff { border-radius: 12px; }
+
+/* —— 正在工作：转动的 Claude 星号 + 扫过文字的流光 —— */
+.chat-working { font-size: 14px; color: var(--muted); min-width: 0; }
+.chat-working-mark { flex: none; color: var(--claude); animation: spin 2.8s linear infinite; }
+.chat-working .ellipsis {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 38%, var(--claude) 50%, var(--muted) 62%, var(--muted) 100%);
+  background-size: 250% 100%;
+  -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: chat-shine 2.2s linear infinite;
+}
+@keyframes chat-shine { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+.chat-working-time { flex: none; font-size: 12.5px; font-variant-numeric: tabular-nums; opacity: .7; }
+.chat-preview { color: var(--muted); }
+
+/* —— 回复结尾：复制、用时 —— */
+.chat-reply-acts { align-items: center; gap: 6px; }
+.chat-reply-acts .chat-turn { font-size: 12px; color: var(--muted); }
+
+/* —— 等你处理的卡片：边框呼吸 —— */
+.chat-ask { border-radius: 16px; animation: chat-ask-glow 2.6s ease-in-out infinite; }
+@keyframes chat-ask-glow { 0%, 100% { box-shadow: 0 0 0 3px var(--claude-soft), var(--shadow); } 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--claude) 6%, transparent), var(--shadow); } }
+
+/* —— 输入框：毛玻璃；Claude 在忙时边缘有一圈流动的光 —— */
+.chat-main::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 26px; background: linear-gradient(transparent, var(--bg)); pointer-events: none; z-index: 1; }
+.chat-input-box {
+  position: relative;
+  border-radius: 22px;
+  background: color-mix(in srgb, var(--panel) 88%, transparent);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2); backdrop-filter: blur(14px) saturate(1.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 10px 30px -12px rgba(0, 0, 0, .18);
+  transition: box-shadow .3s, border-color .3s;
+}
+.chat-input-box:focus-within { border-color: color-mix(in srgb, var(--claude) 45%, var(--line)); box-shadow: 0 0 0 4px var(--claude-soft), 0 10px 30px -12px rgba(0, 0, 0, .18); }
+@property --chat-angle { syntax: "<angle>"; initial-value: 0deg; inherits: false; }
+.chat-composer[data-running] .chat-input-box { box-shadow: 0 12px 36px -12px color-mix(in srgb, var(--claude) 55%, transparent); }
+.chat-composer[data-running] .chat-input-box::before {
+  content: ""; position: absolute; inset: -1px; border-radius: inherit; padding: 1.5px; pointer-events: none;
+  background: conic-gradient(from var(--chat-angle), transparent 0deg, transparent 200deg, color-mix(in srgb, var(--claude) 40%, transparent) 260deg, var(--claude) 320deg, transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+  animation: chat-orbit 2.6s linear infinite;
+}
+@keyframes chat-orbit { to { --chat-angle: 360deg; } }
+.chat-send { border-radius: 12px; transition: transform .15s, filter .15s; }
+.chat-send.btn-primary:not(:disabled) { background: linear-gradient(135deg, color-mix(in srgb, var(--claude) 80%, #fff), var(--claude) 60%); box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--claude) 70%, transparent); }
+.chat-send:not(:disabled):hover { transform: translateY(-1px); }
+.chat-send.btn-primary:disabled { opacity: .35; }
+/* 推荐回复在输入框里是灰字，右上角一枚 Tab */
+.chat-suggest-key { position: absolute; top: 10px; right: 12px; border: 0; background: none; padding: 0; cursor: pointer; }
+.chat-suggest-key kbd { font: 11px var(--mono); padding: 1px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; color: var(--muted); background: var(--panel); }
+.chat-input-box:has(.chat-suggest-key) textarea { padding-right: 52px; }
+
+/* —— 右上角的面板开关、回到底部：浮在内容上的玻璃按钮 —— */
+.chat-side-toggle, .chat-to-bottom {
+  background: color-mix(in srgb, var(--panel) 75%, transparent) !important;
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  border: 1px solid color-mix(in srgb, var(--line) 80%, transparent) !important;
+  box-shadow: 0 4px 16px -6px rgba(0, 0, 0, .2);
+}
+.chat-side-toggle { position: absolute; top: 10px; right: 14px; z-index: 3; width: 34px !important; min-height: 34px !important; border-radius: 11px; color: var(--muted); }
+.chat-side-toggle:hover, .chat-side-toggle[aria-pressed="true"] { color: var(--text); }
+.chat-to-bottom { z-index: 3; transition: transform .15s; }
+.chat-to-bottom:hover { transform: translateY(-2px); }
+.chat-status { padding: 0 8px; }
+.chat-status[data-phase="offline"] .chat-status-dot { background: var(--danger); }
+
+/* —— 空白对话：大号的 Claude 标志 + 几个常用开头 —— */
+.chat-empty { padding: 12vh 0 24px; gap: 14px; }
+.chat-empty-mark {
+  width: 76px; height: 76px; border-radius: 24px; display: grid; place-items: center; color: #fff;
+  background: radial-gradient(circle at 30% 25%, color-mix(in srgb, var(--claude) 55%, #fff), var(--claude) 55%, color-mix(in srgb, var(--claude) 70%, #000));
+  box-shadow: 0 18px 50px -14px color-mix(in srgb, var(--claude) 80%, transparent), inset 0 1px 0 rgba(255, 255, 255, .35);
+}
+.chat-empty-mark svg { color: #fff !important; animation: spin 14s linear infinite; }
+.chat-empty-title { font-family: var(--prose); font-size: 22px; color: var(--text); max-width: 26em; line-height: 1.4; }
+.chat-starters { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 560px; }
+.chat-starter { border: 1px solid var(--line); background: color-mix(in srgb, var(--panel) 80%, transparent); color: var(--text); font: 13.5px var(--font); padding: 8px 14px; border-radius: 999px; cursor: pointer; transition: border-color .15s, transform .15s, box-shadow .15s; }
+.chat-starter:hover { border-color: color-mix(in srgb, var(--claude) 60%, var(--line)); transform: translateY(-1px); box-shadow: 0 6px 18px -8px color-mix(in srgb, var(--claude) 60%, transparent); }
+
+/* 不想要动效的人：全部停下 */
+@media (prefers-reduced-motion: reduce) {
+  .chat-view *, .chat-view *::before, .chat-view *::after { animation: none !important; transition: none !important; }
+  .chat-working .ellipsis { background: none; color: var(--muted); }
+}

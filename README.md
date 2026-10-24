@@ -51,7 +51,7 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## What's open and what's hosted
 
-This repository is the **desktop app / client** (`client/`) and the **client ↔ server protocol** (`protocol/`), under MIT. Remote access goes through the hosted Looklook service (accounts, relays, personal addresses) and needs a Looklook account. The first year is currently free.
+This repository is the **desktop app / client** (`client/`) and the **client ↔ server protocol** (`protocol/`). The client is under AGPL-3.0-or-later and the protocol under MIT (see [License](#license)). Remote access goes through the hosted Looklook service (accounts, relays, personal addresses) and needs a Looklook account. The first year is currently free.
 
 ## Platforms
 
@@ -96,4 +96,12 @@ Checks: `cargo test`, `cargo clippy --all-targets`, `npm run check:locales`.
 
 ## License
 
-[MIT](LICENSE). Bundled third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license covers the code only; the Looklook / 看看 name and logo are not licensed for use by forks.
+The client (`client/`) is licensed under the [GNU Affero General Public License v3.0 or later](LICENSE). If you run a modified version that people use over a network, you must offer them its source (AGPL section 13). The app's Settings page links to this repository.
+
+The protocol crate (`protocol/`) stays under [MIT](protocol/LICENSE) because the hosted service uses it too.
+
+Client releases up to and including 1.34.0 were published under MIT and stay available under MIT. All copyright holders agreed to the change.
+
+The chat view adapts parts of CloudCLI UI (https://github.com/siteboon/claudecodeui); see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+Bundled third-party components are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). The license covers the code only; the Looklook / 看看 name and logo are not licensed for use by forks.

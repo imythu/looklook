@@ -64,7 +64,8 @@ export function toolSummary(name, input = {}) {
   const i = input ?? {};
   switch (name) {
     case 'Bash':
-      return short(i.command);
+      // Claude 自己写的一句说明比命令好读；没有说明时显示命令
+      return short(i.description || i.command);
     case 'Read':
     case 'Edit':
     case 'MultiEdit':
@@ -150,16 +151,29 @@ export function diffLines(name, input = {}, extra = null) {
     const out = [];
     for (const h of patch) {
       out.push({ t: '@', text: `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@` });
+      // 行号：删掉的行是原文件的行号，其余是改后的行号
+      let o = h.oldStart;
+      let n = h.newStart;
       for (const l of h.lines ?? []) {
         const c = l[0];
-        out.push({ t: c === '+' || c === '-' ? c : ' ', text: l.slice(1) });
+        if (c === '-') out.push({ t: '-', text: l.slice(1), no: o++ });
+        else if (c === '+') out.push({ t: '+', text: l.slice(1), no: n++ });
+        else {
+          out.push({ t: ' ', text: l.slice(1), no: n++ });
+          o++;
+        }
       }
     }
     return out;
   }
   if (name === 'Edit') return lineDiff(input.old_string ?? '', input.new_string ?? '');
   if (name === 'MultiEdit') return (input.edits ?? []).flatMap((e, n) => [...(n ? [{ t: '@', text: '…' }] : []), ...lineDiff(e.old_string ?? '', e.new_string ?? '')]);
-  if (name === 'Write') return String(input.content ?? '').split('\n').map((text) => ({ t: '+', text }));
+  if (name === 'Write') {
+    // 末尾的换行不算一行
+    const lines = String(input.content ?? '').split('\n');
+    if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop();
+    return lines.map((text, i) => ({ t: '+', text, no: i + 1 }));
+  }
   return [];
 }
 
@@ -269,40 +283,21 @@ export function contentText(content) {
   return '';
 }
 
-// ---------------- 同类工具调用合成一组 ----------------
+// ---------------- 连续的工具调用合成一组 ----------------
 
-// 同一类的连续调用合成一组（默认收起，点开看每一次）。看文件和搜索算一类（Claude Code 自己也这样合并显示）。
-// 待办、提问、计划不合并：它们各自有专门的显示。
-const TOOL_CLASS = {
-  Read: 'explore',
-  NotebookRead: 'explore',
-  Grep: 'explore',
-  Glob: 'explore',
-  LS: 'explore',
-  Edit: 'edit',
-  MultiEdit: 'edit',
-  Write: 'edit',
-  NotebookEdit: 'edit',
-  Bash: 'bash',
-  BashOutput: 'bash',
-  KillShell: 'bash',
-  KillBash: 'bash',
-  WebFetch: 'web',
-  WebSearch: 'web',
-  Task: 'agent',
-  Agent: 'agent',
-};
-// 生成的图片要直接看到，不合进“调用了几次工具”的一组里
-const NO_GROUP = new Set(['TodoWrite', 'AskUserQuestion', 'ExitPlanMode', 'ImageGen']);
+// 两段文字之间连续的工具调用（看文件、搜索、命令、改动、MCP……）合成一组，默认收起，点开看每一次。
+// 子代理（有自己的步骤）、待办、提问、计划、生成的图片不合并：它们各自有专门的显示。
+const NO_GROUP = new Set(['TodoWrite', 'AskUserQuestion', 'ExitPlanMode', 'ImageGen', 'Task', 'Agent']);
+/** 改文件的工具：组的标题上合计增删行数 */
+export const EDIT_TOOLS = new Set(['Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
 
-/** 工具的类别（合并用）；不合并的返回 null。别的工具（MCP 等）按名字各成一类。 */
+/** 工具的类别（合并用）；不合并的返回 null */
 export function toolClass(name) {
-  if (NO_GROUP.has(name)) return null;
-  return TOOL_CLASS[name] ?? `tool:${name}`;
+  return NO_GROUP.has(name) ? null : 'work';
 }
 
 /**
- * 把条目展开成要显示的行：assistant 回复拆成文字、思考、工具调用，连续的同类工具调用合成一组。
+ * 把条目展开成要显示的行：assistant 回复拆成文字、思考、工具调用，连续的工具调用合成一组。
  * 结果已经画在工具卡片里的 tool_result（`used` 里有它的调用）不单独成行，也不打断分组。
  * 行：{ k: 'item', item } | { k: 'text' | 'thinking' | 'unknown', block } | { k: 'tool', block } | { k: 'group', cls, calls: [block] }
  */

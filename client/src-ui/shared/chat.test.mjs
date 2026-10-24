@@ -27,6 +27,7 @@ test('tool results pair with tool uses', () => {
 
 test('summaries', () => {
   assert.equal(toolSummary('Bash', { command: 'ls  -la\n' }), 'ls -la');
+  assert.equal(toolSummary('Bash', { command: 'ls -la', description: 'List files' }), 'List files');
   assert.equal(toolSummary('Edit', { file_path: '/home/a/proj/src/main.rs' }), 'src/main.rs');
   assert.equal(toolSummary('mcp__looklook__ensure_mapping', { port: 5173, name: 'web' }), 'web');
   assert.equal(toolSummary('TodoWrite', { todos: [{ status: 'completed' }, { status: 'pending' }] }), '1/2');
@@ -39,6 +40,10 @@ test('diffs', () => {
   const p = diffLines('Edit', {}, { structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b', ' c'] }] });
   assert.deepEqual(p.map((l) => l.t), ['@', '-', '+', ' ']);
   assert.equal(diffLines('Write', { content: 'x\ny' }).length, 2);
+  assert.equal(diffLines('Write', { content: 'x\ny\n' }).length, 2);
+  assert.deepEqual(diffLines('Write', { content: 'x\ny' }).map((l) => l.no), [1, 2]);
+  const patch = [{ oldStart: 3, oldLines: 2, newStart: 3, newLines: 2, lines: [' a', '-b', '+c'] }];
+  assert.deepEqual(diffLines('Edit', {}, { structuredPatch: patch }).map((l) => `${l.t}${l.no ?? ''}`), ['@', ' 3', '-4', '+4']);
 });
 
 test('todos, slash commands, answers', () => {
@@ -54,7 +59,7 @@ test('todos, slash commands, answers', () => {
   assert.deepEqual(questionAnswers(qs, { 0: { labels: ['红'] }, 1: { labels: ['苹果'], other: '梨' } }), { '颜色？': '红', '水果？': '苹果, 梨' });
 });
 
-test('consecutive tool calls of the same kind are grouped', () => {
+test('consecutive tool calls are grouped', () => {
   const use = (id, name) => ({ t: 'tool_use', id, name, input: {} });
   const res = (id) => ({ k: 'tool_result', key: `r${id}`, tool_use_id: id });
   const items = [
@@ -70,13 +75,13 @@ test('consecutive tool calls of the same kind are grouped', () => {
     { k: 'tool_result', key: 'orphan', tool_use_id: 'gone' },
   ];
   const rows = chatRows(items);
-  assert.deepEqual(rows.map((r) => r.k), ['item', 'text', 'group', 'tool', 'tool', 'tool', 'text', 'item']);
-  assert.deepEqual(rows[2].calls.map((c) => c.id), ['1', '2', '3']);
+  assert.deepEqual(rows.map((r) => r.k), ['item', 'text', 'group', 'tool', 'tool', 'text', 'item']);
+  assert.deepEqual(rows[2].calls.map((c) => c.id), ['1', '2', '3', '4']);
   assert.equal(rows[2].key, 'g:1');
-  assert.deepEqual(toolCounts(rows[2].calls), [['Read', 2], ['Grep', 1]]);
-  // 一个单独的调用不成组
-  assert.equal(rows[3].block.name, 'Edit');
-  assert.equal(rows[4].block.name, 'TodoWrite');
+  assert.deepEqual(toolCounts(rows[2].calls), [['Read', 2], ['Grep', 1], ['Edit', 1]]);
+  // 待办不合并，打断了分组；后面单独一个调用不成组
+  assert.equal(rows[3].block.name, 'TodoWrite');
+  assert.equal(rows[4].block.name, 'Bash');
 });
 
 test('model labels', () => {

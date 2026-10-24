@@ -22,7 +22,7 @@ import { useRouter } from '../shared/router.jsx';
 import { shouldRemind, UpdateCheck } from '../shared/Update.jsx';
 import { Card, ErrorNote, Field, useLoad } from '../shared/ui.jsx';
 
-// 开源仓库（MIT）
+// 开源仓库（客户端 AGPL-3.0-or-later）
 const SOURCE_URL = 'https://github.com/imythu/looklook';
 
 const SYSTEM_CJK = '"PingFang SC", "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans Mono CJK SC", "Noto Sans CJK SC", monospace';
@@ -259,7 +259,7 @@ export default function Settings() {
             <dd className="mono">{status.account.server}</dd>
             <dt>{t('settings.source')}</dt>
             <dd>
-              <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">github.com/imythu/looklook</a> · MIT
+              <a href={SOURCE_URL} target="_blank" rel="noopener noreferrer">github.com/imythu/looklook</a> · AGPL-3.0
             </dd>
           </dl>
           <UpdateCheck />
