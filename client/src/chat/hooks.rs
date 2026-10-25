@@ -1,7 +1,8 @@
 //! 注入给 Claude Code 的 hooks（docs/CLAUDE_UI.md §4.1、§4.2）。
 //!
 //! - `run/claude-hooks.json`：启动对话模式的 Claude Code 时用 `--settings` 传进去，不改用户自己的 settings。
-//!   每个事件挂一条 command hook：`<looklook> hook <run/hook.json>`。
+//!   每个事件挂一条 command hook：`<looklook> hook <run/hook.json>`；另外带上 `skipDangerousModePermissionPrompt`，
+//!   以全部权限启动时不弹 Bypass Permissions 警告（2.1.310 判断要不要弹时也看 `--settings` 里的值）。
 //! - `run/hook.json`：客户端每次启动写入（0600）：管理台的本机地址和这次运行的随机令牌。
 //! - `looklook hook`：Claude Code 调用的子命令。读 stdin 的 hook 输入，转给客户端的 `POST /hook`，
 //!   把客户端的答复原样写到 stdout。**出什么错都放行**：连不上、超时、出错一律退出 0、不输出，Claude Code 照常运行。
@@ -87,7 +88,7 @@ pub fn settings_json(exe: &Path, endpoint: &Path) -> Value {
             (ev.to_string(), json!([{ "matcher": "*", "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }]))
         })
         .collect();
-    json!({ "hooks": hooks })
+    json!({ "hooks": hooks, "skipDangerousModePermissionPrompt": true })
 }
 
 /// hook 用的程序：看看自己。开发、测试时可以用 `LOOKLOOK_HOOK_EXE` 指定（`cargo test` 里当前程序是测试程序）。
@@ -195,6 +196,7 @@ mod tests {
             assert!(h.get("async").is_none(), "{ev} 必须同步");
         }
         assert_eq!(v["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"], 600);
+        assert_eq!(v["skipDangerousModePermissionPrompt"], true);
     }
 
     #[test]

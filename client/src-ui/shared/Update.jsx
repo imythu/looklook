@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useStatus, webUrl } from '../App.jsx';
 import { api } from './api.js';
+import { deviceName, useDevices } from './devices.jsx';
 import { errorText } from './i18n.js';
 import { formatTime } from './time.js';
 import { Button, ErrorNote, Modal, Note, Switch, useAction, useToast } from './ui.jsx';
@@ -60,6 +61,20 @@ export function shouldRemind(u) {
 async function dismissVersion(version, toast, t) {
   markClosed(`dismiss:${version}`);
   await api.post('/update/dismiss', { version }).catch((e) => toast?.(errorText(t, e), 'error'));
+}
+
+/**
+ * 远程打开（看看网页、远程域名）或能切换电脑时，提醒说的是哪台电脑的看看：横幅前面带上它的名字。
+ * 在这台电脑上本机打开时不带（就是这台）。
+ */
+function DeviceLabel() {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const devices = useDevices();
+  if (status.access === 'local' && !devices.multi) return null;
+  const d = devices.multi ? devices.byId(devices.selected) : devices.items[0];
+  const name = d ? deviceName(t, d) : status.settings?.device_name;
+  return name ? <b>{t('update.on_device', { name })}</b> : null;
 }
 
 const DialogCtx = createContext(() => {});
@@ -262,6 +277,7 @@ export function UpdateBanner() {
       <div className="banner banner-info" role="status" aria-live="polite">
         <RefreshCw size={18} aria-hidden="true" className="spin" style={{ flex: 'none' }} />
         <span className="grow">
+          <DeviceLabel />
           {t('update.banner_progress', { version: job.version || u.version || '' })} · {progressText(t, job)}
           {slow && <span style={{ display: 'block' }}>{t('update.slow_restart')}</span>}
         </span>
@@ -285,7 +301,10 @@ export function UpdateBanner() {
   return (
     <div className={`banner ${u.required ? 'banner-warn' : 'banner-info'}`}>
       <Sparkles size={18} aria-hidden="true" style={{ flex: 'none', marginTop: 2 }} />
-      <span className="grow">{t(u.required ? 'gate.update_required' : 'gate.update', { version: u.version })}</span>
+      <span className="grow">
+        <DeviceLabel />
+        {t(u.required ? 'gate.update_required' : 'gate.update', { version: u.version })}
+      </span>
       <Button variant="ghost" onClick={openUpdate}>
         {t('update.view')}
       </Button>
@@ -317,7 +336,10 @@ export function JustUpdatedBanner() {
   return (
     <div className="banner banner-ok" role="status">
       <CheckCircle2 size={18} aria-hidden="true" style={{ flex: 'none', marginTop: 2 }} />
-      <span className="grow">{t(j.auto ? 'update.just_updated_auto' : 'update.just_updated', { from: j.from, version: status.version })}</span>
+      <span className="grow">
+        <DeviceLabel />
+        {t(j.auto ? 'update.just_updated_auto' : 'update.just_updated', { from: j.from, version: status.version })}
+      </span>
       {j.notes && (
         <Button variant="ghost" onClick={() => setOpen(true)}>
           {t('update.whats_new')}

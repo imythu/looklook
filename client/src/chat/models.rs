@@ -311,7 +311,13 @@ pub async fn refresh_limits(shell: &str, config_dir: &Path, account_dir: Option<
         }
         m.insert(config_dir.to_path_buf(), Instant::now());
     }
-    let Some(cli) = crate::agents::claude_cli(shell).await else { return };
+    let _ = fetch_limits(shell, config_dir, account_dir, cwd).await;
+}
+
+/// 跑一次 `claude -p /usage`（不限频率），取到的记下来。`Ok(true)` 取到了；`Ok(false)` 跑完了但输出里没有用量
+/// （没登录或登录失效、用的是 API Key、旧版 Claude Code 没有 `usage_report`）；`Err` 没装 Claude Code、超时或出错。
+pub async fn fetch_limits(shell: &str, config_dir: &Path, account_dir: Option<&Path>, cwd: &Path) -> Result<bool, ()> {
+    let Some(cli) = crate::agents::claude_cli(shell).await else { return Err(()) };
     let _ = std::fs::create_dir_all(cwd);
     let env: Vec<(&str, Option<&std::ffi::OsStr>)> = account_dir.map(|d| ("CLAUDE_CONFIG_DIR", Some(d.as_os_str()))).into_iter().collect();
     let args = ["-p", "/usage", "--no-session-persistence", "--strict-mcp-config", "--output-format", "stream-json", "--verbose"];
@@ -321,10 +327,17 @@ pub async fn refresh_limits(shell: &str, config_dir: &Path, account_dir: Option<
         Ok(Ok(out)) if out.status.success() => match parse_usage_report(&String::from_utf8_lossy(&out.stdout)) {
             Some((five, seven)) => {
                 REPORTED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(config_dir.to_path_buf(), (crate::util::system_ms(), five, seven));
+                Ok(true)
             }
-            None => tracing::debug!("claude -p /usage 的输出里没有用量（旧版 Claude Code 没有 usage_report），只能读 .claude.json"),
+            None => {
+                tracing::debug!("claude -p /usage 的输出里没有用量（没登录、登录失效，或旧版 Claude Code 没有 usage_report），只能读 .claude.json");
+                Ok(false)
+            }
         },
-        r => tracing::debug!(result = ?r.map(|o| o.map(|o| o.status)), "claude -p /usage 没有成功"),
+        r => {
+            tracing::debug!(result = ?r.map(|o| o.map(|o| o.status)), "claude -p /usage 没有成功");
+            Err(())
+        }
     }
 }
 

@@ -762,19 +762,6 @@ impl Chat {
             Some(_) => self.instances.screen(&inst.id).await,
             None => None,
         };
-        // 首次启动的引导（选主题、安全提示）：用户不关心，替他按掉。按完停 1.5 秒再看屏幕，
-        // 免得读到还没重绘的旧画面多按一次回车（下一屏信任目录默认选中的是“No, exit”）
-        if let Some(key) = capture.as_deref().filter(|_| inst.agent.launch() == "claude").and_then(screen::onboarding) {
-            {
-                let mut st = lock(&inst.st);
-                if st.hold.is_some_and(|h| h > Instant::now()) {
-                    return;
-                }
-                st.hold = Some(Instant::now() + Duration::from_millis(1500));
-            }
-            let _ = self.instances.send_keys(&inst.id, &[key]).await;
-            return;
-        }
         // 在运行、但不是带着看看的 hooks 启动的（开启对话界面之前就开着的、在终端里手动开的）
         let unhooked = running == Some(Some(false));
         let screen = capture.as_deref().map(|c| inst.agent.classify(c));
@@ -2350,7 +2337,9 @@ mod tests {
         let _ = std::fs::remove_file(format!("{dir}/chat-e2e.txt"));
     }
 
-    /// 端到端：空的配置目录首次启动，选主题、安全提示由对话界面自己按掉，测试只替用户信任目录；不发消息，不用额度。
+    /// 端到端：空的配置目录、没信任过的文件夹、全部权限首次启动：启动前已按官方文档写成都确认过了
+    /// （claude_profiles::skip_first_run），选主题、安全提示、信任目录、Bypass 警告都不出现，直接到输入框。不发消息，不用额度。
+    /// `CHAT_E2E_DIR` 可以是普通文件夹、git 仓库里的子目录，或者家目录（同时把 `HOME` 设成它）：都是写工作目录本身。
     /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_onboarding -- --ignored --nocapture`
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
@@ -2380,8 +2369,7 @@ mod tests {
         instances.ensure_session(&row).await.unwrap();
         let (_rx, viewer) = chat.subscribe(&id).unwrap();
         let mut seen = Vec::new();
-        let mut trusted = false;
-        for _ in 0..60 {
+        for _ in 0..30 {
             tokio::time::sleep(Duration::from_millis(1000)).await;
             let raw = instances.screen(&id).await.unwrap_or_default();
             let cap = raw.lines().map(|l| screen::strip(l).0).collect::<Vec<_>>().join("\n");
@@ -2390,25 +2378,23 @@ mod tests {
                     seen.push(k);
                 }
             }
-            // 信任目录、Bypass Permissions 警告：和界面一样，从状态里拿弹窗，用户点“是”
-            let s = chat.snapshot(&id).await.unwrap();
-            let d = &s["status"]["dialog"];
-            if s["status"]["phase"] == "tui" && d.is_object() {
-                let opts: Vec<&str> = d["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
-                println!("弹窗：{} {opts:?}", d["title"]);
-                assert!(!d.to_string().contains("]8;"), "说明里不能带转义：{d}");
-                let yes = opts.iter().position(|o| o.starts_with("Yes")).unwrap();
-                let _ = chat.dialog_choose(&id, d["title"].as_str().unwrap(), opts[yes], yes).await;
-                trusted = true;
-            } else if trusted && matches!(screen::classify(&raw), Screen::Input { .. }) {
+            if matches!(screen::classify(&raw), Screen::Input { .. }) {
                 break;
             }
         }
-        println!("看到过：{seen:?}\n---- 屏幕\n{}", instances.screen(&id).await.unwrap_or_default().lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));
-        assert_eq!(seen[..3], ["theme", "security", "trust"]);
+        println!("---- 屏幕\n{}", instances.screen(&id).await.unwrap_or_default().lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));
+        assert!(seen.is_empty(), "不该出现确认：{seen:?}");
         assert!(matches!(screen::classify(&instances.screen(&id).await.unwrap()), Screen::Input { .. }), "到了输入框");
         let state: Value = serde_json::from_slice(&std::fs::read(cfg.path().join(".claude.json")).unwrap()).unwrap();
         assert_eq!(state["hasCompletedOnboarding"], true);
+        let key = std::fs::canonicalize(&dir).unwrap().display().to_string();
+        assert_eq!(state["projects"][&key]["hasTrustDialogAccepted"], true, "{}", state["projects"]);
+        assert_eq!(state["theme"], "auto");
+        // 看看不写用户设置（Bypass 警告靠 `--settings` 传的 skipDangerousModePermissionPrompt）；
+        // 用户设置里没选过主题时，Claude Code 启动时自己把 `.claude.json` 里的 `theme` 迁过去
+        let settings: Value = std::fs::read(cfg.path().join("settings.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        assert!(settings.get("skipDangerousModePermissionPrompt").is_none(), "{settings}");
+        assert!(settings.get("theme").is_none_or(|t| t == "auto"), "{settings}");
         drop(viewer);
         instances.stop(&id).await.unwrap();
     }
@@ -2472,7 +2458,7 @@ mod tests {
         let texts = |s: &Value| -> String {
             s["items"].as_array().unwrap().iter().filter(|i| i["k"] == "assistant").map(|i| i.to_string()).collect::<Vec<_>>().join("\n")
         };
-        // 首次启动的引导：主题、安全提示由对话界面自己按掉（screen::onboarding），这里只替用户信任目录
+        // 启动时的确认已经在启动前跳过（claude_profiles::skip_first_run）；万一还有信任目录，替用户点
         for _ in 0..60 {
             let s = chat.snapshot(&id).await.unwrap();
             if s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle" {

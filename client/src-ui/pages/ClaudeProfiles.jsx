@@ -1,13 +1,15 @@
 // 设置 → Claude Code 账号：本机默认账号、另外登录的官方账号、第三方接口（Anthropic 官方格式），选一个当默认。
 // 新建的会话用默认的（开始页可以另选），之后切换默认不影响已经建好的会话。
 // 官方账号的登录由 Claude Code 自己完成（后台运行 `claude auth login`，界面显示授权页地址、收授权码），看看不经手令牌。
-import { Check, ExternalLink, KeyRound, LogIn, Plus, Server, UserRound } from 'lucide-react';
+import { Check, ExternalLink, Gauge, KeyRound, LogIn, Plus, Server, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
+import { errorText } from '../shared/i18n.js';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
+import { formatTime } from '../shared/time.js';
 import { Button, Card, CopyButton, ErrorNote, Field, FoldNote, Modal, Note, PasswordInput, Skeleton, Spinner, useAction, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { Disclaimer, ProviderLogo } from './ModelProviders.jsx';
 
@@ -24,13 +26,12 @@ function KindIcon({ p, size = 15 }) {
   return <Icon size={size} aria-hidden="true" />;
 }
 
-/** 官方账号的登录状态：每个单独问（`claude auth status` 要一两秒） */
-function LoginStatus({ id, nonce }) {
+/** 官方账号的登录状态：每个单独问（`claude auth status` 要一两秒）。`expired`：查用量时发现登录失效了 */
+function LoginStatus({ s, err, expired }) {
   const { t } = useTranslation();
-  const [s, err] = useLoad(() => api.get(`/claude-profiles/${id}/status`), [id, nonce]);
   if (err || s?.error) return <span className="muted">{t(s?.error === 'not_installed' ? 'cprof.not_installed' : 'cprof.status_failed')}</span>;
   if (!s) return <span className="muted">{t('cprof.checking')}</span>;
-  if (!s.logged_in) return <span className="cprof-warn">{t('cprof.logged_out')}</span>;
+  if (!s.logged_in) return <span className="cprof-warn">{t(expired ? 'cprof.expired' : 'cprof.logged_out')}</span>;
   // 本机默认账号也可能是环境变量里的 Key（authMethod 不是 claude.ai）
   const who = s.email || (s.auth_method && s.auth_method !== 'claude.ai' ? t(`cprof.auth.${s.auth_method}`, { defaultValue: s.auth_method }) : '');
   return (
@@ -39,6 +40,22 @@ function LoginStatus({ id, nonce }) {
       {s.plan && <span className="muted"> · {String(s.plan).replace(/^\w/, (c) => c.toUpperCase())}</span>}
     </span>
   );
+}
+
+/** 查到的订阅用量：“5 小时 5% · 7 天 91%”，用得多的标黄，重置时间放在提示里 */
+function UsageLine({ limits }) {
+  const { t } = useTranslation();
+  const wins = [
+    ['usage_5h', limits?.five_hour],
+    ['usage_7d', limits?.seven_day],
+  ].filter(([, w]) => w);
+  if (!wins.length) return <span className="muted">{t('cprof.usage_empty')}</span>;
+  return wins.map(([key, w], i) => (
+    <span key={key} className={w.used > 85 ? 'cprof-warn' : 'muted'} title={w.resets_at ? t('cprof.usage_reset', { at: formatTime(w.resets_at) }) : undefined}>
+      {i > 0 && ' · '}
+      {t(`cprof.${key}`, { used: Math.round(w.used) })}
+    </span>
+  ));
 }
 
 /**
@@ -302,6 +319,101 @@ function ApiForm({ initial, accepted, onClose, onSaved }) {
   );
 }
 
+/**
+ * 一个账号。官方账号：已登录时按钮是“查用量”（请 Claude Code 去取，顺便确认登录状态；登录失效就提示重新登录），
+ * 没登录时是“登录”，“重新登录”在更多菜单里。
+ */
+function ProfileRow({ p, isDefault, busy, nonce, onDefault, onLogin, onEdit, onRemove }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const official = p.kind === 'official';
+  const [loaded, err] = useLoad(() => (official ? api.get(`/claude-profiles/${p.id}/status`) : Promise.resolve(null)), [p.id, nonce]);
+  // 查用量时顺便拿到的登录状态比上面问到的新；重新问过之后以问到的为准
+  const [fresh, setFresh] = useState(null);
+  useEffect(() => setFresh(null), [loaded]);
+  const s = fresh ?? loaded;
+  const [usage, setUsage] = useState(null);
+  const q = useAction();
+  const queryUsage = async () => {
+    const r = await q.run(() => api.post(`/claude-profiles/${p.id}/usage`, {}));
+    if (!r) return;
+    if (r.status && !r.status.error) setFresh(r.status);
+    setUsage(r.state === 'ok' ? r : r.state === 'logged_out' ? { state: 'logged_out' } : null);
+    if (r.state === 'logged_out') toast(t('cprof.expired_toast', { name: profileName(t, p) }), 'error');
+    else if (r.state === 'no_limits') toast(t('cprof.usage_none'), 'error');
+    else if (r.state === 'failed') toast(t('cprof.usage_failed'), 'error');
+  };
+  useEffect(() => {
+    if (q.error) toast(errorText(t, q.error), 'error');
+  }, [q.error]);
+  const loggedIn = Boolean(s?.logged_in);
+  return (
+    <li className={isDefault ? 'cprof-default' : ''}>
+      <button
+        type="button"
+        className="cprof-radio"
+        role="radio"
+        aria-checked={isDefault}
+        disabled={busy}
+        onClick={() => !isDefault && onDefault(p)}
+        title={isDefault ? t('cprof.is_default') : t('cprof.make_default')}
+        aria-label={`${profileName(t, p)} · ${isDefault ? t('cprof.is_default') : t('cprof.make_default')}`}
+      />
+      <span className="grow" style={{ minWidth: 0 }}>
+        <b className="cprof-name">
+          <KindIcon p={p} />
+          <span className="ellipsis">{profileName(t, p)}</span>
+          {isDefault && <span className="badge badge-ok">{t('cprof.default')}</span>}
+        </b>
+        <span className="small" style={{ display: 'block' }}>
+          {official ? (
+            <LoginStatus s={s} err={err} expired={usage?.state === 'logged_out'} />
+          ) : (
+            <>
+              <span className="mono muted ellipsis">{p.base_url}</span>
+              {p.models?.main && <span className="muted"> · {p.models.main}</span>}
+              {!p.key_set && (
+                <span className="cprof-warn">
+                  {' '}
+                  · <KeyRound size={13} style={{ verticalAlign: '-2px' }} /> {t('cprof.no_key')}
+                </span>
+              )}
+            </>
+          )}
+        </span>
+        {official && loggedIn && usage?.state === 'ok' && (
+          <span className="small" style={{ display: 'block' }}>
+            <UsageLine limits={usage.limits} />
+          </span>
+        )}
+      </span>
+      <span className="inline">
+        {official &&
+          (loggedIn || !s ? (
+            <Button variant="ghost" icon={Gauge} onClick={queryUsage} busy={q.busy} disabled={busy || !s} title={t('cprof.usage_hint')}>
+              {t('cprof.usage')}
+            </Button>
+          ) : (
+            <Button variant="ghost" icon={LogIn} onClick={() => onLogin(p)} disabled={busy}>
+              {t('cprof.login')}
+            </Button>
+          ))}
+        {(p.id !== 'official' || loggedIn) && (
+          <PopMenu
+            label={t('action.more')}
+            items={[
+              official && loggedIn && { icon: LogIn, label: t('cprof.relogin'), onClick: () => onLogin(p) },
+              p.id !== 'official' && !isDefault && { icon: Check, label: t('cprof.make_default'), onClick: () => onDefault(p) },
+              p.id !== 'official' && { label: t(p.kind === 'api' ? 'cprof.edit' : 'cprof.rename'), onClick: () => onEdit(p) },
+              p.id !== 'official' && { label: t('action.delete'), danger: true, onClick: () => onRemove(p) },
+            ]}
+          />
+        )}
+      </span>
+    </li>
+  );
+}
+
 export default function ClaudeProfilesCard() {
   const { t } = useTranslation();
   const confirm = useConfirm();
@@ -369,63 +481,19 @@ export default function ClaudeProfilesCard() {
         {!data && !error && <Skeleton height={96} />}
         {data && (
           <ul className="list cprof-list">
-            {data.profiles.map((p) => {
-              const isDefault = p.id === data.default;
-              return (
-                <li key={p.id} className={isDefault ? 'cprof-default' : ''}>
-                  <button
-                    type="button"
-                    className="cprof-radio"
-                    role="radio"
-                    aria-checked={isDefault}
-                    disabled={busy}
-                    onClick={() => !isDefault && setDefault(p)}
-                    title={isDefault ? t('cprof.is_default') : t('cprof.make_default')}
-                    aria-label={`${profileName(t, p)} · ${isDefault ? t('cprof.is_default') : t('cprof.make_default')}`}
-                  />
-                  <span className="grow" style={{ minWidth: 0 }}>
-                    <b className="cprof-name">
-                      <KindIcon p={p} />
-                      <span className="ellipsis">{profileName(t, p)}</span>
-                      {isDefault && <span className="badge badge-ok">{t('cprof.default')}</span>}
-                    </b>
-                    <span className="small" style={{ display: 'block' }}>
-                      {p.kind === 'official' ? (
-                        <LoginStatus id={p.id} nonce={nonce} />
-                      ) : (
-                        <>
-                          <span className="mono muted ellipsis">{p.base_url}</span>
-                          {p.models?.main && <span className="muted"> · {p.models.main}</span>}
-                          {!p.key_set && (
-                            <span className="cprof-warn">
-                              {' '}
-                              · <KeyRound size={13} style={{ verticalAlign: '-2px' }} /> {t('cprof.no_key')}
-                            </span>
-                          )}
-                        </>
-                      )}
-                    </span>
-                  </span>
-                  <span className="inline">
-                    {p.kind === 'official' && (
-                      <Button variant="ghost" icon={LogIn} onClick={() => login(p)} disabled={busy}>
-                        {t('cprof.login')}
-                      </Button>
-                    )}
-                    {p.id !== 'official' && (
-                      <PopMenu
-                        label={t('action.more')}
-                        items={[
-                          !isDefault && { icon: Check, label: t('cprof.make_default'), onClick: () => setDefault(p) },
-                          { label: t(p.kind === 'api' ? 'cprof.edit' : 'cprof.rename'), onClick: () => setForm({ kind: p.kind, initial: p }) },
-                          { label: t('action.delete'), danger: true, onClick: () => remove(p) },
-                        ]}
-                      />
-                    )}
-                  </span>
-                </li>
-              );
-            })}
+            {data.profiles.map((p) => (
+              <ProfileRow
+                key={p.id}
+                p={p}
+                isDefault={p.id === data.default}
+                busy={busy}
+                nonce={nonce}
+                onDefault={setDefault}
+                onLogin={login}
+                onEdit={(x) => setForm({ kind: x.kind, initial: x })}
+                onRemove={remove}
+              />
+            ))}
           </ul>
         )}
         <p className="muted small" style={{ margin: '12px 0 0' }}>

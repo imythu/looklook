@@ -961,7 +961,14 @@ impl Instances {
             };
         }
         let env = if row.launch == "claude" {
-            crate::claude_profiles::launch_env(&self.paths.home, &crate::claude_profiles::for_instance(&self.store, &row.id))
+            let profile = crate::claude_profiles::for_instance(&self.store, &row.id);
+            let env = crate::claude_profiles::launch_env(&self.paths.home, &profile);
+            // 所有 Claude Code 的启动命令都经过这里：在账号目录建好（launch_env）之后、命令交给 tmux 之前，
+            // 把引导、信任目录写成确认过了（时机、和运行中的 Claude Code 同时写怎么办见 skip_first_run）
+            if let Err(e) = crate::claude_profiles::skip_first_run(&self.paths.home, &profile, Path::new(&row.workdir)) {
+                tracing::warn!(error = %e, "无法跳过 Claude Code 启动时的确认");
+            }
+            env
         } else {
             crate::model::launch_env(&self.store, &self.paths.home, &row.launch)
         };

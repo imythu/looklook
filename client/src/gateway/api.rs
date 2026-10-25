@@ -164,6 +164,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/claude-profiles/default", put(set_default_claude_profile))
         .route("/claude-profiles/{id}", put(update_claude_profile).delete(delete_claude_profile))
         .route("/claude-profiles/{id}/status", get(claude_profile_status))
+        .route("/claude-profiles/{id}/usage", post(claude_profile_usage))
         .route("/claude-profiles/{id}/login", get(claude_login_state).post(login_claude_profile).delete(cancel_claude_login))
         .route("/claude-profiles/{id}/login/code", post(claude_login_code))
         .route("/metrics", get(metrics))
@@ -2054,6 +2055,15 @@ async fn get_claude_profiles(State(app): State<App>) -> Json<Value> {
 async fn claude_profile_status(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
     Ok(Json(crate::claude_profiles::status(app.instances.shell(), &app.paths.home, &p).await))
+}
+
+/// 查官方账号的订阅用量（`claude -p /usage`，要几秒）；顺便给出登录状态，登录失效时界面提示重新登录
+async fn claude_profile_usage(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    if p.kind != crate::claude_profiles::Kind::Official {
+        return Err(LocalError::not_found());
+    }
+    Ok(Json(crate::claude_profiles::usage(app.instances.shell(), &app.paths.home, &p).await))
 }
 
 #[derive(Deserialize)]
