@@ -29,6 +29,19 @@ const MIGRATIONS: &[&str] = &[
     // v3：撤下“DSH（终端）”启动类型和手动指定的 AI 工具位置；已有的 DSH 终端版改成自定义命令，照样能用
     "UPDATE instances SET launch = 'custom', command = 'dsh tui' WHERE launch = 'dsh_tui';
      DELETE FROM kv WHERE key = 'tool_paths';",
+    // v4：设置在电脑之间同步（sync.rs，docs/SETTINGS_SYNC.md §4.2）
+    "CREATE TABLE sync_record (
+        collection TEXT NOT NULL,
+        id         TEXT NOT NULL,
+        value      TEXT,
+        deleted    INTEGER NOT NULL DEFAULT 0,
+        hlc        TEXT NOT NULL,
+        origin     TEXT NOT NULL,
+        seq        INTEGER NOT NULL,
+        PRIMARY KEY (collection, id)
+     );
+     CREATE INDEX sync_record_origin ON sync_record(origin, seq);
+     CREATE TABLE sync_seen (origin TEXT PRIMARY KEY, max_seq INTEGER NOT NULL);",
 ];
 
 pub struct Store {
@@ -82,6 +95,15 @@ impl Store {
     fn with<T>(&self, f: impl FnOnce(&Connection) -> rusqlite::Result<T>) -> Result<T> {
         let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         Ok(f(&conn)?)
+    }
+
+    /// 在一个事务里读写（sync.rs 用：记录与已见序号要一起改）。
+    pub fn tx<T>(&self, f: impl FnOnce(&rusqlite::Transaction<'_>) -> rusqlite::Result<T>) -> Result<T> {
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = conn.transaction()?;
+        let v = f(&tx)?;
+        tx.commit()?;
+        Ok(v)
     }
 
     // ---------- kv ----------

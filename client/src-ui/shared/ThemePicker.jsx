@@ -6,6 +6,7 @@ import { useStatus } from '../App.jsx';
 import { api } from './api.js';
 import { errorText } from './i18n.js';
 import { TERM_THEMES } from './termTheme.js';
+import { SyncMark } from './SettingsSync.jsx';
 import { Modal, useToast } from './ui.jsx';
 
 /** 一排配色小样，点一下选中。 */
@@ -44,7 +45,7 @@ export function TermThemeModal({ open, onClose }) {
   const pick = async (theme) => {
     if (theme === status.settings.theme) return;
     try {
-      await api.put('/settings', { ...status.settings, theme });
+      await api.put('/settings', { theme });
       reload();
     } catch (e) {
       toast(errorText(t, e), 'error');
@@ -52,7 +53,9 @@ export function TermThemeModal({ open, onClose }) {
   };
   return (
     <Modal open={open} onClose={onClose} title={t('term.theme')}>
-      <p className="muted small">{t('term.theme_note')}</p>
+      <p className="muted small">
+        {t('term.theme_note')} <SyncMark />
+      </p>
       <ThemePicker value={status.settings.theme} onChange={pick} />
     </Modal>
   );

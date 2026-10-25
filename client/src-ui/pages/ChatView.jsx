@@ -70,6 +70,8 @@ import {
   duration,
   EDIT_TOOLS,
   fieldKind,
+  KNOWN_DIALOGS,
+  knownDialog,
   latestTodos,
   modelLabel,
   modelView,
@@ -1165,6 +1167,15 @@ function LimitWait({ id, waiting }) {
   );
 }
 
+/** 认出来的确认框换成当前语言：回给后端的还是原文 */
+function knownText(t, { kind, path }) {
+  return {
+    title: t(`chat.known.${kind}_title`),
+    body: t(`chat.known.${kind}_body`, { path }),
+    option: (label) => (label === KNOWN_DIALOGS[kind] ? t(`chat.known.${kind}_yes`) : label === 'No, exit' ? t(`chat.known.${kind}_no`) : label),
+  };
+}
+
 function TuiDialog({ id, dialog, limit }) {
   const { t } = useT();
   const toast = useToast();
@@ -1173,6 +1184,8 @@ function TuiDialog({ id, dialog, limit }) {
   const box = useRef(null);
   const sig = dialog ? `${dialog.title}|${dialog.options.map((o) => o.label).join('|')}` : '';
   const isLimit = isLimitDialog(dialog);
+  const kd = knownDialog(dialog);
+  const known = kd ? knownText(t, kd) : null;
   useEffect(() => {
     setPick(dialog?.selected ?? 0);
   }, [sig]);
@@ -1205,11 +1218,11 @@ function TuiDialog({ id, dialog, limit }) {
   };
   return (
     <div className="chat-scrim">
-      <div className="chat-dialog" role="dialog" aria-modal="true" aria-label={dialog?.title || t('chat.dialog_title')} tabIndex={-1} ref={box} onKeyDown={onKey}>
+      <div className="chat-dialog" role="dialog" aria-modal="true" aria-label={known?.title || dialog?.title || t('chat.dialog_title')} tabIndex={-1} ref={box} onKeyDown={onKey}>
         {dialog ? (
           <>
-            <h3>{isLimit ? t('chat.limit.title') : dialog.title}</h3>
-            {dialog.body.length > 0 && <p className="chat-dialog-body">{dialog.body.join('\n').trim()}</p>}
+            <h3>{isLimit ? t('chat.limit.title') : (known?.title ?? dialog.title)}</h3>
+            {known ? <p className="chat-dialog-body">{known.body}</p> : dialog.body.length > 0 && <p className="chat-dialog-body">{dialog.body.join('\n').trim()}</p>}
             {isLimit && (
               <div className="chat-limit-when">
                 <LimitReset id={id} />
@@ -1223,7 +1236,7 @@ function TuiDialog({ id, dialog, limit }) {
                   <span className="chat-opt-dot" aria-hidden="true" />
                   <span className="chat-opt-text">
                     <b>
-                      {isLimit ? limitOption(t, o.label) : o.label}
+                      {isLimit ? limitOption(t, o.label) : known ? known.option(o.label) : o.label}
                       {o.current && <Check size={13} className="chat-opt-cur" aria-label={t('chat.dialog_current')} />}
                     </b>
                     {isLimit && o.label !== limitOption(t, o.label) && <span className="chat-note">{o.label}</span>}

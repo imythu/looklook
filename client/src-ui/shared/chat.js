@@ -265,6 +265,17 @@ export function slashAction(text) {
 }
 
 /** AskUserQuestion 的答案：{ 问题原文: 选项 label }；多选用 ", " 连起来，自己填的文字直接作为答案。 */
+/** Claude Code 启动时的两个确认框（2.1.310）：信任目录、Bypass Permissions 警告，按“是”那一项的文字认 */
+export const KNOWN_DIALOGS = { trust: 'Yes, I trust this folder', bypass: 'Yes, I accept' };
+
+/** 是认识的确认框时返回 `{ kind, path }`：`path` 是信任框说明的第一段（目录，窄屏时折成几行） */
+export function knownDialog(d) {
+  const kind = Object.keys(KNOWN_DIALOGS).find((k) => d?.options?.some((o) => o.label === KNOWN_DIALOGS[k]));
+  if (!kind) return null;
+  const end = d.body.indexOf('');
+  return { kind, path: kind === 'trust' ? d.body.slice(0, end < 0 ? 1 : end).join('') : '' };
+}
+
 export function questionAnswers(questions, picked) {
   const out = {};
   (questions ?? []).forEach((q, n) => {

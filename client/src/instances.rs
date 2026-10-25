@@ -1163,9 +1163,14 @@ impl Instances {
     // ---------------- 对话界面用的 tmux 操作（chat/mod.rs） ----------------
 
     /// 面板在复制模式（终端里用滚轮往上翻过）时，送进去的字会被当成复制模式的按键：`f`、`g`、`/` 等会在某个
-    /// 终端上弹出提示，`send-keys` 要等提示关掉才返回（看不见的终端上就一直卡着，表现为 tmux 超时）。先退出所有模式。
+    /// 终端上弹出提示，`send-keys` 要等提示关掉才返回（看不见的终端上就一直卡着，表现为 tmux 超时）。先退出复制模式。
+    /// 先问在不在复制模式、在才退出（`send-keys -X cancel`）。不能用 `copy-mode -q`：Windows 的 psmux 把它当成
+    /// “进入复制模式”，接着送的字、回车、Esc 全被复制模式吃掉——对话页发不出消息、选择框关不掉。
     async fn leave_mode(&self, target: &str) {
-        let _ = self.tmux(&["copy-mode", "-q", "-t", target]).await;
+        let in_mode = self.tmux(&["display-message", "-p", "-t", target, "#{pane_in_mode}"]).await.is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "1");
+        if in_mode {
+            let _ = self.tmux(&["send-keys", "-t", target, "-X", "cancel"]).await;
+        }
     }
 
     /// `send-keys`：`keys` 是 tmux 的按键名（`Enter`、`Escape`、`C-j`、`2` …）。
@@ -1373,13 +1378,13 @@ impl Instances {
 /// term-inject.js 从 `term_themes_js` 里取同一份（见 gateway/assets.rs）。未知名称按 `dark`。
 pub fn xterm_theme(name: &str) -> &'static str {
     match name {
-        // 潟湖（默认）：深海蓝底、米白文字、阳光黄光标，ANSI 颜色鲜亮，不是一片黑
+        // 潟湖：深海蓝底、米白文字、阳光黄光标，ANSI 颜色鲜亮，不是一片黑
         "lagoon" => r##"{"background":"#16204a","foreground":"#e9eeff","cursor":"#ffcc4d","cursorAccent":"#16204a","selectionBackground":"#34468a","black":"#1b2550","red":"#ff6b81","green":"#4ee2a0","yellow":"#ffcc4d","blue":"#6aa8ff","magenta":"#d68cff","cyan":"#3fd8f2","white":"#dfe6ff","brightBlack":"#7182c4","brightRed":"#ff8fa0","brightGreen":"#7cf0bd","brightYellow":"#ffdb7a","brightBlue":"#93c1ff","brightMagenta":"#e4adff","brightCyan":"#7ae6f7","brightWhite":"#ffffff"}"##,
         // 落日：梅子紫底、橘粉光标
         "sunset" => r##"{"background":"#2b1736","foreground":"#fbeaf0","cursor":"#ff8a5c","cursorAccent":"#2b1736","selectionBackground":"#5a3170","black":"#3a2046","red":"#ff6b8b","green":"#9ee37d","yellow":"#ffc857","blue":"#7fb2ff","magenta":"#ff7ad9","cyan":"#5ee0d0","white":"#f0dbe6","brightBlack":"#9a78a8","brightRed":"#ff94ab","brightGreen":"#bdf09f","brightYellow":"#ffd986","brightBlue":"#a8cbff","brightMagenta":"#ff9fe5","brightCyan":"#8cecdf","brightWhite":"#ffffff"}"##,
         // 薄荷：浅薄荷底、翠绿光标
         "mint" => r##"{"background":"#f2fbf7","foreground":"#15352b","cursor":"#00a676","cursorAccent":"#ffffff","selectionBackground":"#c6eedd","black":"#15352b","red":"#e5484d","green":"#0f9d58","yellow":"#c27c00","blue":"#2563eb","magenta":"#b5179e","cyan":"#0891b2","white":"#c9dcd4","brightBlack":"#6b8f82","brightRed":"#ff5f63","brightGreen":"#18b36b","brightYellow":"#db9200","brightBlue":"#3b82f6","brightMagenta":"#d02bb5","brightCyan":"#06a6c9","brightWhite":"#ffffff"}"##,
-        // 橘子汽水：奶油白底、橘色光标
+        // 橘子汽水（默认）：奶油白底、橘色光标
         "tangerine" => r##"{"background":"#fff7ee","foreground":"#3a2414","cursor":"#ff6a1f","cursorAccent":"#ffffff","selectionBackground":"#ffd7b5","black":"#3a2414","red":"#e53935","green":"#2e9e44","yellow":"#c77700","blue":"#1e6fe0","magenta":"#c2185b","cyan":"#00897b","white":"#e8d6c6","brightBlack":"#9a7a64","brightRed":"#ff5a4e","brightGreen":"#3cb85a","brightYellow":"#e08f00","brightBlue":"#3d86f5","brightMagenta":"#e0337a","brightCyan":"#00a493","brightWhite":"#ffffff"}"##,
         // AI 助手命令行风格：暖色的近黑背景、米白文字、陶土橙光标与强调色，ANSI 颜色压低饱和度，长时间看不累
         "agent" => r##"{"background":"#1a1915","foreground":"#e8e4dc","cursor":"#d97757","cursorAccent":"#1a1915","selectionBackground":"#4a3f37","selectionForeground":"#faf8f3","black":"#24221e","red":"#e06c5a","green":"#8fbf7a","yellow":"#e3b35c","blue":"#7aa2d6","magenta":"#c48bc9","cyan":"#6fbfb5","white":"#d8d3c8","brightBlack":"#6e6a61","brightRed":"#ef8a76","brightGreen":"#a9d394","brightYellow":"#f0c97e","brightBlue":"#9dbde6","brightMagenta":"#d8a8dc","brightCyan":"#92d6cd","brightWhite":"#faf8f3"}"##,
@@ -1388,7 +1393,7 @@ pub fn xterm_theme(name: &str) -> &'static str {
     }
 }
 
-/// 所有配色的 xterm.js `theme`，写成 `{"lagoon":{…},…}`，给 term-inject.js 换配色用。
+/// 所有配色的 xterm.js `theme`，写成 `{"tangerine":{…},…}`，给 term-inject.js 换配色用。
 pub fn term_themes_js() -> String {
     let items: Vec<String> = crate::settings::THEMES.iter().map(|n| format!("\"{n}\":{}", xterm_theme(n))).collect();
     format!("{{{}}}", items.join(","))

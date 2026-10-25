@@ -33,6 +33,12 @@ fn is_rule(line: &str) -> bool {
     n >= 20 && n * 10 >= line.trim().chars().count() * 9
 }
 
+/// 输入框上沿：Claude Code 会把会话标题写进这条横线（`──── 标题 ─`），标题长或终端窄（手机）时
+/// `─` 被挤得只剩结尾一个（` 标题… ─`）。认不出来就当成“在等你选择”了。
+fn is_top_rule(line: &str) -> bool {
+    is_rule(line) || line.trim_end().ends_with(" ─")
+}
+
 /// `capture-pane -p -e` 的输出（带 SGR 转义）：去掉转义，同时记下哪些字符是“暗淡”（推荐提示）的。
 /// 光标（反色的一个字）压在推荐提示的第一个字上时（2.1.310：`❯ ␛[7mm␛[0;2make median…`），这个字跟着后面算暗淡。
 pub(super) fn strip(line: &str) -> (String, String) {
@@ -44,6 +50,15 @@ pub(super) fn strip(line: &str) -> (String, String) {
     let mut chars = line.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
+            // OSC（链接 `␛]8;;url␛\`）：到 BEL 或 `␛\` 为止整段去掉
+            if chars.peek() == Some(&']') {
+                while let Some(p) = chars.next() {
+                    if p == '\x07' || (p == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+                continue;
+            }
             if chars.peek() == Some(&'[') {
                 chars.next();
                 let mut params = String::new();
@@ -108,7 +123,7 @@ pub fn classify(capture: &str) -> Screen {
         return Screen::Modal;
     }
     // 往上找输入框上沿的横线（输入框最多 20 行）
-    let Some(top) = lines[..bottom].iter().rposition(|(p, _)| is_rule(p)) else { return Screen::Modal };
+    let Some(top) = lines[..bottom].iter().rposition(|(p, _)| is_top_rule(p)) else { return Screen::Modal };
     if bottom - top < 2 || bottom - top > 21 {
         return Screen::Modal;
     }
@@ -422,6 +437,21 @@ pub fn limit_wait(capture: &str) -> Option<String> {
     })
 }
 
+/// Claude Code 首次启动的引导里用户不关心的两屏：选主题（选“跟随终端”）、安全提示。返回要按的键；
+/// 光标还没到“Auto”时按 Up（第一项，到顶不会绕回去），到了按 Enter。信任目录、登录不在这里，要用户自己选。
+pub fn onboarding(capture: &str) -> Option<&'static str> {
+    if classify(capture) != Screen::Modal {
+        return None;
+    }
+    let lines: Vec<String> = capture.lines().map(|l| strip(l).0).collect();
+    let has = |s: &str| lines.iter().any(|l| l.contains(s));
+    if has("Choose the text style") {
+        let sel = lines.iter().find(|l| l.trim_start().starts_with('❯'))?;
+        return Some(if sel.contains("Auto (match terminal)") { "Enter" } else { "Up" });
+    }
+    (has("Security notes:") && has("Press Enter to continue")).then_some("Enter")
+}
+
 /// 选项前面的编号（`1. `、`12.  `）：返回编号后面的文字
 fn numbered(t: &str) -> Option<&str> {
     let (n, rest) = t.split_once('.')?;
@@ -545,6 +575,24 @@ mod tests {
         // 多行输入
         let s = format!("{RULE}\n❯ 第一行\n  第二行\n{RULE}\n  ⏸ manual mode on\n");
         assert_eq!(classify(&s), Screen::Input { text: "第一行\n第二行".into(), busy: false });
+    }
+
+    #[test]
+    fn rule_with_long_session_title() {
+        // 输入框上沿写着长标题（中文），横线不到九成；右边还有别的面板的横线，不能被它们带偏
+        let title = format!("{RULE}{RULE}{RULE} acme-control-plane 和 acme-app 项目更新与问题处理 ─");
+        let panel = format!("  正文的一行{}{RULE}", " ".repeat(40));
+        let s = format!("{panel}\n  回复的最后一句\n{panel}\n\n{title}\n❯ \n{RULE}{RULE}{RULE}{RULE}\n  ⏵⏵ auto mode on (shift+tab to cycle)\n");
+        assert_eq!(classify(&s), Screen::Input { text: String::new(), busy: false });
+        // 手机上终端窄，标题把横线挤得只剩结尾一个 `─`
+        let s = format!("  回复的最后一句
+
+ acme-control-plane 和 acme-app … ─
+❯ 
+{RULE}
+  ⏵⏵ auto mode on (shift+tab to  · ⧉
+");
+        assert_eq!(classify(&s), Screen::Input { text: String::new(), busy: false });
     }
 
     #[test]
@@ -760,6 +808,25 @@ mod tests {
         assert_eq!(d.options.len(), 9);
     }
 
+
+    /// 2.1.310 首次启动（空的配置目录，60 列）：主题、安全提示替用户按掉；登录方式要用户自己选
+    #[test]
+    fn onboarding_screens() {
+        let theme = include_str!("testdata/onboarding-theme.txt");
+        assert_eq!(onboarding(theme), Some("Up"));
+        assert_eq!(onboarding(include_str!("testdata/onboarding-theme-auto.txt")), Some("Enter"));
+        assert_eq!(onboarding(include_str!("testdata/onboarding-security.txt")), Some("Enter"));
+        assert_eq!(onboarding(include_str!("testdata/onboarding-login.txt")), None);
+        assert_eq!(onboarding(include_str!("testdata/trust.txt")), None);
+        // 以 Bypass Permissions 启动时的警告要用户自己确认；说明里的链接（OSC 8）不能带着转义显示出来
+        let bypass = include_str!("testdata/bypass.txt");
+        assert_eq!(onboarding(bypass), None);
+        let d = dialog(bypass).unwrap();
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["No, exit", "Yes, I accept"]);
+        assert!(d.body.iter().any(|l| l == "https://code.claude.com/docs/en/security"), "{:?}", d.body);
+        // 对话里提到这几句话不算
+        assert_eq!(onboarding(&format!("● Security notes: Press Enter to continue\n{RULE}\n❯ \n{RULE}\n")), None);
+    }
 
     #[test]
     fn real_dialogs_parsed() {

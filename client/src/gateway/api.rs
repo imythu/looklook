@@ -131,6 +131,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/tunnels/{id}/shares", get(list_page_shares).post(create_page_share))
         .route("/tunnels/{id}/shares/{share}", delete(delete_page_share))
         .route("/settings", get(get_settings).put(put_settings))
+        .route("/sync", get(get_sync).put(put_sync))
+        .route("/sync/exchange", post(sync_exchange))
         .route("/projects", get(get_projects).put(put_projects))
         .route("/history", get(list_history))
         .route("/history/marks", put(put_history_mark))
@@ -186,7 +188,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -222,6 +224,8 @@ async fn status(State(app): State<App>, Extension(access): Extension<Access>) ->
         "relay": crate::relay::status(),
         "capabilities": app.instances.capabilities(),
         "settings": Settings::load(&app.store),
+        // 设置在电脑之间同步有没有打开（界面在同步项旁边标一下）
+        "sync_enabled": crate::settings_sync::enabled(&app.store),
         "console": app.console_info(),
         "update": app.updater.view(),
         "metrics": app.metrics.brief(),
@@ -1528,7 +1532,15 @@ async fn get_settings(State(app): State<App>) -> Json<Settings> {
     Json(Settings::load(&app.store))
 }
 
-async fn put_settings(State(app): State<App>, Json(s): Json<Settings>) -> R<Json<Settings>> {
+/// 只需带要改的字段，其余沿用现在的值（界面各处只发自己改的那几项，不会把别的电脑刚同步来的值用旧值盖回去）。
+async fn put_settings(State(app): State<App>, Json(patch): Json<serde_json::Map<String, Value>>) -> R<Json<Settings>> {
+    let mut cur = serde_json::to_value(Settings::load(&app.store)).map_err(anyhow::Error::from)?;
+    for (k, v) in patch {
+        if cur.get(&k).is_some() {
+            cur[&k] = v;
+        }
+    }
+    let s: Settings = serde_json::from_value(cur).map_err(|_| LocalError::invalid("settings", "format"))?;
     let s = s.normalized();
     crate::shells::validate(&s.default_shell)?;
     match std::fs::metadata(&s.default_workdir) {
@@ -1538,8 +1550,38 @@ async fn put_settings(State(app): State<App>, Json(s): Json<Settings>) -> R<Json
         }
         _ => return Err(LocalError::new("WORKDIR_NOT_FOUND").with("path", s.default_workdir)),
     }
-    app.account.save_settings(&s).await?;
+    if app.account.save_settings(&s).await? {
+        app.sync.poke();
+    }
     Ok(Json(s))
+}
+
+// ---------------- 设置在电脑之间同步（settings_sync.rs，docs/SETTINGS_SYNC.md） ----------------
+
+async fn get_sync(State(app): State<App>) -> Json<Value> {
+    Json(app.sync.view(&app).await)
+}
+
+#[derive(Deserialize)]
+struct SyncReq {
+    enabled: bool,
+}
+
+async fn put_sync(State(app): State<App>, Json(req): Json<SyncReq>) -> R<Json<Value>> {
+    crate::settings_sync::set_enabled(&app.store, req.enabled)?;
+    if req.enabled {
+        app.sync.poke();
+    }
+    Ok(Json(app.sync.view(&app).await))
+}
+
+/// 另一台电脑来对账：只接受经 WebRTC 的请求，请求还要带那台电脑的设备签名（浏览器签不出来）。
+async fn sync_exchange(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<crate::settings_sync::ExchangeReq>) -> R<Json<crate::settings_sync::ExchangeResp>> {
+    if !matches!(access, Access::Rtc { .. }) {
+        return Err(LocalError::new("SYNC_NEED_RTC"));
+    }
+    require_allowed(&app)?;
+    Ok(Json(crate::settings_sync::exchange(&app, req).await?))
 }
 
 #[derive(Deserialize)]

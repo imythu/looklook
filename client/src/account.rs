@@ -651,7 +651,7 @@ impl Account {
             if name != settings.device_name() {
                 tracing::info!(%name, "电脑名称已在网页上修改，同步到本机");
                 settings.device_name = if name == crate::util::host_name() { String::new() } else { name };
-                settings.save(&self.store).map_err(internal)?;
+                settings.save(&self.store, self.clock.now_ms()).map_err(internal)?;
             }
         }
         Ok(r.next_heartbeat_seconds.max(60) as u64)
@@ -830,12 +830,13 @@ impl Account {
 
     /// 保存本机设置；电脑名称变了时立即告诉平台（远程入口的电脑列表马上显示新名称）。
     /// 在 busy 锁里保存：进行中的心跳带回的旧名称不会覆盖刚改的名称。通知失败不要紧，下一次心跳会带上新名称。
-    pub async fn save_settings(&self, settings: &Settings) -> anyhow::Result<()> {
-        let renamed = {
+    /// 返回同步项有没有改动（有的话调用方要通知 settings_sync）。
+    pub async fn save_settings(&self, settings: &Settings) -> anyhow::Result<bool> {
+        let (renamed, synced) = {
             let _g = self.busy.lock().await;
             let old = Settings::load(&self.store).device_name();
-            settings.save(&self.store)?;
-            old != settings.device_name()
+            let synced = settings.save(&self.store, self.clock.now_ms())?;
+            (old != settings.device_name(), synced)
         };
         if renamed && self.creds().is_some() {
             let body = RenameDevice { name: settings.device_name() };
@@ -843,7 +844,7 @@ impl Account {
                 tracing::warn!(error = %e, "电脑名称同步到平台失败，下次心跳再同步");
             }
         }
-        Ok(())
+        Ok(synced)
     }
 
     /// 可选的线路（中转）与当前所在、用户自选的线路。

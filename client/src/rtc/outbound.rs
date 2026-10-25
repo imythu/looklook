@@ -22,6 +22,9 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use http_body_util::BodyExt;
 use looklook_protocol::dto::RemoteDevices;
+use looklook_protocol::signing::{parse_public_key, verify};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{self, protocol::Role, Message};
@@ -145,6 +148,16 @@ impl LinkError {
     }
 }
 
+/// [`Outbound::verify_peer`] 的结果。
+pub enum PeerCheck {
+    /// 签名对，带那台电脑的名称。
+    Ok(String),
+    /// 服务端太旧，设备列表里没有公钥。
+    Unsupported,
+    /// 不是这个账户的电脑，或者签名不对。
+    Bad,
+}
+
 #[derive(Default)]
 pub struct Outbound {
     /// 每台电脑一个槽：同一台的并发请求只建一条连接。
@@ -203,6 +216,19 @@ impl Outbound {
                 self.close_all();
             }
         }
+    }
+
+    /// 用平台登记的设备公钥（设备列表里的 `keys`，含轮换中的 `retiring`）校验同一账户另一台电脑的签名。
+    /// 电脑之间确认对方身份用（SSH 导入、设置同步）：浏览器没有设备私钥，签不出来。
+    pub async fn verify_peer(&self, account: &Account, dev: &str, key_id: &str, message: &str, sig: &str, fresh: bool) -> Result<PeerCheck, crate::platform::PlatformError> {
+        let devices = self.devices(account, fresh).await?;
+        let Some(d) = devices.items.iter().find(|d| d.id == dev) else { return Ok(PeerCheck::Bad) };
+        if d.keys.is_empty() {
+            // 旧服务端没有下发公钥：没法校验
+            return Ok(PeerCheck::Unsupported);
+        }
+        let ok = d.keys.iter().filter(|k| k.id == key_id).filter_map(|k| parse_public_key(&k.public_key)).any(|vk| verify(&vk, message, sig));
+        Ok(if ok { PeerCheck::Ok(d.name.clone()) } else { PeerCheck::Bad })
     }
 
     /// 到这台电脑的连接：有可用的就复用，没有就建一条。
@@ -328,6 +354,44 @@ fn failed(e: anyhow::Error) -> Response {
     LinkError::Failed(e).response()
 }
 
+/// 本机后端直接调那台电脑的 JSON 接口（不是转发管理台的请求）：成功时解出响应，204 为 None；
+/// 失败时把对方的错误码原样带回来。响应解不开时用 `bad_reply` 这个错误码。
+pub async fn post_json<T: DeserializeOwned>(link: &Arc<Link>, path: &str, body: &impl Serialize, max: usize, bad_reply: &str) -> Result<Option<T>, LocalError> {
+    let json = serde_json::to_vec(body).map_err(anyhow::Error::from)?;
+    let req = Request::builder()
+        .method("POST")
+        .uri(path)
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(crate::gateway::CLIENT_HEADER, "1")
+        .body(Body::from(json))
+        .map_err(anyhow::Error::from)?;
+    let resp = http(link.clone(), req, path.to_string()).await;
+    let status = resp.status();
+    let bytes = axum::body::to_bytes(resp.into_body(), max).await.map_err(|_| LocalError::new("RTC_FAILED"))?;
+    if status == StatusCode::NO_CONTENT {
+        return Ok(None);
+    }
+    if status.is_success() {
+        return serde_json::from_slice(&bytes).map(Some).map_err(|_| LocalError::new(bad_reply));
+    }
+    #[derive(Deserialize)]
+    struct Wrapped {
+        error: Inner,
+    }
+    #[derive(Deserialize)]
+    struct Inner {
+        code: String,
+        #[serde(default)]
+        params: serde_json::Map<String, Value>,
+    }
+    match serde_json::from_slice::<Wrapped>(&bytes) {
+        Ok(w) => Err(LocalError { status, code: w.error.code, params: w.error.params }),
+        // 旧版本没有这个接口：路由没匹配上，回的不是我们的错误格式
+        Err(_) if status == StatusCode::NOT_FOUND => Err(LocalError::not_found()),
+        Err(_) => Err(LocalError::new("RTC_FAILED")),
+    }
+}
+
 /// 转发一个 HTTP 请求。`path` 是去掉了 `__lldev` 的路径与查询。
 pub async fn http(link: Arc<Link>, req: Request, path: String) -> Response {
     match http_inner(link, req, path).await {
@@ -340,7 +404,8 @@ async fn http_inner(link: Arc<Link>, req: Request, path: String) -> Result<Respo
     let (parts, mut body) = req.into_parts();
     let mut ch = link.channel("r")?;
     ch.opened(OPEN_LIMIT).await?;
-    ch.send(&frame::ctl(&json!({ "t": "req", "m": parts.method.as_str(), "p": path, "h": headers_json(&parts.headers) })))?;
+    // 文本类响应让那台电脑压缩后再发（bridge::gzip_worth），这边解开
+    ch.send(&frame::ctl(&json!({ "t": "req", "m": parts.method.as_str(), "p": path, "h": headers_json(&parts.headers), "z": "gzip" })))?;
     while let Some(f) = body.frame().await {
         let f = f.map_err(|e| anyhow!("读取请求体失败：{e}"))?;
         let Ok(data) = f.into_data() else { continue };
@@ -380,7 +445,9 @@ async fn http_inner(link: Arc<Link>, req: Request, path: String) -> Result<Respo
     // 响应体：交给一个任务从通道里读，读到 `end` 为止；管理台放弃了（不再读）就关掉通道。
     let (tx, rx) = mpsc::channel::<Result<Bytes, std::io::Error>>(16);
     let mut pipe = Pipe { ch, _link: link };
+    let mut gz = (head.get("z").and_then(Value::as_str) == Some("gzip")).then(|| flate2::write::GzDecoder::new(Vec::new()));
     tokio::spawn(async move {
+        use std::io::Write;
         loop {
             let Some(m) = pipe.ch.recv().await else {
                 let _ = tx.send(Err(std::io::Error::other("连接中断"))).await;
@@ -388,11 +455,29 @@ async fn http_inner(link: Arc<Link>, req: Request, path: String) -> Result<Respo
             };
             match frame::parse(&m) {
                 Some(Frame::Data { data, .. }) => {
-                    if tx.send(Ok(Bytes::copy_from_slice(data))).await.is_err() {
+                    let out = match &mut gz {
+                        Some(z) => match z.write_all(data) {
+                            Ok(()) => Bytes::from(std::mem::take(z.get_mut())),
+                            Err(e) => {
+                                let _ = tx.send(Err(e)).await;
+                                return;
+                            }
+                        },
+                        None => Bytes::copy_from_slice(data),
+                    };
+                    if !out.is_empty() && tx.send(Ok(out)).await.is_err() {
                         return;
                     }
                 }
-                Some(Frame::Ctl(v)) if frame::kind(&v) == "end" => return,
+                Some(Frame::Ctl(v)) if frame::kind(&v) == "end" => {
+                    if let Some(z) = gz.take() {
+                        let last = z.finish().map(Bytes::from);
+                        if !matches!(&last, Ok(b) if b.is_empty()) {
+                            let _ = tx.send(last).await;
+                        }
+                    }
+                    return;
+                }
                 Some(Frame::Ctl(v)) if frame::kind(&v) == "err" => {
                     let _ = tx.send(Err(std::io::Error::other("响应体出错"))).await;
                     return;
@@ -574,6 +659,8 @@ mod tests {
 /// 两条真实的 PeerConnection 在本机回环上对接：发起方（本模块）经通道发请求，应答方用 `bridge` 交给路由。
 #[cfg(test)]
 mod loopback {
+    use std::convert::Infallible;
+
     use axum::routing::{get, post};
 
     use super::*;
@@ -632,6 +719,54 @@ mod loopback {
         let req = Request::builder().method("POST").uri("/api/echo").body(Body::from(big.clone())).unwrap();
         let r = http(link.clone(), req, "/api/echo".into()).await;
         assert_eq!(r.into_body().collect().await.unwrap().to_bytes().len(), big.len());
+    }
+
+    fn text_router() -> (axum::Router, String) {
+        let text: String = (0..20_000).map(|i| format!("line {i}\n")).collect();
+        let t = text.clone();
+        let router = axum::Router::new()
+            .route("/api/text", get(move || async move { t.clone() }))
+            .route("/api/small", get(|| async { "ok" }))
+            .route("/api/sse", get(|| async { ([(header::CONTENT_TYPE, "text/event-stream")], Body::from_stream(futures_util::stream::iter([Ok::<_, Infallible>("data: 1\n\n".repeat(200))]))) }));
+        (router, text)
+    }
+    /// 发起方要了 gzip：文本响应压缩后过通道，这边解开，内容与长度不变。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn text_responses_are_gzipped() {
+        let (router, text) = text_router();
+        let link = pair(router).await;
+        let r = http(link.clone(), Request::get("/api/text").body(Body::empty()).unwrap(), "/api/text".into()).await;
+        assert_eq!(r.headers()[header::CONTENT_LENGTH], text.len().to_string().as_str());
+        assert_eq!(r.into_body().collect().await.unwrap().to_bytes(), text.as_bytes());
+
+        // 通道上：res 帧带 z，数据比原文小得多；小的、SSE 不压
+        let fetch = |p: &'static str| {
+            let link = link.clone();
+            async move {
+                let mut ch = link.channel("r").unwrap();
+                ch.opened(OPEN_LIMIT).await.unwrap();
+                ch.send(&frame::ctl(&json!({ "t": "req", "m": "GET", "p": p, "h": [], "z": "gzip" }))).unwrap();
+                ch.send(&frame::ctl(&json!({ "t": "end" }))).unwrap();
+                let res = ctl_frame(&mut ch).await;
+                let mut n = 0;
+                loop {
+                    match frame::parse(&ch.recv().await.unwrap()) {
+                        Some(Frame::Data { data, .. }) => n += data.len(),
+                        Some(Frame::Ctl(v)) if v["t"] == "end" => break,
+                        _ => {}
+                    }
+                }
+                (res, n)
+            }
+        };
+        let (res, n) = fetch("/api/text").await;
+        assert_eq!(res["z"], "gzip");
+        assert!(n < text.len() / 4, "{n}");
+        let (res, n) = fetch("/api/small").await;
+        assert!(res.get("z").is_none());
+        assert_eq!(n, 2);
+        let (res, _) = fetch("/api/sse").await;
+        assert!(res.get("z").is_none(), "SSE 不压缩");
     }
 
     /// 测试用的 WebSocket 回显（那台电脑上的终端）：子协议 tty。

@@ -4,6 +4,7 @@
 //! - `{"t":"req","m":"GET","p":"/api/x","h":[[k,v],…]}`：之后是请求体分块，`{"t":"end"}` 结束。请求带上
 //!   [`Access::Rtc`] 交给现有的 `gateway::router`（与远程入口同一套路由与检查）；回 `{"t":"res","s":…,"h":…}`、
 //!   响应体分块、`{"t":"end"}`，然后关闭通道。浏览器提前关闭通道就是放弃这个请求，这边随之丢弃。
+//!   首帧带 `"z":"gzip"` 时，文本类、长度已知的响应体压缩后再发，`res` 帧带 `"z":"gzip"`，由对端解开（[`gzip_worth`]）。
 //! - `{"t":"ws","p":"/i/{id}/ws","proto":[…]}`：在内存里用 hyper 跑一条连接接到同一个路由上，再用 WebSocket 客户端
 //!   握手，终端的口令、`ensure_attachable`、更新保护等都沿用 `gateway::terminal` 的逻辑。成功回 `{"t":"open","proto":…}`，
 //!   失败回 `{"t":"close","code":…}`；之后每条 WebSocket 消息对应一条（大的拆成几帧）数据帧。首帧带 `"resume": true` 时
@@ -11,6 +12,7 @@
 //! - `ctl` 通道：`{"t":"hello","proto":1}` 握手，回本机设备 id。
 
 use std::convert::Infallible;
+use std::io::Write;
 use std::sync::Arc;
 
 use anyhow::{bail, Context, Result};
@@ -134,9 +136,28 @@ impl Upload {
     }
 }
 
+/// 小于这么多字节的响应体不压缩（省不了几个字节，还多一个 gzip 头）。
+const GZIP_MIN: u64 = 1024;
+
+/// 对端能解压（首帧带 `"z":"gzip"`）时，这个响应值不值得压缩：文本类（不含 SSE）、没压缩过、长度已知且不太小。
+///
+/// Service Worker 转来的请求里没有 `Accept-Encoding`（浏览器在网络层才加），路由也就不压缩，走中转时受中转带宽限制，
+/// 所以在通道这一层压缩。只压长度已知的响应：一次性给出的，攒着压不会拖慢；流式的（SSE、长轮询）原样发。
+fn gzip_worth(head: &Value, method: &Method, headers: &axum::http::HeaderMap) -> bool {
+    if head.get("z").and_then(Value::as_str) != Some("gzip") || *method == Method::HEAD || headers.contains_key(header::CONTENT_ENCODING) {
+        return false;
+    }
+    let len = headers.get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<u64>().ok());
+    if !len.is_some_and(|n| n >= GZIP_MIN) {
+        return false;
+    }
+    let ct = headers.get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_ascii_lowercase();
+    (ct.starts_with("text/") && !ct.starts_with("text/event-stream")) || ["json", "javascript", "xml", "wasm"].iter().any(|k| ct.contains(k))
+}
+
 async fn http(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
     let method = Method::from_bytes(head.get("m").and_then(Value::as_str).unwrap_or("GET").as_bytes()).context("请求方法不合法")?;
-    let mut req = Request::builder().method(method).uri(path_of(head)?);
+    let mut req = Request::builder().method(method.clone()).uri(path_of(head)?);
     for (k, v) in headers_of(head) {
         req = req.header(k, v);
     }
@@ -162,7 +183,13 @@ async fn http(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
 
     let (parts, mut body) = resp.into_parts();
     let h: Vec<Value> = parts.headers.iter().filter_map(|(k, v)| Some(json!([k.as_str(), v.to_str().ok()?]))).collect();
-    ch.send(&frame::ctl(&json!({ "t": "res", "s": parts.status.as_u16(), "h": h })))?;
+    // 头原样给（Content-Length 是解开后的长度，对端解开后照样对）
+    let mut gz = gzip_worth(head, &method, &parts.headers).then(|| flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default()));
+    let mut res = json!({ "t": "res", "s": parts.status.as_u16(), "h": h });
+    if gz.is_some() {
+        res["z"] = json!("gzip");
+    }
+    ch.send(&frame::ctl(&res))?;
     let mut writable = true;
     loop {
         tokio::select! {
@@ -173,13 +200,27 @@ async fn http(ctx: &Ctx, ch: &mut Channel, head: &Value) -> Result<()> {
                 Some(DcEvent::Closed) | None => return Ok(()),
             },
             f = body.frame(), if writable => match f {
-                None => break,
+                None => {
+                    if let Some(z) = gz.take() {
+                        for c in z.finish()?.chunks(frame::CHUNK) {
+                            ch.send(&frame::data(false, false, c))?;
+                        }
+                    }
+                    break;
+                }
                 Some(Err(e)) => {
                     ch.send(&frame::ctl(&json!({ "t": "err" })))?;
                     bail!("响应体出错：{e}");
                 }
                 Some(Ok(f)) => {
                     if let Ok(data) = f.into_data() {
+                        let data = match &mut gz {
+                            Some(z) => {
+                                z.write_all(&data)?;
+                                Bytes::from(std::mem::take(z.get_mut()))
+                            }
+                            None => data,
+                        };
                         for c in data.chunks(frame::CHUNK) {
                             ch.send(&frame::data(false, false, c))?;
                         }

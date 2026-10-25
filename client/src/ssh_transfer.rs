@@ -16,14 +16,11 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use axum::body::Body;
-use axum::extract::Request;
-use axum::http::{header, StatusCode};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use futures_util::StreamExt;
 use hkdf::Hkdf;
-use looklook_protocol::signing::{b64, b64_decode, parse_public_key, verify};
+use looklook_protocol::signing::{b64, b64_decode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -34,7 +31,7 @@ use zeroize::Zeroizing;
 
 use crate::error::LocalError;
 use crate::gateway::App;
-use crate::rtc::outbound::Link;
+use crate::rtc::outbound::{Link, PeerCheck};
 use crate::ssh::{self, Carried, Resolve};
 use crate::store::Store;
 
@@ -481,18 +478,15 @@ fn own_device(app: &App) -> Result<String, LocalError> {
 
 /// 用平台登记的设备公钥（§8：设备列表带上每台电脑当前有效的公钥）校验另一台电脑的签名，返回它的名称。
 async fn verify_peer(app: &App, dev: &str, key_id: &str, message: &str, sig: &str) -> Result<String, LocalError> {
-    let devices = app.outbound.devices(&app.account, true).await?;
-    let d = devices.items.iter().find(|d| d.id == dev).ok_or_else(|| err("SSH_TRANSFER_SIGNATURE"))?;
-    if d.keys.is_empty() {
+    match app.outbound.verify_peer(&app.account, dev, key_id, message, sig, true).await? {
+        PeerCheck::Ok(name) => Ok(name),
         // 旧服务端没有下发公钥：没法校验，宁可不做
-        return Err(err("SSH_TRANSFER_UNSUPPORTED"));
+        PeerCheck::Unsupported => Err(err("SSH_TRANSFER_UNSUPPORTED")),
+        PeerCheck::Bad => {
+            tracing::warn!(dev, "SSH 导入：对方的签名不对");
+            Err(err("SSH_TRANSFER_SIGNATURE"))
+        }
     }
-    let ok = d.keys.iter().filter(|k| k.id == key_id).filter_map(|k| parse_public_key(&k.public_key)).any(|vk| verify(&vk, message, sig));
-    if !ok {
-        tracing::warn!(dev, "SSH 导入：对方的签名不对");
-        return Err(err("SSH_TRANSFER_SIGNATURE"));
-    }
-    Ok(d.name.clone())
 }
 
 fn sign(app: &App, message: &str) -> Result<(String, String), LocalError> {
@@ -744,37 +738,7 @@ pub async fn email_code(app: &App, id: &str) -> Result<(), LocalError> {
 
 /// 这台电脑经 WebRTC 调另一台电脑的接口（POST JSON）。204 返回 None。
 async fn call<T: DeserializeOwned>(link: &Arc<Link>, path: &str, body: &impl Serialize) -> Result<Option<T>, LocalError> {
-    let json = serde_json::to_vec(body).map_err(anyhow::Error::from)?;
-    let req = Request::builder()
-        .method("POST")
-        .uri(path)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(crate::gateway::CLIENT_HEADER, "1")
-        .body(Body::from(json))
-        .map_err(anyhow::Error::from)?;
-    let resp = crate::rtc::outbound::http(link.clone(), req, path.to_string()).await;
-    let status = resp.status();
-    let bytes = axum::body::to_bytes(resp.into_body(), BODY_MAX).await.map_err(|_| err("RTC_FAILED"))?;
-    if status == StatusCode::NO_CONTENT {
-        return Ok(None);
-    }
-    if status.is_success() {
-        return serde_json::from_slice(&bytes).map(Some).map_err(|_| err("SSH_TRANSFER_PROTOCOL"));
-    }
-    #[derive(Deserialize)]
-    struct Wrapped {
-        error: Inner,
-    }
-    #[derive(Deserialize)]
-    struct Inner {
-        code: String,
-        #[serde(default)]
-        params: serde_json::Map<String, Value>,
-    }
-    match serde_json::from_slice::<Wrapped>(&bytes) {
-        Ok(w) => Err(LocalError { status, code: w.error.code, params: w.error.params }),
-        Err(_) => Err(err("RTC_FAILED")),
-    }
+    crate::rtc::outbound::post_json(link, path, body, BODY_MAX, "SSH_TRANSFER_PROTOCOL").await
 }
 
 async fn link(app: &App, dev: &str) -> Result<Arc<Link>, LocalError> {
@@ -1115,11 +1079,12 @@ mod tests {
 /// 两台电脑走完整个流程：B 经假平台建 WebRTC 连到 A 的真路由（`Access::Rtc`），A 在本机确认，B 导入后测试连接；
 /// 另有拒绝、确认码输错作废、伪造签名、非 WebRTC 来源被拒。
 #[cfg(test)]
-mod e2e {
+pub(crate) mod e2e {
     use std::path::Path;
 
-    use axum::body::Bytes;
-    use axum::http::{HeaderMap, Uri};
+    use axum::body::{Body, Bytes};
+    use axum::extract::Request;
+    use axum::http::{HeaderMap, StatusCode, Uri};
     use axum::response::IntoResponse;
     use ed25519_dalek::SigningKey;
     use looklook_protocol::dto::{DeviceKey, RemoteDevice, RemoteDevices};
@@ -1133,7 +1098,7 @@ mod e2e {
     use crate::paths::Paths;
     use crate::rtc::{bridge, peer::Pc};
 
-    fn app(home: &Path, server: &str, dev: &str, key: SigningKey) -> App {
+    pub(crate) fn app(home: &Path, server: &str, dev: &str, key: SigningKey) -> App {
         let store = Arc::new(Store::memory().unwrap());
         let paths = Paths { home: home.into(), ttyd: None, mux: None, fonts: None, trzsz: None };
         let account = test_support::logged_in(store.clone(), paths.clone(), server, dev, key);
@@ -1159,13 +1124,14 @@ mod e2e {
             rtc: Default::default(),
             outbound: Default::default(),
             ssh_transfer: Default::default(),
+            sync: Default::default(),
         })
     }
 
-    type Target = Arc<Mutex<Option<axum::Router>>>;
+    pub(crate) type Target = Arc<Mutex<Option<axum::Router>>>;
 
     /// 假平台：设备列表带两台电脑的公钥；B 的 offer 交给 A 的真路由（经 bridge，请求是 `Access::Rtc`）。
-    async fn platform(keys: Vec<(&'static str, SigningKey)>, target: Target) -> String {
+    pub(crate) async fn platform(keys: Vec<(&'static str, SigningKey)>, target: Target) -> String {
         let svc = axum::Router::new().fallback(move |uri: Uri, headers: HeaderMap, body: Bytes| {
             let (keys, target) = (keys.clone(), target.clone());
             async move {
@@ -1237,7 +1203,7 @@ mod e2e {
     }
 
     /// 经 A 的路由发一个请求（带指定的来源），返回状态码与错误码。
-    async fn via_router(a: &App, access: Access, path: &str, body: Value) -> (StatusCode, String) {
+    pub(crate) async fn via_router(a: &App, access: Access, path: &str, body: Value) -> (StatusCode, String) {
         let mut req = Request::builder().method("POST").uri(path).header("content-type", "application/json").header(crate::gateway::CLIENT_HEADER, "1").body(Body::from(body.to_string())).unwrap();
         req.extensions_mut().insert(access);
         let r = gateway::router(a.clone()).oneshot(req).await.unwrap();

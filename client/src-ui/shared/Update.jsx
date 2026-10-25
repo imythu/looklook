@@ -345,7 +345,7 @@ function AutoUpdate() {
   const on = status.settings.auto_update !== false;
   const reason = status.update?.cannot_reason;
   const set = async (v) => {
-    const r = await run(() => api.put('/settings', { ...status.settings, auto_update: v }));
+    const r = await run(() => api.put('/settings', { auto_update: v }));
     if (r) {
       toast(t('common.saved'));
       reload();

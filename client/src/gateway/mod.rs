@@ -35,6 +35,7 @@ use crate::paths::Paths;
 use crate::store::Store;
 
 pub use proxy::{client as proxy_client, HttpClient};
+pub use api::local_only;
 
 /// 请求从哪个入口进来。
 #[derive(Debug, Clone)]
@@ -82,6 +83,8 @@ pub struct Inner {
     pub outbound: Arc<crate::rtc::outbound::Outbound>,
     /// 从另一台电脑导入 SSH 主机：进行中的导出与导入（src/ssh_transfer.rs）
     pub ssh_transfer: crate::ssh_transfer::SshTransfer,
+    /// 设置在电脑之间同步（src/settings_sync.rs）
+    pub sync: Arc<crate::settings_sync::Syncer>,
 }
 
 impl Inner {

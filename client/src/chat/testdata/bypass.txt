@@ -1,0 +1,40 @@
+
+[38;5;211m────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+[39m  [1m[38;5;211mWARNING:[0m [1m[38;5;211mClaude[0m [1m[38;5;211mCode[0m [1m[38;5;211mrunning[0m [1m[38;5;211min[0m [1m[38;5;211mBypass[0m [1m[38;5;211mPermissions[0m [1m[38;5;211mmode[0m
+
+  In Bypass Permissions mode, Claude Code will not ask for your approval before running potentially dangerous
+  commands.
+  This mode should only be used in a sandboxed container/VM that has restricted internet access and can easily be
+  restored if damaged.
+
+  By proceeding, you accept all responsibility for actions taken while running in Bypass Permissions mode.
+
+  ]8;id=zaxmda;https://code.claude.com/docs/en/security\https://code.claude.com/docs/en/security]8;;\
+
+  [38;5;153m❯[39m [38;5;153mNo,[39m [38;5;153mexit[39m
+    Yes, I accept
+
+  [3m[38;5;246mEnter[0m [3m[38;5;246mto[0m [3m[38;5;246mconfirm[0m [3m[38;5;246m·[0m [3m[38;5;246mEsc[0m [3m[38;5;246mto[0m [3m[38;5;246mcancel[0m
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

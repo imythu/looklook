@@ -2,6 +2,11 @@
 // 终端上下的标题栏、按键条、标签栏都跟着终端配色走，不然浅色 / Agent 配色时终端变了、上下两头还是深色。
 // ansi：设置页配色小样上的几个色点（红、绿、黄、蓝、品红、青）。顺序就是设置页里的顺序，第一个是默认。
 export const TERM_THEMES = {
+  tangerine: {
+    bg: '#fff7ee', fg: '#3a2414', accent: '#ff6a1f', border: '#f5d2b3',
+    bar: '#ffe7d1', muted: '#8a6448', key: '#ffffff', keyLine: '#f0cfb2', keyActive: '#ffd9b8', hover: 'rgba(255, 106, 31, .12)', scheme: 'light',
+    ansi: ['#e53935', '#2e9e44', '#c77700', '#1e6fe0', '#c2185b', '#00897b'],
+  },
   lagoon: {
     bg: '#16204a', fg: '#e9eeff', accent: '#ffcc4d', border: '#2f3d7a',
     bar: '#1d2a5e', muted: '#9fb0e6', key: '#24346f', keyLine: '#36488c', keyActive: '#36488c', hover: 'rgba(255, 255, 255, .09)', scheme: 'dark',
@@ -16,11 +21,6 @@ export const TERM_THEMES = {
     bg: '#f2fbf7', fg: '#15352b', accent: '#00a676', border: '#cdebdf',
     bar: '#ffffff', muted: '#4f7a6b', key: '#ffffff', keyLine: '#c4e5d8', keyActive: '#d9f3e8', hover: 'rgba(0, 140, 95, .08)', scheme: 'light',
     ansi: ['#e5484d', '#0f9d58', '#c27c00', '#2563eb', '#b5179e', '#0891b2'],
-  },
-  tangerine: {
-    bg: '#fff7ee', fg: '#3a2414', accent: '#ff6a1f', border: '#f5d2b3',
-    bar: '#ffe7d1', muted: '#8a6448', key: '#ffffff', keyLine: '#f0cfb2', keyActive: '#ffd9b8', hover: 'rgba(255, 106, 31, .12)', scheme: 'light',
-    ansi: ['#e53935', '#2e9e44', '#c77700', '#1e6fe0', '#c2185b', '#00897b'],
   },
   agent: {
     bg: '#1a1915', fg: '#e8e4dc', accent: '#d97757', border: '#3a352e',
@@ -39,7 +39,7 @@ export const TERM_THEMES = {
   },
 };
 
-export const termTheme = (name) => TERM_THEMES[name] ?? TERM_THEMES.lagoon;
+export const termTheme = (name) => TERM_THEMES[name] ?? TERM_THEMES.tangerine;
 
 /** 终端页面外框用的 CSS 变量（styles.css 里的 --term-*）。 */
 export function termVars(name) {

@@ -1720,6 +1720,16 @@
     "send_queue": "Queue: {{agent}} reads it once the current step is done",
     "next_step": "Next",
     "mid_tag": "Sent while working · joined this turn",
+    "known": {
+      "trust_title": "Trust this folder?",
+      "trust_body": "{{path}}\n\nOnce trusted, {{agent}} can read, edit, and execute files here. Only trust your own code, well-known open source projects, or work from your team. If unsure, review what's in this folder first.",
+      "trust_yes": "Yes, I trust this folder",
+      "trust_no": "No, exit",
+      "bypass_title": "Allow Bypass Permissions mode?",
+      "bypass_body": "In Bypass Permissions mode, {{agent}} will not ask for your approval before running potentially dangerous commands. Only use it in a sandboxed container or VM with restricted internet access that can easily be restored if damaged.\n\nBy proceeding, you accept all responsibility for actions taken in this mode. See https://code.claude.com/docs/en/security",
+      "bypass_yes": "Yes, I accept",
+      "bypass_no": "No, exit"
+    },
     "limit": {
       "title": "Usage limit reached. What next?",
       "opt_auto": "Wait here, then continue automatically after the reset",
@@ -2030,5 +2040,20 @@
   "pull": {
     "pull": "Pull to refresh",
     "release": "Release to refresh"
+  },
+  "sync": {
+    "title": "Settings sync",
+    "toggle": "Sync settings across my computers",
+    "lead": "Your terminal theme, font, font size, default permissions for new AI sessions and attachment retention stay the same on every computer signed in to your account. Settings travel encrypted directly between your computers and are never stored on Looklook's servers. A computer that's offline catches up the next time it comes online.",
+    "mark": "Syncs to your other computers",
+    "state_off": "Off: settings on this computer apply only here.",
+    "state_local_only": "Not syncing while “This computer only” is on.",
+    "state_alone": "Sign in to the same account on another computer and settings sync automatically.",
+    "state_waiting": "Waiting for your other computers to come online.",
+    "state_synced": "In sync across {{count}} computers",
+    "peer_synced": "{{name}}: synced {{when}}",
+    "peer_offline": "{{name}}: offline, syncs when it's back",
+    "peer_pending": "{{name}}: waiting to sync",
+    "peer_old": "{{name}}: Looklook is too old, update it to sync"
   }
 }

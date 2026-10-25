@@ -228,5 +228,10 @@
   "CODEX_REQUEST_FAILED": "Codex 没能完成这个操作：{{detail}}",
   "CHAT_TERMINAL_ONLY": "对话页暂时连不上 Codex，可以先在终端里用",
   "CODEX_TERMINAL_BUSY": "终端里的程序没有退出，请在终端里手动退出后再重新连接",
-  "CODEX_TERMINAL_STOPPED": "终端没在运行，请先启动"
+  "CODEX_TERMINAL_STOPPED": "终端没在运行，请先启动",
+  "SYNC_NEED_RTC": "设置同步只能在电脑之间经端到端通道进行。",
+  "SYNC_SIGNATURE": "对方电脑的身份核对没通过，没有同步。",
+  "SYNC_UNSUPPORTED": "看看服务器的版本太旧，暂时不能同步设置。",
+  "SYNC_DISABLED": "那台电脑关掉了设置同步。",
+  "SYNC_PROTOCOL": "两台电脑的看看版本不兼容，先都更新到最新版。"
 }

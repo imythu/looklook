@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { useStatus } from '../App.jsx';
 import { api } from './api.js';
 import { errorText } from './i18n.js';
+import { SyncLabel } from './SettingsSync.jsx';
 import { relativeTime } from './time.js';
 import { Button, Card, CopyButton, Empty, ErrorNote, Field, Modal, Skeleton, useConfirm, useLoad, useToast } from './ui.jsx';
 import { formatBytes } from './xfer.js';
@@ -144,7 +145,7 @@ export function AttachmentsCard() {
   const setDays = async (v) => {
     setSaving(true);
     try {
-      await api.put('/settings', { ...status.settings, attach_days: v });
+      await api.put('/settings', { attach_days: v });
       reload();
       reloadStatus();
       toast(t('common.saved'));
@@ -188,7 +189,7 @@ export function AttachmentsCard() {
       <p className="muted small" style={{ marginTop: 0 }}>
         {t('att.lead')}
       </p>
-      <Field label={t('att.keep')} hint={data?.dir && <span className="mono">{data.dir}</span>}>
+      <Field label={<SyncLabel text={t('att.keep')} />} hint={data?.dir && <span className="mono">{data.dir}</span>}>
         <div className="seg" role="group" aria-label={t('att.keep')} aria-busy={saving}>
           {RETENTION_DAYS.map((d) => (
             <button key={d} type="button" aria-pressed={days === d} disabled={saving} onClick={() => days !== d && setDays(d)}>

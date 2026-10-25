@@ -1,0 +1,40 @@
+[38;5;174mWelcome[39m [38;5;174mto[39m [38;5;174mClaude[39m [38;5;174mCode[39m [38;5;246mv2.1.310[39m
+..........................................................
+
+     *                                       █████▓▓░
+                                 *         ███▓░     ░░
+            ░░░░░░                        ███▓░
+    ░░░   ░░░░░░░░░░                      ███▓░
+   ░░░░░░░░░░░░░░░░░░░    [1m*[0m                ██▓░░      ▓
+                                             ░▓▓███▓▓░
+[38;5;246m *[39m                                 [38;5;246m░░░░[39m
+[38;5;246m [39m                                [38;5;246m░░░░░░░░[39m
+[38;5;246m [39m                              [38;5;246m░░░░░░░░░░░░░░░░[39m
+      [38;5;174m █████████[39m                                        [38;5;246m*[39m
+      [38;5;174m██▄█████▄██[39m                        [1m*[0m
+      [38;5;174m █████████[39m      *
+.......[38;5;174m█[39m [38;5;174m█[39m   [38;5;174m█[39m [38;5;174m█[39m..........................................
+
+ [1mSecurity notes:[0m
+
+ [38;5;246m1.[39m Claude can make mistakes.
+    [38;5;246mYou're[39m [38;5;246mresponsible[39m [38;5;246mfor[39m [38;5;246mClaude's actions and should [39m
+    [38;5;246malways[39m
+    [38;5;246mreview them, especially when running code.[39m
+ [38;5;246m2.[39m Due to prompt injection risks, only use it with code you
+    [38;5;246mLearn more: ]8;id=zaxmda;https://code.claude.com/docs/en/security\https://code.claude.com/docs/en/security[39m]8;;\
+
+ [38;5;153mPress [1mEnter[0m[38;5;153m to continue…[39m
+
+
+
+
+
+
+
+
+
+
+
+
+

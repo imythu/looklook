@@ -263,6 +263,7 @@ p { margin: 0 0 12px; }
 /* ---------- 表单 ---------- */
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; min-width: 0; }
 .field-label { font-weight: 600; font-size: 14px; }
+.sync-mark { display: inline-flex; vertical-align: -1px; margin-left: 2px; color: var(--muted); cursor: help; }
 .field-hint { font-size: 13px; color: var(--muted); }
 .field-error { font-size: 13px; color: var(--danger); }
 input, select, textarea {

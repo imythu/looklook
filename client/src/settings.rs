@@ -4,13 +4,17 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use serde::{Deserialize, Serialize};
 
+use crate::settings_sync;
 use crate::store::Store;
 
 const KEY: &str = "settings";
-const THEME_REV: u8 = 2;
+const THEME_REV: u8 = 3;
 /// 终端配色（和 instances.rs 的 xterm_theme、src-ui/shared/termTheme.js 保持一致）
-pub const THEMES: &[&str] = &["lagoon", "sunset", "mint", "tangerine", "agent", "dark", "light"];
-const DEFAULT_THEME: &str = "lagoon";
+pub const THEMES: &[&str] = &["tangerine", "lagoon", "sunset", "mint", "agent", "dark", "light"];
+const DEFAULT_THEME: &str = "tangerine";
+/// 在电脑之间同步的设置项（docs/SETTINGS_SYNC.md §4.1）：值只以同步记录为准（settings_sync.rs），
+/// `kv.settings` 里也留一份，只是给降级到旧版本时读。其余字段和这台电脑的路径、环境有关，不同步。
+pub const SYNCED: &[&str] = &["theme", "font", "font_size", "default_full_access", "attach_days"];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -20,10 +24,10 @@ pub struct Settings {
     /// 终端中文字体：`wenkai`（内置霞鹜文楷等宽）或 `system`（系统黑体）
     pub font: String,
     pub font_size: u8,
-    /// 终端配色：见 `THEMES`，默认 `lagoon`（深海蓝）
+    /// 终端配色：见 `THEMES`，默认 `tangerine`（橘子汽水）
     pub theme: String,
-    /// 配色设置的版本：0 = 默认还是 `dark` 时存下的设置，1 = 默认是 `agent` 时存下的；读的时候把当时的默认
-    /// 换成现在的默认一次，之后用户自己再选 `dark` / `agent` 也会保留。字段自己的 serde 默认是 0（不是 Settings::default 里的值）。
+    /// 配色设置的版本：0 = 默认还是 `dark` 时存下的设置，1 = 默认是 `agent` 时存下的，2 = 默认是 `lagoon` 时存下的；读的时候把当时的默认
+    /// 换成现在的默认一次，之后用户自己再选 `dark` / `agent` / `lagoon` 也会保留。字段自己的 serde 默认是 0（不是 Settings::default 里的值）。
     #[serde(default)]
     pub theme_rev: u8,
     /// 在看看服务端显示的电脑名称；为空时用主机名
@@ -61,14 +65,43 @@ fn default_workdir() -> String {
 
 impl Settings {
     pub fn load(store: &Store) -> Self {
+        Self::load_local(store).synced(store)
+    }
+
+    /// 只看 `kv.settings`，不看同步记录。
+    fn load_local(store: &Store) -> Self {
         let s: Self = store.get(KEY).ok().flatten().unwrap_or_default();
         s.migrated()
     }
 
-    /// 旧设置里的 `dark`（rev 0）、`agent`（rev 1）是当时的默认值：换成现在的默认配色（只换一次，见 `theme_rev`）。
+    /// 同步项换成同步记录里的值（有的话）；某一项的值不合法就保留原来的。
+    fn synced(self, store: &Store) -> Self {
+        let Ok(vals) = settings_sync::values(store, settings_sync::SETTINGS) else { return self };
+        let mut out = self;
+        for k in SYNCED {
+            let Some(v) = vals.get(*k) else { continue };
+            let mut j = serde_json::to_value(&out).unwrap_or_default();
+            j[*k] = v.clone();
+            if let Ok(s) = serde_json::from_value(j) {
+                out = s;
+            }
+        }
+        out
+    }
+
+    /// 升级到有同步的版本时（每次启动都调，已有记录的项跳过）：把自己改过的同步项导入同步记录（§10），
+    /// 优先级最低，之后任何一台电脑上的真实修改都优先。还是默认值的项不导入。
+    pub fn import_synced(store: &Store) -> anyhow::Result<()> {
+        let mine = serde_json::to_value(Self::load_local(store))?;
+        let def = serde_json::to_value(Self::default())?;
+        let items: Vec<(&str, serde_json::Value)> = SYNCED.iter().filter(|k| mine[**k] != def[**k]).map(|k| (*k, mine[*k].clone())).collect();
+        settings_sync::import(store, settings_sync::SETTINGS, &items)
+    }
+
+    /// 旧设置里的 `dark`（rev 0）、`agent`（rev 1）、`lagoon`（rev 2）是当时的默认值：换成现在的默认配色（只换一次，见 `theme_rev`）。
     fn migrated(mut self) -> Self {
         if self.theme_rev < THEME_REV {
-            if (self.theme_rev < 1 && self.theme == "dark") || self.theme == "agent" {
+            if (self.theme_rev < 1 && self.theme == "dark") || (self.theme_rev < 2 && self.theme == "agent") || self.theme == "lagoon" {
                 self.theme = DEFAULT_THEME.into();
             }
             self.theme_rev = THEME_REV;
@@ -76,8 +109,16 @@ impl Settings {
         self
     }
 
-    pub fn save(&self, store: &Store) -> anyhow::Result<()> {
-        store.set(KEY, self)
+    /// 保存；同步项有改动时写成本机的同步记录，返回 true（这时要通知 settings_sync 去同步）。
+    pub fn save(&self, store: &Store, now_ms: i64) -> anyhow::Result<bool> {
+        let old = serde_json::to_value(Self::load(store))?;
+        let new = serde_json::to_value(self)?;
+        store.set(KEY, self)?;
+        let changed: Vec<(&str, Option<serde_json::Value>)> = SYNCED.iter().filter(|k| old[**k] != new[**k]).map(|k| (*k, Some(new[*k].clone()))).collect();
+        if changed.is_empty() {
+            return Ok(false);
+        }
+        settings_sync::write_local(store, now_ms, settings_sync::SETTINGS, &changed)
     }
 
     pub fn normalized(mut self) -> Self {
@@ -221,26 +262,50 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_default_theme_moves_to_lagoon_once() {
+    fn old_default_theme_moves_to_tangerine_once() {
         // 加 agent 配色之前存下的设置：没有 theme_rev，theme 是当时的默认 dark
         let old: Settings = serde_json::from_str(r#"{"theme":"dark","font_size":15}"#).unwrap();
         assert_eq!(old.theme_rev, 0);
-        assert_eq!(old.clone().migrated().theme, "lagoon");
-        // 默认还是 agent 时存下的（rev 1）：agent 换成新默认；当时自己选的 dark 不动
+        assert_eq!(old.clone().migrated().theme, "tangerine");
+        // 默认还是 agent（rev 1）、lagoon（rev 2）时存下的：换成新默认；当时自己选的 dark 不动
         let agent: Settings = serde_json::from_str(r#"{"theme":"agent","theme_rev":1}"#).unwrap();
-        assert_eq!(agent.migrated().theme, "lagoon");
+        assert_eq!(agent.migrated().theme, "tangerine");
+        let lagoon: Settings = serde_json::from_str(r#"{"theme":"lagoon","theme_rev":2}"#).unwrap();
+        assert_eq!(lagoon.migrated().theme, "tangerine");
         let dark1: Settings = serde_json::from_str(r#"{"theme":"dark","theme_rev":1}"#).unwrap();
         assert_eq!(dark1.migrated().theme, "dark");
+        let agent2: Settings = serde_json::from_str(r#"{"theme":"agent","theme_rev":2}"#).unwrap();
+        assert_eq!(agent2.migrated().theme, "agent", "rev 2 时自己选的 agent 不动");
         let light: Settings = serde_json::from_str(r#"{"theme":"light"}"#).unwrap();
         assert_eq!(light.migrated().theme, "light", "自己选的浅色不动");
-        // 之后又自己选回 agent / dark 并保存：保留
-        for t in ["agent", "dark", "sunset"] {
+        // 之后又自己选回 agent / dark / lagoon 并保存：保留
+        for t in ["agent", "dark", "sunset", "lagoon"] {
             let chosen = Settings { theme: t.into(), ..Settings::default() }.normalized();
             let back: Settings = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
             assert_eq!(back.migrated().theme, t);
         }
-        assert_eq!(Settings::default().theme, "lagoon");
-        assert_eq!(Settings { theme: "neon".into(), ..Settings::default() }.normalized().theme, "lagoon");
+        assert_eq!(Settings::default().theme, "tangerine");
+        assert_eq!(Settings { theme: "neon".into(), ..Settings::default() }.normalized().theme, "tangerine");
+    }
+
+    #[test]
+    fn synced_fields_come_from_sync_records() {
+        let store = Store::memory().unwrap();
+        // 升级前改过字号：导入后照旧
+        store.set(KEY, &Settings { font_size: 18, default_workdir: "/w".into(), ..Settings::default() }).unwrap();
+        Settings::import_synced(&store).unwrap();
+        assert_eq!(Settings::load(&store).font_size, 18);
+        // 另一台电脑改了配色和字号（比导入的新）：这台跟着变，不同步的字段不动
+        let other = Store::memory().unwrap();
+        settings_sync::write_local(&other, 5, settings_sync::SETTINGS, &[("theme", Some("mint".into())), ("font_size", Some(16.into()))]).unwrap();
+        let (recs, _) = settings_sync::missing(&other, &Default::default(), 100).unwrap();
+        settings_sync::merge(&store, &recs).unwrap();
+        let s = Settings::load(&store);
+        assert_eq!((s.theme.as_str(), s.font_size, s.default_workdir.as_str()), ("mint", 16, "/w"));
+        // 只改不同步的字段：不算同步项改动
+        assert!(!Settings { default_workdir: "/x".into(), ..s.clone() }.save(&store, 10).unwrap());
+        assert!(Settings { font: "system".into(), ..s }.save(&store, 11).unwrap());
+        assert_eq!(Settings::load(&store).font, "system");
     }
 
     #[test]

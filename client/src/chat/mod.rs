@@ -762,6 +762,19 @@ impl Chat {
             Some(_) => self.instances.screen(&inst.id).await,
             None => None,
         };
+        // 首次启动的引导（选主题、安全提示）：用户不关心，替他按掉。按完停 1.5 秒再看屏幕，
+        // 免得读到还没重绘的旧画面多按一次回车（下一屏信任目录默认选中的是“No, exit”）
+        if let Some(key) = capture.as_deref().filter(|_| inst.agent.launch() == "claude").and_then(screen::onboarding) {
+            {
+                let mut st = lock(&inst.st);
+                if st.hold.is_some_and(|h| h > Instant::now()) {
+                    return;
+                }
+                st.hold = Some(Instant::now() + Duration::from_millis(1500));
+            }
+            let _ = self.instances.send_keys(&inst.id, &[key]).await;
+            return;
+        }
         // 在运行、但不是带着看看的 hooks 启动的（开启对话界面之前就开着的、在终端里手动开的）
         let unhooked = running == Some(Some(false));
         let screen = capture.as_deref().map(|c| inst.agent.classify(c));
@@ -2337,6 +2350,69 @@ mod tests {
         let _ = std::fs::remove_file(format!("{dir}/chat-e2e.txt"));
     }
 
+    /// 端到端：空的配置目录首次启动，选主题、安全提示由对话界面自己按掉，测试只替用户信任目录；不发消息，不用额度。
+    /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_onboarding -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn chat_e2e_onboarding() {
+        let bin = std::env::var("CHAT_E2E_BIN").expect("CHAT_E2E_BIN");
+        let dir = std::env::var("CHAT_E2E_DIR").expect("CHAT_E2E_DIR");
+        std::env::set_var("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap_or_default()));
+        let tmux_dir = tempfile::tempdir().unwrap();
+        std::env::set_var("TMUX_TMPDIR", tmux_dir.path());
+        std::env::remove_var("TMUX");
+        // 空的 Claude Code 配置，只借用登录（链接，刷新令牌时写回同一个文件）
+        let cfg = tempfile::tempdir().unwrap();
+        let creds = dirs::home_dir().unwrap().join(".claude/.credentials.json");
+        std::os::unix::fs::symlink(&creds, cfg.path().join(".credentials.json")).unwrap();
+        std::env::set_var("CLAUDE_CONFIG_DIR", cfg.path());
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("looklook");
+        assert!(exe.is_file(), "先 cargo build");
+        std::env::set_var("LOOKLOOK_HOOK_EXE", exe);
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let store = Arc::new(Store::memory().unwrap());
+        let instances = Instances::new(store.clone(), paths.clone());
+        let input = crate::instances::Input { name: Some("e2e-onboarding".into()), workdir: Some(dir.clone()), launch: Some("claude".into()), ..Default::default() };
+        let id = instances.create(input).await.unwrap().row.id;
+        let chat = Chat::new(store.clone(), paths.clone(), instances.clone());
+        let row = store.instance(&id).unwrap().unwrap();
+        instances.ensure_session(&row).await.unwrap();
+        let (_rx, viewer) = chat.subscribe(&id).unwrap();
+        let mut seen = Vec::new();
+        let mut trusted = false;
+        for _ in 0..60 {
+            tokio::time::sleep(Duration::from_millis(1000)).await;
+            let raw = instances.screen(&id).await.unwrap_or_default();
+            let cap = raw.lines().map(|l| screen::strip(l).0).collect::<Vec<_>>().join("\n");
+            for (k, s) in [("theme", "Choose the text style"), ("security", "Security notes:"), ("trust", "trust this folder"), ("bypass", "Yes, I accept")] {
+                if cap.contains(s) && !seen.contains(&k) {
+                    seen.push(k);
+                }
+            }
+            // 信任目录、Bypass Permissions 警告：和界面一样，从状态里拿弹窗，用户点“是”
+            let s = chat.snapshot(&id).await.unwrap();
+            let d = &s["status"]["dialog"];
+            if s["status"]["phase"] == "tui" && d.is_object() {
+                let opts: Vec<&str> = d["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
+                println!("弹窗：{} {opts:?}", d["title"]);
+                assert!(!d.to_string().contains("]8;"), "说明里不能带转义：{d}");
+                let yes = opts.iter().position(|o| o.starts_with("Yes")).unwrap();
+                let _ = chat.dialog_choose(&id, d["title"].as_str().unwrap(), opts[yes], yes).await;
+                trusted = true;
+            } else if trusted && matches!(screen::classify(&raw), Screen::Input { .. }) {
+                break;
+            }
+        }
+        println!("看到过：{seen:?}\n---- 屏幕\n{}", instances.screen(&id).await.unwrap_or_default().lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));
+        assert_eq!(seen[..3], ["theme", "security", "trust"]);
+        assert!(matches!(screen::classify(&instances.screen(&id).await.unwrap()), Screen::Input { .. }), "到了输入框");
+        let state: Value = serde_json::from_slice(&std::fs::read(cfg.path().join(".claude.json")).unwrap()).unwrap();
+        assert_eq!(state["hasCompletedOnboarding"], true);
+        drop(viewer);
+        instances.stop(&id).await.unwrap();
+    }
+
     /// 端到端：运行中排队、立即发送（Claude Code 的 Ctrl+X Ctrl+S）。用 haiku（项目里 `.claude/settings.local.json` 定模型）：
     /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_send_now -- --ignored --nocapture`
     #[tokio::test(flavor = "multi_thread")]
@@ -2396,7 +2472,7 @@ mod tests {
         let texts = |s: &Value| -> String {
             s["items"].as_array().unwrap().iter().filter(|i| i["k"] == "assistant").map(|i| i.to_string()).collect::<Vec<_>>().join("\n")
         };
-        // 首次启动的引导（主题、信任目录）：替用户按
+        // 首次启动的引导：主题、安全提示由对话界面自己按掉（screen::onboarding），这里只替用户信任目录
         for _ in 0..60 {
             let s = chat.snapshot(&id).await.unwrap();
             if s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle" {
@@ -2408,7 +2484,7 @@ mod tests {
                 instances.send_keys(&id, &["Down"]).await.unwrap();
                 tokio::time::sleep(Duration::from_millis(800)).await;
                 instances.send_keys(&id, &["Enter"]).await.unwrap();
-            } else if cap.contains("Press Enter to continue") || cap.contains("Dark mode") || cap.contains("Enter to confirm") {
+            } else if cap.contains("Enter to confirm") {
                 instances.send_keys(&id, &["Enter"]).await.unwrap();
             } else {
                 println!("---- 屏幕\n{}", cap.lines().filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));

@@ -22,6 +22,7 @@ import RelayPicker, { RELAYS_ANCHOR } from '../shared/RelayPicker.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { shouldRemind, UpdateCheck } from '../shared/Update.jsx';
 import { Card, ErrorNote, Field, useLoad } from '../shared/ui.jsx';
+import { SyncCard, SyncLabel } from '../shared/SettingsSync.jsx';
 
 // 开源仓库（客户端 AGPL-3.0-or-later）
 const SOURCE_URL = 'https://github.com/imythu/looklook';
@@ -73,9 +74,10 @@ function sectionOf(hash) {
   return SECTIONS.some(([k]) => k === id) ? id : 'general';
 }
 
-// 自动保存的设置项
-const KEYS = ['font', 'font_size', 'theme', 'default_workdir', 'default_shell', 'device_name', 'default_full_access'];
-const same = (a, b) => KEYS.every((k) => String(a[k] ?? '') === String(b[k] ?? ''));
+// 自动保存的设置项（配色在终端页里换，自动更新、附件保留天数在各自的卡片里单独保存）
+const KEYS = ['font', 'font_size', 'default_workdir', 'default_shell', 'device_name', 'default_full_access'];
+const differs = (a, b) => (k) => String(a[k] ?? '') !== String(b[k] ?? '');
+const same = (a, b) => !KEYS.some(differs(a, b));
 
 /** 改动停下 600 毫秒后保存；离开页面时把没保存的立即发出去。 */
 function useAutoSave(status, reload) {
@@ -85,14 +87,16 @@ function useAutoSave(status, reload) {
   const latest = useRef({ s, status });
   latest.current = { s, status };
 
-  const body = (v) => ({
-    ...v,
-    font_size: Number(v.font_size),
-    // 自动更新、附件保留天数、终端配色（在终端页里换）在别处单独改、立即保存，以当前状态为准
-    auto_update: latest.current.status.settings.auto_update,
-    theme: latest.current.status.settings.theme,
-    attach_days: latest.current.status.settings.attach_days,
-  });
+  // 只发改了的项：其余的（包括别的电脑刚同步过来的）由后端沿用现在的值
+  const body = (v) => Object.fromEntries(KEYS.filter(differs(v, saved.current)).map((k) => [k, k === 'font_size' ? Number(v[k]) : v[k]]));
+
+  // 没有未保存的改动时跟着最新状态走（比如别的电脑同步来了新字号）
+  useEffect(() => {
+    if (same(latest.current.s, saved.current) && !same(status.settings, saved.current)) {
+      saved.current = status.settings;
+      setS(status.settings);
+    }
+  }, [status.settings]);
 
   useEffect(() => {
     if (same(s, saved.current)) return;
@@ -173,6 +177,7 @@ export default function Settings() {
             />
           </Field>
         </Card>
+        <SyncCard />
         <AttachmentsCard />
       </>
     ),
@@ -185,7 +190,7 @@ export default function Settings() {
           >
             {t('settings.preview')}
           </div>
-          <Field label={t('settings.font')} hint={caps.fonts ? t('settings.font_hint') : t('settings.font_missing')}>
+          <Field label={<SyncLabel text={t('settings.font')} />} hint={caps.fonts ? t('settings.font_hint') : t('settings.font_missing')}>
             <Seg
               value={s.font}
               label={t('settings.font')}
@@ -196,14 +201,14 @@ export default function Settings() {
               ]}
             />
           </Field>
-          <Field label={t('settings.font_size')}>
+          <Field label={<SyncLabel text={t('settings.font_size')} />}>
             <Seg value={Number(s.font_size)} label={t('settings.font_size')} onChange={set('font_size')} options={[13, 14, 15, 16, 18, 20].map((n) => [n, String(n)])} />
           </Field>
         </Card>
         <Card title={t('settings.new_terminal')}>
           <FolderField label={t('settings.workdir')} hint={t('settings.workdir_hint')} value={s.default_workdir} onChange={set('default_workdir')} />
           <ShellPicker value={s.default_shell ?? ''} onChange={set('default_shell')} data={shells} />
-          <Field label={t('settings.default_full_access')} hint={t('settings.default_full_access_hint')}>
+          <Field label={<SyncLabel text={t('settings.default_full_access')} />} hint={t('settings.default_full_access_hint')}>
             <Seg
               value={Boolean(s.default_full_access)}
               label={t('settings.default_full_access')}

@@ -46,6 +46,7 @@ mod relay;
 mod relay_watch;
 mod rtc;
 mod settings;
+mod settings_sync;
 mod shells;
 mod ssh;
 mod ssh_transfer;
@@ -485,6 +486,9 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     updater::rescue_mux_backups(); // 要在第一次调用会话保持程序之前
     updater::settle_trzsz();
     paths.trzsz = paths::find_trzsz().map(|d| versions::stable_trzsz(&paths.home, d));
+    if let Err(e) = settings::Settings::import_synced(&store) {
+        tracing::warn!(error = %e, "设置同步：导入现有设置失败");
+    }
     let instances = Instances::new(store.clone(), paths.clone());
     let updater = updater::Updater::new(store.clone(), paths.clone(), account.clone(), shutdown.clone());
     let metrics = metrics::Metrics::new();
@@ -524,6 +528,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         rtc: Default::default(),
         outbound: Default::default(),
         ssh_transfer: Default::default(),
+        sync: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     if let Err(e) = chat.publish(ui_addr) {
@@ -548,6 +553,9 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(app.rtc.clone().watch(account.clone())),
         tokio::spawn(app.outbound.clone().watch(account.clone())),
         tokio::spawn(rtc::signal::run(app.clone(), shutdown.clone())),
+        tokio::spawn(app.sync.clone().run(app.clone(), shutdown.clone())),
+        // libdatachannel 默认第一条连接时才初始化（usrsctp、OpenSSL、线程池），提前做掉，第一次建连少等一会儿
+        tokio::task::spawn_blocking(datachannel::preload),
         {
             let app = app.clone();
             tokio::spawn(app.resolved.clone().run(move || app.access()))

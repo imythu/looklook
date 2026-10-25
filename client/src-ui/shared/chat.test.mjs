@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, knownDialog, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -198,4 +198,14 @@ test('时间点解析：微秒、没写时区、秒数', async () => {
   assert.equal(parseInstant('2026-10-24T18:00:00+08:00'), Date.UTC(2026, 9, 24, 10));
   assert.equal(parseInstant(1792583484), 1792583484000);
   assert.ok(Number.isNaN(parseInstant('junk')));
+});
+
+test('trust and bypass dialogs are recognized by their options', () => {
+  // 60 列时目录折成两行（2.1.310 实测）
+  const trust = { title: 'Accessing workspace:', body: ['/tmp/claude-0/-workspace-', '29ccd47f9839/proj', '', 'Quick safety check: …'], options: [{ label: 'No, exit' }, { label: 'Yes, I trust this folder' }] };
+  assert.deepEqual(knownDialog(trust), { kind: 'trust', path: '/tmp/claude-0/-workspace-29ccd47f9839/proj' });
+  const bypass = { title: 'WARNING: Claude Code running in Bypass Permissions mode', body: ['In Bypass Permissions mode, …'], options: [{ label: 'No, exit' }, { label: 'Yes, I accept' }] };
+  assert.deepEqual(knownDialog(bypass), { kind: 'bypass', path: '' });
+  assert.equal(knownDialog({ title: 'Bash command', body: [], options: [{ label: 'Yes' }, { label: 'No' }] }), null);
+  assert.equal(knownDialog(null), null);
 });
