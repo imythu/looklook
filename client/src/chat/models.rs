@@ -262,33 +262,44 @@ pub fn context_window(ctx: &Ctx, model: &str) -> u64 {
     from_catalog.unwrap_or(200_000)
 }
 
-/// 订阅的用量（5 小时、7 天）：只读 Claude Code 自己缓存在 `.claude.json` 里的（只认当前登录的账号的）。
+/// 订阅的用量（5 小时、7 天）：Claude Code 自己缓存在 `.claude.json` 里的（只认当前登录的账号的），
+/// 和最近一次 [`refresh_limits`] 时它报出来的，哪个新用哪个（`.claude.json` 写不进去时，比如 Docker 里被挂成了目录，就只有后者）。
 /// 不拿 `.credentials.json` 里的令牌去问 Anthropic：Anthropic 不允许第三方应用使用 claude.ai 的凭据（docs/CLAUDE_ACCOUNTS.md）。
 pub fn limits(ctx: &Ctx) -> Value {
     let state = read_json(&ctx.state_file).unwrap_or(Value::Null);
     let c = &state["cachedUsageUtilization"];
-    if c["accountUuid"].is_null() || c["accountUuid"] != state["oauthAccount"]["accountUuid"] {
-        return Value::Null;
-    }
-    // 这份缓存只在 Claude Code 查用量时更新，可能是几天前的：已经过了重置时间的窗口不再显示（数字早就不对了）
+    let cached = (!c["accountUuid"].is_null() && c["accountUuid"] == state["oauthAccount"]["accountUuid"]).then(|| {
+        let u = &c["utilization"];
+        let win = |k: &str| (u[k]["utilization"].clone(), u[k]["resets_at"].clone());
+        (c["fetchedAtMs"].as_i64().unwrap_or(0), win("five_hour"), win("seven_day"))
+    });
+    let reported = REPORTED.lock().unwrap_or_else(|e| e.into_inner()).as_ref().and_then(|m| m.get(&ctx.config_dir).cloned());
+    let Some((fetched, five, seven)) = cached.into_iter().chain(reported).max_by_key(|r| r.0) else { return Value::Null };
+    // 可能是几天前取的：已经过了重置时间的窗口不再显示（数字早就不对了）
     let now = time::OffsetDateTime::now_utc();
-    let pick = |k: &str| {
-        let u = &c["utilization"][k];
-        let expired = u["resets_at"].as_str().and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()).is_some_and(|t| t <= now);
-        if u["utilization"].is_number() && !expired {
-            serde_json::json!({ "used": u["utilization"], "resets_at": u["resets_at"] })
+    let pick = |(used, resets_at): Window| {
+        let expired = resets_at.as_str().and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok()).is_some_and(|t| t <= now);
+        if used.is_number() && !expired {
+            serde_json::json!({ "used": used, "resets_at": resets_at })
         } else {
             Value::Null
         }
     };
-    serde_json::json!({ "five_hour": pick("five_hour"), "seven_day": pick("seven_day"), "fetched_at": c["fetchedAtMs"] })
+    serde_json::json!({ "five_hour": pick(five), "seven_day": pick(seven), "fetched_at": fetched })
 }
+
+/// 一个窗口：用了百分之几、什么时候重置
+type Window = (Value, Value);
+
+/// [`refresh_limits`] 时 Claude Code 报出来的用量，按配置目录：（取到的时间，5 小时，7 天）
+static REPORTED: Mutex<Option<HashMap<PathBuf, (i64, Window, Window)>>> = Mutex::new(None);
 
 /// 用量缓存多旧就请 Claude Code 重新取
 pub const LIMITS_STALE_MS: i64 = 2 * 60 * 1000;
 
-/// 请 Claude Code 自己刷新用量缓存：`claude -p /usage`（本地命令，不调用模型、不消耗额度），它问到后写进
-/// 这个配置目录的 `.claude.json`，之后 [`limits`] 就能读到。不留对话记录、不启动 MCP 服务器；在 `cwd`（一个空目录）里运行。
+/// 请 Claude Code 自己去取用量：`claude -p /usage`（本地命令，不调用模型、不消耗额度）。它会写进这个配置目录的
+/// `.claude.json`，stream-json 输出里也有一份（`usage_report`），记下来，之后 [`limits`] 就能读到。
+/// 不留对话记录、不启动 MCP 服务器；在 `cwd`（一个空目录）里运行。
 /// 每个配置目录两分钟最多一次，同时只跑一个。`account_dir` 为 None 时是本机默认账号（不改 `CLAUDE_CONFIG_DIR`）。
 pub async fn refresh_limits(shell: &str, config_dir: &Path, account_dir: Option<&Path>, cwd: &Path) {
     static LAST: Mutex<Option<HashMap<PathBuf, Instant>>> = Mutex::new(None);
@@ -303,12 +314,27 @@ pub async fn refresh_limits(shell: &str, config_dir: &Path, account_dir: Option<
     let Some(cli) = crate::agents::claude_cli(shell).await else { return };
     let _ = std::fs::create_dir_all(cwd);
     let env: Vec<(&str, Option<&std::ffi::OsStr>)> = account_dir.map(|d| ("CLAUDE_CONFIG_DIR", Some(d.as_os_str()))).into_iter().collect();
-    let mut cmd = crate::agents::cli_command(shell, &cli, &["-p", "/usage", "--no-session-persistence", "--strict-mcp-config"], &env);
-    cmd.current_dir(cwd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
-    match tokio::time::timeout(Duration::from_secs(30), cmd.status()).await {
-        Ok(Ok(s)) if s.success() => {}
-        r => tracing::debug!(result = ?r, "claude -p /usage 没有成功"),
+    let args = ["-p", "/usage", "--no-session-persistence", "--strict-mcp-config", "--output-format", "stream-json", "--verbose"];
+    let mut cmd = crate::agents::cli_command(shell, &cli, &args, &env);
+    cmd.current_dir(cwd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(30), cmd.output()).await {
+        Ok(Ok(out)) if out.status.success() => match parse_usage_report(&String::from_utf8_lossy(&out.stdout)) {
+            Some((five, seven)) => {
+                REPORTED.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(config_dir.to_path_buf(), (crate::util::system_ms(), five, seven));
+            }
+            None => tracing::debug!("claude -p /usage 的输出里没有用量（旧版 Claude Code 没有 usage_report），只能读 .claude.json"),
+        },
+        r => tracing::debug!(result = ?r.map(|o| o.map(|o| o.status)), "claude -p /usage 没有成功"),
     }
+}
+
+/// `claude -p /usage --output-format stream-json` 输出里的 `usage_report.rate_limits.limits`：
+/// `session` 是 5 小时的，`weekly_all` 是 7 天的（按 `kind` 认，不看显示的文字）。一个都没有时 None。
+fn parse_usage_report(out: &str) -> Option<(Window, Window)> {
+    let limits = out.lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find_map(|v| v["usage_report"]["rate_limits"]["limits"].as_array().cloned())?;
+    let win = |kind: &str| limits.iter().find(|l| l["kind"] == kind).map(|l| (l["percent"].clone(), l["resets_at"].clone())).unwrap_or_default();
+    let (five, seven) = (win("session"), win("weekly_all"));
+    (five.0.is_number() || seven.0.is_number()).then_some((five, seven))
 }
 
 /// 权限规则（各 settings 文件里的，按来源）和 MCP 服务器（`~/.claude.json` 的用户级、这个项目的，以及项目的 `.mcp.json`）
@@ -455,6 +481,40 @@ mod tests {
         json!({ "id": id, "name": name, "description": format!("{name} desc"), "section": section,
             "thinking": { "type": "effort", "effort_options": efforts.iter().map(|e| json!({ "id": e })).collect::<Vec<_>>() },
             "runtime": { "default_effort": "medium" } })
+    }
+
+    #[test]
+    fn limits_from_cache_or_usage_report() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join(".claude");
+        // .claude.json 写不进去（Docker 里被挂成了目录）：只有 `claude -p /usage` 报出来的
+        let state = tmp.path().join(".claude.json");
+        std::fs::create_dir_all(&state).unwrap();
+        let ctx = Ctx { config_dir: cfg.clone(), state_file: state.clone(), workdir: tmp.path(), env: HashMap::new() };
+        assert!(limits(&ctx).is_null());
+        let out = [
+            json!({ "type": "system", "subtype": "init" }).to_string(),
+            json!({ "type": "assistant", "usage_report": { "rate_limits": { "limits": [
+                { "kind": "session", "group": "session", "percent": 29, "resets_at": "2999-10-25T03:09:59.616161+00:00" },
+                { "kind": "weekly_scoped", "group": "weekly", "percent": 5, "resets_at": "2999-10-27T06:59:59+00:00", "scope": { "model": { "display_name": "Fable" } } },
+                { "kind": "weekly_all", "group": "weekly", "percent": 76, "resets_at": "2020-10-27T06:59:59+00:00" }
+            ] } } }).to_string(),
+        ]
+        .join("\n");
+        let (five, seven) = parse_usage_report(&out).unwrap();
+        assert!(parse_usage_report("not json\n{}").is_none());
+        REPORTED.lock().unwrap().get_or_insert_with(HashMap::new).insert(cfg.clone(), (100, five, seven));
+        let v = limits(&ctx);
+        assert_eq!(v["five_hour"]["used"], 29);
+        assert!(v["seven_day"].is_null(), "已经过了重置时间");
+        assert_eq!(v["fetched_at"], 100);
+
+        // .claude.json 里的更新就用它的
+        std::fs::remove_dir(&state).unwrap();
+        let win = |p: u64| json!({ "utilization": p, "resets_at": "2999-01-01T00:00:00Z" });
+        write(&state, &json!({ "oauthAccount": { "accountUuid": "a" }, "cachedUsageUtilization": { "accountUuid": "a", "fetchedAtMs": 200, "utilization": { "five_hour": win(40), "seven_day": win(80) } } }));
+        let v = limits(&ctx);
+        assert_eq!((v["five_hour"]["used"].clone(), v["seven_day"]["used"].clone(), v["fetched_at"].clone()), (json!(40), json!(80), json!(200)));
     }
 
     #[test]
