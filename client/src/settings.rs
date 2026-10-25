@@ -8,8 +8,8 @@ use crate::store::Store;
 
 const KEY: &str = "settings";
 const THEME_REV: u8 = 2;
-/// 终端配色（和 instances.rs 的 ttyd_args、src-ui/shared/termTheme.js 保持一致）
-const THEMES: &[&str] = &["lagoon", "sunset", "mint", "tangerine", "agent", "dark", "light"];
+/// 终端配色（和 instances.rs 的 xterm_theme、src-ui/shared/termTheme.js 保持一致）
+pub const THEMES: &[&str] = &["lagoon", "sunset", "mint", "tangerine", "agent", "dark", "light"];
 const DEFAULT_THEME: &str = "lagoon";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

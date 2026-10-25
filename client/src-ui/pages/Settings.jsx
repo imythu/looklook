@@ -16,7 +16,7 @@ import ClaudeProfilesCard from './ClaudeProfiles.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
-import { TERM_THEMES, termTheme } from '../shared/termTheme.js';
+import { termTheme } from '../shared/termTheme.js';
 import { DiagCard } from '../shared/Report.jsx';
 import RelayPicker, { RELAYS_ANCHOR } from '../shared/RelayPicker.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -57,33 +57,6 @@ export function Seg({ value, options, onChange, label }) {
 }
 
 /** 终端配色：每个选项是一小块终端的样子（栏、提示符、光标、几种 ANSI 颜色） */
-function ThemePicker({ value, onChange }) {
-  const { t } = useTranslation();
-  return (
-    <div className="theme-pick" role="group" aria-label={t('settings.theme')}>
-      {Object.entries(TERM_THEMES).map(([id, th]) => (
-        <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)} title={t(`settings.theme_${id}`)}>
-          <span className="theme-sample" style={{ background: th.bg, color: th.fg, borderColor: th.border }} aria-hidden="true">
-            <span className="theme-sample-bar" style={{ background: th.bar, borderColor: th.border }} />
-            <span className="theme-sample-line">
-              <b style={{ color: th.ansi[1] }}>~</b> $ <i style={{ background: th.accent }} />
-            </span>
-            <span className="theme-sample-dots">
-              {th.ansi.map((c) => (
-                <i key={c} style={{ background: c }} />
-              ))}
-            </span>
-          </span>
-          <span className="theme-name">
-            {value === id && <Check size={14} aria-hidden="true" />}
-            {t(`settings.theme_${id}`)}
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
 const SECTIONS = [
   ['general', SlidersHorizontal],
   ['terminal', SquareTerminal],
@@ -115,8 +88,9 @@ function useAutoSave(status, reload) {
   const body = (v) => ({
     ...v,
     font_size: Number(v.font_size),
-    // 自动更新、附件保留天数在别处单独开关、立即保存，以当前状态为准
+    // 自动更新、附件保留天数、终端配色（在终端页里换）在别处单独改、立即保存，以当前状态为准
     auto_update: latest.current.status.settings.auto_update,
+    theme: latest.current.status.settings.theme,
     attach_days: latest.current.status.settings.attach_days,
   });
 
@@ -225,12 +199,6 @@ export default function Settings() {
           <Field label={t('settings.font_size')}>
             <Seg value={Number(s.font_size)} label={t('settings.font_size')} onChange={set('font_size')} options={[13, 14, 15, 16, 18, 20].map((n) => [n, String(n)])} />
           </Field>
-          <Field label={t('settings.theme')}>
-            <ThemePicker value={s.theme} onChange={set('theme')} />
-          </Field>
-          <p className="muted small" style={{ margin: 0 }}>
-            {t('settings.apply_note')}
-          </p>
         </Card>
         <Card title={t('settings.new_terminal')}>
           <FolderField label={t('settings.workdir')} hint={t('settings.workdir_hint')} value={s.default_workdir} onChange={set('default_workdir')} />

@@ -275,6 +275,8 @@
     "retry": "Retry"
   },
   "term": {
+    "theme": "Terminal colors (all terminals)",
+    "theme_note": "One color scheme for every terminal. Changes apply right away.",
     "back": "Back",
     "reload": "Reload",
     "codex_reconnect": "Reconnect terminal",
@@ -393,7 +395,6 @@
     "theme_sunset": "Sunset",
     "theme_mint": "Mint",
     "theme_tangerine": "Tangerine",
-    "apply_note": "Applies to terminals opened or restarted afterwards.",
     "general": "General",
     "workdir": "Default folder",
     "workdir_hint": "The folder used by default when creating a terminal.",

@@ -99,6 +99,16 @@ export function useTermConn(frame) {
   return ok;
 }
 
+/**
+ * 让终端用这套配色（`name`，见 termTheme.js）。ttyd 启动时定下的配色只管新开的终端，所以终端加载好（`loaded`）、
+ * 设置里换了配色时都发一次，已经开着的终端也马上跟着换（term-inject.js 的 setTheme）。
+ */
+export function useTermTheme(frame, name, loaded) {
+  useEffect(() => {
+    if (loaded) frame.current?.contentWindow?.postMessage({ type: 'looklook:theme', data: name }, frameOrigin(frame));
+  }, [name, loaded]);
+}
+
 export function termFit(frame) {
   frame.current?.contentWindow?.postMessage({ type: 'looklook:fit' }, frameOrigin(frame));
 }

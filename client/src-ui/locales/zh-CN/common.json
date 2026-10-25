@@ -275,6 +275,8 @@
     "retry": "重试"
   },
   "term": {
+    "theme": "终端配色（全部终端）",
+    "theme_note": "所有终端共用一套配色，换了马上生效。",
     "back": "返回",
     "reload": "刷新",
     "codex_reconnect": "重新连接终端",
@@ -393,7 +395,6 @@
     "theme_sunset": "落日",
     "theme_mint": "薄荷",
     "theme_tangerine": "橘子汽水",
-    "apply_note": "新打开或重新启动的终端生效。",
     "general": "常规",
     "workdir": "默认文件夹",
     "workdir_hint": "新建终端时默认使用的文件夹。",

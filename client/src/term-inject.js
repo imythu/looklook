@@ -147,6 +147,20 @@
   function readOnly() {
     if (TERM && TERM.options) TERM.options.disableStdin = parentOffline && !connOk;
   }
+  /**
+   * 管理台换了配色（looklook:theme，配色名）：ttyd 启动时 `-t theme=` 定下的配色只管新开的终端，
+   * 已经开着的在这里换（配色表由客户端在脚本前面带上，见 gateway/assets.rs）。终端还没准备好时先记下。
+   */
+  var wantTheme = null;
+  function setTheme(name) {
+    var th = window.__llThemes && window.__llThemes[name];
+    if (!th) return;
+    wantTheme = name;
+    // 终端周围露出来的那一圈（ttyd 页面本身的底色）也跟着换
+    document.documentElement.style.background = th.background;
+    if (document.body) document.body.style.background = th.background;
+    if (TERM && TERM.options) TERM.options.theme = th;
+  }
   /** 管理台告诉我们电脑离线了 / 又在线了（looklook:offline） */
   function setOffline(on) {
     if (parentOffline === on) return;
@@ -942,12 +956,14 @@
   // 电脑离线 / 在线：终端还没准备好时也要记下（准备好时 setup 按它决定能不能输入）
   window.addEventListener('message', function (e) {
     if (fromParent(e) && e.data.type === 'looklook:offline') setOffline(Boolean(e.data.data));
+    if (fromParent(e) && e.data.type === 'looklook:theme') setTheme(e.data.data);
   });
 
   function setup(term) {
     window.removeEventListener('message', earlyFocus);
     TERM = term;
     readOnly();
+    if (wantTheme) setTheme(wantTheme);
     // 要求过聚焦，或者页面已经有焦点：交给终端（手机上不主动弹键盘）
     if (wantFocus || (!touch && document.hasFocus())) term.focus();
     refitOnReturn(term);

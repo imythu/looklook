@@ -28,8 +28,9 @@ pub async fn ui(uri: Uri) -> Response {
 }
 
 pub async fn term_js() -> Response {
-    // 脚本里有只针对 Windows（psmux）的处理，按本机系统打开。
-    let js = if cfg!(windows) { format!("window.__llHostWindows=true;\n{TERM_JS}") } else { TERM_JS.to_string() };
+    // 脚本里有只针对 Windows（psmux）的处理，按本机系统打开；所有配色一起带上，管理台换配色时已开着的终端马上跟着换。
+    let host = if cfg!(windows) { "window.__llHostWindows=true;\n" } else { "" };
+    let js = format!("{host}window.__llThemes={};\n{TERM_JS}", crate::instances::term_themes_js());
     ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], js).into_response()
 }
 

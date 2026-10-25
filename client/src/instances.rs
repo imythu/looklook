@@ -1369,9 +1369,10 @@ impl Instances {
     }
 }
 
-/// ttyd 参数。终端字体、配色在这里通过 `-t` 传给浏览器端的 xterm.js。
-pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[String]) -> Vec<String> {
-    let theme = match s.theme.as_str() {
+/// 一套终端配色的 xterm.js `theme`（JSON）。启动 ttyd 时通过 `-t` 传进去；已经开着的终端换配色时由
+/// term-inject.js 从 `term_themes_js` 里取同一份（见 gateway/assets.rs）。未知名称按 `dark`。
+pub fn xterm_theme(name: &str) -> &'static str {
+    match name {
         // 潟湖（默认）：深海蓝底、米白文字、阳光黄光标，ANSI 颜色鲜亮，不是一片黑
         "lagoon" => r##"{"background":"#16204a","foreground":"#e9eeff","cursor":"#ffcc4d","cursorAccent":"#16204a","selectionBackground":"#34468a","black":"#1b2550","red":"#ff6b81","green":"#4ee2a0","yellow":"#ffcc4d","blue":"#6aa8ff","magenta":"#d68cff","cyan":"#3fd8f2","white":"#dfe6ff","brightBlack":"#7182c4","brightRed":"#ff8fa0","brightGreen":"#7cf0bd","brightYellow":"#ffdb7a","brightBlue":"#93c1ff","brightMagenta":"#e4adff","brightCyan":"#7ae6f7","brightWhite":"#ffffff"}"##,
         // 落日：梅子紫底、橘粉光标
@@ -1384,7 +1385,18 @@ pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[Strin
         "agent" => r##"{"background":"#1a1915","foreground":"#e8e4dc","cursor":"#d97757","cursorAccent":"#1a1915","selectionBackground":"#4a3f37","selectionForeground":"#faf8f3","black":"#24221e","red":"#e06c5a","green":"#8fbf7a","yellow":"#e3b35c","blue":"#7aa2d6","magenta":"#c48bc9","cyan":"#6fbfb5","white":"#d8d3c8","brightBlack":"#6e6a61","brightRed":"#ef8a76","brightGreen":"#a9d394","brightYellow":"#f0c97e","brightBlue":"#9dbde6","brightMagenta":"#d8a8dc","brightCyan":"#92d6cd","brightWhite":"#faf8f3"}"##,
         "light" => r##"{"background":"#fbfbfd","foreground":"#1f2330","cursor":"#4f46e5","cursorAccent":"#ffffff","selectionBackground":"#c7d2fe","black":"#1f2330","red":"#d9364f","green":"#12a150","yellow":"#b7791f","blue":"#4f46e5","magenta":"#a23fd1","cyan":"#0891b2","white":"#d4d7e1","brightBlack":"#6b7285","brightRed":"#e5536a","brightGreen":"#1fb866","brightYellow":"#c98f2b","brightBlue":"#6366f1","brightMagenta":"#b95ee0","brightCyan":"#06b6d4","brightWhite":"#ffffff"}"##,
         _ => r##"{"background":"#11131a","foreground":"#e3e6ee","cursor":"#a5b4fc","cursorAccent":"#11131a","selectionBackground":"#3b3f63","black":"#1b1e27","red":"#f06a7e","green":"#3ccf7c","yellow":"#e0a846","blue":"#818cf8","magenta":"#c084fc","cyan":"#22d3ee","white":"#d6d9e2","brightBlack":"#5c6375","brightRed":"#ff8a9b","brightGreen":"#6ee7a0","brightYellow":"#f5c46a","brightBlue":"#a5b4fc","brightMagenta":"#d8b4fe","brightCyan":"#67e8f9","brightWhite":"#ffffff"}"##,
-    };
+    }
+}
+
+/// 所有配色的 xterm.js `theme`，写成 `{"lagoon":{…},…}`，给 term-inject.js 换配色用。
+pub fn term_themes_js() -> String {
+    let items: Vec<String> = crate::settings::THEMES.iter().map(|n| format!("\"{n}\":{}", xterm_theme(n))).collect();
+    format!("{{{}}}", items.join(","))
+}
+
+/// ttyd 参数。终端字体、配色在这里通过 `-t` 传给浏览器端的 xterm.js。
+pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[String]) -> Vec<String> {
+    let theme = xterm_theme(&s.theme);
     let mut a: Vec<String> = vec![
         "-i".into(),
         "127.0.0.1".into(),
@@ -1769,6 +1781,14 @@ fn process_name(pid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_theme_has_an_xterm_palette() {
+        let all: serde_json::Value = serde_json::from_str(&term_themes_js()).unwrap();
+        for n in crate::settings::THEMES {
+            assert!(all[n]["background"].is_string(), "{n}");
+        }
+    }
 
     /// 启动 ttyd 的线程退出后 ttyd 不能跟着收到 SIGTERM（PR_SET_PDEATHSIG 跟的是线程）。
     #[cfg(target_os = "linux")]

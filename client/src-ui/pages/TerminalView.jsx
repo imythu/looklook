@@ -3,7 +3,7 @@
 // 终端 / 文件 / Git 的切换在手机和窄屏上放在底部（像 App 的底部标签栏），宽屏放在顶栏。
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页右边打开的每个会话是一个 TermPane（见 Sessions.jsx）。
-import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Play, PlugZap, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, WifiOff } from 'lucide-react';
+import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Palette, Play, PlugZap, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, WifiOff } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -11,7 +11,7 @@ import { useStatus } from '../App.jsx';
 import { api, selectedDevice, terminalDevice } from '../shared/api.js';
 import { CHAT_LAUNCHES } from '../shared/chat.js';
 import { usePaths } from '../shared/paths.jsx';
-import { termFit, termFocus, termOffline, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn, useTermConn } from '../shared/termFrame.js';
+import { termFit, termFocus, termOffline, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn, useTermConn, useTermTheme } from '../shared/termFrame.js';
 import { errorText } from '../shared/i18n.js';
 import { AI_LAUNCHES } from '../shared/keys.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
@@ -19,6 +19,7 @@ import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { customName, sessionTitle } from '../shared/sessions.jsx';
 import TextSelect, { useTextSelect } from '../shared/TextSelect.jsx';
+import { TermThemeModal } from '../shared/ThemePicker.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import ChatView from './ChatView.jsx';
 import FileBrowser from './FileBrowser.jsx';
@@ -293,6 +294,8 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   const allowed = status.account.allowed;
   const running = Boolean(inst?.running && allowed);
   const cut = useOffline(frame, Boolean(offline && running), loaded);
+  const [picking, setPicking] = useState(false);
+  useTermTheme(frame, status.settings.theme, loaded);
   // 把焦点交给当前标签的输入框：对话标签是对话输入框，其他是终端
   const focusInput = () => {
     if (isTouch()) return;
@@ -386,8 +389,8 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
       hidden={!active}
       aria-label={inst?.name ?? id}
       data-pane-id={id}
-      data-scheme={tab === 'term' ? undefined : 'app'}
-      style={tab === 'term' ? undefined : APP_CHROME}
+      data-scheme={tab === 'term' ? termTheme(status.settings.theme).scheme : 'app'}
+      style={tab === 'term' ? termVars(status.settings.theme) : APP_CHROME}
     >
       <header className="term-bar ws-pane-bar" onDoubleClick={(e) => !e.target.closest('button, a, input') && !full && toggleMax()}>
         <span className="term-title">
@@ -410,6 +413,11 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
             <TextSelectIcon size={16} />
           </button>
         )}
+        {running && tab === 'term' && (
+          <button type="button" className={iconBtn} onClick={() => setPicking(true)} aria-label={t('term.theme')} title={t('term.theme')}>
+            <Palette size={16} />
+          </button>
+        )}
         {tab !== 'chat' && files.button}
         {!full && (
           <button type="button" className={iconBtn} onClick={toggleMax} aria-pressed={max} aria-label={t(max ? 'term.restore' : 'term.maximize')} title={t(max ? 'term.restore' : 'term.maximize')}>
@@ -429,6 +437,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
         {cut && tab !== 'chat' && <OfflineNote />}
         {tab !== 'chat' && files.layer}
         {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); termFocus(frame); }} />}
+        <TermThemeModal open={picking} onClose={() => { setPicking(false); termFocus(frame); }} />
         {running && tab === 'git' && (
           <div className="term-files-tab">
             <GitPanel id={id} active={active && tab === 'git'} />
@@ -488,6 +497,8 @@ export default function TerminalView({ id }) {
   const keybarShown = touch && keys && live && tab === 'term';
   const files = useTermFiles({ id, inst, frame, enabled: live && tab !== 'chat', touch, hostOs: status.capabilities.os, keybar: keybarShown || tabbarShown });
   const vars = useTermChrome(status.settings.theme, true, tab !== 'term');
+  const [picking, setPicking] = useState(false);
+  useTermTheme(frame, status.settings.theme, loaded);
   useRefitOnReturn(frame, live);
   useFocusWhenReady(frame, live && tab === 'term' && !touch);
   const [selecting, setSelecting] = useTextSelect(frame, live && tab === 'term');
@@ -600,6 +611,7 @@ export default function TerminalView({ id }) {
   const more = [
     tab === 'term' && live && { icon: TextSelectIcon, label: t('select.toggle'), onClick: () => setSelecting(true) },
     tab === 'term' && live && { icon: RefreshCw, label: t('term.reload'), onClick: reloadTerm },
+    tab === 'term' && live && { icon: Palette, label: t('term.theme'), onClick: () => setPicking(true) },
     tab === 'term' && live && reconnect.shown && { icon: PlugZap, label: t('term.codex_reconnect'), onClick: reconnect.run },
     { icon: full ? Minimize2 : Maximize2, label: t(full ? 'term.exit_full' : 'term.full'), onClick: toggleFull },
     { icon: ExternalLink, label: t('instance.new_window'), onClick: newWindow },
@@ -627,6 +639,11 @@ export default function TerminalView({ id }) {
         {!compact && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onClick={reloadTerm} aria-label={t('term.reload')} title={t('term.reload')}>
             <RefreshCw size={18} />
+          </button>
+        )}
+        {!compact && tab === 'term' && live && (
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => setPicking(true)} aria-label={t('term.theme')} title={t('term.theme')}>
+            <Palette size={18} />
           </button>
         )}
         {tab !== 'chat' && files.button}
@@ -658,6 +675,7 @@ export default function TerminalView({ id }) {
           </div>
         )}
         {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); if (!touch) termFocus(frame); }} />}
+        <TermThemeModal open={picking} onClose={() => { setPicking(false); if (!touch) termFocus(frame); }} />
         {live && tab === 'git' && (
           <div className="term-files-tab">
             <GitPanel id={id} active={tab === 'git'} />
