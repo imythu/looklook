@@ -151,6 +151,8 @@ pub struct Transcript {
     /// 运行中发的、还在 Claude Code 队列里的消息（`queue-operation`）。这一步做完会并进对话（`queued_command` 附件），
     /// 或者这一轮结束后当成下一条消息发出去
     pub queued: Vec<String>,
+    /// Claude Code 的整个队列（含不显示的后台任务通知）：`dequeue` 不带内容，取的是最前面那条，要照着它的顺序记
+    queue: std::collections::VecDeque<String>,
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
@@ -223,7 +225,7 @@ pub fn tool_calls_in(items: &[Item]) -> Vec<ToolCall<'_>> {
 
 impl Transcript {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), first_of_msg: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false, queued: vec![] }
+        Self { path, pos: 0, partial: vec![], recs: vec![], by_uuid: HashMap::new(), first_of_msg: HashMap::new(), display: vec![], version: None, stats: Stats::default(), sidechain: false, notes: HashMap::new(), model: None, usage: None, model_msg: None, totals: Totals::default(), per_msg: HashMap::new(), title: None, custom_title: false, queued: vec![], queue: Default::default() }
     }
 
     /// 子代理的 transcript
@@ -530,18 +532,23 @@ impl Transcript {
 }
 
 impl Transcript {
+    /// 照着 Claude Code 的队列记：`enqueue` 放到最后；`dequeue`（立即发送、这一轮结束后发出）不带内容，取最前面那条；
+    /// `remove`（并进这一轮）按内容删；`popAll` / `clear`（按上键拿回去编辑等）清空。界面只显示用户发的。
     fn queue_op(&mut self, v: &Value) {
-        let text = v["content"].as_str().filter(|s| !s.contains("<task-notification>") && !s.trim().is_empty());
-        match (v["operation"].as_str(), text) {
-            (Some("enqueue"), Some(t)) => self.queued.push(t.to_string()),
-            (Some("popAll" | "clear"), _) => self.queued.clear(),
-            (_, Some(t)) => {
-                if let Some(n) = self.queued.iter().position(|q| q == t) {
-                    self.queued.remove(n);
+        let text = v["content"].as_str();
+        match v["operation"].as_str() {
+            Some("enqueue") => self.queue.push_back(text.unwrap_or("").to_string()),
+            Some("dequeue") => {
+                self.queue.pop_front();
+            }
+            Some("popAll" | "clear") => self.queue.clear(),
+            _ => {
+                if let Some(n) = text.and_then(|t| self.queue.iter().position(|q| q == t)) {
+                    self.queue.remove(n);
                 }
             }
-            _ => {}
         }
+        self.queued = self.queue.iter().filter(|s| !s.contains("<task-notification>") && !s.trim().is_empty()).cloned().collect();
     }
 }
 
@@ -816,6 +823,14 @@ mod tests {
         let Body::User { text, mid, .. } = &t.items(3, 4)[0].body else { panic!() };
         assert_eq!(text, "顺便算一下 2+3");
         assert!(mid);
+        // 立即发送：dequeue 不带内容，取最前面的（后台任务通知也在队列里，只是不显示）
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"<task-notification>t</task-notification>"})).as_bytes());
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"马上看这个"})).as_bytes());
+        assert_eq!(t.queued, ["马上看这个"]);
+        t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
+        assert_eq!(t.queued, ["马上看这个"], "先取走的是通知");
+        t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
+        assert!(t.queued.is_empty());
         // 按上键拿回去编辑：队列清空
         t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"x"})).as_bytes());
         t.feed(line(json!({"type":"queue-operation","operation":"popAll"})).as_bytes());

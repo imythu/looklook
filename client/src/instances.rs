@@ -1106,7 +1106,8 @@ impl Instances {
         let Backend::Tmux(tmux) = &self.backend else { return Err(LocalError::new("NO_TMUX")) };
         let _ = write_tmux_conf(&self.paths.tmux_conf());
         let mut cmd = Command::new(tmux);
-        cmd.args(self.tmux_base_args()).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        // 超时就结束它：不然卡住的 tmux 客户端会一直留着
+        cmd.args(self.tmux_base_args()).args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         self.apply_env(&mut cmd);
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -1161,9 +1162,16 @@ impl Instances {
 
     // ---------------- 对话界面用的 tmux 操作（chat/mod.rs） ----------------
 
+    /// 面板在复制模式（终端里用滚轮往上翻过）时，送进去的字会被当成复制模式的按键：`f`、`g`、`/` 等会在某个
+    /// 终端上弹出提示，`send-keys` 要等提示关掉才返回（看不见的终端上就一直卡着，表现为 tmux 超时）。先退出所有模式。
+    async fn leave_mode(&self, target: &str) {
+        let _ = self.tmux(&["copy-mode", "-q", "-t", target]).await;
+    }
+
     /// `send-keys`：`keys` 是 tmux 的按键名（`Enter`、`Escape`、`C-j`、`2` …）。
     pub async fn send_keys(&self, id: &str, keys: &[&str]) -> Result<(), LocalError> {
         let target = format!("{}:", exact(&Self::session_name(id)));
+        self.leave_mode(&target).await;
         let mut args = vec!["send-keys", "-t", &target];
         args.extend_from_slice(keys);
         self.tmux_ok(&args).await
@@ -1172,6 +1180,7 @@ impl Instances {
     /// 按字面送出文字（不解释按键名）。`--` 不能少：以 `-` 开头的文字会被 tmux 当成选项。
     pub async fn send_literal(&self, id: &str, text: &str) -> Result<(), LocalError> {
         let target = format!("{}:", exact(&Self::session_name(id)));
+        self.leave_mode(&target).await;
         self.tmux_ok(&["send-keys", "-t", &target, "-l", "--", text]).await
     }
 
@@ -1180,7 +1189,7 @@ impl Instances {
         let buffer = format!("ll_chat_{id}");
         let Backend::Tmux(tmux) = &self.backend else { return Err(LocalError::new("NO_TMUX")) };
         let mut cmd = Command::new(tmux);
-        cmd.args(self.tmux_base_args()).args(["load-buffer", "-b", &buffer, "-"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+        cmd.args(self.tmux_base_args()).args(["load-buffer", "-b", &buffer, "-"]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped()).kill_on_drop(true);
         self.apply_env(&mut cmd);
         #[cfg(windows)]
         cmd.creation_flags(CREATE_NO_WINDOW);
@@ -1196,6 +1205,7 @@ impl Instances {
             return Err(LocalError::new("START_FAILED").with("detail", String::from_utf8_lossy(&out.stderr).trim()));
         }
         let target = format!("{}:", exact(&Self::session_name(id)));
+        self.leave_mode(&target).await;
         self.tmux_ok(&["paste-buffer", "-p", "-d", "-b", &buffer, "-t", &target]).await
     }
 

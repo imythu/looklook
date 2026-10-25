@@ -2203,15 +2203,15 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-working-mark { flex: none; width: 18px; text-align: center; color: var(--claude); font-size: 17px; line-height: 1; text-shadow: 0 0 10px color-mix(in srgb, var(--claude) 60%, transparent); }
 .chat-working-orig { flex: none; font-size: 12px; font-style: italic; color: var(--muted); opacity: .75; }
 .chat-working-detail { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; font-variant-numeric: tabular-nums; padding: 1px 8px; border-radius: 999px; background: var(--claude-soft); color: color-mix(in srgb, var(--claude) 75%, var(--text)); }
-/* 单行截断要 overflow:hidden，行高给够，不然 g、y 的下半截被切掉 */
+/* 单行截断要 overflow:hidden，行高给够，不然 g、y 的下半截被切掉。
+   动效只变颜色：不用 background-clip:text 的流光，那样字是透明的、由背景剪出来，Safari 和部分显卡加速下
+   动画时按低分辨率绘制，下半截发虚 */
 .chat-working .ellipsis {
   flex: 0 1 auto; line-height: 1.6; padding-block: 1px; font-weight: 500;
-  background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 38%, var(--claude) 50%, var(--muted) 62%, var(--muted) 100%);
-  background-size: 250% 100%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: chat-shine 2.2s linear infinite;
+  color: var(--muted);
+  animation: chat-breathe 2.2s ease-in-out infinite;
 }
-@keyframes chat-shine { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+@keyframes chat-breathe { 50% { color: color-mix(in srgb, var(--claude) 80%, var(--muted)); } }
 .chat-working-time { flex: none; font-size: 12.5px; font-variant-numeric: tabular-nums; opacity: .7; }
 .chat-preview { color: var(--muted); }
 
@@ -2378,5 +2378,4 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 /* 不想要动效的人：全部停下 */
 @media (prefers-reduced-motion: reduce) {
   .chat-view *, .chat-view *::before, .chat-view *::after { animation: none !important; transition: none !important; }
-  .chat-working .ellipsis { background: none; color: var(--muted); }
 }

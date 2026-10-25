@@ -1422,9 +1422,28 @@ impl Chat {
             let st = lock(&inst.st);
             (st.actual_model.clone(), st.context, st.version.clone())
         };
-        let (config_dir, state_file) = self.claude_paths(id);
+        let profile = crate::claude_profiles::for_instance(&self.store, id);
+        let (config_dir, state_file) = crate::claude_profiles::config_paths(&self.paths.home, &profile);
         let ctx = models::Ctx { config_dir, state_file, workdir: &workdir, env: HashMap::new() };
-        let (window, limits) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
+        let (window, mut limits) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
+        // 订阅用量只读 Claude Code 自己的缓存；缓存没有或旧了，请它自己去取（第三方接口没有订阅用量）。
+        // 一点都没有时等它取完再读，否则在后台取，下次来取就是新的
+        if profile.kind == crate::claude_profiles::Kind::Official {
+            let fetched = limits["fetched_at"].as_i64().unwrap_or(0);
+            if crate::util::system_ms() - fetched > models::LIMITS_STALE_MS {
+                let shell = self.instances.shell().to_string();
+                let account = (profile.id != crate::claude_profiles::OFFICIAL).then(|| crate::claude_profiles::account_dir(&self.paths.home, &profile.id));
+                let cwd = self.paths.home.join("run").join("usage");
+                let dir = ctx.config_dir.clone();
+                let refresh = async move { models::refresh_limits(&shell, &dir, account.as_deref(), &cwd).await };
+                if limits.is_null() {
+                    refresh.await;
+                    limits = tokio::task::block_in_place(|| models::limits(&ctx));
+                } else {
+                    tokio::spawn(refresh);
+                }
+            }
+        }
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
     }
 

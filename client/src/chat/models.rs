@@ -284,6 +284,33 @@ pub fn limits(ctx: &Ctx) -> Value {
     serde_json::json!({ "five_hour": pick("five_hour"), "seven_day": pick("seven_day"), "fetched_at": c["fetchedAtMs"] })
 }
 
+/// 用量缓存多旧就请 Claude Code 重新取
+pub const LIMITS_STALE_MS: i64 = 2 * 60 * 1000;
+
+/// 请 Claude Code 自己刷新用量缓存：`claude -p /usage`（本地命令，不调用模型、不消耗额度），它问到后写进
+/// 这个配置目录的 `.claude.json`，之后 [`limits`] 就能读到。不留对话记录、不启动 MCP 服务器；在 `cwd`（一个空目录）里运行。
+/// 每个配置目录两分钟最多一次，同时只跑一个。`account_dir` 为 None 时是本机默认账号（不改 `CLAUDE_CONFIG_DIR`）。
+pub async fn refresh_limits(shell: &str, config_dir: &Path, account_dir: Option<&Path>, cwd: &Path) {
+    static LAST: Mutex<Option<HashMap<PathBuf, Instant>>> = Mutex::new(None);
+    {
+        let mut last = LAST.lock().unwrap_or_else(|e| e.into_inner());
+        let m = last.get_or_insert_with(HashMap::new);
+        if m.get(config_dir).is_some_and(|t| t.elapsed() < Duration::from_millis(LIMITS_STALE_MS as u64)) {
+            return;
+        }
+        m.insert(config_dir.to_path_buf(), Instant::now());
+    }
+    let Some(cli) = crate::agents::claude_cli(shell).await else { return };
+    let _ = std::fs::create_dir_all(cwd);
+    let env: Vec<(&str, Option<&std::ffi::OsStr>)> = account_dir.map(|d| ("CLAUDE_CONFIG_DIR", Some(d.as_os_str()))).into_iter().collect();
+    let mut cmd = crate::agents::cli_command(shell, &cli, &["-p", "/usage", "--no-session-persistence", "--strict-mcp-config"], &env);
+    cmd.current_dir(cwd).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).kill_on_drop(true);
+    match tokio::time::timeout(Duration::from_secs(30), cmd.status()).await {
+        Ok(Ok(s)) if s.success() => {}
+        r => tracing::debug!(result = ?r, "claude -p /usage 没有成功"),
+    }
+}
+
 /// 权限规则（各 settings 文件里的，按来源）和 MCP 服务器（`~/.claude.json` 的用户级、这个项目的，以及项目的 `.mcp.json`）
 pub fn config(ctx: &Ctx) -> Value {
     let proj = ctx.workdir.join(".claude");
