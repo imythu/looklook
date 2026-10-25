@@ -104,6 +104,7 @@ const HELP_EXAMPLES: &str = "\
   looklook status           查看登录状态 / Show sign-in status
   looklook upgrade          升级到最新版本 / Upgrade to the latest version
   looklook access lan on    允许局域网设备打开管理台 / Let LAN devices open the console
+  looklook rtc              远程连接直连设置：端口范围、公网地址 / Direct connection settings: ports, public addresses
   looklook --local-from 172.17.0.1
                             在 Docker 里运行：宿主机上打开管理台也算这台电脑
                             In Docker: opening the console from the host counts as this computer
@@ -129,6 +130,11 @@ enum Cmd {
     Access {
         #[command(subcommand)]
         action: Option<AccessCmd>,
+    },
+    /// 远程连接直连设置：传输端口范围、公网 IPv4 / IPv6 / Direct connection settings: port range, public IPv4 / IPv6
+    Rtc {
+        #[command(subcommand)]
+        action: Option<RtcCmd>,
     },
     /// 登录看看账户（在手机或任意浏览器上批准）/ Sign in (approve from your phone or any browser)
     Login,
@@ -181,6 +187,26 @@ enum AccessCmd {
     Allow { ip: String },
     /// 从白名单移除 / Remove from the whitelist
     Remove { ip: String },
+}
+
+/// 改了只对新建的连接生效。客户端没在运行时直接改本机设置，下次启动生效。
+/// Changes apply to new connections. If the client isn't running, the setting is saved for its next start.
+#[derive(Subcommand)]
+enum RtcCmd {
+    /// 传输端口范围（UDP），如 50000-50031；default 恢复默认 / UDP port range, e.g. 50000-50031; `default` to reset
+    Ports { range: String },
+    /// 公网 IPv4（完全锥形 NAT、同号端口转发时填）；off 清除 / Public IPv4 (full-cone NAT or same-port forwarding); `off` to clear
+    Ipv4 { addr: String },
+    /// 公网 IPv6；off 清除 / Public IPv6; `off` to clear
+    Ipv6 { addr: String },
+    /// 使用 IPv6 / Use IPv6
+    Ipv6Enabled { state: OnOff },
+    /// 检测这台电脑的公网地址（会访问中转和 cip.cc、ip.me 等服务）/ Detect public addresses (asks the relay and sites like cip.cc, ip.me)
+    Detect {
+        /// 把检测到的地址保存下来 / Save the detected addresses
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -252,6 +278,7 @@ fn main() -> Result<()> {
             Ok(())
         }
         Some(Cmd::Access { action }) => rt.block_on(cli_access(&cli.home, cli_listen, action)),
+        Some(Cmd::Rtc { action }) => rt.block_on(cli_rtc(&cli.home, cli_listen, action)),
         Some(Cmd::Login) => rt.block_on(cli_login(&cli.home, cli_listen)),
         Some(Cmd::Logout { force }) => {
             let v = rt.block_on(call(&cli.home, cli_listen, "POST", "/api/auth/logout", Some(json!({ "force": force }))))?;
@@ -503,6 +530,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         a => a,
     };
     let relay_addr = relay.local_addr()?;
+    rtc::net::set_current(rtc::net::NetConfig::load(&store));
     let access = gateway::access::AccessConfig::load(&store);
     // 首次运行时生成的访问码要存下来，否则每次启动都不一样。
     access.save(&store)?;
@@ -824,6 +852,108 @@ fn print_access(v: &Value) {
     }
 }
 
+/// `looklook rtc`：查看或修改远程连接的直连设置（服务端 docs/07）。客户端在运行就经它的接口改（立即用于新连接），
+/// 没在运行就直接改本机数据库。
+async fn cli_rtc(home: &Option<PathBuf>, listen: SocketAddr, action: Option<RtcCmd>) -> Result<()> {
+    use rtc::net::{NetConfig, NetUpdate};
+    let not_running = |e: &anyhow::Error| e.chain().any(|c| c.is::<reqwest::Error>());
+    let offline = || -> Result<Store> { Ok(Store::open(&Paths::discover(home.clone())?.db())?) };
+    let off_or = |a: String| if a.eq_ignore_ascii_case("off") { String::new() } else { a };
+    let update = match action {
+        None => None,
+        Some(RtcCmd::Ports { range }) => {
+            let (b, e) = if range.eq_ignore_ascii_case("default") {
+                rtc::net::DEFAULT_PORTS
+            } else {
+                range
+                    .split_once('-')
+                    .and_then(|(b, e)| Some((b.trim().parse().ok()?, e.trim().parse().ok()?)))
+                    .context("端口范围写成 起始-结束，例如 50000-50031 / Write the range as begin-end, e.g. 50000-50031")?
+            };
+            Some(NetUpdate { port_begin: Some(b), port_end: Some(e), ..Default::default() })
+        }
+        Some(RtcCmd::Ipv4 { addr }) => Some(NetUpdate { public_v4: Some(off_or(addr)), ..Default::default() }),
+        Some(RtcCmd::Ipv6 { addr }) => Some(NetUpdate { public_v6: Some(off_or(addr)), ..Default::default() }),
+        Some(RtcCmd::Ipv6Enabled { state }) => Some(NetUpdate { ipv6: Some(matches!(state, OnOff::On)), ..Default::default() }),
+        Some(RtcCmd::Detect { apply }) => {
+            let d = match call(home, listen, "POST", "/api/rtc/net/detect", Some(json!({}))).await {
+                Ok(v) => v,
+                Err(e) if not_running(&e) => serde_json::to_value(rtc::net::detect(None).await)?,
+                Err(e) => return Err(e),
+            };
+            print_detected(&d);
+            if !apply {
+                if d["suggest_v4"].is_string() || d["suggest_v6"].is_string() {
+                    println!("加 --apply 保存 / Add --apply to save");
+                }
+                return Ok(());
+            }
+            let pick = |k: &str| d[k].as_str().map(str::to_string);
+            let u = NetUpdate { public_v4: pick("suggest_v4"), public_v6: pick("suggest_v6"), ..Default::default() };
+            if u.public_v4.is_none() && u.public_v6.is_none() {
+                bail!("没有检测到地址，没有保存 / Nothing detected; nothing saved");
+            }
+            Some(u)
+        }
+    };
+    let v = match &update {
+        Some(u) => call(home, listen, "PUT", "/api/rtc/net", Some(serde_json::to_value(u)?)).await,
+        None => call(home, listen, "GET", "/api/rtc/net", None).await,
+    };
+    let v = match v {
+        Ok(v) => v,
+        Err(e) if not_running(&e) => {
+            let store = offline()?;
+            let mut c = NetConfig::load(&store);
+            if let Some(u) = &update {
+                c = c.updated(u).map_err(|(_, rule)| anyhow::anyhow!(cli_error("VALIDATION_FAILED", &json!({ "rule": rule }))))?;
+                c.save(&store)?;
+                println!("客户端没在运行，设置已保存，下次启动生效 / The client isn't running; saved for its next start");
+            }
+            rtc::net::view(&c)
+        }
+        Err(e) => return Err(e),
+    };
+    print_rtc(&v);
+    Ok(())
+}
+
+fn print_rtc(v: &Value) {
+    let addr = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).unwrap_or("（未填 / not set）").to_string();
+    println!("传输端口 / Ports: UDP {}-{}", v["port_begin"], v["port_end"]);
+    println!("公网 IPv4 / Public IPv4: {}", addr("public_v4"));
+    println!("公网 IPv6 / Public IPv6: {}", addr("public_v6"));
+    println!("使用 IPv6 / Use IPv6: {}", if v["ipv6"].as_bool() == Some(true) { "开启 / on" } else { "关闭 / off" });
+    let nic: Vec<&str> = v["nic_v6"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    if !nic.is_empty() {
+        println!("网卡上的公网 IPv6（自动使用）/ Public IPv6 on network adapters (used automatically): {}", nic.join(", "));
+    }
+    println!(
+        "直连需要在防火墙、安全组上放行这段 UDP 端口（IPv4 和 IPv6）；路由器端口转发时外部端口要和内部端口相同。只支持完全锥形 NAT。\n\
+         Direct connections need this UDP range open in the firewall / security group (IPv4 and IPv6); when forwarding on a router, use the same external and internal ports. Only full-cone NAT is supported."
+    );
+}
+
+fn print_detected(d: &Value) {
+    for (fam, k) in [("IPv4", "v4"), ("IPv6", "v6")] {
+        println!("{fam}:");
+        for p in d[k].as_array().into_iter().flatten() {
+            let source = p["source"].as_str().unwrap_or("-");
+            let source = if source == "relay" { "中转 STUN / relay STUN" } else { source };
+            match p["ip"].as_str() {
+                Some(ip) => println!("  {source:<24} {ip}"),
+                None => println!("  {source:<24} -（{}）", p["error"].as_str().unwrap_or("-")),
+            }
+        }
+        let ips: Vec<&str> = d[k].as_array().into_iter().flatten().filter_map(|p| p["ip"].as_str()).collect();
+        if ips.iter().any(|ip| *ip != ips[0]) {
+            println!("  各来源结果不一致，可能经过了代理或 VPN / Sources disagree; a proxy or VPN may be in the way");
+        }
+    }
+    let s = |k: &str| d[k].as_str().unwrap_or("-").to_string();
+    println!("建议 / Suggested: IPv4 {}, IPv6 {}", s("suggest_v4"), s("suggest_v6"));
+}
+
 /// `looklook restart`：让正在运行的客户端重启（和更新后的重启一样，由系统服务或它自己拉起新进程），等新进程起来。
 async fn cli_restart(home: &Option<PathBuf>, listen: SocketAddr) -> Result<()> {
     let old = call(home, listen, "POST", "/api/restart", Some(json!({}))).await?;
@@ -864,6 +994,11 @@ fn cli_error(code: &str, params: &Value) -> String {
             Some("ip_too_wide") => "范围太大，不能对整个互联网开放 / Range too wide; it can't open to the whole internet".into(),
             Some("ip_loopback") => "这台电脑自己本来就可以打开，不用添加 / This computer is always allowed; no need to add it".into(),
             Some("ip_too_many") => "白名单最多 32 项 / The whitelist holds at most 32 entries".into(),
+            Some("rtc_ports") => "端口范围要在 1025–65535 之间，起始不大于结束 / The range must be within 1025–65535, begin ≤ end".into(),
+            Some("rtc_ports_span") => "端口范围至少 8 个端口 / The range needs at least 8 ports".into(),
+            Some("ipv4") => "不是 IPv4 地址 / Not an IPv4 address".into(),
+            Some("ipv6") => "不是 IPv6 地址 / Not an IPv6 address".into(),
+            Some("host_unusable") => "这个地址连不到（回环、链路本地、组播等）/ This address can't be reached (loopback, link-local, multicast…)".into(),
             Some(r) => format!("填写的内容不正确 / Invalid input: {r}"),
             None => "填写的内容不正确 / Invalid input".into(),
         },

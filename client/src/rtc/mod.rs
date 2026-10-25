@@ -10,8 +10,10 @@
 
 pub mod bridge;
 pub mod frame;
+pub mod net;
 pub mod outbound;
 pub mod peer;
+pub mod probe;
 pub mod resume;
 pub mod signal;
 
@@ -217,6 +219,7 @@ async fn run_peer(app: App, id: u64, mut pc: peer::Pc, ctx: bridge::Ctx, cancel:
             _ = &mut expires => break "session_expired",
             _ = &mut deadline => break if connected { "disconnected" } else { "connect_timeout" },
             ch = pc.incoming.recv() => match ch {
+                Some(ch) if ch.label == probe::LABEL => { tasks.spawn(probe::echo(ch)); }
                 Some(ch) => { tasks.spawn(bridge::serve(ctx.clone(), ch)); }
                 None => break "closed",
             },

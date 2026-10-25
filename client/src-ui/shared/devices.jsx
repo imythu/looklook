@@ -8,7 +8,7 @@ import { useTranslation } from 'react-i18next';
 
 import { configureDevices, deviceApi, fetchDevices, localApi, rtcMode } from './api.js';
 import { DeviceAvatar } from './brands.jsx';
-import { linkLabel, PathDot, useLinks } from './paths.jsx';
+import { linkLabel, PathDot, PathLine, useLinks } from './paths.jsx';
 import { Button, ErrorNote, Field, Modal, Switch, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
@@ -272,6 +272,7 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
                   <span className="small muted">
                     {[osLabel(x.os), linkLabel(t, x, links), x.id === d.def ? t('devices.default') : null].filter(Boolean).join(' · ')}
                   </span>
+                  {x.online && !(!rtcMode && x.id === d.def) && <PathLine device={x.id} />}
                 </span>
                 {x.online && <PathDot device={x.id} self={!rtcMode && x.id === d.def} />}
                 {selected ? <Check size={16} aria-hidden="true" /> : <span className="device-check-gap" aria-hidden="true" />}

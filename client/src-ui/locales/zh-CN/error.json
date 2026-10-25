@@ -96,7 +96,11 @@
     "jump_required": "“跳板机代登”需要先选择跳板机",
     "jump_loop": "跳板机不能绕回这台主机自己",
     "jump_missing": "选的跳板机已经不在了",
-    "jump_depth": "跳板机嵌套太多层了"
+    "jump_depth": "跳板机嵌套太多层了",
+    "rtc_ports": "端口要在 1025–65535 之间，起始不大于结束",
+    "rtc_ports_span": "至少要 8 个端口",
+    "ipv4": "不是 IPv4 地址",
+    "ipv6": "不是 IPv6 地址"
   },
   "DEVICE_TIMEOUT": "这台电脑没有及时响应，正在重试",
   "CLIENT_UNREACHABLE": "连不上这台电脑上的看看，它可能已经退出",
@@ -149,7 +153,10 @@
     "jump_auth": "跳板机登录方式",
     "jump_key_path": "跳板机私钥文件",
     "jump_key_text": "跳板机私钥",
-    "resume": "要接着的对话"
+    "resume": "要接着的对话",
+    "rtc_ports": "传输端口范围",
+    "public_v4": "公网 IPv4",
+    "public_v6": "公网 IPv6"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "会员已到期",

@@ -32,6 +32,7 @@ use tokio_util::sync::CancellationToken;
 
 use super::frame::{self, Frame};
 use super::peer::{Channel, DcEvent, Pc, PcState};
+use super::probe;
 use crate::account::Account;
 use crate::error::LocalError;
 
@@ -56,6 +57,8 @@ pub struct Link {
     // 释放时先关通道，再关连接（见 peer.rs）
     ctl: Mutex<Option<Channel>>,
     pc: Mutex<Option<Pc>>,
+    /// 丢包率探测（`super::probe`）。
+    probe: Arc<Mutex<probe::Stats>>,
 }
 
 impl Link {
@@ -263,8 +266,9 @@ impl Outbound {
         };
         let measured = futures_util::future::join_all(links.into_iter().map(|(dev, l)| async move {
             let path = l.path();
+            let loss = lock(&l.probe).loss();
             let rtt = l.rtt().await;
-            (dev, json!({ "kind": path.as_ref().map(|p| p.kind), "local": path.as_ref().map(|p| &p.local), "remote": path.as_ref().map(|p| &p.remote), "rtt_ms": rtt.map(|d| d.as_millis() as u64) }))
+            (dev, json!({ "kind": path.as_ref().map(|p| p.kind), "local": path.as_ref().map(|p| &p.local), "remote": path.as_ref().map(|p| &p.remote), "rtt_ms": rtt.map(|d| d.as_millis() as u64), "loss": loss }))
         }))
         .await;
         measured.into_iter().collect()
@@ -305,8 +309,20 @@ impl Outbound {
         }
         let path = pc.path();
         tracing::info!(dev, kind = ?path.as_ref().map(|p| p.kind), local = path.as_ref().map(|p| p.local.as_str()), remote = path.as_ref().map(|p| p.remote.as_str()), "已连上另一台电脑");
-        let link = Arc::new(Link { closed: CancellationToken::new(), ctl: Mutex::new(Some(ctl)), pc: Mutex::new(Some(pc)) });
+        let probe_ch = pc.unreliable_channel(probe::LABEL);
+        let link = Arc::new(Link { closed: CancellationToken::new(), ctl: Mutex::new(Some(ctl)), pc: Mutex::new(Some(pc)), probe: Default::default() });
         tokio::spawn(watch_link(link.closed.clone(), state, dev.to_string()));
+        match probe_ch {
+            Ok(ch) => {
+                // 任务持有连接，通道先于连接释放；别处都不用这条连接了（被换掉）就停
+                let l = link.clone();
+                tokio::spawn(async move {
+                    probe::run(ch, l.probe.clone(), l.closed.clone(), || Arc::strong_count(&l) > 1).await;
+                    drop(l);
+                });
+            }
+            Err(e) => tracing::debug!(error = %format!("{e:#}"), "开丢包探测通道失败"),
+        }
         Ok(link)
     }
 }
@@ -680,7 +696,11 @@ mod loopback {
         let ctx = bridge::Ctx { router, host: "u.looklook.test".into(), origin: "http://u.looklook.test".into(), sid: "s".into(), device: "devb".into(), terms, expires: tokio::time::Instant::now() + Duration::from_secs(3600) };
         tokio::spawn(async move {
             while let Some(ch) = b.incoming.recv().await {
-                tokio::spawn(bridge::serve(ctx.clone(), ch));
+                if ch.label == crate::rtc::probe::LABEL {
+                    tokio::spawn(crate::rtc::probe::echo(ch));
+                } else {
+                    tokio::spawn(bridge::serve(ctx.clone(), ch));
+                }
             }
             drop(b);
         });
@@ -692,7 +712,7 @@ mod loopback {
         let m = ctl.recv().await.unwrap();
         let Some(Frame::Ctl(v)) = frame::parse(&m) else { panic!("hello") };
         assert_eq!(v["dev"], "devb");
-        Arc::new(Link { closed: CancellationToken::new(), ctl: Mutex::new(Some(ctl)), pc: Mutex::new(Some(a)) })
+        Arc::new(Link { closed: CancellationToken::new(), ctl: Mutex::new(Some(ctl)), pc: Mutex::new(Some(a)), probe: Default::default() })
     }
 
     #[tokio::test(flavor = "multi_thread")]

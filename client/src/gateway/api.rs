@@ -38,6 +38,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/rtc/devices", get(rtc_devices))
         .route("/rtc/local-only", put(put_local_only))
         .route("/rtc/paths", get(rtc_paths))
+        .route("/rtc/net", get(crate::rtc::net::get_net).put(crate::rtc::net::put_net))
+        .route("/rtc/net/detect", post(crate::rtc::net::post_detect))
         .route("/platform/{*rest}", get(platform_web).post(platform_web).put(platform_web).patch(platform_web).delete(platform_web))
         .route("/instances", get(list_instances).post(create_instance))
         .route("/instances/{id}", get(get_instance).patch(update_instance).delete(delete_instance))

@@ -1,6 +1,6 @@
 --- a/libdatachannel/deps/libjuice/src/udp.c
 +++ b/libdatachannel/deps/libjuice/src/udp.c
-@@ -362,6 +362,53 @@
+@@ -362,6 +362,61 @@
  	return 0;
  }
  
@@ -27,13 +27,21 @@
 +	return b[0] == 198 && (b[1] == 18 || b[1] == 19);
 +}
 +
-+// 0: private IPv4 (RFC 1918), 1: other IPv4, 2: IPv6
++// 0: private IPv4 (RFC 1918), 1: public IPv4, 2: global IPv6 (2000::/3), 3: other IPv4 (CGNAT 100.64/10 etc.),
++// 4: other IPv6 (ULA). A public IPv6 address is a direct path for browsers on IPv6, so it must not be pushed out of
++// the cap by CGNAT or ULA addresses.
 +static int looklook_rank(const addr_record_t *r) {
++	if (r->addr.ss_family == AF_INET6) {
++		const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in6 *)&r->addr)->sin6_addr;
++		return (b[0] & 0xE0) == 0x20 ? 2 : 4;
++	}
 +	if (r->addr.ss_family != AF_INET)
-+		return 2;
++		return 4;
 +	const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in *)&r->addr)->sin_addr;
 +	if (b[0] == 10 || (b[0] == 172 && (b[1] & 0xF0) == 16) || (b[0] == 192 && b[1] == 168))
 +		return 0;
++	if (b[0] == 100 && (b[1] & 0xC0) == 64)
++		return 3;
 +	return 1;
 +}
 +
@@ -54,7 +62,7 @@
  // Helper function to check if a similar address already exists in records
  // This function ignores the port
  static int has_duplicate_addr(struct sockaddr *addr, const addr_record_t *records, size_t count) {
-@@ -498,7 +545,7 @@
+@@ -498,7 +553,7 @@
  		socklen_t len = list->Address[i].iSockaddrLength;
  		if ((sa->sa_family == AF_INET ||
  		     (sa->sa_family == AF_INET6 && bound.addr.ss_family == AF_INET6)) &&
@@ -63,7 +71,7 @@
  			if (!has_duplicate_addr(sa, records, current - records)) {
  				++ret;
  				if (current != end) {
-@@ -525,13 +572,15 @@
+@@ -525,13 +580,15 @@
  			continue;
  		if (strcmp(ifa->ifa_name, "docker0") == 0)
  			continue;
@@ -80,7 +88,7 @@
  			if (!has_duplicate_addr(sa, records, current - records)) {
  				++ret;
  				if (current != end) {
-@@ -563,13 +612,15 @@
+@@ -563,13 +620,15 @@
  	for (int i = 0; i < n; ++i) {
  		struct ifreq *ifr = ifc.ifc_req + i;
  		struct sockaddr *sa = &ifr->ifr_addr;
@@ -97,7 +105,7 @@
  			if (!has_duplicate_addr(sa, records, current - records)) {
  				++ret;
  				if (current != end) {
-@@ -598,5 +649,6 @@
+@@ -598,5 +657,6 @@
  #endif
  #endif
  

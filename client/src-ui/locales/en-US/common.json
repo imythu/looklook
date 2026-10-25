@@ -1956,6 +1956,7 @@
     "secure": "Encryption",
     "e2e": "End-to-end, computer signature verified",
     "latency": "Latency",
+    "loss": "Packet loss",
     "remote_note": "Tries to reach that computer directly and falls back to the route as a relay, which only sees encrypted data."
   },
   "hist": {
@@ -2035,7 +2036,8 @@
     "p2p": "Direct over the internet",
     "relay": "Through relay",
     "none": "Not connected yet; connects when used",
-    "self": "This computer"
+    "self": "This computer",
+    "loss": "{{loss}} loss"
   },
   "pull": {
     "pull": "Pull to refresh",
@@ -2055,5 +2057,28 @@
     "peer_offline": "{{name}}: offline, syncs when it's back",
     "peer_pending": "{{name}}: waiting to sync",
     "peer_old": "{{name}}: Looklook is too old, update it to sync"
+  },
+  "direct": {
+    "title": "Direct connection",
+    "intro": "When you open this computer remotely, a direct connection is tried first and the relay is used if it fails. If this computer has a public address (full-cone NAT only) and the ports below are open, phones and office networks can connect directly too. Changes apply to new connections.",
+    "ports": "Port range (UDP)",
+    "ports_hint": "Each connection uses one port. At least 8, 32 recommended. When all are taken, a random port is used and that connection goes through the relay.",
+    "port_begin": "First port",
+    "port_end": "Last port",
+    "ports_default": "Reset to default",
+    "public_v4": "Public IPv4",
+    "public_v4_hint": "Fill in when the public address isn't on a network adapter, e.g. with router port forwarding (external and internal ports must match). Optional; without it, peers behind symmetric NAT usually go through the relay.",
+    "public_v6": "Public IPv6",
+    "public_v6_hint": "Public IPv6 addresses on network adapters are used automatically; fill this in only to pin one address.",
+    "public_v6_nic": "Public IPv6 on network adapters (used automatically, usually no need to fill in): {{ips}}",
+    "not_set": "Not set",
+    "detect": "Detect",
+    "detect_hint": "Detecting makes this computer ask the relay's STUN and cip.cc, ip.me, ipw.cn, ipify and ident.me. Results only fill the fields; click Save to apply. With a proxy or VPN on, you may see its address.",
+    "source_relay": "Relay STUN",
+    "probe_failed": "failed ({{why}})",
+    "probe_disagree": "Sources disagree; a proxy or VPN may be in the way. Please check.",
+    "ipv6": "Use IPv6",
+    "ipv6_hint": "Turn off to use IPv4 only, e.g. when IPv6 is unreliable.",
+    "firewall": "Direct connections need UDP {{begin}}–{{end}} open in the firewall or cloud security group (IPv4 and IPv6). With router port forwarding, external and internal ports must match."
   }
 }

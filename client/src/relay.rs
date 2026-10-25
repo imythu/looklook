@@ -399,18 +399,7 @@ fn start(p: &RelayParams, local: SocketAddr, path: &std::path::Path) -> anyhow::
 pub async fn ping(addr: &str) -> Result<u32, String> {
     const PING_SAMPLES: usize = 3;
     const WAIT: Duration = Duration::from_secs(1);
-    let (host, port) = addr
-        .rsplit_once(':')
-        .and_then(|(h, p)| Some((h.trim_start_matches('[').trim_end_matches(']'), p.parse::<u16>().ok()?)))
-        .ok_or_else(|| "address".to_string())?;
-    // 与通道相同的开发用解析覆盖（`*.localhost`、`LOOKLOOK_RESOLVE`）
-    let ip = match localhost_addr(host).or_else(|| resolve_override(host)).or_else(|| host.parse().ok()) {
-        Some(ip) => ip,
-        None => tokio::net::lookup_host((host, port)).await.ok().and_then(|mut a| a.next()).map(|a| a.ip()).ok_or_else(|| "dns".to_string())?,
-    };
-    let bind: SocketAddr = if ip.is_ipv4() { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
-    let sock = tokio::net::UdpSocket::bind(bind).await.map_err(|_| "network".to_string())?;
-    sock.connect((ip, port)).await.map_err(|_| "network".to_string())?;
+    let sock = stun_socket(addr).await?;
     let mut best: Option<Duration> = None;
     let mut buf = [0u8; 1024];
     for _ in 0..PING_SAMPLES {
@@ -439,6 +428,49 @@ pub async fn ping(addr: &str) -> Result<u32, String> {
     best.map(|b| b.as_millis().clamp(1, u32::MAX as u128) as u32).ok_or_else(|| "timeout".into())
 }
 
+/// 经中转的 STUN 看这台电脑的出口地址（检测公网地址用，`rtc::net`）：发 3 次 Binding 请求，取第一个成功响应里的地址。
+pub async fn stun_mapped(addr: &str) -> Result<std::net::IpAddr, String> {
+    let sock = stun_socket(addr).await?;
+    let mut buf = [0u8; 1024];
+    for _ in 0..3 {
+        let tx: [u8; 12] = rand::random();
+        sock.send(&stun_binding_request(&tx)).await.map_err(|_| "network".to_string())?;
+        let reply = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let n = sock.recv(&mut buf).await?;
+                if is_stun_binding_success(&buf[..n], &tx) {
+                    return Ok::<_, std::io::Error>(stun_mapped_addr(&buf[..n]));
+                }
+            }
+        })
+        .await;
+        match reply {
+            Ok(Ok(Some(ip))) => return Ok(ip),
+            Ok(Ok(None)) => return Err("no_ip".into()),
+            Ok(Err(_)) => return Err("connect".into()),
+            Err(_) => {}
+        }
+    }
+    Err("timeout".into())
+}
+
+/// 解析好地址、连上（UDP connect）的 socket。
+async fn stun_socket(addr: &str) -> Result<tokio::net::UdpSocket, String> {
+    let (host, port) = addr
+        .rsplit_once(':')
+        .and_then(|(h, p)| Some((h.trim_start_matches('[').trim_end_matches(']'), p.parse::<u16>().ok()?)))
+        .ok_or_else(|| "address".to_string())?;
+    // 与通道相同的开发用解析覆盖（`*.localhost`、`LOOKLOOK_RESOLVE`）
+    let ip = match localhost_addr(host).or_else(|| resolve_override(host)).or_else(|| host.parse().ok()) {
+        Some(ip) => ip,
+        None => tokio::net::lookup_host((host, port)).await.ok().and_then(|mut a| a.next()).map(|a| a.ip()).ok_or_else(|| "dns".to_string())?,
+    };
+    let bind: SocketAddr = if ip.is_ipv4() { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
+    let sock = tokio::net::UdpSocket::bind(bind).await.map_err(|_| "network".to_string())?;
+    sock.connect((ip, port)).await.map_err(|_| "network".to_string())?;
+    Ok(sock)
+}
+
 const STUN_MAGIC: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
 
 /// STUN Binding 请求（RFC 8489，不带属性）：类型 0x0001、长度 0、magic cookie、12 字节事务 id。
@@ -455,9 +487,58 @@ fn is_stun_binding_success(m: &[u8], tx: &[u8; 12]) -> bool {
     m.len() >= 20 && m[0..2] == [0x01, 0x01] && m[4..8] == STUN_MAGIC && m[8..20] == tx[..]
 }
 
+/// Binding 成功响应里的地址：XOR-MAPPED-ADDRESS（0x0020），没有时用 MAPPED-ADDRESS（0x0001）。
+fn stun_mapped_addr(m: &[u8]) -> Option<std::net::IpAddr> {
+    let len = u16::from_be_bytes([*m.get(2)?, *m.get(3)?]) as usize;
+    let body = m.get(20..20 + len)?;
+    let (mut i, mut plain) = (0, None);
+    while i + 4 <= body.len() {
+        let typ = u16::from_be_bytes([body[i], body[i + 1]]);
+        let n = u16::from_be_bytes([body[i + 2], body[i + 3]]) as usize;
+        let v = body.get(i + 4..i + 4 + n)?;
+        let xor = typ == 0x0020;
+        if (xor || typ == 0x0001) && v.len() >= 8 {
+            // 第 2 字节是地址族：1 = IPv4，2 = IPv6；异或用 magic cookie 加事务 id
+            let key: Vec<u8> = m[4..20].to_vec();
+            let raw = &v[4..];
+            let ip = match (v[1], raw.len()) {
+                (1, 4) => Some(std::net::IpAddr::from(<[u8; 4]>::try_from(&raw[..4]).ok()?)),
+                (2, 16) => Some(std::net::IpAddr::from(<[u8; 16]>::try_from(&raw[..16]).ok()?)),
+                _ => None,
+            };
+            let ip = ip.map(|ip| match (xor, ip) {
+                (false, ip) => ip,
+                (true, std::net::IpAddr::V4(a)) => std::net::IpAddr::from(std::array::from_fn::<u8, 4, _>(|k| a.octets()[k] ^ key[k])),
+                (true, std::net::IpAddr::V6(a)) => std::net::IpAddr::from(std::array::from_fn::<u8, 16, _>(|k| a.octets()[k] ^ key[k])),
+            });
+            if xor {
+                return ip;
+            }
+            plain = plain.or(ip);
+        }
+        i += 4 + n.div_ceil(4) * 4;
+    }
+    plain
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_the_mapped_address() {
+        let tx = [7u8; 12];
+        let mut m = vec![0x01, 0x01, 0, 12];
+        m.extend_from_slice(&STUN_MAGIC);
+        m.extend_from_slice(&tx);
+        // XOR-MAPPED-ADDRESS 203.0.113.7:50000
+        let ip = [203u8 ^ 0x21, 0 ^ 0x12, 113 ^ 0xa4, 7 ^ 0x42];
+        let port = (50000u16 ^ 0x2112).to_be_bytes();
+        m.extend_from_slice(&[0x00, 0x20, 0, 8, 0, 1, port[0], port[1], ip[0], ip[1], ip[2], ip[3]]);
+        assert!(is_stun_binding_success(&m, &tx));
+        assert_eq!(stun_mapped_addr(&m), Some("203.0.113.7".parse().unwrap()));
+        assert_eq!(stun_mapped_addr(&m[..20]), None);
+    }
 
     #[test]
     fn detects_wake_and_lost_addresses() {

@@ -10,7 +10,7 @@ import { useTranslation } from 'react-i18next';
 import { useStatus } from '../App.jsx';
 import { api } from './api.js';
 import { deviceName, useDevices } from './devices.jsx';
-import { usePaths } from './paths.jsx';
+import { lossLevel, lossText, usePaths } from './paths.jsx';
 import { errorText } from './i18n.js';
 import { RELAYS_ANCHOR } from './RelayPicker.jsx';
 import { Link } from './router.jsx';
@@ -191,6 +191,8 @@ function RemotePop({ ms, name, path }) {
         </dd>
         <dt>{t('conn.latency')}</dt>
         <dd>{ms === null ? '—' : t('nav.remote_ms', { ms })}</dd>
+        <dt>{t('conn.loss')}</dt>
+        <dd className={path?.loss != null ? `loss-${lossLevel(path.loss)}` : undefined}>{lossText(path?.loss) ?? '—'}</dd>
         {path && (
           <>
             <dt>{t('path.label')}</dt>
@@ -240,7 +242,10 @@ export function ConnChip() {
     label = t('conn.local');
     sub = t(`relay.pill.${pill}`);
   } else {
-    kind = ms === null ? 'ok' : ms >= VERY_SLOW_MS ? 'bad' : ms >= SLOW_MS ? 'warn' : 'ok';
+    // 延迟和丢包率取更差的那个
+    const lag = ms === null ? 'ok' : ms >= VERY_SLOW_MS ? 'bad' : ms >= SLOW_MS ? 'warn' : 'ok';
+    const loss = lossLevel(path?.loss) ?? 'ok';
+    kind = lag === 'bad' || loss === 'bad' ? 'bad' : lag === 'warn' || loss === 'warn' ? 'warn' : 'ok';
     label = t('conn.remote');
     sub = ms === null ? null : t('nav.remote_ms', { ms });
   }
@@ -252,7 +257,7 @@ export function ConnChip() {
         onClick={() => setOpen(!open)}
         aria-expanded={open}
         aria-haspopup="dialog"
-        title={mode === 'remote' ? [path ? t(`path.${path.kind}`) : null, ms !== null ? t('nav.remote_latency_hint', { ms }) : null].filter(Boolean).join(' · ') || undefined : undefined}
+        title={mode === 'remote' ? [path ? t(`path.${path.kind}`) : null, ms !== null ? t('nav.remote_latency_hint', { ms }) : null, lossText(path?.loss) ? t('path.loss', { loss: lossText(path.loss) }) : null].filter(Boolean).join(' · ') || undefined : undefined}
       >
         <span className={`dot ${path ? `path-${path.kind}` : kind === 'ok' ? 'on' : kind}`} aria-hidden="true" />
         <span>{label}</span>

@@ -415,6 +415,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .relay-pop .relay-status { margin: 0; }
 .relay-pop-actions { display: flex; gap: 8px; }
 @media (max-width: 520px) { .conn-sub { display: none; } .conn-chip { padding: 0 10px; } }
+/* 手机顶栏里的胶囊不在最右边，靠右对齐的弹层会伸出屏幕左边：改成贴屏幕两边 */
+@media (max-width: 520px) { .topbar .relay-pop { position: fixed; top: calc(var(--topbar-h) + env(safe-area-inset-top, 0px)); left: 12px; right: 12px; width: auto; } }
 @media (prefers-reduced-motion: reduce) { .conn-chip .dot.wait { animation: none; } }
 
 /* 用户菜单的分隔线 */
@@ -804,6 +806,13 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .toggle-row .switch { margin-top: 2px; }
 .access-sub { display: grid; gap: 6px; margin: -4px 0 12px; padding-left: 12px; border-left: 3px solid var(--brand-soft); }
 .access-sub .note { margin: 6px 0 0; }
+.direct-ports { justify-content: flex-start; align-items: center; }
+.direct-ports input { width: 7.5em; flex: none; }
+.direct-ports > span { flex: none; }
+.direct-probes { display: block; margin: -4px 0 14px; }
+.direct-probe { display: flex; gap: 12px; }
+.direct-probe > span:first-child { min-width: 8em; }
+.direct-probe-warn { display: block; color: var(--warn); margin-top: 2px; }
 .access-code { display: grid; gap: 8px; margin: -4px 0 16px; }
 .access-code-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .access-code-value { font-size: 22px; font-weight: 700; letter-spacing: .08em; padding: 6px 12px; border-radius: 10px; background: var(--panel-2); word-break: break-all; }
@@ -1007,6 +1016,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .dot.path-p2p { background: var(--brand-2); }
 .dot.path-relay { background: var(--warn); }
 .dot.path-none { background: var(--line); }
+/* 丢包率：5% 起偏高、15% 起很差（shared/paths.jsx lossLevel） */
+.loss-warn { color: var(--warn); font-weight: 600; }
+.loss-bad { color: var(--danger); font-weight: 600; }
 .device-check-gap { width: 16px; flex: none; }
 .device-pill .path-dot { margin-left: 4px; }
 .device-local-only { margin-top: 4px; padding: 10px 10px 6px; border-top: 1px solid var(--line); }

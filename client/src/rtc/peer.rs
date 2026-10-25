@@ -8,10 +8,12 @@ use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, bail, Result};
 use datachannel::{
-    ConnectionState, DataChannelHandler, DataChannelInfo, GatheringState, IceCandidate, PeerConnectionHandler, RtcConfig,
-    RtcDataChannel, RtcPeerConnection, SessionDescription,
+    ConnectionState, DataChannelHandler, DataChannelInfo, DataChannelInit, GatheringState, IceCandidate, PeerConnectionHandler, RtcConfig,
+    Reliability, RtcDataChannel, RtcPeerConnection, SessionDescription,
 };
 use looklook_protocol::rtc::IceServer;
+
+use super::net::NetConfig;
 use tokio::sync::{mpsc, watch};
 
 /// 发送缓冲超过这么多就暂停发送，降到 [`LOW_WATER`] 以下再继续（docs/06 §6.2）。
@@ -288,12 +290,22 @@ pub struct Pc {
     deferred: Vec<(String, String)>,
     /// 对端的完整 SDP（含候选），[`Self::path`] 按地址查候选类型用。
     remote_sdp: String,
+    /// 建连时的网络设置（端口范围、公网地址），生成 SDP 时写公网地址用。
+    net: NetConfig,
 }
 
 impl Pc {
     /// 按浏览器的 offer 建立连接（libdatachannel 随即自动生成 answer 并开始收集候选）。
     pub fn answer(ice: &[IceServer], offer_sdp: &str) -> Result<Self> {
-        let mut me = Self::new(ice)?;
+        let net = super::net::current();
+        Self::answer_in(ice, offer_sdp, &net, true).or_else(|e| {
+            tracing::warn!(error = %format!("{e:#}"), ports = %format!("{}-{}", net.port_begin, net.port_end), "WebRTC 端口范围里没有空闲端口，改用随机端口");
+            Self::answer_in(ice, offer_sdp, &net, false)
+        })
+    }
+
+    fn answer_in(ice: &[IceServer], offer_sdp: &str, net: &NetConfig, ranged: bool) -> Result<Self> {
+        let mut me = Self::new(ice, net, ranged)?;
         let (sdp, deferred) = split_candidates(offer_sdp);
         let offer: SessionDescription =
             serde_json::from_value(serde_json::json!({ "type": "offer", "sdp": sdp })).map_err(|e| anyhow!("offer 无法解析：{e}"))?;
@@ -305,17 +317,34 @@ impl Pc {
     }
 
     /// 作为发起方建立连接：开一条 `ctl` 通道（libdatachannel 随即生成 offer 并开始收集候选）。
+    /// 端口范围（docs/07 §3）里没有空闲端口时改用随机端口：libjuice 绑不上端口，生成 offer / answer 时就同步报错。
     pub fn offer(ice: &[IceServer]) -> Result<(Self, Channel)> {
-        let mut me = Self::new(ice)?;
+        let net = super::net::current();
+        Self::offer_in(ice, &net, true).or_else(|e| {
+            tracing::warn!(error = %format!("{e:#}"), ports = %format!("{}-{}", net.port_begin, net.port_end), "WebRTC 端口范围里没有空闲端口，改用随机端口");
+            Self::offer_in(ice, &net, false)
+        })
+    }
+
+    fn offer_in(ice: &[IceServer], net: &NetConfig, ranged: bool) -> Result<(Self, Channel)> {
+        let mut me = Self::new(ice, net, ranged)?;
         let ctl = me.channel("ctl")?;
         Ok((me, ctl))
     }
 
-    fn new(ice: &[IceServer]) -> Result<Self> {
+    /// `ranged`：在设置的端口范围里绑定（否则随机端口）。
+    fn new(ice: &[IceServer], net: &NetConfig, ranged: bool) -> Result<Self> {
         // libdatachannel / libjuice 自己的警告（STUN / TURN 失败、发送失败等）进日志；只设置一次
         datachannel::configure_logging(tracing::Level::WARN);
         let urls = ice_urls(ice);
-        let cfg = RtcConfig::new(&urls);
+        let mut cfg = RtcConfig::new(&urls);
+        if ranged {
+            cfg.port_range_begin = net.port_begin;
+            cfg.port_range_end = net.port_end;
+        }
+        if !net.ipv6 {
+            cfg = cfg.bind_address(&"0.0.0.0");
+        }
         let (state_tx, state) = watch::channel(PcState::New);
         let (gathered_tx, gathered) = watch::channel(false);
         let (reflexive_tx, reflexive) = watch::channel(0);
@@ -324,7 +353,7 @@ impl Pc {
         let h = PcHandler { incoming: incoming_tx, pending: None, state: state_tx, gathered: gathered_tx, reflexive: reflexive_tx, gather: gather.clone() };
         let pc = RtcPeerConnection::new(&cfg, h).map_err(|e| anyhow!("创建 PeerConnection 失败：{e:?}"))?;
         let servers = urls.iter().map(|u| server_host(u)).collect();
-        Ok(Self { pc, state, gathered, reflexive, incoming, gather, servers, remote: String::new(), deferred: Vec::new(), remote_sdp: String::new() })
+        Ok(Self { pc, state, gathered, reflexive, incoming, gather, servers, remote: String::new(), deferred: Vec::new(), remote_sdp: String::new(), net: net.clone() })
     }
 
     /// 连上以后实际走的路；还没选出候选对时为 None。
@@ -346,6 +375,14 @@ impl Pc {
         let (tx, rx) = mpsc::unbounded_channel();
         let mut dc = self.pc.create_data_channel(label, DcHandler(tx)).map_err(|e| anyhow!("创建 DataChannel 失败：{e:?}"))?;
         let _ = dc.set_buffered_amount_low_threshold(LOW_WATER);
+        Ok(Channel { dc, rx, label: label.to_string() })
+    }
+
+    /// 本机开一条不重传、不保序的通道（丢包率探测用，见 `super::probe`）。
+    pub fn unreliable_channel(&mut self, label: &str) -> Result<Channel> {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let init = DataChannelInit::default().reliability(Reliability { unordered: true, unreliable: true, max_packet_life_time: 0, max_retransmits: 0 });
+        let dc = self.pc.create_data_channel_ex(label, DcHandler(tx), &init).map_err(|e| anyhow!("创建 DataChannel 失败：{e:?}"))?;
         Ok(Channel { dc, rx, label: label.to_string() })
     }
 
@@ -389,6 +426,7 @@ impl Pc {
             bail!("本地描述不是 {kind}：{}", v["type"]);
         }
         let sdp = v["sdp"].as_str().map(str::to_owned).ok_or_else(|| anyhow!("{kind} 缺少 sdp"))?;
+        let sdp = super::net::add_public(&sdp, &self.net);
         if !sdp.contains(" typ srflx") && !sdp.contains(" typ relay") && !self.servers.is_empty() {
             self.warn_no_reflexive(kind).await;
         }
@@ -583,6 +621,48 @@ mod tests {
         assert!(classify("garbage", "x").is_none());
     }
 
+    /// 端口范围里的端口都被占了：改用随机端口，照样生成 offer；这时不写公网地址（随机端口没有放行）。
+    #[tokio::test]
+    async fn exhausted_port_range_falls_back_to_random_ports() {
+        let net = NetConfig { port_begin: 50100, port_end: 50107, public_v4: Some("203.0.113.7".parse().unwrap()), ..NetConfig::DEFAULT };
+        let ok = |(mut pc, ch): (Pc, Channel)| async move {
+            let sdp = pc.local_offer(Duration::from_secs(3)).await.unwrap();
+            drop(ch);
+            sdp
+        };
+        // 有空闲端口：在范围里，并且带上公网地址
+        let sdp = ok(Pc::offer_in(&[], &net, true).unwrap()).await;
+        assert!(sdp.contains(" typ host") && sdp.contains("a=candidate:llpub4 "), "{sdp}");
+        let port: u16 = sdp.lines().find(|l| l.contains(" typ host")).and_then(|l| l.split_whitespace().nth(5)).unwrap().parse().unwrap();
+        assert!(net.in_range(port), "{port}");
+        let held: Vec<_> = (50100..=50107).filter_map(|p| std::net::UdpSocket::bind(("::", p)).ok()).collect();
+        if held.len() < 8 {
+            return; // 别的测试正占着其中的端口
+        }
+        assert!(Pc::offer_in(&[], &net, true).is_err(), "范围占满时同步报错");
+        let sdp = ok(Pc::offer_in(&[], &net, false).unwrap()).await;
+        assert!(sdp.contains(" typ host") && !sdp.contains("llpub"), "{sdp}");
+    }
+
+    /// 对端只拿到填的公网地址（这里用回环地址代替端口转发）也能连上：两边 SDP 里都去掉 host 候选，
+    /// 应答方只能往 `llpub` 候选发检查，发起方从收到的检查里学到对端（prflx）。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn connects_through_the_public_candidate_alone() {
+        let strip = |sdp: &str| sdp.split_inclusive('\n').filter(|l| !l.contains(" typ host")).collect::<String>();
+        let net = NetConfig { public_v4: Some(std::net::Ipv4Addr::LOCALHOST), ..NetConfig::DEFAULT };
+        let (mut a, mut ctl) = Pc::offer_in(&[], &net, true).unwrap();
+        let offer = strip(&a.local_offer(Duration::from_secs(3)).await.unwrap());
+        assert!(offer.contains("a=candidate:llpub4 ") && !offer.contains(" typ host"), "{offer}");
+        let mut b = Pc::answer_in(&[], &offer, &NetConfig::DEFAULT, false).unwrap();
+        let answer = strip(&b.local_answer(Duration::from_secs(3)).await.unwrap());
+        a.set_answer(&answer).unwrap();
+        ctl.opened(Duration::from_secs(10)).await.unwrap();
+        let path = b.path().expect("path");
+        assert!(path.remote.starts_with("127.0.0.1 srflx"), "{path:?}");
+        drop(ctl);
+        tokio::task::spawn_blocking(move || drop((a, b))).await.unwrap();
+    }
+
     /// 本机候选地址不含 Clash/mihomo 的 TUN / fake-ip 地址（198.18.0.0/15），私有 IPv4 排在最前（third_party 的 libjuice 补丁）。
     #[tokio::test]
     async fn host_candidates_skip_tun() {
@@ -593,3 +673,4 @@ mod tests {
         assert!(!hosts.iter().any(|l| l.contains(" 198.18.") || l.contains(" 198.19.")), "{hosts:?}");
     }
 }
+

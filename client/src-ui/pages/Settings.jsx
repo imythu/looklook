@@ -1,6 +1,6 @@
 // 设置：按分区显示，一次只看一个分区（地址里的 #分区 决定）。
 //   通用：电脑名称、语言、附件；终端：字体与配色、新终端的默认文件夹和 shell、新 AI 会话默认的权限；AI 模型：模型服务商；
-//   网络与访问：远程线路、访问控制；关于：版本、检查更新、问题记录。
+//   网络与访问：远程线路、直连（端口与公网地址）、访问控制；关于：版本、检查更新、问题记录。
 // 终端和通用里的选项改了就自动保存，不需要点保存按钮。
 import { Bot, Check, Globe, Info, SlidersHorizontal, SquareTerminal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
@@ -11,6 +11,7 @@ import { DeviceTag } from '../shared/brands.jsx';
 import { LocalOnlyToggle, useDevices } from '../shared/devices.jsx';
 import { api } from '../shared/api.js';
 import AccessCard from './Access.jsx';
+import DirectCard from './DirectConnect.jsx';
 import { AttachmentsCard } from '../shared/Attachments.jsx';
 import ClaudeProfilesCard from './ClaudeProfiles.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
@@ -236,6 +237,7 @@ export default function Settings() {
           </Card>
         )}
         <RelayPicker />
+        <DirectCard />
         <div id="access" className="anchor">
           <AccessCard />
         </div>

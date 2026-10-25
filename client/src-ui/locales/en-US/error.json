@@ -96,7 +96,11 @@
     "jump_required": "— “Via jump host” needs a jump host",
     "jump_loop": "can’t lead back to this host",
     "jump_missing": "no longer exists",
-    "jump_depth": "nests too many jump hosts"
+    "jump_depth": "nests too many jump hosts",
+    "rtc_ports": "must be within 1025–65535, first ≤ last",
+    "rtc_ports_span": "needs at least 8 ports",
+    "ipv4": "is not an IPv4 address",
+    "ipv6": "is not an IPv6 address"
   },
   "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
   "CLIENT_UNREACHABLE": "Can't reach Looklook on this computer; it may have quit",
@@ -149,7 +153,10 @@
     "jump_auth": "Jump host sign-in",
     "jump_key_path": "Jump host key file",
     "jump_key_text": "Jump host key",
-    "resume": "conversation to continue"
+    "resume": "conversation to continue",
+    "rtc_ports": "Port range",
+    "public_v4": "Public IPv4",
+    "public_v6": "Public IPv6"
   },
   "reason": {
     "MEMBERSHIP_EXPIRED": "membership expired",

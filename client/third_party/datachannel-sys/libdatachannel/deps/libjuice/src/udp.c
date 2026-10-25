@@ -385,13 +385,21 @@ static bool looklook_skip_addr(const struct sockaddr *sa) {
 	return b[0] == 198 && (b[1] == 18 || b[1] == 19);
 }
 
-// 0: private IPv4 (RFC 1918), 1: other IPv4, 2: IPv6
+// 0: private IPv4 (RFC 1918), 1: public IPv4, 2: global IPv6 (2000::/3), 3: other IPv4 (CGNAT 100.64/10 etc.),
+// 4: other IPv6 (ULA). A public IPv6 address is a direct path for browsers on IPv6, so it must not be pushed out of
+// the cap by CGNAT or ULA addresses.
 static int looklook_rank(const addr_record_t *r) {
+	if (r->addr.ss_family == AF_INET6) {
+		const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in6 *)&r->addr)->sin6_addr;
+		return (b[0] & 0xE0) == 0x20 ? 2 : 4;
+	}
 	if (r->addr.ss_family != AF_INET)
-		return 2;
+		return 4;
 	const uint8_t *b = (const uint8_t *)&((const struct sockaddr_in *)&r->addr)->sin_addr;
 	if (b[0] == 10 || (b[0] == 172 && (b[1] & 0xF0) == 16) || (b[0] == 192 && b[1] == 168))
 		return 0;
+	if (b[0] == 100 && (b[1] & 0xC0) == 64)
+		return 3;
 	return 1;
 }
 

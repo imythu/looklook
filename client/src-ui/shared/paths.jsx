@@ -49,24 +49,59 @@ export function usePaths() {
   return data;
 }
 
-/** 一台电脑的路径：`{kind, rtt_ms, local, remote}`；没连着为 null。 */
+/** 一台电脑的路径：`{kind, rtt_ms, loss, local, remote}`；没连着为 null。`loss` 是 0–1 的丢包率，对端是旧版或样本还少时为 null。 */
 export function usePath(device) {
   const all = usePaths();
   return (device && all[device]) || null;
 }
 
-/** 电脑菜单每行右侧：色点加延迟；悬停（手机上长按）看完整说明。`self`：本机 App 里的本机，只写“本机”。 */
+/** 丢包率的文字（“2%”）；没有数据为 null。 */
+export function lossText(loss) {
+  return loss == null ? null : `${Math.round(loss * 100)}%`;
+}
+
+/** 丢包率的严重程度：5% 起偏高（warn），15% 起很差（bad），其余 ok；没有数据为 null。 */
+export function lossLevel(loss) {
+  if (loss == null) return null;
+  return loss >= 0.15 ? 'bad' : loss >= 0.05 ? 'warn' : 'ok';
+}
+
+function pathTip(t, p) {
+  if (!p) return t('path.none');
+  const loss = lossText(p.loss);
+  return [t(`path.${p.kind}`), p.remote?.split(' ')[0], p.rtt_ms != null ? `${p.rtt_ms} ms` : null, loss ? t('path.loss', { loss }) : null].filter(Boolean).join(' · ');
+}
+
+/** 电脑菜单每行右侧：色点加延迟；悬停看完整说明（手机上看行里的 [PathLine]）。`self`：本机 App 里的本机，只写“本机”。 */
 export function PathDot({ device, self = false }) {
   const { t } = useTranslation();
   const p = usePath(self ? null : device);
   if (self) return <span className="path-dot muted">{t('path.self')}</span>;
   const kind = p?.kind ?? 'none';
   const ms = p?.rtt_ms;
-  const tip = p ? [t(`path.${kind}`), p.remote?.split(' ')[0], ms != null ? `${ms} ms` : null].filter(Boolean).join(' · ') : t('path.none');
+  const tip = pathTip(t, p);
   return (
     <span className="path-dot" title={tip} aria-label={tip}>
       <span className={`dot path-${kind}`} aria-hidden="true" />
       {ms != null ? `${ms} ms` : '—'}
+    </span>
+  );
+}
+
+/** 电脑菜单行里的第三行：走的路、丢包率、对端地址。手机没有悬停，靠这一行看；没连着不显示。 */
+export function PathLine({ device }) {
+  const { t } = useTranslation();
+  const p = usePath(device);
+  if (!p) return null;
+  const loss = lossText(p.loss);
+  const addr = p.remote?.split(' ')[0];
+  // 地址可能很长（IPv6），放最后，窄屏截断时先截它
+  return (
+    <span className="small muted path-line">
+      {t(`path.${p.kind}`)}
+      {' · '}
+      <span className={loss ? `loss-${lossLevel(p.loss)}` : undefined}>{t('path.loss', { loss: loss ?? '—' })}</span>
+      {addr && ` · ${addr}`}
     </span>
   );
 }
