@@ -66,6 +66,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/events", get(super::chat::events))
         .route("/instances/{id}/chat/history", get(super::chat::history))
         .route("/instances/{id}/chat/item", get(super::chat::item))
+        .route("/instances/{id}/chat/image", get(super::chat::image))
         .route("/instances/{id}/chat/agent", get(super::chat::agent))
         .route("/instances/{id}/chat/commands", get(super::chat::commands))
         .route("/instances/{id}/chat/input", post(super::chat::input))

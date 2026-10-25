@@ -722,6 +722,26 @@ fn join_text(content: &Value) -> (String, u32, bool) {
     (text, images, truncated)
 }
 
+/// 一条原始记录（`full_item` 取到的那一行）里用户消息的第 `n` 张图片：类型和内容（对话界面上点开看大图用）。
+/// 和 `join_text` 的计数一样只看第一层内容块：`message.content`，运行中发的是 `attachment.prompt`。
+pub fn user_image(rec: &Value, n: usize) -> Option<(&'static str, Vec<u8>)> {
+    use base64::Engine;
+    let roots = [&rec["message"]["content"], &rec["attachment"]["prompt"]];
+    let img = roots.iter().filter_map(|r| r.as_array()).flatten().filter(|b| b["type"] == "image").nth(n)?;
+    if img["source"]["type"] != "base64" {
+        return None;
+    }
+    let mime = match img["source"]["media_type"].as_str()? {
+        "image/png" => "image/png",
+        "image/jpeg" | "image/jpg" => "image/jpeg",
+        "image/gif" => "image/gif",
+        "image/webp" => "image/webp",
+        _ => return None,
+    };
+    let data = base64::engine::general_purpose::STANDARD.decode(img["source"]["data"].as_str()?.trim()).ok()?;
+    Some((mime, data))
+}
+
 pub(super) fn truncate(s: &str, limit: usize) -> (String, bool) {
     if s.len() <= limit {
         return (s.to_string(), false);
@@ -785,6 +805,25 @@ fn slim_extra(v: &Value) -> Option<Value> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn user_image_from_records() {
+        let img = |d: Option<(&str, Vec<u8>)>| d.map(|(m, b)| format!("{m}:{}", String::from_utf8_lossy(&b)));
+        // 内容块里的 base64；第二张；不支持的类型不给
+        let rec = serde_json::json!({ "message": { "content": [
+            { "type": "text", "text": "看图" },
+            { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "YWJj" } },
+            { "type": "image", "source": { "type": "base64", "media_type": "image/jpeg", "data": "eHl6" } },
+            { "type": "image", "source": { "type": "base64", "media_type": "image/svg+xml", "data": "PHN2Zz4=" } },
+        ] } });
+        assert_eq!(img(user_image(&rec, 0)).unwrap(), "image/png:abc");
+        assert_eq!(img(user_image(&rec, 1)).unwrap(), "image/jpeg:xyz");
+        assert!(user_image(&rec, 2).is_none());
+        assert!(user_image(&rec, 3).is_none());
+        // 运行中发的（attachment.prompt）
+        let q = serde_json::json!({ "attachment": { "prompt": [{ "type": "image", "source": { "type": "base64", "media_type": "image/webp", "data": "cQ==" } }] } });
+        assert_eq!(img(user_image(&q, 0)).unwrap(), "image/webp:q");
+    }
+
     use super::*;
     use serde_json::json;
 

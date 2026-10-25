@@ -16,7 +16,7 @@ import ClaudeProfilesCard from './ClaudeProfiles.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
-import { termTheme } from '../shared/termTheme.js';
+import { TERM_THEMES, termTheme } from '../shared/termTheme.js';
 import { DiagCard } from '../shared/Report.jsx';
 import RelayPicker, { RELAYS_ANCHOR } from '../shared/RelayPicker.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -50,6 +50,34 @@ export function Seg({ value, options, onChange, label }) {
       {options.map(([v, text]) => (
         <button key={v} type="button" aria-pressed={value === v} onClick={() => onChange(v)}>
           {text}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** 终端配色：每个选项是一小块终端的样子（栏、提示符、光标、几种 ANSI 颜色） */
+function ThemePicker({ value, onChange }) {
+  const { t } = useTranslation();
+  return (
+    <div className="theme-pick" role="group" aria-label={t('settings.theme')}>
+      {Object.entries(TERM_THEMES).map(([id, th]) => (
+        <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)} title={t(`settings.theme_${id}`)}>
+          <span className="theme-sample" style={{ background: th.bg, color: th.fg, borderColor: th.border }} aria-hidden="true">
+            <span className="theme-sample-bar" style={{ background: th.bar, borderColor: th.border }} />
+            <span className="theme-sample-line">
+              <b style={{ color: th.ansi[1] }}>~</b> $ <i style={{ background: th.accent }} />
+            </span>
+            <span className="theme-sample-dots">
+              {th.ansi.map((c) => (
+                <i key={c} style={{ background: c }} />
+              ))}
+            </span>
+          </span>
+          <span className="theme-name">
+            {value === id && <Check size={14} aria-hidden="true" />}
+            {t(`settings.theme_${id}`)}
+          </span>
         </button>
       ))}
     </div>
@@ -198,16 +226,7 @@ export default function Settings() {
             <Seg value={Number(s.font_size)} label={t('settings.font_size')} onChange={set('font_size')} options={[13, 14, 15, 16, 18, 20].map((n) => [n, String(n)])} />
           </Field>
           <Field label={t('settings.theme')}>
-            <Seg
-              value={s.theme}
-              label={t('settings.theme')}
-              onChange={set('theme')}
-              options={[
-                ['agent', t('settings.theme_agent')],
-                ['dark', t('settings.theme_dark')],
-                ['light', t('settings.theme_light')],
-              ]}
-            />
+            <ThemePicker value={s.theme} onChange={set('theme')} />
           </Field>
           <p className="muted small" style={{ margin: 0 }}>
             {t('settings.apply_note')}

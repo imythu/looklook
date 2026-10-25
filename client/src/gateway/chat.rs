@@ -97,6 +97,22 @@ pub async fn item(State(app): State<App>, Path(id): Path<String>, Query(q): Quer
 }
 
 #[derive(Deserialize)]
+pub struct ImageQuery {
+    key: String,
+    #[serde(default)]
+    n: usize,
+}
+
+/// 用户消息里的图片（对话界面上的缩略图、点开的大图）
+pub async fn image(State(app): State<App>, Path(id): Path<String>, Query(q): Query<ImageQuery>) -> R<Response> {
+    use axum::http::{header, HeaderValue};
+    let (mime, bytes) = app.chat.user_image(&id, &q.key, q.n).await?;
+    let mut res = (StatusCode::OK, [(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=86400")], bytes).into_response();
+    res.headers_mut().insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    Ok(res)
+}
+
+#[derive(Deserialize)]
 pub struct AgentQuery {
     #[serde(default)]
     agent: Option<String>,

@@ -708,6 +708,16 @@ impl Chat {
         tokio::task::block_in_place(|| t.full_item(key)).ok_or_else(LocalError::not_found)
     }
 
+    /// 用户消息 `key` 里的第 `n` 张图片：类型和内容。只支持 Claude Code（图片直接存在 transcript 里）
+    pub async fn user_image(&self, id: &str, key: &str, n: usize) -> Result<(&'static str, Vec<u8>), LocalError> {
+        self.require(id)?;
+        if self.is_codex(id) {
+            return Err(LocalError::not_found());
+        }
+        let rec = self.item(id, key).await?;
+        transcript::user_image(&rec, n).ok_or_else(LocalError::not_found)
+    }
+
     /// 打开一个对话视图：订阅事件，没在跟读就开始跟读和抓屏。
     pub fn subscribe(self: &Arc<Self>, id: &str) -> Result<(broadcast::Receiver<Event>, Viewer), LocalError> {
         self.require(id)?;

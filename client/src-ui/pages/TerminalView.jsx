@@ -24,7 +24,7 @@ import ChatView from './ChatView.jsx';
 import FileBrowser from './FileBrowser.jsx';
 import GitPanel from './GitPanel.jsx';
 import { useTermFiles } from './TermFiles.jsx';
-import { termTheme, termVars } from '../shared/termTheme.js';
+import { APP_CHROME, termTheme, termVars } from '../shared/termTheme.js';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -101,19 +101,22 @@ export function useNarrow(query = '(max-width: 719px)') {
   return m;
 }
 
-/** 终端外框的配色变量；整页终端时浏览器的地址栏 / 状态栏颜色（theme-color）也跟着终端顶栏走。 */
-export function useTermChrome(theme, page = false) {
+/**
+ * 终端外框的配色变量；整页终端时浏览器的地址栏 / 状态栏颜色（theme-color）也跟着顶栏走。
+ * app：不在终端标签（对话、改动、文件），上下两头用管理台的配色（APP_CHROME）。
+ */
+export function useTermChrome(theme, page = false, app = false) {
   useEffect(() => {
     if (!page) return undefined;
     const meta = document.querySelector('meta[name="theme-color"]');
     if (!meta) return undefined;
     const old = meta.content;
-    meta.content = termTheme(theme).bar;
+    meta.content = app ? getComputedStyle(document.documentElement).getPropertyValue('--panel').trim() || old : termTheme(theme).bar;
     return () => {
       meta.content = old;
     };
-  }, [theme, page]);
-  return termVars(theme);
+  }, [theme, page, app]);
+  return app ? APP_CHROME : termVars(theme);
 }
 
 // （对话 /）终端 / 改动 / 文件
@@ -238,8 +241,18 @@ function OfflineNote() {
   const { t } = useTranslation();
   return (
     <div className="term-offline" role="status">
-      <WifiOff size={15} aria-hidden="true" />
-      <span>{t('term.offline')}</span>
+      <span className="term-offline-ico" aria-hidden="true">
+        <WifiOff size={16} />
+      </span>
+      <span className="term-offline-text">
+        <b>{t('term.offline_title')}</b>
+        <small>{t('term.offline_hint')}</small>
+      </span>
+      <span className="term-offline-dots" aria-hidden="true">
+        <i />
+        <i />
+        <i />
+      </span>
     </div>
   );
 }
@@ -367,7 +380,15 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
     );
   }
   return (
-    <section ref={wrap} className={`ws-pane ${max ? 'max' : ''}`} hidden={!active} aria-label={inst?.name ?? id} data-pane-id={id}>
+    <section
+      ref={wrap}
+      className={`ws-pane ${max ? 'max' : ''}`}
+      hidden={!active}
+      aria-label={inst?.name ?? id}
+      data-pane-id={id}
+      data-scheme={tab === 'term' ? undefined : 'app'}
+      style={tab === 'term' ? undefined : APP_CHROME}
+    >
       <header className="term-bar ws-pane-bar" onDoubleClick={(e) => !e.target.closest('button, a, input') && !full && toggleMax()}>
         <span className="term-title">
           {lead ?? <span className={`dot ${running ? 'on' : ''}`} />}
@@ -405,7 +426,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
       </header>
       <div className="term-frame">
         {body}
-        {cut && <OfflineNote />}
+        {cut && tab !== 'chat' && <OfflineNote />}
         {tab !== 'chat' && files.layer}
         {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); termFocus(frame); }} />}
         {running && tab === 'git' && (
@@ -466,7 +487,7 @@ export default function TerminalView({ id }) {
   // 对话下面展开着终端时也要按键条（选择框要用方向键、回车、Esc）
   const keybarShown = touch && keys && live && tab === 'term';
   const files = useTermFiles({ id, inst, frame, enabled: live && tab !== 'chat', touch, hostOs: status.capabilities.os, keybar: keybarShown || tabbarShown });
-  const vars = useTermChrome(status.settings.theme, true);
+  const vars = useTermChrome(status.settings.theme, true, tab !== 'term');
   useRefitOnReturn(frame, live);
   useFocusWhenReady(frame, live && tab === 'term' && !touch);
   const [selecting, setSelecting] = useTextSelect(frame, live && tab === 'term');
@@ -584,7 +605,7 @@ export default function TerminalView({ id }) {
     { icon: ExternalLink, label: t('instance.new_window'), onClick: newWindow },
   ];
   return (
-    <div className="term-page" data-scheme={termTheme(status.settings.theme).scheme} data-tabbar={tabbarShown ? '' : undefined} style={{ ...vars, ...mobile.style }}>
+    <div className="term-page" data-scheme={tab === 'term' ? termTheme(status.settings.theme).scheme : 'app'} data-tabbar={tabbarShown ? '' : undefined} style={{ ...vars, ...mobile.style }}>
       {/* 横屏打字时屏幕极矮：先藏起顶栏，键盘收起后回来 */}
       <header className="term-bar" hidden={mobile.cramped}>
         <button type="button" className="btn btn-plain btn-icon" onClick={() => navigate('/')} aria-label={t('term.back')} title={t('term.back')}>
@@ -629,7 +650,7 @@ export default function TerminalView({ id }) {
       </header>
       <div className="term-frame">
         {body}
-        {cut && <OfflineNote />}
+        {cut && tab !== 'chat' && <OfflineNote />}
         {tab !== 'chat' && files.layer}
         {live && tab === 'files' && (
           <div className="term-files-tab">

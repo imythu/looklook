@@ -17,10 +17,12 @@ import {
   Brain,
   Check,
   ChevronDown,
+  ChevronLeft,
   ChevronRight,
   CircleDashed,
   CircleStop,
   CornerDownRight,
+  ExternalLink,
   FilePen,
   FileText,
   GitBranch,
@@ -40,11 +42,13 @@ import {
   Square,
   SquareTerminal,
   TriangleAlert,
+  WifiOff,
   Wrench,
   X,
   Zap,
 } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { api, fetchRaw, plainLinksWork } from '../shared/api.js';
@@ -723,9 +727,99 @@ function Thinking({ text }) {
   );
 }
 
+/** 用户消息里第 i 张图片的地址（`chat/image`：从记录里取出来） */
+const userImageUrl = (id, key, i) => `/instances/${id}/chat/image?key=${encodeURIComponent(key)}&n=${i}`;
+
+/** 用户发的图片：气泡上方一排小图，点开看大图 */
+function UserImages({ id, itemKey, n }) {
+  const { t } = useT();
+  const [open, setOpen] = useState(null);
+  const urls = useMemo(() => Array.from({ length: n }, (_, i) => userImageUrl(id, itemKey, i)), [id, itemKey, n]);
+  return (
+    <div className="chat-user-imgs">
+      {urls.map((url, i) => (
+        <UserThumb key={url} url={url} label={t('chat.image_n', { n: i + 1, total: n })} onOpen={() => setOpen(i)} />
+      ))}
+      {open != null && <Lightbox urls={urls} index={open} onIndex={setOpen} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+function UserThumb({ url, label, onOpen }) {
+  const src = useGenSrc(url);
+  const [broken, setBroken] = useState(false);
+  return (
+    <button type="button" className="chat-user-img" onClick={onOpen} aria-label={label} title={label} disabled={broken}>
+      {broken ? <ImageIcon size={18} aria-hidden="true" /> : src ? <img src={src} alt="" loading="lazy" decoding="async" onError={() => setBroken(true)} /> : <LoaderCircle size={16} className="spin" aria-hidden="true" />}
+    </button>
+  );
+}
+
+/** 全屏看大图：点空白处、Esc 关闭；多张时左右切换（按钮、方向键、手机上左右滑） */
+function Lightbox({ urls, index, onIndex, onClose }) {
+  const { t } = useT();
+  const src = useGenSrc(urls[index]);
+  const many = urls.length > 1;
+  const go = (d) => onIndex((index + d + urls.length) % urls.length);
+  const touch = useRef(null);
+  useEffect(() => {
+    const key = (e) => {
+      if (e.key === 'Escape') onClose();
+      else if (many && e.key === 'ArrowLeft') go(-1);
+      else if (many && e.key === 'ArrowRight') go(1);
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  });
+  return createPortal(
+    <div
+      className="chat-lightbox"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t('chat.image_n', { n: index + 1, total: urls.length })}
+      onClick={(e) => e.target === e.currentTarget && onClose()}
+      onTouchStart={(e) => (touch.current = e.touches[0].clientX)}
+      onTouchEnd={(e) => {
+        const dx = e.changedTouches[0].clientX - (touch.current ?? 0);
+        if (many && Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+      }}
+    >
+      <div className="chat-lightbox-bar">
+        {many && <span className="chat-lightbox-count">{index + 1} / {urls.length}</span>}
+        <span className="grow" />
+        {src && (
+          <a className="chat-lightbox-btn" href={src} target="_blank" rel="noopener noreferrer" aria-label={t('chat.res_open')} title={t('chat.res_open')}>
+            <ExternalLink size={18} />
+          </a>
+        )}
+        <button type="button" className="chat-lightbox-btn" onClick={onClose} aria-label={t('action.close')} title={t('action.close')} autoFocus>
+          <X size={20} />
+        </button>
+      </div>
+      {src ? <img key={src} className="chat-lightbox-img" src={src} alt="" onClick={onClose} /> : <LoaderCircle size={28} className="spin chat-lightbox-wait" aria-hidden="true" />}
+      {many && (
+        <>
+          <button type="button" className="chat-lightbox-btn chat-lightbox-nav prev" onClick={() => go(-1)} aria-label={t('chat.image_prev')}>
+            <ChevronLeft size={22} />
+          </button>
+          <button type="button" className="chat-lightbox-btn chat-lightbox-nav next" onClick={() => go(1)} aria-label={t('chat.image_next')}>
+            <ChevronRight size={22} />
+          </button>
+        </>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
 /** 不是 assistant 回复的条目（用户消息、单独的工具结果、分隔线、提示……） */
 function Item({ id, item }) {
   const { t } = useT();
+  const agent = useContext(AgentCtx).id;
+  const thumbs = item.images > 0 && agent === 'claude';
   switch (item.k) {
     case 'user':
       return (
@@ -737,10 +831,14 @@ function Item({ id, item }) {
               {t('chat.mid_tag')}
             </span>
           )}
-          <div className="chat-bubble">
-            {item.text}
-            {item.images > 0 && <span className="chat-note">{t('chat.images', { n: item.images })}</span>}
-          </div>
+          {/* 图片小图只有 Claude Code 有（图片存在 transcript 里）；Codex 照旧只写几张 */}
+          {thumbs && <UserImages id={id} itemKey={item.key} n={item.images} />}
+          {(item.text.trim() || (item.images > 0 && !thumbs)) && (
+            <div className="chat-bubble">
+              {item.text}
+              {item.images > 0 && !thumbs && <span className="chat-note">{t('chat.images', { n: item.images })}</span>}
+            </div>
+          )}
         </div>
       );
     case 'task':
@@ -1730,18 +1828,32 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
 /**
  * 输入框上面的状态提示：空闲、运行中不显示（运行中对话流的最后有“正在…”），
  * 只有要注意的状态（等你确认、在等选择、重连中、出错）才出现。
+ * 电脑离线也在这里说（对话标签不叠浮层，免得挡住消息）。
  */
-function StatusNotice({ status, online }) {
+function StatusNotice({ status, online, offline }) {
   const { t } = useT();
   if (!status) return null;
   const { phase, tool, error, reason } = status;
-  if (online && !error && (phase === 'idle' || phase === 'running' || phase === 'detached')) return null;
+  if (!online) {
+    return (
+      <div className="chat-status chat-status-off" role="status">
+        {offline ? <WifiOff size={14} aria-hidden="true" /> : <span className="chat-status-dot" aria-hidden="true" />}
+        <span className="ellipsis">{t(offline ? 'chat.offline_status' : 'chat.reconnecting')}</span>
+        <span className="chat-status-dots" aria-hidden="true">
+          <i />
+          <i />
+          <i />
+        </span>
+      </div>
+    );
+  }
+  if (!error && (phase === 'idle' || phase === 'running' || phase === 'detached')) return null;
   const label = phase === 'detached' && reason === 'not_attached' ? 'chat.phase_not_attached' : `chat.phase_${phase}`;
   return (
-    <div className="chat-status" data-phase={online ? phase : 'offline'}>
+    <div className="chat-status" data-phase={phase}>
       <span className="chat-status-dot" aria-hidden="true" />
       <span className="grow ellipsis">
-        {!online ? t('chat.reconnecting') : phase === 'running' && tool ? t('chat.running_tool', { tool }) : t(label)}
+        {phase === 'running' && tool ? t('chat.running_tool', { tool }) : t(label)}
         {error && <span className="chat-status-err"> · {error}</span>}
       </span>
     </div>
@@ -2733,7 +2845,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           )}
           {phase === 'detached' && <Detached id={id} status={status} />}
           {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
-          <StatusNotice status={status} online={chat.online} />
+          <StatusNotice status={status} online={chat.online} offline={offline} />
           <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} onAction={onAction} onSide={setSide} />
         </div>
       </div>

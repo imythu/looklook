@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use crate::store::Store;
 
 const KEY: &str = "settings";
-const THEME_REV: u8 = 1;
+const THEME_REV: u8 = 2;
+/// 终端配色（和 instances.rs 的 ttyd_args、src-ui/shared/termTheme.js 保持一致）
+const THEMES: &[&str] = &["lagoon", "sunset", "mint", "tangerine", "agent", "dark", "light"];
+const DEFAULT_THEME: &str = "lagoon";
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
@@ -17,10 +20,10 @@ pub struct Settings {
     /// 终端中文字体：`wenkai`（内置霞鹜文楷等宽）或 `system`（系统黑体）
     pub font: String,
     pub font_size: u8,
-    /// 终端配色：`agent`（默认，AI 助手命令行风格的暖色深色）/ `dark` / `light`
+    /// 终端配色：见 `THEMES`，默认 `lagoon`（深海蓝）
     pub theme: String,
-    /// 配色设置的版本：0 = 还没有 `agent` 配色时存下的设置（那时默认是 `dark`），读的时候换成新的默认一次；
-    /// 之后用户自己再选 `dark` 也会保留。字段自己的 serde 默认是 0（不是 Settings::default 里的值）。
+    /// 配色设置的版本：0 = 默认还是 `dark` 时存下的设置，1 = 默认是 `agent` 时存下的；读的时候把当时的默认
+    /// 换成现在的默认一次，之后用户自己再选 `dark` / `agent` 也会保留。字段自己的 serde 默认是 0（不是 Settings::default 里的值）。
     #[serde(default)]
     pub theme_rev: u8,
     /// 在看看服务端显示的电脑名称；为空时用主机名
@@ -41,7 +44,7 @@ impl Default for Settings {
             default_workdir: default_workdir(),
             font: "wenkai".into(),
             font_size: 15,
-            theme: "agent".into(),
+            theme: DEFAULT_THEME.into(),
             theme_rev: THEME_REV,
             device_name: String::new(),
             default_shell: String::new(),
@@ -62,11 +65,11 @@ impl Settings {
         s.migrated()
     }
 
-    /// 旧设置里的 `dark` 是当时的默认值：换成现在的默认配色（只换一次，见 `theme_rev`）。
+    /// 旧设置里的 `dark`（rev 0）、`agent`（rev 1）是当时的默认值：换成现在的默认配色（只换一次，见 `theme_rev`）。
     fn migrated(mut self) -> Self {
         if self.theme_rev < THEME_REV {
-            if self.theme == "dark" {
-                self.theme = "agent".into();
+            if (self.theme_rev < 1 && self.theme == "dark") || self.theme == "agent" {
+                self.theme = DEFAULT_THEME.into();
             }
             self.theme_rev = THEME_REV;
         }
@@ -81,8 +84,8 @@ impl Settings {
         if !matches!(self.font.as_str(), "wenkai" | "system") {
             self.font = "wenkai".into();
         }
-        if !matches!(self.theme.as_str(), "agent" | "dark" | "light") {
-            self.theme = "agent".into();
+        if !THEMES.contains(&self.theme.as_str()) {
+            self.theme = DEFAULT_THEME.into();
         }
         self.theme_rev = THEME_REV;
         self.font_size = self.font_size.clamp(10, 28);
@@ -218,19 +221,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_default_theme_moves_to_agent_once() {
+    fn old_default_theme_moves_to_lagoon_once() {
         // 加 agent 配色之前存下的设置：没有 theme_rev，theme 是当时的默认 dark
         let old: Settings = serde_json::from_str(r#"{"theme":"dark","font_size":15}"#).unwrap();
         assert_eq!(old.theme_rev, 0);
-        assert_eq!(old.clone().migrated().theme, "agent");
+        assert_eq!(old.clone().migrated().theme, "lagoon");
+        // 默认还是 agent 时存下的（rev 1）：agent 换成新默认；当时自己选的 dark 不动
+        let agent: Settings = serde_json::from_str(r#"{"theme":"agent","theme_rev":1}"#).unwrap();
+        assert_eq!(agent.migrated().theme, "lagoon");
+        let dark1: Settings = serde_json::from_str(r#"{"theme":"dark","theme_rev":1}"#).unwrap();
+        assert_eq!(dark1.migrated().theme, "dark");
         let light: Settings = serde_json::from_str(r#"{"theme":"light"}"#).unwrap();
         assert_eq!(light.migrated().theme, "light", "自己选的浅色不动");
-        // 之后又自己选回 dark 并保存：保留
-        let chosen = Settings { theme: "dark".into(), ..Settings::default() }.normalized();
-        let back: Settings = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
-        assert_eq!(back.migrated().theme, "dark");
-        assert_eq!(Settings::default().theme, "agent");
-        assert_eq!(Settings { theme: "neon".into(), ..Settings::default() }.normalized().theme, "agent");
+        // 之后又自己选回 agent / dark 并保存：保留
+        for t in ["agent", "dark", "sunset"] {
+            let chosen = Settings { theme: t.into(), ..Settings::default() }.normalized();
+            let back: Settings = serde_json::from_str(&serde_json::to_string(&chosen).unwrap()).unwrap();
+            assert_eq!(back.migrated().theme, t);
+        }
+        assert_eq!(Settings::default().theme, "lagoon");
+        assert_eq!(Settings { theme: "neon".into(), ..Settings::default() }.normalized().theme, "lagoon");
     }
 
     #[test]
