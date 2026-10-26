@@ -120,7 +120,7 @@ const SLOW_MS = 150;
 const VERY_SLOW_MS = 400;
 
 /** 点开胶囊、点外面或按 Esc 关上。 */
-export function usePop() {
+function usePop() {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {

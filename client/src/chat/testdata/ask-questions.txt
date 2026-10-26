@@ -1,0 +1,35 @@
+  [38;5;246mIdeal for long-running tasks. Claude [39m
+  [38;5;246mcan make mistakes that allow harmful [39m
+  [38;5;246mcommands to run, it's recommended to [39m
+  [38;5;246monly use in isolated environments. [39m
+  [38;5;246mShift+Tab to change mode.[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231m用 AskUserQuestion [39m
+  [38;5;231m工具问我喜欢红色还是蓝色，然后只回一句话[39m
+[49m
+[38;5;246m● [39mUser answered Claude's questions:
+[38;5;246m  ⎿  · 你喜欢红色还是蓝色？ → 红色[39m
+
+[38;5;231m●[39m 你选的是红色。
+
+[38;5;246m✻[39m [38;5;246mCooked for 6s · done 10:36 PM[39m
+
+[38;5;246m[48;5;237m❯ [38;5;231m用 AskUserQuestion [39m
+  [38;5;231m工具一次问我两个问题：第一个问颜色（红/蓝，每[39m
+  [38;5;231m个选项带一句说明），第二个问水果（苹果/香蕉，[39m
+  [38;5;231m每个选项带一句说明），然后只回一句话[39m
+[38;5;246m[49m─────────────────────────────────────────────────
+← [38;5;16m[48;5;153m ☐ 颜色 [39m[49m ☐ 水果  ✔ Submit  →
+
+[1m[38;5;231m你喜欢红色还是蓝色？[0m
+
+[38;5;153m❯[39m [38;5;246m1.[39m [38;5;153m红色[39m
+     [38;5;246m热烈、醒目，给人充满活力的感觉[39m
+  [38;5;246m2.[39m 蓝色
+     [38;5;246m沉静、清爽，给人冷静可靠的感觉[39m
+  [38;5;246m3. Type something.[39m
+[38;5;246m─────────────────────────────────────────────────
+[39m  4. Chat about this
+
+[38;5;246mEnter to select · Tab/Arrow keys to navigate · [39m
+[38;5;246mEsc to cancel[39m

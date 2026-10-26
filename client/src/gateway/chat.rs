@@ -163,11 +163,6 @@ pub async fn adopt(State(app): State<App>, Path(id): Path<String>) -> R<StatusCo
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// 状态栏右下角的账号用量（这台电脑上登录了的 Claude、Codex）
-pub async fn accounts_usage(State(app): State<App>) -> Json<Value> {
-    Json(app.chat.accounts_usage().await)
-}
-
 /// Codex 终端标签上的“重新连接终端”
 pub async fn codex_terminal(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
     require_allowed(&app)?;

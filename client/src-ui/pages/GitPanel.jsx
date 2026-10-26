@@ -1,6 +1,5 @@
-// 终端页的 “Git” 标签：终端当前目录所在仓库的分支、改动、提交历史；点文件或提交在右边看对比。
-// 改动分成“这段对话改的”和“其他未提交”，勾上要提交的，左下角写说明提交（可以顺便推送）。
-// 暂存区、拉取、合并交给终端（AI 编程助手或 git 命令）。手机上列表和对比分两屏。
+// 终端页的 “Git” 标签（只读）：终端当前目录所在仓库的分支、改动、提交历史；点文件或提交在右边看对比。
+// 暂存、提交、拉取、推送交给终端（AI 编程助手或 git 命令）。手机上列表和对比分两屏。
 import { ArrowDown, ArrowLeft, ArrowUp, Check, GitBranch, GitCommitHorizontal, History, RefreshCw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -8,7 +7,7 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { relativeTime } from '../shared/time.js';
-import { Button, Empty, useToast } from '../shared/ui.jsx';
+import { Button, Empty } from '../shared/ui.jsx';
 
 const POLL_MS = 5000;
 
@@ -62,87 +61,18 @@ function splitPath(p) {
   return i < 0 ? ['', p] : [p.slice(0, i + 1), p.slice(i + 1)];
 }
 
-function FileRow({ f, selected, onOpen, picked, onPick, stat }) {
-  const { t } = useTranslation();
+function FileRow({ f, selected, onOpen }) {
   const [dir, name] = splitPath(f.path);
   return (
     <li className={`git-file ${selected ? 'selected' : ''}`}>
-      <input type="checkbox" className="git-pick" checked={picked} onChange={(e) => onPick(e.target.checked)} aria-label={t('git.pick_file', { file: f.path })} />
       <button type="button" className="git-file-main" onClick={onOpen} title={f.from ? `${f.from} → ${f.path}` : f.path}>
         <StatusBadge code={f.code} />
         <span className="git-file-name ellipsis">
           {name}
           {dir && <span className="git-file-dir"> {dir}</span>}
         </span>
-        {stat && (stat.add > 0 || stat.del > 0) && (
-          <span className="git-file-stat">
-            <i className="add">+{stat.add}</i> <i className="del">−{stat.del}</i>
-          </span>
-        )}
       </button>
     </li>
-  );
-}
-
-/** 对话里改过的文件（绝对路径）→ 相对仓库根目录的路径（和 git 状态里的对上），不在这个仓库里的去掉 */
-export function relToRepo(root, abs) {
-  const norm = (p) => p.replace(/\\/g, '/').replace(/\/+$/, '');
-  const r = norm(root ?? '');
-  const a = norm(abs ?? '');
-  if (!r || !a.toLowerCase().startsWith(`${r.toLowerCase()}/`)) return null;
-  return a.slice(r.length + 1);
-}
-
-/** 左下角的提交：说明、提交选中的文件、提交并推送 */
-function CommitBox({ id, picked, onDone }) {
-  const { t } = useTranslation();
-  const toast = useToast();
-  const [msg, setMsg] = useState('');
-  const [busy, setBusy] = useState(false);
-  const go = async (push) => {
-    if (!msg.trim() || !picked.length) return;
-    setBusy(true);
-    try {
-      const r = await api.post(`/instances/${id}/git/commit`, { files: picked, message: msg, push });
-      setMsg('');
-      if (r.push_error) toast(t('git.push_failed', { hash: r.hash, detail: r.push_error }), 'error');
-      else toast(t(r.pushed ? 'git.pushed' : 'git.committed', { hash: r.hash }));
-      onDone();
-    } catch (e) {
-      toast(errorText(t, e), 'error');
-    } finally {
-      setBusy(false);
-    }
-  };
-  return (
-    <form
-      className="git-commit"
-      onSubmit={(e) => {
-        e.preventDefault();
-        go(false);
-      }}
-    >
-      <label className="sec" htmlFor={`git-msg-${id}`}>{t('git.commit_msg')}</label>
-      <textarea
-        id={`git-msg-${id}`}
-        rows={3}
-        value={msg}
-        onChange={(e) => setMsg(e.target.value)}
-        placeholder={t('git.commit_ph')}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-            e.preventDefault();
-            go(false);
-          }
-        }}
-      />
-      <div className="git-commit-acts">
-        <Button type="submit" busy={busy} disabled={!msg.trim() || !picked.length} className="grow">
-          {t('git.commit_n', { n: picked.length })}
-        </Button>
-        <Button variant="secondary" icon={ArrowUp} busy={busy} disabled={!msg.trim() || !picked.length} onClick={() => go(true)} aria-label={t('git.commit_push')} title={t('git.commit_push')} />
-      </div>
-    </form>
   );
 }
 
@@ -220,11 +150,10 @@ export default function GitPanel({ id, active }) {
   const load = async () => {
     const my = ++tick.current;
     try {
-      // 这段对话改过的文件（没有对话界面的终端没有，忽略）
-      const [data, conv] = await Promise.all([api.get(`/instances/${id}/git`), api.get(`/instances/${id}/chat/changes`).catch(() => null)]);
-      if (my === tick.current) setState({ data, conv });
+      const data = await api.get(`/instances/${id}/git`);
+      if (my === tick.current) setState({ data });
     } catch (error) {
-      if (my === tick.current) setState((s) => ({ ...s, data: s.data, error }));
+      if (my === tick.current) setState((s) => ({ data: s.data, error }));
     }
   };
   useEffect(() => {
@@ -236,27 +165,6 @@ export default function GitPanel({ id, active }) {
 
   const data = state.data;
   const files = useMemo(() => changedFiles(data?.files), [data]);
-  // 对话改过的（相对仓库根目录 → 增删行数），只留现在还没提交的
-  const conv = useMemo(() => {
-    const m = new Map();
-    for (const c of state.conv?.files ?? []) {
-      const rel = relToRepo(data?.root, c.path);
-      if (rel && files.some((f) => f.path === rel)) m.set(rel, c);
-    }
-    return m;
-  }, [state.conv, data, files]);
-  // 勾选要提交的：没动过时默认勾上这段对话改的（没有就全部），动过之后照用户的
-  const [picks, setPicks] = useState(null);
-  const picked = files.map((f) => f.path).filter((p) => (picks ? picks.has(p) : conv.size ? conv.has(p) : true));
-  const pick = (p, on) => {
-    const next = new Set(picked);
-    if (on) next.add(p);
-    else next.delete(p);
-    setPicks(next);
-  };
-  const row = (f) => <FileRow key={f.path} f={f} selected={view?.key === `file:${f.path}`} onOpen={() => openFile(f)} picked={picked.includes(f.path)} onPick={(on) => pick(f.path, on)} stat={conv.get(f.path)} />;
-  const mine = files.filter((f) => conv.has(f.path));
-  const others = files.filter((f) => !conv.has(f.path));
 
   const openFile = async (f) => {
     const key = `file:${f.path}`;
@@ -336,14 +244,11 @@ export default function GitPanel({ id, active }) {
                   <p className="muted small">{t('git.clean_body')}</p>
                 </Empty>
               )}
-              {mine.length > 0 && (
-                <>
-                  <div className="sec git-group">{t('git.group_conv', { n: mine.length })}</div>
-                  <ul className="git-files">{mine.map(row)}</ul>
-                  {others.length > 0 && <div className="sec git-group">{t('git.group_other', { n: others.length })}</div>}
-                </>
-              )}
-              <ul className="git-files">{(mine.length ? others : files).map(row)}</ul>
+              <ul className="git-files">
+                {files.map((f) => (
+                  <FileRow key={f.path} f={f} selected={view?.key === `file:${f.path}`} onOpen={() => openFile(f)} />
+                ))}
+              </ul>
               {data.truncated && <p className="muted small fb-pad">{t('git.too_many')}</p>}
             </div>
           ) : (
@@ -370,17 +275,6 @@ export default function GitPanel({ id, active }) {
                 </li>
               ))}
             </ol>
-          )}
-          {mode === 'changes' && nChanges > 0 && (
-            <CommitBox
-              id={id}
-              picked={picked}
-              onDone={() => {
-                setPicks(null);
-                setView(null);
-                load();
-              }}
-            />
           )}
         </aside>
       )}
