@@ -603,6 +603,10 @@ fn user_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) -> V
         return vec![Item { key: key(0), ts, body: Body::Interrupt }];
     }
     if let Some(cmd) = command_text(trimmed) {
+        // /clear（/new、/reset）是新会话记录里的第一条：对话界面上新会话应该是空的首页，不显示它
+        if cmd.is_empty() || cmd == "/clear" || cmd.starts_with("/clear\n") {
+            return vec![];
+        }
         return vec![Item { key: key(0), ts, body: Body::Command { text: cmd } }];
     }
     if trimmed.contains("<task-notification>") {
@@ -640,7 +644,8 @@ fn system_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) ->
     let body = match v["subtype"].as_str()? {
         "compact_boundary" => Body::Divider { kind: "compact".into() },
         "turn_duration" => Body::Turn { ms: v["durationMs"].as_u64()? },
-        "local_command" => Body::Command { text: command_text(v["content"].as_str()?)? },
+        // 没有输出的命令（/clear 的 `<local-command-stdout></local-command-stdout>`）不显示
+        "local_command" => Body::Command { text: command_text(v["content"].as_str()?).filter(|t| !t.is_empty())? },
         "informational" => Body::Info { text: truncate(v["content"].as_str()?, TEXT_LIMIT).0 },
         _ => return None,
     };
@@ -1063,6 +1068,17 @@ mod tests {
         assert_eq!(kinds(&t), ["user", "interrupt", "command", "command", "turn"]);
         assert_eq!(items[2].body, Body::Command { text: "/model".into() });
         assert_eq!(items[3].body, Body::Command { text: "Kept model as `Haiku 5.5`".into() });
+    }
+
+    #[test]
+    fn clear_starts_an_empty_conversation() {
+        // 2.1.310 的 /new（/clear 的别名）之后，新会话的记录开头是这几条
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = line(json!({"type":"user","uuid":"m1","parentUuid":null,"isMeta":true,"message":{"content":"<local-command-caveat>The command below was run directly in Claude Code</local-command-caveat>"}}));
+        s += &line(json!({"type":"user","uuid":"c1","parentUuid":"m1","message":{"content":"<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"}}));
+        s += &line(json!({"type":"system","subtype":"local_command","uuid":"c2","parentUuid":"c1","content":"<local-command-stdout></local-command-stdout>"}));
+        t.feed(s.as_bytes());
+        assert!(kinds(&t).is_empty(), "{:?}", kinds(&t));
     }
 
     #[test]

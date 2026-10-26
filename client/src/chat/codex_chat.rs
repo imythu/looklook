@@ -240,7 +240,7 @@ impl Chat {
             s.kill();
         }
         let (tx, rx) = mpsc::unbounded_channel();
-        let server = AppServer::start(&self.paths.home.join("run"), program, env.as_ref(), signature, tx).await?;
+        let server = AppServer::start(&self.paths.home.join("run"), program, self.instances.shell(), env.as_ref(), signature, tx).await?;
         let gen = self.codex.generation.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.codex.threads).clear();
         *slot = Some(server.clone());
@@ -958,6 +958,15 @@ impl Chat {
 
     // ---------------- 终端里的 TUI（和对话界面同步） ----------------
 
+    /// 对话模式的 Codex 终端启动之前：先起好 app-server，终端里一开始就是接在它上面的 TUI。
+    /// 不等的话 app-server 还没起来（Windows 上要好几秒），终端会先改成本机直接运行，对话页先显示“暂时连不上”再自己转过来。
+    /// 起不来时照旧走本机直接运行，原因记在日志里。
+    pub async fn codex_warm(&self) {
+        if let Err(e) = self.codex_server().await {
+            tracing::warn!(error = ?e, "Codex 的后台服务起不来，终端改成直接运行");
+        }
+    }
+
     /// 终端标签连上之前：起好 app-server、加载好会话（还没有就建一个），这样终端里的 TUI 接的是同一个会话。
     pub async fn codex_prepare_terminal(&self, id: &str) {
         let r: Result<(), LocalError> = async {
@@ -1017,7 +1026,7 @@ impl Chat {
         // 起好 app-server、加载好会话；--remote 要有地址
         self.codex_attach(id).await?;
         if codex_app::endpoint().is_none() {
-            return Err(LocalError::new("CODEX_APP_SERVER"));
+            return Err(LocalError::new("CODEX_APP_SERVER").with("detail", "app-server connection closed"));
         }
         let line = self.instances.codex_tui_line(id).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
         self.codex_expect_tui(id);

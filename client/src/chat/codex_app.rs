@@ -74,25 +74,56 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// 在交互 shell 里找到过的 `codex`：再找要起一次 shell，记下来
-static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// 用户交互登录 shell 里的 PATH（不是 Windows 时）：问一次记下来
+static USER_PATH: Mutex<Option<String>> = Mutex::new(None);
+
+/// 用户平时打开终端时的 PATH：从程序坞打开的客户端（和 launchd 起的后台）只有系统默认的 PATH，
+/// Homebrew、npm、nvm / fnm 加的目录常只写在 `~/.zshrc` 里，只问登录 shell 也拿不到。
+/// 用 `/usr/bin/env` 打印，不用 shell 自己的语法（fish、nushell 的 `$PATH` 不是冒号分隔）。
+async fn user_path(shell: &str) -> Option<String> {
+    if cfg!(windows) {
+        return None;
+    }
+    if let Some(p) = lock(&USER_PATH).clone() {
+        return Some(p);
+    }
+    let mut cmd = tokio::process::Command::new(shell);
+    cmd.args(["-lic", "/usr/bin/env"]).stdin(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true);
+    let out = tokio::time::timeout(Duration::from_secs(8), cmd.output()).await.ok()?.ok()?;
+    let path = String::from_utf8_lossy(&out.stdout).lines().rev().find_map(|l| l.strip_prefix("PATH=")).map(str::to_string).filter(|p| !p.is_empty())?;
+    *lock(&USER_PATH) = Some(path.clone());
+    Some(path)
+}
+
+/// 启动 app-server 时的 PATH：codex 所在的目录（node 常在它旁边）、用户 shell 的 PATH、客户端自己的 PATH
+async fn launch_path(shell: &str, program: &Path) -> Option<std::ffi::OsString> {
+    if cfg!(windows) {
+        return None;
+    }
+    let mut dirs: Vec<PathBuf> = program.parent().filter(|d| !d.as_os_str().is_empty()).map(Path::to_path_buf).into_iter().collect();
+    if let Some(p) = user_path(shell).await {
+        dirs.extend(std::env::split_paths(&p));
+    }
+    if let Some(p) = std::env::var_os("PATH") {
+        dirs.extend(std::env::split_paths(&p));
+    }
+    let mut seen = std::collections::HashSet::new();
+    dirs.retain(|d| seen.insert(d.clone()));
+    std::env::join_paths(dirs).ok()
+}
 
 /// 启动 Codex 用的程序。Windows：npm 装的 `codex.exe`（见 [`super::codex_launch::program`]）；
-/// 其他平台：PATH 里的 `codex`，找不到时问用户的交互登录 shell（和“工具”页的检测一样，见 [`crate::tools::detect`]）：
-/// 从程序坞打开的客户端拿不到用户 shell 里加的 PATH，nvm / fnm 之类常只写在 `~/.zshrc`，只问登录 shell 也找不到。
+/// 其他平台：客户端 PATH 里的 `codex`，没有时在用户交互登录 shell 的 PATH 里找（见 [`user_path`]）。
 pub async fn program(shell: &str) -> PathBuf {
     if let Some(p) = super::codex_launch::program() {
         return p;
     }
     if !cfg!(windows) {
-        if let Some(p) = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("codex")).find(|p| p.is_file())) {
+        let find = |path: &std::ffi::OsStr| std::env::split_paths(path).map(|d| d.join("codex")).find(|p| p.is_file());
+        if let Some(p) = std::env::var_os("PATH").and_then(|path| find(&path)) {
             return p;
         }
-        if let Some(p) = lock(&FOUND).clone().filter(|p| p.is_file()) {
-            return p;
-        }
-        if let Some(p) = crate::tools::detect(shell).await.codex.map(PathBuf::from).filter(|p| p.is_file()) {
-            *lock(&FOUND) = Some(p.clone());
+        if let Some(p) = user_path(shell).await.and_then(|path| find(path.as_ref())) {
             return p;
         }
     }
@@ -150,7 +181,7 @@ fn kill_pid(pid: u32) {
 impl AppServer {
     /// 接上 app-server：`run/codex-app.json` 记着的还在、配置也没变就接回去，否则另起一个（单独运行，不随客户端退出）。
     /// `env`：第三方服务商（环境变量和 `-c` 参数）。
-    pub async fn start(run: &Path, program: PathBuf, env: Option<&crate::model::LaunchEnv>, signature: String, tx: mpsc::UnboundedSender<Incoming>) -> Result<Arc<Self>, LocalError> {
+    pub async fn start(run: &Path, program: PathBuf, shell: &str, env: Option<&crate::model::LaunchEnv>, signature: String, tx: mpsc::UnboundedSender<Incoming>) -> Result<Arc<Self>, LocalError> {
         let state_file = run.join("codex-app.json");
         let (token_file, token) = token(run).map_err(|e| LocalError::new("CODEX_APP_SERVER").with("detail", e.to_string()))?;
         let saved: Value = std::fs::read_to_string(&state_file).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
@@ -171,12 +202,15 @@ impl AppServer {
                     .filter(|p| std::net::TcpListener::bind(("127.0.0.1", *p)).is_ok())
                     .or_else(free_port)
                     .ok_or_else(|| LocalError::new("CODEX_APP_SERVER").with("detail", "no free port"))?;
-                let pid = spawn(run, &program, env, port, &token_file)?;
+                let path = launch_path(shell, &program).await;
+                let pid = spawn(run, &program, path.as_deref(), env, port, &token_file)?;
                 let deadline = tokio::time::Instant::now() + START_WAIT;
                 while !ready(port).await {
                     if tokio::time::Instant::now() > deadline {
                         kill_pid(pid);
-                        return Err(LocalError::new("CODEX_APP_SERVER").with("detail", "app-server did not start"));
+                        let tail = log_tail(run);
+                        tracing::warn!(program = %program.display(), log = %tail, "Codex 的后台服务没有起来");
+                        return Err(LocalError::new("CODEX_APP_SERVER").with("detail", if tail.is_empty() { "app-server did not start".to_string() } else { tail }));
                     }
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
@@ -326,18 +360,14 @@ impl AppServer {
 }
 
 /// 单独起一个 app-server（不挂在客户端进程上：客户端退出它照常运行）。返回进程号。
-fn spawn(run: &Path, program: &Path, env: Option<&crate::model::LaunchEnv>, port: u16, token_file: &Path) -> Result<u32, LocalError> {
-    // 不是 Windows 时经登录 shell 启动（和 agents::cli_command 一样）：npm / Homebrew 装的 codex 是 node 脚本，
-    // 从程序坞打开的客户端 PATH 里没有 node，直接起会立刻退出，对话界面就用不了（终端里的 shell 有 PATH，照常能用）。
-    // codex 所在的目录也放进 PATH：nvm 之类只在 ~/.zshrc 里加 PATH，登录 shell 没有，node 就在 codex 旁边
-    #[cfg(windows)]
+/// 直接起 codex，不经 shell 转一手（shell 的语法各不相同，起不来时也说不清是谁没找到）；
+/// 不是 Windows 时 PATH 换成 [`launch_path`]：npm / Homebrew 装的 codex 是 node 脚本，要能找到 node。
+fn spawn(run: &Path, program: &Path, path: Option<&std::ffi::OsStr>, env: Option<&crate::model::LaunchEnv>, port: u16, token_file: &Path) -> Result<u32, LocalError> {
+    std::fs::create_dir_all(run).map_err(|e| LocalError::new("CODEX_APP_SERVER").with("detail", format!("{}: {e}", run.display())))?;
     let mut cmd = tokio::process::Command::new(program);
-    #[cfg(not(windows))]
-    let mut cmd = {
-        let mut c = tokio::process::Command::new(crate::shells::login_shell());
-        c.args(["-lc", "case $0 in */*) PATH=\"${0%/*}:$PATH\"; export PATH;; esac; exec \"$0\" \"$@\""]).arg(program);
-        c
-    };
+    if let Some(p) = path {
+        cmd.env("PATH", p);
+    }
     if let Some(e) = env {
         e.apply(&mut cmd);
     }
@@ -355,11 +385,23 @@ fn spawn(run: &Path, program: &Path, env: Option<&crate::model::LaunchEnv>, port
     cmd.creation_flags(0x0800_0000 | 0x0000_0200);
     #[cfg(unix)]
     cmd.process_group(0);
-    let child = cmd.spawn().map_err(|e| LocalError::new("CODEX_NOT_FOUND").with("detail", format!("{}: {e}", program.display())))?;
+    let child = cmd.spawn().map_err(|e| {
+        let code = if e.kind() == std::io::ErrorKind::NotFound { "CODEX_NOT_FOUND" } else { "CODEX_APP_SERVER" };
+        tracing::warn!(program = %program.display(), error = %e, "Codex 的后台服务起不来");
+        LocalError::new(code).with("detail", format!("{}: {e}", program.display()))
+    })?;
     let pid = child.id().ok_or_else(|| LocalError::new("CODEX_APP_SERVER").with("detail", "no pid"))?;
     // 不等它结束；句柄丢掉不影响进程
     drop(child);
     Ok(pid)
+}
+
+/// app-server 的日志最后几行（起不来时放进报错里，免得只看到“连不上”）
+fn log_tail(run: &Path) -> String {
+    let text = std::fs::read_to_string(run.join("codex-app.log")).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    let tail = lines[lines.len().saturating_sub(3)..].join(" / ");
+    tail.chars().rev().take(400).collect::<Vec<_>>().into_iter().rev().collect()
 }
 
 /// app-server 用不了时终端里直接运行的 Codex（同一个会话，`--no-daemon`）：对话界面暂时不可用，但终端照常能用。
@@ -395,6 +437,32 @@ mod tests {
         // 找不到时至少给出名字，由系统去找（报错由 spawn 返回）
         let p = program(&crate::shells::login_shell()).await;
         assert!(p.file_stem().is_some_and(|s| s.to_string_lossy().starts_with("codex")));
+    }
+
+    /// 端到端：像从程序坞打开的客户端那样，PATH 里没有 codex，只有用户 shell 的配置里加了它所在的目录：
+    /// 照样能找到、起得来 app-server。要装好 codex（不调模型，不用额度）：
+    /// `CODEX_E2E_BIN=<codex 的完整路径> cargo test codex_app_from_bare_path -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn codex_app_from_bare_path() {
+        let real = PathBuf::from(std::env::var("CODEX_E2E_BIN").expect("CODEX_E2E_BIN"));
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join("tools bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::os::unix::fs::symlink(&real, bin.join("codex")).unwrap();
+        let node = std::env::split_paths(&std::env::var_os("PATH").unwrap()).find(|d| d.join("node").is_file()).map(|d| d.display().to_string()).unwrap_or_default();
+        std::fs::write(home.path().join(".bash_profile"), format!("export PATH=\"$HOME/tools bin:{node}:/usr/bin:/bin\"\n")).unwrap();
+        let codex_home = std::env::var("CODEX_HOME").unwrap_or_else(|_| dirs::home_dir().unwrap().join(".codex").display().to_string());
+        std::env::set_var("CODEX_HOME", codex_home);
+        std::env::set_var("HOME", home.path());
+        std::env::set_var("PATH", "/sbin");
+        let program = program("/bin/bash").await;
+        assert_eq!(program, bin.join("codex"), "在用户 shell 的 PATH 里找到");
+        let run = home.path().join("run");
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let server = AppServer::start(&run, program, "/bin/bash", None, "e2e".into(), tx).await.unwrap_or_else(|e| panic!("{e:?}"));
+        assert!(server.alive());
+        server.kill();
     }
 
     #[test]

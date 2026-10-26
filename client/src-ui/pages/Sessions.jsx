@@ -4,7 +4,7 @@
 // 侧栏每个项目只列最近几个，其余在项目页（Project.jsx）。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, ListTree, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, Laptop, ListTree, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -17,7 +17,8 @@ import { linkFailure, linkLabel, linkState, useLinks } from '../shared/paths.jsx
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { Link, useRouter } from '../shared/router.jsx';
-import { baseName, customName, isDraftProject, lastUsed, projectEntries, projectPath, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
+import { baseName, customName, groupProjects, isActive as isLive, isDraftProject, lastUsed, projectEntries, projectPath, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
+import { keyLabel } from '../shared/hotkeys.js';
 import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
 import { AddProjectDialog } from './AddProject.jsx';
 import { CAN_FORK } from './History.jsx';
@@ -43,6 +44,8 @@ const FOLD_KEY = 'looklook.fold';
 const GROUP_KEY = 'looklook.groupby';
 const DEVF_KEY = 'looklook.devfilter';
 const QUERY_KEY = 'looklook.query';
+const ONLINE_KEY = 'looklook.devonline';
+const STATUS_KEY = 'looklook.sstatus';
 // 侧栏每个项目里，在运行的之外再列几个（停了的终端和以前的对话）
 const SIDE_SHOW = 5;
 // 项目多于这么多时，一个月没用过的收进一组
@@ -528,7 +531,144 @@ function matcher(q, t) {
   };
 }
 
-/** 项目和会话列表（左侧栏、手机首页共用）。 */
+/** 看哪几台电脑：空数组是全部。旧版存的是一个 id 字符串（'all' 或某台电脑）。 */
+function readDevFilter() {
+  const v = readStore(localStorage, DEVF_KEY, []);
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string');
+  return typeof v === 'string' && v !== 'all' ? [v] : [];
+}
+const STATUS = ['all', 'attn', 'running', 'rest'];
+const GROUPS = ['project', 'device', 'recent'];
+
+/** 点到外面、按 Esc 时关掉弹出的筛选。 */
+function usePopover() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => !ref.current?.contains(e.target) && setOpen(false);
+    const key = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('pointerdown', down);
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('pointerdown', down);
+      document.removeEventListener('keydown', key);
+    };
+  }, [open]);
+  return { open, setOpen, ref };
+}
+
+/**
+ * 电脑筛选（docs/UI_REDESIGN_2026-10.md §2.3）：一个下拉，可以多选、搜、只看在线的；每行有颜色、系统、连接状态和会话个数。
+ * `value` 是选中的电脑（空 = 全部），`counts` 是每台的会话个数。
+ */
+function DeviceFilter({ value, onChange, online, onOnline, counts }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const links = useLinks();
+  const { open, setOpen, ref } = usePopover();
+  const [q, setQ] = useState('');
+  const all = value.length === 0;
+  const picked = devices.items.filter((d) => value.includes(d.id));
+  const label = all ? t('sess.all_devices') : picked.length === 1 ? deviceName(t, picked[0]) : t('sess.n_devices_picked', { count: picked.length });
+  const words = q.trim().toLowerCase();
+  const shown = devices.items.filter((d) => !words || [deviceName(t, d), d.os, osLabel(d.os)].filter(Boolean).join(' ').toLowerCase().includes(words));
+  const toggle = (id) => {
+    const next = all ? [id] : value.includes(id) ? value.filter((x) => x !== id) : [...value, id];
+    onChange(next.length === devices.items.length ? [] : next);
+  };
+  const active = !all || online;
+  return (
+    <div className="sfilter" ref={ref}>
+      <button type="button" className={`sfilter-chip ${active ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="dialog">
+        {picked.length === 1 ? <DeviceAvatar device={picked[0]} size={16} /> : <Laptop size={14} aria-hidden="true" />}
+        <span className="ellipsis">{label}</span>
+        {online && <span className="sfilter-note">{t('sess.online_only_short')}</span>}
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      {active && (
+        <button type="button" className="sfilter-clear" onClick={() => { onChange([]); onOnline(false); }} aria-label={t('sess.filter_clear')} title={t('sess.filter_clear')}>
+          <X size={12} />
+        </button>
+      )}
+      {open && (
+        <div className="sfilter-pop" role="dialog" aria-label={t('sess.dev_filter')}>
+          {devices.items.length > 6 && (
+            <label className="slist-search sfilter-search">
+              <Search size={14} aria-hidden="true" />
+              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('sess.dev_search')} aria-label={t('sess.dev_search')} spellCheck={false} autoFocus />
+            </label>
+          )}
+          <button type="button" className="sfilter-row" role="menuitemcheckbox" aria-checked={all} onClick={() => onChange([])}>
+            <span className={`sfilter-box ${all ? 'on' : ''}`} aria-hidden="true">{all && <Check size={12} />}</span>
+            <span className="grow">{t('sess.all_devices')}</span>
+            <span className="sfilter-count">{Object.values(counts).reduce((a, b) => a + b, 0)}</span>
+          </button>
+          <div className="sfilter-list">
+            {shown.map((d) => {
+              const on = !all && value.includes(d.id);
+              const state = linkState(d, links);
+              return (
+                <div key={d.id} className="sfilter-line">
+                  <button type="button" className="sfilter-row" role="menuitemcheckbox" aria-checked={on} onClick={() => toggle(d.id)}>
+                    <span className={`sfilter-box ${on ? 'on' : ''}`} aria-hidden="true">{on && <Check size={12} />}</span>
+                    <DeviceAvatar device={d} size={20} dot />
+                    <span className="grow sfilter-name">
+                      <span className="ellipsis">{deviceName(t, d)}</span>
+                      <span className="sfilter-sub ellipsis">{[osLabel(d.os), state === 'online' ? t('devices.online') : linkLabel(t, d, links)].filter(Boolean).join(' · ')}</span>
+                    </span>
+                    <span className="sfilter-count">{counts[d.id] ?? 0}</span>
+                  </button>
+                  <button type="button" className="sfilter-only" onClick={() => { onChange([d.id]); setOpen(false); }} title={t('sess.only_this')}>
+                    {t('sess.only')}
+                  </button>
+                </div>
+              );
+            })}
+            {shown.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
+          </div>
+          <label className="sfilter-toggle">
+            <input type="checkbox" checked={online} onChange={(e) => onOnline(e.target.checked)} />
+            {t('sess.online_only')}
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 状态筛选：全部 / 等你处理 / 正在运行 / 停了的和以前的对话。 */
+function StatusFilter({ value, onChange }) {
+  const { t } = useTranslation();
+  const { open, setOpen, ref } = usePopover();
+  const on = value !== 'all';
+  return (
+    <div className="sfilter" ref={ref}>
+      <button type="button" className={`sfilter-chip ${on ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
+        <span className={`sdot sdot-${value === 'attn' ? 'attn' : value === 'running' ? 'working' : value === 'rest' ? 'stopped' : 'idle'}`} aria-hidden="true" />
+        <span className="ellipsis">{t(`sess.status.${value}`)}</span>
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      {on && (
+        <button type="button" className="sfilter-clear" onClick={() => onChange('all')} aria-label={t('sess.filter_clear')} title={t('sess.filter_clear')}>
+          <X size={12} />
+        </button>
+      )}
+      {open && (
+        <div className="sfilter-pop sfilter-pop-sm" role="menu">
+          {STATUS.map((k) => (
+            <button key={k} type="button" className="sfilter-row" role="menuitemradio" aria-checked={value === k} onClick={() => { onChange(k); setOpen(false); }}>
+              <Check size={14} aria-hidden="true" style={{ visibility: value === k ? 'visible' : 'hidden' }} />
+              <span className="grow">{t(`sess.status.${k}`)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 项目和会话列表（电脑上的会话栏、手机首页共用）：标题、搜索、电脑和状态筛选，下面是等你处理、项目。 */
 export function SessionList({ currentId }) {
   const links = useLinks();
   const { t } = useTranslation();
@@ -541,15 +681,31 @@ export function SessionList({ currentId }) {
     setQueryState(q);
     writeStore(sessionStorage, QUERY_KEY, q);
   };
-  const [groupBy, setGroupByState] = useState(() => (readStore(localStorage, GROUP_KEY, 'project') === 'device' ? 'device' : 'project'));
+  const [groupBy, setGroupByState] = useState(() => {
+    const v = readStore(localStorage, GROUP_KEY, 'project');
+    return GROUPS.includes(v) ? v : 'project';
+  });
   const setGroupBy = (v) => {
     setGroupByState(v);
     writeStore(localStorage, GROUP_KEY, v);
   };
-  const [devFilter, setDevFilterState] = useState(() => readStore(localStorage, DEVF_KEY, 'all'));
+  const [devFilter, setDevFilterState] = useState(readDevFilter);
   const setDevFilter = (v) => {
     setDevFilterState(v);
     writeStore(localStorage, DEVF_KEY, v);
+  };
+  const [onlineOnly, setOnlineState] = useState(() => readStore(localStorage, ONLINE_KEY, false) === true);
+  const setOnline = (v) => {
+    setOnlineState(v);
+    writeStore(localStorage, ONLINE_KEY, v);
+  };
+  const [status, setStatusState] = useState(() => {
+    const v = readStore(sessionStorage, STATUS_KEY, 'all');
+    return STATUS.includes(v) ? v : 'all';
+  });
+  const setStatus = (v) => {
+    setStatusState(v);
+    writeStore(sessionStorage, STATUS_KEY, v);
   };
   // 折叠：用户点过的记住；没点过的，最近一周用过的项目展开，其他收起
   const [fold, setFoldState] = useState(() => readStore(localStorage, FOLD_KEY, {}));
@@ -564,21 +720,26 @@ export function SessionList({ currentId }) {
   const match = matcher(query, t);
   const convMatch = convMatcher(query, t);
   const multi = devices.multi;
-  const filter = multi && devices.items.some((d) => d.id === devFilter) ? devFilter : 'all';
-  const devOk = (dev) => filter === 'all' || dev === filter;
-  // 按项目看全部电脑时，多台电脑上的同一个仓库合成一个项目（见 groupProjects）
-  const mergeOn = multi && groupBy !== 'device' && filter === 'all';
-  const groups = mergeOn ? s.projectGroups : s.projects.filter((p) => devOk(p.device)).map((p) => ({ key: p.key, name: p.name, members: [p], primary: p }));
+  // 选中的电脑里已经不在列表里的（换了账户、删掉了）不算
+  const picked = multi ? devFilter.filter((id) => devices.items.some((d) => d.id === id)) : [];
+  const devOk = (dev) => !multi || ((picked.length === 0 || picked.includes(dev)) && (!onlineOnly || devices.byId(dev)?.online));
+  // 状态筛选：等你处理、正在运行只看在运行的会话；“停了的和以前的对话”只看其余的
+  const instOk = (i) => (status === 'attn' ? sessionState(i) === 'attn' : status === 'running' ? isLive(i) : status === 'rest' ? !isLive(i) : true) && (!match || match(i));
+  const restOk = status !== 'attn' && status !== 'running';
+  const filtering = Boolean(match) || status !== 'all';
+  // 按项目看时，多台电脑上的同一个仓库合成一个项目（只在选中的电脑里合，见 groupProjects）
+  const mine = s.projects.filter((p) => devOk(p.device));
+  const groups = multi && groupBy === 'project' ? groupProjects(mine, true) : mine.map((p) => ({ key: p.key, name: p.name, members: [p], primary: p }));
   // 每个项目合成的会话列表（见 projectEntries），每一行记着是哪台电脑上的（r.m）；离线那台的排在后面。
-  // 搜索时只留符合的，项目名符合的整个留着
+  // 搜索、按状态筛选时只留符合的，项目名符合搜索的整个留着
   const byAt = (a, b) => b.at - a.at;
   const projects = groups
     .map((g) => {
       const parts = g.members.map((m) => {
         const e = projectEntries(m);
         const tag = (r) => ({ ...r, m });
-        const live = e.live.map(tag).filter((r) => !match || match(r.inst));
-        const rest = e.rest.map(tag).filter((r) => !match || (r.kind === 'inst' ? match(r.inst) : convMatch(r.conv)));
+        const live = e.live.map(tag).filter((r) => instOk(r.inst));
+        const rest = restOk ? e.rest.map(tag).filter((r) => (r.kind === 'inst' ? instOk(r.inst) : !match || convMatch(r.conv))) : [];
         return { m, live, rest, count: e.count };
       });
       const ms = g.members;
@@ -597,8 +758,11 @@ export function SessionList({ currentId }) {
         items: ms.flatMap((m) => m.items),
       };
     })
-    .filter((x) => !match || x.live.length + x.rest.length > 0 || x.p.name.toLowerCase().includes(query.trim().toLowerCase()));
-  const attn = s.items.filter((i) => sessionState(i) === 'attn' && devOk(multi ? terminalDevice(i.id) : null) && (!match || match(i)));
+    .filter((x) => (!filtering ? true : x.live.length + x.rest.length > 0 || (match && status === 'all' && x.p.name.toLowerCase().includes(query.trim().toLowerCase()))));
+  const attn = status === 'rest' ? [] : s.items.filter((i) => sessionState(i) === 'attn' && devOk(multi ? terminalDevice(i.id) : null) && (!match || match(i)));
+  // 每台电脑的会话个数（电脑筛选里显示）
+  const counts = {};
+  for (const p of s.projects) counts[p.device] = (counts[p.device] ?? 0) + p.items.length;
   const allOpen = projects.some((x) => isOpen(x));
   const foldAll = () =>
     setFoldState(() => {
@@ -610,9 +774,9 @@ export function SessionList({ currentId }) {
   const renderProject = (x, showDevice) => {
     const { p } = x;
     const drafting = x.members.some((m) => isDraftProject(m, ui.draftAt));
-    const open = match || drafting ? true : isOpen(x);
-    const shown = match ? x.rest : x.rest.slice(0, SIDE_SHOW);
-    const more = match ? 0 : x.count - x.live.length - shown.length;
+    const open = filtering || drafting ? true : isOpen(x);
+    const shown = filtering ? x.rest : x.rest.slice(0, SIDE_SHOW);
+    const more = filtering ? 0 : x.count - x.live.length - shown.length;
     // 合并的项目：每行标上是哪台电脑的
     const row = (r) =>
       r.kind === 'inst' ? <SessionRow key={r.key} inst={r.inst} current={r.inst.id === currentId} devTag={x.merged} /> : <ConvSideRow key={r.key} p={r.m} conv={r.conv} devTag={x.merged} />;
@@ -637,6 +801,23 @@ export function SessionList({ currentId }) {
   let body;
   if (s.loading) {
     body = <div className="slist-loading"><Spinner size={16} /></div>;
+  } else if (groupBy === 'recent') {
+    // 按时间：不分项目，在运行的和停了的、以前的对话放在一起按最近用过排
+    const rows = projects.flatMap((x) => [...x.live, ...x.rest].map((r) => ({ ...r, x }))).filter((r) => !r.m.offline || r.kind === 'conv');
+    rows.sort((a, b) => (a.kind === 'inst' && isLive(a.inst) ? 0 : 1) - (b.kind === 'inst' && isLive(b.inst) ? 0 : 1) || b.at - a.at);
+    const max = filtering ? rows.length : 60;
+    body = (
+      <section className="sproject srecent">
+        {rows.slice(0, max).map((r) =>
+          r.kind === 'inst' ? <SessionRow key={r.key} inst={r.inst} current={r.inst.id === currentId} attn devTag={multi} /> : <ConvSideRow key={r.key} p={r.m} conv={r.conv} devTag={multi} />,
+        )}
+        {rows.length > max && (
+          <button type="button" className="slist-more" onClick={() => navigate('/history')}>
+            {t('sess.recent_more', { count: rows.length - max })}
+          </button>
+        )}
+      </section>
+    );
   } else if (groupBy === 'device' && multi) {
     body = devices.items
       .filter((d) => devOk(d.id))
@@ -645,12 +826,13 @@ export function SessionList({ currentId }) {
         const key = `dev:${d.id}`;
         const open = fold[key] ?? true;
         const group = s.groups?.[d.id];
+        if (filtering && ps.length === 0) return null;
         return (
           <section key={d.id} className="sdevice">
             <DeviceHead device={d} count={ps.reduce((n, x) => n + x.items.length, 0)} open={open} onToggle={() => setFold(key, !open)} />
             {open && group?.error && <ErrorNote error={group.error} />}
             {open && ps.map((x) => renderProject(x, false))}
-            {open && d.online && ps.length === 0 && !match && <p className="slist-note">{t('devices.no_terminals')}</p>}
+            {open && d.online && ps.length === 0 && <p className="slist-note">{t('devices.no_terminals')}</p>}
           </section>
         );
       });
@@ -658,9 +840,9 @@ export function SessionList({ currentId }) {
     // 项目多了：一个月没用过的（没置顶、没在运行、没有要处理的）收进最后一组
     const monthAgo = Date.now() - MONTH;
     const isOld = (x) => !x.pinned && !x.active && Math.max(x.used, x.convAt) < monthAgo && !x.items.some((i) => i.id === currentId || sessionState(i) === 'attn');
-    const old = !match && projects.length > OLD_MIN ? projects.filter(isOld) : [];
+    const old = !filtering && projects.length > OLD_MIN ? projects.filter(isOld) : [];
     const oldOpen = fold.old ?? false;
-    const showDevice = multi && filter === 'all';
+    const showDevice = multi && picked.length !== 1;
     body = (
       <>
         {projects.filter((x) => !old.includes(x)).map((x) => renderProject(x, showDevice))}
@@ -674,74 +856,69 @@ export function SessionList({ currentId }) {
       </>
     );
   }
+  const viewMenu = [
+    { head: t('sess.group_label') },
+    ...GROUPS.filter((g) => g !== 'device' || multi).map((g) => ({ label: t(`sess.group.${g}`), checked: groupBy === g, onClick: () => setGroupBy(g) })),
+    'sep',
+    groupBy !== 'recent' && projects.length > 0 && { icon: allOpen ? ChevronsDownUp : ChevronsUpDown, label: t(allOpen ? 'sess.fold_all' : 'sess.unfold_all'), onClick: foldAll },
+    { icon: FolderPlus, label: t('sess.add_project'), onClick: () => ui.addProject() },
+    { icon: History, label: t('hist.title'), onClick: () => navigate('/history') },
+  ];
+  const searchable = s.items.length > 0 || s.projects.length > 3 || s.projects.some((p) => p.total > 0);
   return (
     <div className="slist">
-      {(s.items.length > 0 || s.projects.length > 3 || s.projects.some((p) => p.total > 0)) && (
-        <label className="slist-search">
-          <Search size={15} aria-hidden="true" />
-          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} placeholder={t('sess.search')} aria-label={t('sess.search')} spellCheck={false} />
-        </label>
-      )}
-      {multi && (
-        <div className="devbar" role="group" aria-label={t('sess.dev_filter')}>
-          <button type="button" aria-pressed={filter === 'all'} onClick={() => setDevFilter('all')}>
-            {t('sess.all_devices')}
-          </button>
-          {devices.items.map((d) => (
-            <button key={d.id} type="button" aria-pressed={filter === d.id} onClick={() => setDevFilter(filter === d.id ? 'all' : d.id)} style={{ '--dc': deviceColor(devices, d.id) }}>
-              <DeviceAvatar device={d} size={18} />
-              <span className="ellipsis">{deviceName(t, d)}</span>
-              {linkState(d, links) !== 'online' && <span className="muted">{linkLabel(t, d, links)}</span>}
-            </button>
-          ))}
+      <div className="slist-top">
+        <div className="slist-titlebar">
+          <h2 className="slist-title grow">{t('sess.title')}</h2>
+          <NewProjectButton />
+          <PopMenu items={viewMenu} className="btn btn-plain btn-icon" icon={SlidersHorizontal} label={t('sess.view_menu')} sheet />
         </div>
-      )}
-      {s.error && <ErrorNote error={s.error} />}
-      {attn.length > 0 && (
-        <section className="sattn" aria-label={t('sess.attention')}>
-          <h3 className="slist-label slist-label-warn">
-            <AlertCircle size={13} aria-hidden="true" />
-            {t('sess.attention')} · {attn.length}
-          </h3>
-          {attn.map((i) => <SessionRow key={i.id} inst={i} attn current={i.id === currentId} />)}
-        </section>
-      )}
-      <div className="slist-head">
-        <h3 className="slist-label grow">{t('sess.projects')}</h3>
-        {multi && (
-          <span className="seg seg-xs" role="group" aria-label={t('sess.group_label')}>
-            <button type="button" aria-pressed={groupBy === 'project'} onClick={() => setGroupBy('project')}>
-              {t('sess.by_project')}
+        {searchable && (
+          <label className="slist-search">
+            <Search size={15} aria-hidden="true" />
+            <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} placeholder={t('sess.search')} aria-label={t('sess.search')} spellCheck={false} />
+            <button type="button" className="slist-kbd" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new Event('ll-quick-switch')); }} title={t('qs.title')}>
+              {keyLabel('mod+K')}
             </button>
-            <button type="button" aria-pressed={groupBy === 'device'} onClick={() => setGroupBy('device')}>
-              {t('sess.by_device')}
-            </button>
-          </span>
+          </label>
         )}
-        {projects.length > 0 && (
-          <button type="button" className="btn btn-plain btn-icon" onClick={foldAll} aria-label={t(allOpen ? 'sess.fold_all' : 'sess.unfold_all')} title={t(allOpen ? 'sess.fold_all' : 'sess.unfold_all')}>
-            {allOpen ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />}
-          </button>
+        {(multi || searchable) && (
+          <div className="sfilters" role="group" aria-label={t('sess.filters')}>
+            {multi && <DeviceFilter value={picked} onChange={setDevFilter} online={onlineOnly} onOnline={setOnline} counts={counts} />}
+            <StatusFilter value={status} onChange={setStatus} />
+          </div>
         )}
-        <NewProjectButton />
       </div>
-      {body}
-      {!s.loading && match && projects.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
-      {match && (
-        <button type="button" className="btn btn-plain slist-hist" onClick={() => navigate(`/history?q=${encodeURIComponent(query.trim())}`)}>
-          <History size={14} aria-hidden="true" />
-          <span className="ellipsis">{t('hist.search_in', { q: query.trim() })}</span>
-        </button>
-      )}
-      {!s.loading && !match && s.projects.length === 0 && (
-        <div className="slist-empty">
-          <p className="slist-note">{t('sess.empty_projects')}</p>
-          <button type="button" className="btn btn-sm slist-add" onClick={() => ui.addProject()}>
-            <FolderPlus size={15} aria-hidden="true" />
-            {t('sess.add_project')}
+      <div className="slist-body">
+        {s.error && <ErrorNote error={s.error} />}
+        {attn.length > 0 && groupBy !== 'recent' && (
+          <section className="sattn" aria-label={t('sess.attention')}>
+            <h3 className="slist-label slist-label-warn">
+              <AlertCircle size={13} aria-hidden="true" />
+              {t('sess.attention')} · {attn.length}
+            </h3>
+            {attn.map((i) => <SessionRow key={i.id} inst={i} attn current={i.id === currentId} />)}
+          </section>
+        )}
+        {groupBy !== 'recent' && projects.length > 0 && <h3 className="slist-label slist-label-head">{t(groupBy === 'device' && multi ? 'sess.by_device' : 'sess.projects')}</h3>}
+        {body}
+        {!s.loading && filtering && projects.length === 0 && attn.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
+        {match && (
+          <button type="button" className="btn btn-plain slist-hist" onClick={() => navigate(`/history?q=${encodeURIComponent(query.trim())}`)}>
+            <History size={14} aria-hidden="true" />
+            <span className="ellipsis">{t('hist.search_in', { q: query.trim() })}</span>
           </button>
-        </div>
-      )}
+        )}
+        {!s.loading && !filtering && s.projects.length === 0 && (
+          <div className="slist-empty">
+            <p className="slist-note">{t('sess.empty_projects')}</p>
+            <button type="button" className="btn btn-sm slist-add" onClick={() => ui.addProject()}>
+              <FolderPlus size={15} aria-hidden="true" />
+              {t('sess.add_project')}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -751,24 +928,17 @@ function NewProjectButton() {
   const ui = useSessionUi();
   return (
     <button type="button" className="btn btn-plain btn-icon" onClick={() => ui.addProject()} aria-label={t('sess.add_project')} title={t('sess.add_project_hint')}>
-      <FolderPlus size={15} />
+      <FolderPlus size={16} />
     </button>
   );
 }
 
-/** 手机首页：会话列表 + 右下角“新会话”。 */
+/** 手机首页：会话列表（新会话在底部标签栏中间）。 */
 export function SessionHome() {
-  const { t } = useTranslation();
-  const { status } = useStatus();
-  const ui = useSessionUi();
   return (
     <div className="shome">
       <BackendNote />
       <SessionList />
-      <button type="button" className="fab" onClick={() => ui.newSession()} disabled={!status.account.allowed}>
-        <Plus size={20} aria-hidden="true" />
-        {t('sess.new')}
-      </button>
     </div>
   );
 }

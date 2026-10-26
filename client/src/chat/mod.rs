@@ -2977,6 +2977,77 @@ mod tests {
         instances.stop(&id).await.unwrap();
     }
 
+    /// 端到端：/new（Claude Code 里是 /clear 的别名）之后对话界面回到空的首页：换成新会话、条目清空、空闲（不是“已结束”）。
+    /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_new -- --ignored --nocapture`
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn chat_e2e_new() {
+        let bin = std::env::var("CHAT_E2E_BIN").expect("CHAT_E2E_BIN");
+        let dir = std::env::var("CHAT_E2E_DIR").expect("CHAT_E2E_DIR");
+        std::env::set_var("PATH", format!("{bin}:{}", std::env::var("PATH").unwrap_or_default()));
+        std::env::set_var("ANTHROPIC_MODEL", "haiku");
+        std::env::remove_var("TMUX");
+        std::fs::create_dir_all(format!("{dir}/.claude")).unwrap();
+        std::fs::write(format!("{dir}/.claude/settings.local.json"), r#"{"model":"haiku"}"#).unwrap();
+        let exe = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("looklook");
+        assert!(exe.is_file(), "先 cargo build");
+        std::env::set_var("LOOKLOOK_HOOK_EXE", exe);
+        let home = tempfile::tempdir().unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let store = Arc::new(Store::memory().unwrap());
+        let instances = Instances::new(store.clone(), paths.clone());
+        let input = crate::instances::Input { name: Some("e2e-new".into()), workdir: Some(dir.clone()), launch: Some("claude".into()), ..Default::default() };
+        let id = instances.create(input).await.unwrap().row.id;
+        let chat = Chat::new(store.clone(), paths.clone(), instances.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let c2 = chat.clone();
+        let app = axum::Router::new().route(
+            hooks::PATH,
+            axum::routing::post(move |headers: axum::http::HeaderMap, body: axum::body::Bytes| {
+                let chat = c2.clone();
+                async move {
+                    let h = |k: &str| headers.get(k).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+                    if !chat.token_ok(&h(hooks::TOKEN_HEADER)) {
+                        return String::new();
+                    }
+                    let ev: Value = serde_json::from_slice(&body).unwrap_or_default();
+                    println!("hook {} {} {}", ev["hook_event_name"], ev["source"], ev["reason"]);
+                    chat.hook(&h(hooks::INSTANCE_HEADER), ev).await
+                }
+            }),
+        );
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        chat.publish(addr).unwrap();
+        let row = store.instance(&id).unwrap().unwrap();
+        instances.ensure_session(&row).await.unwrap();
+        let (_rx, viewer) = chat.subscribe(&id).unwrap();
+        async fn wait(chat: &Arc<Chat>, id: &str, what: &str, secs: u64, f: impl Fn(&Value) -> bool) -> Value {
+            for _ in 0..secs * 4 {
+                let s = chat.snapshot(id).await.unwrap();
+                if f(&s) {
+                    return s;
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+            panic!("等不到：{what}；最后的状态 {}", chat.snapshot(id).await.unwrap()["status"]);
+        }
+        let s = wait(&chat, &id, "SessionStart", 60, |s| s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle").await;
+        let first = s["status"]["session_id"].clone();
+        assert_eq!(chat.input(&id, "只回复两个字母 ok", &[]).await.unwrap()["delivered"], true);
+        wait(&chat, &id, "回复", 60, |s| s["status"]["phase"] == "idle" && s["items"].as_array().is_some_and(|a| a.iter().any(|i| i["k"] == "assistant"))).await;
+        chat.input(&id, "/new", &[]).await.unwrap();
+        let s = wait(&chat, &id, "换成新会话", 30, |s| s["status"]["session_id"].is_string() && s["status"]["session_id"] != first).await;
+        // 两个 hook 都到齐再看最后的状态
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let s2 = chat.snapshot(&id).await.unwrap();
+        println!("换会话时：{}\n3 秒后：{} 条目 {}", s["status"], s2["status"], s2["items"]);
+        assert_eq!(s2["status"]["phase"], "idle", "{}", s2["status"]);
+        assert!(s2["items"].as_array().unwrap().is_empty(), "{}", s2["items"]);
+        drop(viewer);
+        instances.stop(&id).await.unwrap();
+    }
+
     /// 端到端：快捷设置（权限模式、思考强度、模型）、后台命令（列表、输出、停止）、子代理列表。
     /// 和 chat_e2e 一样要登录好的 claude：`CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_tasks -- --ignored --nocapture`
     #[tokio::test(flavor = "multi_thread")]

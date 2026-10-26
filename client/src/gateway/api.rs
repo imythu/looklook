@@ -424,6 +424,9 @@ async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> 
         let (chat, id) = (app.chat.clone(), v.row.id.clone());
         tokio::spawn(async move { chat.codex_first(&id, prompt, resume).await });
     }
+    if req.start && app.instances.codex_app_mode(&v.row) {
+        app.chat.codex_warm().await;
+    }
     let v = if req.start { app.instances.start(&v.row.id).await? } else { v };
     Ok((StatusCode::CREATED, Json(v)))
 }
@@ -598,6 +601,7 @@ async fn delete_instance(State(app): State<App>, Path(id): Path<String>) -> R<St
 
 async fn start_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
+    warm_codex(&app, &id).await;
     Ok(Json(app.instances.start(&id).await?))
 }
 
@@ -606,8 +610,16 @@ async fn stop_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl
     Ok(Json(app.instances.get(&id).await?))
 }
 
+/// 对话模式的 Codex 终端启动前先起好 app-server（见 [`crate::chat::Chat::codex_warm`]）
+async fn warm_codex(app: &App, id: &str) {
+    if app.store.instance(id).ok().flatten().is_some_and(|r| app.instances.codex_app_mode(&r)) {
+        app.chat.codex_warm().await;
+    }
+}
+
 async fn restart_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
+    warm_codex(&app, &id).await;
     Ok(Json(app.instances.restart(&id).await?))
 }
 

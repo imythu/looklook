@@ -98,6 +98,8 @@ import { inputHistory, rememberInput, searchInputs } from '../shared/inputHistor
 import PopMenu from '../shared/PopMenu.jsx';
 import { Button, CopyButton, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { KindIcon, profileName } from './ClaudeProfiles.jsx';
+import { FindBar, MessageSheet, OutlineTab, UserActs, fillInput, useChatKeys, useLongPress } from './ChatTools.jsx';
+import { LaunchIcon } from '../shared/brands.jsx';
 
 // ---------------- 数据 ----------------
 
@@ -240,15 +242,30 @@ function JsonBlock({ value, raw, className = '' }) {
   );
 }
 
-/** 工具结果、参数里的一段文字：整段是 JSON 时格式化显示，网址可以点 */
+/** 一块文字，右上角有复制（电脑上悬停出现，手机上一直在） */
+function Copyable({ text, children }) {
+  if (!text) return children;
+  return (
+    <div className="chat-copyable">
+      {children}
+      <span className="chat-copyable-btn">
+        <CopyButton text={text} label={false} variant="plain" />
+      </span>
+    </div>
+  );
+}
+
+/** 工具结果、参数里的一段文字：整段是 JSON 时格式化显示，网址可以点；可以复制 */
 function RichText({ text, className = '' }) {
   if (!text) return null;
   const json = parseJson(text);
   if (json) return <JsonBlock value={json} raw={text} className={className} />;
   return (
-    <pre className={`chat-pre ${className}`}>
-      <Linked text={text} />
-    </pre>
+    <Copyable text={text}>
+      <pre className={`chat-pre ${className}`}>
+        <Linked text={text} />
+      </pre>
+    </Copyable>
   );
 }
 
@@ -467,7 +484,9 @@ function ToolBody({ id, block, result }) {
     case 'Bash':
       return (
         <>
-          <Pre text={`$ ${input.command ?? ''}`} className="cmd" />
+          <Copyable text={input.command ?? ''}>
+            <Pre text={`$ ${input.command ?? ''}`} className="cmd" />
+          </Copyable>
           <ResultText id={id} result={result} />
         </>
       );
@@ -707,15 +726,7 @@ function Rows({ id, items, live, limit = 0 }) {
         const all = rows.slice(from, n + 1).filter((x) => x.k === 'text').map((x) => x.block.text).join('\n\n');
         // 这一轮用了多久跟在复制按钮后面（不再单独占一行）
         const turn = next?.item?.k === 'turn' ? next.item : null;
-        return (
-          <div key={r.key} className="chat-reply-end">
-            <Markdown text={r.block.text} links={links} />
-            <div className="chat-reply-acts">
-              <CopyButton text={all} label={false} variant="plain" />
-              {turn && <span className="chat-turn">{t('chat.turn', { s: Math.max(1, Math.round(turn.ms / 1000)) })}</span>}
-            </div>
-          </div>
-        );
+        return <ReplyEnd key={r.key} text={r.block.text} all={all} turn={turn} />;
       }
       case 'thinking':
         return <Thinking key={r.key} text={r.block.text} />;
@@ -735,6 +746,53 @@ function Rows({ id, items, live, limit = 0 }) {
         return <Item key={r.key} id={id} item={r.item} />;
     }
   })];
+}
+
+/** 一段回复的最后一段文字，下面是复制和用时；手机上长按这一段弹出复制菜单 */
+function ReplyEnd({ text, all, turn }) {
+  const { t } = useT();
+  const { links } = useContext(ArtifactCtx);
+  const [sheet, setSheet] = useState(false);
+  const press = useLongPress(() => setSheet(true));
+  return (
+    <div className="chat-reply-end" {...press}>
+      <Markdown text={text} links={links} />
+      <div className="chat-reply-acts">
+        <CopyButton text={all} label={false} variant="plain" />
+        {turn && <span className="chat-turn">{t('chat.turn', { s: Math.max(1, Math.round(turn.ms / 1000)) })}</span>}
+      </div>
+      {sheet && <MessageSheet text={all} onClose={() => setSheet(false)} />}
+    </div>
+  );
+}
+
+/** 用户消息：电脑上悬停出现复制、填回输入框；手机上长按弹出菜单 */
+function UserItem({ id, item, thumbs }) {
+  const { t } = useT();
+  const [sheet, setSheet] = useState(false);
+  const text = item.text.trim();
+  const press = useLongPress(() => text && setSheet(true));
+  return (
+    <div className="chat-user" data-mid={item.mid ? '' : undefined} data-key={item.key}>
+      {/* Claude 在忙时发的：这一步做完就并进了这一轮 */}
+      {item.mid && (
+        <span className="chat-mid-tag">
+          <CornerDownRight size={12} aria-hidden="true" />
+          {t('chat.mid_tag')}
+        </span>
+      )}
+      {/* 图片小图：从记录里取（Claude 的 transcript、Codex 的 rollout 里都有图片本身） */}
+      {thumbs && <UserImages id={id} itemKey={item.key} n={item.images} />}
+      {(text || (item.images > 0 && !thumbs)) && (
+        <div className="chat-bubble" {...press}>
+          {item.text}
+          {item.images > 0 && !thumbs && <span className="chat-note">{t('chat.images', { n: item.images })}</span>}
+        </div>
+      )}
+      {text && <UserActs id={id} text={text} />}
+      {sheet && <MessageSheet text={text} onFill={() => fillInput(id, text)} onClose={() => setSheet(false)} />}
+    </div>
+  );
 }
 
 function Thinking({ text }) {
@@ -848,25 +906,7 @@ function Item({ id, item }) {
   const thumbs = item.images > 0 && (agent === 'claude' || caps?.user_images === true);
   switch (item.k) {
     case 'user':
-      return (
-        <div className="chat-user" data-mid={item.mid ? '' : undefined}>
-          {/* Claude 在忙时发的：这一步做完就并进了这一轮 */}
-          {item.mid && (
-            <span className="chat-mid-tag">
-              <CornerDownRight size={12} aria-hidden="true" />
-              {t('chat.mid_tag')}
-            </span>
-          )}
-          {/* 图片小图：从记录里取（Claude 的 transcript、Codex 的 rollout 里都有图片本身） */}
-          {thumbs && <UserImages id={id} itemKey={item.key} n={item.images} />}
-          {(item.text.trim() || (item.images > 0 && !thumbs)) && (
-            <div className="chat-bubble">
-              {item.text}
-              {item.images > 0 && !thumbs && <span className="chat-note">{t('chat.images', { n: item.images })}</span>}
-            </div>
-          )}
-        </div>
-      );
+      return <UserItem id={id} item={item} thumbs={thumbs} />;
     case 'task':
       return (
         <p className="chat-event" title={item.summary}>
@@ -886,7 +926,11 @@ function Item({ id, item }) {
     case 'interrupt':
       return <p className="chat-event">{t('chat.interrupted')}</p>;
     case 'command':
-      return <Pre text={item.text} className="chat-command" />;
+      return (
+        <Copyable text={item.text}>
+          <Pre text={item.text} className="chat-command" />
+        </Copyable>
+      );
     case 'divider':
       return <p className="chat-divider">{t('chat.compacted')}</p>;
     case 'summary':
@@ -1748,6 +1792,15 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
     window.addEventListener(`ll-chat-model:${id}`, open);
     return () => window.removeEventListener(`ll-chat-model:${id}`, open);
   }, [id]);
+  // 换成了新会话（/new、/clear）：回到空的首页，光标放回输入框。发出命令时输入框暂时不可用，焦点已经丢了，等能用了再放
+  const sid = status?.session_id ?? null;
+  const seenSid = useRef(sid);
+  useEffect(() => {
+    if (!sid || disabled || sid === seenSid.current) return;
+    const was = seenSid.current;
+    seenSid.current = sid;
+    if (was && !touch) requestAnimationFrame(() => area.current?.focus());
+  }, [sid, disabled]);
   // 外面（空白对话里的常用开头）要把一句话填进输入框
   useEffect(() => {
     const fill = (e) => {
@@ -2736,7 +2789,8 @@ function ConfigTab({ id }) {
   );
 }
 
-const SIDE_TABS = ['changes', 'tasks', 'usage', 'config'];
+const SIDE_TABS = ['changes', 'outline', 'tasks', 'usage', 'config'];
+const CODEX_TABS = ['changes', 'outline', 'resources', 'usage'];
 
 const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
 const ART_ICONS = { image: ImageIcon, pdf: FileText, video: FileText, audio: FileText, text: FileText, file: FileText };
@@ -2854,10 +2908,10 @@ function ResourcesTab({ id, items }) {
   );
 }
 
-function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact }) {
+function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact, outline }) {
   const { t } = useT();
   // 资源栏先只给 Codex
-  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : ['changes', 'resources', 'usage'];
+  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : CODEX_TABS;
   const bg = backgroundCounts(status);
   const running = (bg.subagent ?? 0) + (bg.shell ?? 0);
   return (
@@ -2881,6 +2935,7 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
         {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
         {tab === 'config' && <ConfigTab id={id} />}
         {tab === 'resources' && <ResourcesTab id={id} items={items} />}
+        {tab === 'outline' && <OutlineTab items={items} {...outline} />}
       </div>
     </aside>
   );
@@ -2906,8 +2961,18 @@ function SpinGlyph() {
   );
 }
 
+/** Codex 运行中：单色的 Codex 标志轻轻呼吸（docs/UI_REDESIGN_2026-10.md §3） */
+function CodexGlyph() {
+  return (
+    <span className="chat-working-mark codex" aria-hidden="true">
+      <LaunchIcon launch="codex" size={14} mono />
+    </span>
+  );
+}
+
 function Live({ status, items, since }) {
   const { t, i18n } = useT();
+  const agent = useContext(AgentCtx).id;
   // 已经跑了多久，每秒更新
   const [, tick] = useReducer((n) => n + 1, 0);
   useEffect(() => {
@@ -2926,7 +2991,7 @@ function Live({ status, items, since }) {
     <>
       {shown && <div className="chat-preview">{preview}</div>}
       <p className="chat-working">
-        <SpinGlyph />
+        {agent === 'codex' ? <CodexGlyph /> : <SpinGlyph />}
         <span className="ellipsis">{act.text || (status?.tool ? t('chat.running_tool', { tool: status.tool }) : t('chat.working'))}</span>
         {act.orig && <span className="chat-working-orig" lang="en">{act.orig}</span>}
         {act.detail && (
@@ -3072,7 +3137,7 @@ const SIDE_KEY = 'll-chat-side';
 const readSide = () => {
   try {
     const v = localStorage.getItem(SIDE_KEY);
-    return SIDE_TABS.includes(v) ? v : null;
+    return SIDE_TABS.includes(v) || CODEX_TABS.includes(v) ? v : null;
   } catch {
     return null;
   }
@@ -3140,6 +3205,17 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
     prev.current = phase;
   }, [phase]);
   const { following, toBottom } = useFollow(list, inner, [items, status?.pending?.id, active, side]);
+  // 查找栏：已经开着时再按 Ctrl/⌘ F 是回到查找框
+  const [finding, setFinding] = useState(false);
+  const onFind = useCallback(() => {
+    setFinding((was) => {
+      if (was) window.dispatchEvent(new Event('ll-chat-find'));
+      return true;
+    });
+  }, []);
+  useChatKeys({ active, list, inner, onFind });
+  const known = useSessions()?.known(id);
+  const title = known?.agent_title || known?.name || '';
   const toast = useToast();
   const onAction = (a) => {
     if (SIDE_TABS.includes(a)) setSide(a);
@@ -3175,22 +3251,23 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   return (
     <AgentCtx.Provider value={agentCtx}>
       <ArtifactCtx.Provider value={artifactCtx}>
-    <div className="chat-view" data-side={side ? '' : undefined}>
+    <div className="chat-view" data-side={side ? '' : undefined} data-agent={agentId}>
       <div className="chat-col">
         <div className="chat-main">
+          {finding && <FindBar list={list} inner={inner} more={chat.start > 0} deps={[items, side]} onClose={() => setFinding(false)} />}
           <div className="chat-list" ref={list} onScroll={onScroll} tabIndex={-1}>
             <div className="chat-items" ref={inner}>
               {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
               {!items.length && status && phase !== 'detached' && !first && (
                 <div className="chat-empty">
                   <span className="chat-empty-mark" aria-hidden="true">
-                    <Asterisk size={40} />
+                    {agentId === 'codex' ? <LaunchIcon launch="codex" size={40} mono /> : <Asterisk size={40} />}
                   </span>
                   <p className="chat-empty-title">{t('chat.empty')}</p>
                   {/* 几个常用的开头：点了填进输入框，可以改了再发 */}
                   <div className="chat-starters">
                     {STARTERS.map((k) => (
-                      <button key={k} type="button" className="chat-starter" onClick={() => window.dispatchEvent(new CustomEvent(`ll-chat-fill:${id}`, { detail: t(`chat.starter.${k}`) }))}>
+                      <button key={k} type="button" className="chat-starter" onClick={() => fillInput(id, t(`chat.starter.${k}`))}>
                         {t(`chat.starter.${k}`)}
                       </button>
                     ))}
@@ -3253,7 +3330,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
       </div>
-      {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} />}
+      {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} outline={{ list, inner, agent: agentName, title, more: chat.start > 0 }} />}
     </div>
       </ArtifactCtx.Provider>
     </AgentCtx.Provider>

@@ -4,7 +4,7 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, Link2, ListTodo, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, FolderOpen, Github, Globe, History, House, Keyboard, Languages, Laptop, Link2, ListTodo, LogOut, MessageSquare, Plus, Server, Settings as SettingsIcon, ShieldCheck, Wrench } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -32,6 +32,10 @@ import PopMenu from './shared/PopMenu.jsx';
 import { sessionState, SessionsProvider, useSessions } from './shared/sessions.jsx';
 import { daysLeft, formatTime } from './shared/time.js';
 import { BrandMark, Button, Drawer, FoldNote, LangSwitch, Note, Skeleton, useConfirm, useToast } from './shared/ui.jsx';
+import { keyLabel } from './shared/hotkeys.js';
+import { setLocale } from './shared/i18n.js';
+import QuickSwitch from './shared/QuickSwitch.jsx';
+import ShortcutsHelp from './shared/Shortcuts.jsx';
 import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
@@ -105,7 +109,6 @@ const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
 // 会话相关的页面铺满主区域（不限宽度）
 const isWide = (p) => p === '/' || p === '/new' || p === '/tasks' || p === '/history' || SESS.test(p);
 const RAIL_KEY = 'looklook.rail';
-const TOOLS_KEY = 'looklook.tools';
 
 function readFlag(key, fallback) {
   try {
@@ -203,7 +206,7 @@ function GateBanner() {
 /** 用户卡片的菜单：电脑、会员与邀请、账户与安全；报告问题；看看主页、帮助文档、GitHub；退出登录。
  *  外部链接在 App 里由系统浏览器打开（desktop.rs 拦截新窗口）。 */
 function useUserMenu() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { status } = useStatus();
   const { navigate } = useRouter();
   const logout = useLogout();
@@ -211,6 +214,7 @@ function useUserMenu() {
   const toast = useToast();
   const open = (url) => () => window.open(url, '_blank', 'noopener');
   const left = daysLeft(status.account.session?.membership_expires_at);
+  const en = i18n.language?.startsWith('en');
   // 专属地址：手机、外面的电脑打开它就能用；菜单里一直看得到，点一下复制
   const addr = status.account.session?.user_host_url;
   const copyAddr = async () => {
@@ -227,7 +231,10 @@ function useUserMenu() {
     { icon: Laptop, label: t('acct.computers'), onClick: () => navigate('/devices') },
     { icon: CalendarClock, label: t('acct.membership'), hint: left > 0 ? t('account.days_left', { n: left }) : t('account.expired'), onClick: () => navigate('/membership') },
     { icon: ShieldCheck, label: t('acct.account'), onClick: () => navigate('/account') },
+    { icon: SettingsIcon, label: t('nav.settings'), hint: shouldRemind(status.update) ? t('update.badge') : undefined, onClick: () => navigate('/settings') },
     'sep',
+    { icon: Languages, label: en ? '中文' : 'English', onClick: () => setLocale(en ? 'zh-CN' : 'en-US') },
+    { icon: Keyboard, label: t('keys.title'), hint: keyLabel('mod+/'), onClick: () => window.dispatchEvent(new Event('ll-shortcuts')) },
     { icon: Bug, label: t('report.title'), onClick: openReport },
     { icon: House, label: t('nav.home_page'), onClick: open(webUrl(status, '/')) },
     { icon: BookOpen, label: t('nav.docs'), onClick: open(webUrl(status, '/docs')) },
@@ -235,101 +242,6 @@ function useUserMenu() {
     'sep',
     { icon: LogOut, label: t('nav.logout'), onClick: logout, danger: true },
   ];
-}
-
-function ToolMeta({ x }) {
-  const { t } = useTranslation();
-  const { status } = useStatus();
-  if (x.badge === 'update' && shouldRemind(status.update)) {
-    return (
-      <span className="nav-badge" title={t('update.badge')}>
-        {t('update.badge')}
-      </span>
-    );
-  }
-  if (x.meta === 'cpu' && status.metrics) {
-    return (
-      <span className="nav-meta" title={t('system.cpu')}>
-        {Math.round(status.metrics.cpu)}%
-      </span>
-    );
-  }
-  return null;
-}
-
-/** 工具：收起时一行图标（更新红点照样显示），展开时是列表。 */
-function ToolGroup({ path }) {
-  const { t } = useTranslation();
-  const { status } = useStatus();
-  const devices = useDevices();
-  const [open, setOpen] = useState(() => readFlag(TOOLS_KEY, false));
-  const toggle = () => {
-    writeFlag(TOOLS_KEY, !open);
-    setOpen(!open);
-  };
-  return (
-    <div className="side-tools">
-      <button type="button" className="side-group-head" onClick={toggle} aria-expanded={open} title={t(open ? 'sess.tools_fold' : 'sess.tools_unfold')}>
-        <ChevronDown size={14} aria-hidden="true" />
-        {t('sess.tools')}
-      </button>
-      {(devices.multi || devices.localOnly) && <DeviceSwitcher perDevice side helpUrl={webUrl(status, '/docs/faq')} />}
-      {open ? (
-        <nav className="side-group" aria-label={t('sess.tools')}>
-          {TOOLS.map((x) => (
-            <Link key={x.to} to={x.to} className="side-link">
-              <x.icon size={18} aria-hidden="true" />
-              {t(x.key)}
-              <ToolMeta x={x} />
-            </Link>
-          ))}
-        </nav>
-      ) : (
-        <nav className="tool-strip" aria-label={t('sess.tools')}>
-          {TOOLS.map((x) => (
-            <Link key={x.to} to={x.to} className={`btn btn-plain btn-icon tool-ico ${path === x.to ? 'active' : ''}`} aria-label={t(x.key)} title={t(x.key)}>
-              <x.icon size={18} aria-hidden="true" />
-              {x.badge === 'update' && shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
-            </Link>
-          ))}
-        </nav>
-      )}
-    </div>
-  );
-}
-
-/**
- * 任务看板的入口（docs/TASK_BOARD.md §5.1），带“等你处理”的个数：展开的侧栏里一行、收起的侧栏里一个图标、
- * 手机顶栏上一个图标（有要处理的才显示）。
- */
-function TasksLink({ rail = false, top = false, active }) {
-  const { t } = useTranslation();
-  const n = useAttnCount();
-  const label = n > 0 ? t('board.nav_count', { count: n }) : t('board.title');
-  if (top) {
-    if (n === 0 || active) return null;
-    return (
-      <Link to="/tasks" className="btn btn-plain btn-icon tasks-top" aria-label={label} title={label}>
-        <ListTodo size={20} aria-hidden="true" />
-        <span className="rail-count">{n}</span>
-      </Link>
-    );
-  }
-  if (rail) {
-    return (
-      <Link to="/tasks" className={`btn btn-plain btn-icon tool-ico rail-tasks ${active ? 'active' : ''}`} aria-label={label} title={label}>
-        <ListTodo size={18} aria-hidden="true" />
-        {n > 0 && <span className="rail-count">{n}</span>}
-      </Link>
-    );
-  }
-  return (
-    <Link to="/tasks" className={`side-link side-tasks ${active ? 'active' : ''}`}>
-      <ListTodo size={18} aria-hidden="true" />
-      {t('board.title')}
-      {n > 0 && <span className="side-tasks-count">{n}</span>}
-    </Link>
-  );
 }
 
 /** 标签页标题前加上等你处理的个数：`(2) 看看`。每次重画都对一遍（对话页会临时在标题前加 ●，之后还原） */
@@ -342,111 +254,180 @@ function useTitleCount() {
   });
 }
 
-function SideNav({ open, onClose, rail, onRail, path }) {
-  const { t } = useTranslation();
-  const { status } = useStatus();
-  const devices = useDevices();
-  const ui = useSessionUi();
-  const sessions = useSessions();
-  const userMenu = useUserMenu();
-  const s = status.account.session;
-  const left = daysLeft(s.membership_expires_at);
-  const allowed = status.account.allowed;
-  const current = path.match(SESS)?.[1];
-  useEffect(() => {
-    if (!open) return undefined;
-    const onKey = (e) => e.key === 'Escape' && onClose();
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [open]);
-  if (rail) {
-    const attn = sessions.items.filter((i) => sessionState(i) === 'attn');
-    const switcher = (devices.multi || devices.localOnly) && DEVICE_PAGES.includes(path);
+// 会话栏只在会话相关的页面出现（docs/UI_REDESIGN_2026-10.md §2.1）；工具页内容区铺满
+const isSessionArea = (p) => p === '/' || p === '/project' || SESS.test(p);
+const PANE_W_KEY = 'looklook.panew';
+const PANE_MIN = 240;
+const PANE_MAX = 440;
+
+function readWidth() {
+  try {
+    const v = Number(localStorage.getItem(PANE_W_KEY));
+    return v >= PANE_MIN && v <= PANE_MAX ? v : 288;
+  } catch {
+    return 288;
+  }
+}
+
+/** 图标栏上的一个入口：悬停显示名字（和快捷键），右上角可以带个数或红点。 */
+function RailItem({ to, onClick, icon: Icon, label, hint, active, count, dot, className = '', disabled }) {
+  const title = hint ? `${label} (${hint})` : label;
+  const inner = (
+    <>
+      <Icon size={19} aria-hidden="true" />
+      {count > 0 && <span className="rail-count">{count}</span>}
+      {dot && <span className="dot-badge" aria-hidden="true" />}
+    </>
+  );
+  const cls = `rail-btn ${active ? 'active' : ''} ${className}`;
+  if (to) {
     return (
-      <aside className="side side-rail" id="side-nav" aria-label={t('nav.main')}>
-        {/* 收起时点 logo 展开侧栏（移上去变成“展开”图标）；展开时点 logo 回首页 */}
-        <button type="button" className="side-brand rail-brand" onClick={() => onRail(false)} aria-label={t('sess.expand_side')} title={`${t('sess.expand_side')} (Ctrl+Shift+S)`}>
-          <BrandMark size={30} />
-          <PanelLeftOpen size={18} className="rail-brand-open" aria-hidden="true" />
-        </button>
-        <PopMenu items={userMenu} className="btn btn-plain btn-icon" label={s.user.nickname}>
-          <Initial name={s.user.nickname} />
-        </PopMenu>
-        {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
-        <button type="button" className="btn btn-icon rail-new" onClick={() => ui.newSession()} disabled={!allowed} aria-label={t('sess.new')} title={`${t('sess.new')} (Ctrl+Shift+O)`}>
-          <Plus size={18} />
-        </button>
-        <Link to="/history" className="btn btn-plain btn-icon" aria-label={t('hist.title')} title={t('hist.title')}>
-          <History size={18} aria-hidden="true" />
-        </Link>
-        <TasksLink rail active={path === '/tasks'} />
-        <button
-          type="button"
-          className="btn btn-plain btn-icon rail-sessions"
-          onClick={() => (attn.length ? ui.openSession(attn[0].id) : onRail(false))}
-          aria-label={attn.length ? t('sess.rail_attn', { count: attn.length }) : t('sess.expand_side')}
-          title={attn.length ? t('sess.rail_attn', { count: attn.length }) : t('sess.expand_side')}
-        >
-          <MessageSquare size={18} />
-          {attn.length > 0 && <span className="rail-count">{attn.length}</span>}
-        </button>
-        <span className="rail-sep" aria-hidden="true" />
-        {TOOLS.map((x) => (
-          <Link key={x.to} to={x.to} className={`btn btn-plain btn-icon tool-ico ${path === x.to ? 'active' : ''}`} aria-label={t(x.key)} title={t(x.key)}>
-            <x.icon size={18} aria-hidden="true" />
-            {x.badge === 'update' && shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
-          </Link>
-        ))}
-        <span className="rail-foot">
-          <ConnChip />
-        </span>
-      </aside>
+      <Link to={to} className={cls} aria-label={label} title={title} aria-current={active ? 'page' : undefined}>
+        {inner}
+      </Link>
     );
   }
   return (
-    <>
-      {open && <div className="side-backdrop" onClick={onClose} aria-hidden="true" />}
-      <aside className={`side ${open ? 'open' : ''}`} id="side-nav" aria-label={t('nav.main')}>
-        <Link to="/" className="brand side-brand">
-          <BrandMark size={28} />
-          <span className="brand-text">{t('brand')}</span>
-        </Link>
-        <div className="side-head">
-          <PopMenu items={userMenu} className="side-me" label={s.user.nickname}>
-            <Initial name={s.user.nickname} />
-            <span className="grow">
-              <b className="ellipsis">{s.user.nickname}</b>
-              <span className={`small ${left > 30 ? 'muted' : 'warn-text'}`}>{left > 0 ? t('account.days_left', { n: left }) : t('account.expired')}</span>
-            </span>
-          </PopMenu>
-          <button type="button" className="btn btn-plain btn-icon side-collapse" onClick={() => onRail(true)} aria-label={t('sess.collapse_side')} title={`${t('sess.collapse_side')} (Ctrl+Shift+S)`}>
-            <PanelLeftClose size={18} />
-          </button>
-          <button type="button" className="btn btn-plain btn-icon side-close" onClick={onClose} aria-label={t('nav.close_menu')}>
-            <X size={20} />
-          </button>
-        </div>
-        <div className="side-new-row">
-          <button type="button" className="side-new" onClick={() => ui.newSession()} disabled={!allowed}>
-            <Plus size={18} aria-hidden="true" />
-            {t('sess.new')}
-            <kbd className="side-kbd">Ctrl ⇧ O</kbd>
-          </button>
-          <Link to="/history" className="btn side-hist" aria-label={t('hist.title')} title={t('hist.title')}>
-            <History size={18} aria-hidden="true" />
-          </Link>
-        </div>
-        <TasksLink active={path === '/tasks'} />
-        <ToolGroup path={path} />
-        <div className="side-sessions">
-          <SessionList currentId={current} />
-        </div>
-        <div className="side-foot">
-          <ConnChip />
-          <LangSwitch />
-        </div>
-      </aside>
-    </>
+    <button type="button" className={cls} onClick={onClick} aria-label={label} title={title} disabled={disabled} aria-pressed={active}>
+      {inner}
+    </button>
+  );
+}
+
+/**
+ * 电脑上最左边的图标栏：logo、新会话、会话（显示 / 收起会话栏）、任务看板、以前的对话；工具；底部是设置、连接状态、用户菜单。
+ */
+function NavRail({ path, paneOpen, onPane }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const { navigate } = useRouter();
+  const ui = useSessionUi();
+  const sessions = useSessions();
+  const userMenu = useUserMenu();
+  const n = useAttnCount();
+  const s = status.account.session;
+  const area = isSessionArea(path);
+  const openSessions = () => {
+    if (area) return onPane(!paneOpen);
+    onPane(true);
+    const last = sessions.recent.find((id) => sessions.byId(id));
+    if (last) ui.openSession(last);
+    else navigate('/');
+  };
+  return (
+    <nav className="rail" aria-label={t('nav.main')}>
+      <Link to="/" className="rail-brand" aria-label={t('nav.start')} title={t('nav.start')}>
+        <BrandMark size={30} />
+      </Link>
+      <RailItem onClick={() => ui.newSession()} icon={Plus} label={t('sess.new')} hint={keyLabel('mod+shift+O')} className="rail-new" disabled={!status.account.allowed} />
+      <RailItem onClick={openSessions} icon={MessageSquare} label={t(area && paneOpen ? 'sess.collapse_side' : 'sess.title')} hint={keyLabel('mod+shift+S')} active={area} />
+      <RailItem to="/tasks" icon={ListTodo} label={n > 0 ? t('board.nav_count', { count: n }) : t('board.title')} active={path === '/tasks'} count={n} />
+      <RailItem to="/history" icon={History} label={t('hist.title')} active={path === '/history'} />
+      <span className="rail-sep" aria-hidden="true" />
+      {TOOLS.filter((x) => x.to !== '/settings').map((x) => (
+        <RailItem key={x.to} to={x.to} icon={x.icon} label={t(x.key)} active={path === x.to} />
+      ))}
+      <span className="rail-grow" aria-hidden="true" />
+      <RailItem to="/settings" icon={SettingsIcon} label={t('nav.settings')} dot={shouldRemind(status.update)} />
+      <span className="rail-conn">
+        <ConnChip />
+      </span>
+      <PopMenu items={userMenu} className="rail-btn rail-me" label={s.user.nickname}>
+        <Initial name={s.user.nickname} />
+      </PopMenu>
+    </nav>
+  );
+}
+
+/** 会话栏：项目和会话列表，右边缘可以拖动改宽度（记在本机）。 */
+function SessionPane({ path, width, onWidth }) {
+  const { t } = useTranslation();
+  const current = path.match(SESS)?.[1];
+  const drag = (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const x0 = e.clientX;
+    const w0 = width;
+    let w = w0;
+    const move = (ev) => {
+      w = Math.max(PANE_MIN, Math.min(PANE_MAX, w0 + ev.clientX - x0));
+      onWidth(w, false);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      document.body.classList.remove('resizing');
+      onWidth(w, true);
+    };
+    document.body.classList.add('resizing');
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+  const key = (e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    onWidth(Math.max(PANE_MIN, Math.min(PANE_MAX, width + (e.key === 'ArrowLeft' ? -16 : 16))), true);
+  };
+  return (
+    <aside className="spane" id="side-nav" aria-label={t('sess.title')}>
+      <SessionList currentId={current} />
+      {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 分隔条可以用方向键调宽度 */}
+      <div className="spane-resize" role="separator" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={PANE_MIN} aria-valuemax={PANE_MAX} aria-label={t('sess.pane_resize')} tabIndex={0} onPointerDown={drag} onKeyDown={key} onDoubleClick={() => onWidth(288, true)} />
+    </aside>
+  );
+}
+
+/** 工具页顶上：多台电脑时说明工具作用于哪台，可以切换（手机上在顶栏里）。 */
+function ToolContext() {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  return (
+    <div className="toolctx">
+      <span className="muted small">{t('nav.tools_on')}</span>
+      <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />
+    </div>
+  );
+}
+
+/**
+ * 手机底部的标签栏：会话 · 任务 · ＋新建 · 工具 · 我的。工具和“我的”从底部弹出菜单。
+ */
+function MobileTabs({ path }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const { navigate } = useRouter();
+  const ui = useSessionUi();
+  const userMenu = useUserMenu();
+  const n = useAttnCount();
+  const s = status.account.session;
+  const tools = TOOLS.filter((x) => x.to !== '/settings').map((x) => ({ icon: x.icon, label: t(x.key), onClick: () => navigate(x.to) }));
+  const onTool = TOOLS.some((x) => x.to === path && x.to !== '/settings');
+  return (
+    <nav className="mtabs" aria-label={t('nav.main')}>
+      <Link to="/" className={`mtab ${isSessionArea(path) ? 'active' : ''}`}>
+        <MessageSquare size={21} aria-hidden="true" />
+        <span>{t('sess.title')}</span>
+      </Link>
+      <Link to="/tasks" className={`mtab ${path === '/tasks' ? 'active' : ''}`}>
+        <ListTodo size={21} aria-hidden="true" />
+        {n > 0 && <span className="rail-count">{n}</span>}
+        <span>{t('board.short')}</span>
+      </Link>
+      <button type="button" className="mtab mtab-new" onClick={() => ui.newSession()} disabled={!status.account.allowed} aria-label={t('sess.new')}>
+        <span className="mtab-plus">
+          <Plus size={22} aria-hidden="true" />
+        </span>
+      </button>
+      <PopMenu items={[{ head: t('sess.tools') }, ...tools]} className={`mtab ${onTool ? 'active' : ''}`} label={t('sess.tools')} sheet>
+        <Wrench size={21} aria-hidden="true" />
+        <span>{t('sess.tools')}</span>
+      </PopMenu>
+      <PopMenu items={userMenu} className="mtab" label={s.user.nickname} sheet>
+        <Initial name={s.user.nickname} />
+        {shouldRemind(status.update) && <span className="dot-badge" aria-hidden="true" />}
+        <span>{t('nav.me')}</span>
+      </PopMenu>
+    </nav>
   );
 }
 
@@ -456,18 +437,25 @@ function ConsoleLayout({ path, stale, children }) {
   const devices = useDevices();
   const ui = useSessionUi();
   const switcher = (devices.multi || devices.localOnly) && DEVICE_PAGES.includes(path);
-  const [open, setOpen] = useState(false);
-  const [rail, setRailState] = useState(() => readFlag(RAIL_KEY, false));
-  const setRail = (v) => {
-    writeFlag(RAIL_KEY, v);
-    setRailState(v);
+  const [paneOpen, setPaneState] = useState(() => !readFlag(RAIL_KEY, false));
+  const setPane = (v) => {
+    writeFlag(RAIL_KEY, !v);
+    setPaneState(v);
   };
-  const railRef = useRef(rail);
-  railRef.current = rail;
-  // 换了页面（包括打开抽屉，它不改主区域的 path）时收起手机上的侧栏
-  const { path: here } = useRouter();
-  useEffect(() => setOpen(false), [here]);
-  // Ctrl+Shift+O 新会话，Ctrl+Shift+S 收起 / 展开侧栏（焦点在终端里时由终端自己处理按键）
+  const [width, setWidth] = useState(readWidth);
+  const onWidth = (w, save) => {
+    setWidth(w);
+    if (save) {
+      try {
+        localStorage.setItem(PANE_W_KEY, String(w));
+      } catch {
+        /* 无痕模式等：只是不记住 */
+      }
+    }
+  };
+  const paneRef = useRef(paneOpen);
+  paneRef.current = paneOpen;
+  // Ctrl+Shift+O 新会话，Ctrl+Shift+S 收起 / 展开会话栏（焦点在终端里时由终端自己处理按键）
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
@@ -477,53 +465,41 @@ function ConsoleLayout({ path, stale, children }) {
         ui.newSession();
       } else if (k === 's' && window.innerWidth >= 900) {
         e.preventDefault();
-        setRail(!railRef.current);
+        setPane(!paneRef.current);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [ui]);
-  const s = status.account.session;
   const wide = isWide(path);
   const sess = path.match(SESS)?.[1] ?? null;
+  const pane = paneOpen && isSessionArea(path);
   useTitleCount();
   return (
     <>
-      {/* 手机上的顶栏；宽屏上这些都在侧栏里（连接、语言在侧栏底部），不再占一整行 */}
+      {/* 手机上的顶栏；电脑上这些都在图标栏里 */}
       <header className="topbar topbar-console">
-        <span className="inline" style={{ flexWrap: 'nowrap', gap: 4 }}>
-          <button type="button" className="btn btn-plain btn-icon menu-btn" onClick={() => setOpen(true)} aria-label={t('nav.menu')} aria-expanded={open} aria-controls="side-nav">
-            <Menu size={22} />
-            {shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
-          </button>
-          <Link to="/" className="brand">
-            <BrandMark />
-            <span className="brand-text">{t('brand')}</span>
-          </Link>
-        </span>
+        <Link to="/" className="brand">
+          <BrandMark />
+          <span className="brand-text">{t('brand')}</span>
+        </Link>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
-          {/* 宽屏展开的侧栏里“工具”上方已有电脑切换，顶栏的只在手机和收起侧栏时显示 */}
-          {switcher && (
-            <span className={rail ? 'inline' : 'inline side-dup'}>
-              <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />
-            </span>
-          )}
-          <TasksLink top active={path === '/tasks'} />
+          {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
           <ConnChip />
-          <LangSwitch />
-          <Link to="/account" aria-label={t('nav.account')}>
-            <Initial name={s.user.nickname} />
-          </Link>
         </span>
       </header>
-      <GateBanner />
-      <TransferBanner />
-      <UpdateBanner />
-      <JustUpdatedBanner />
-      <RelayHint />
-      <div className={`console ${rail ? 'console-rail' : ''}`}>
-        <SideNav open={open} onClose={() => setOpen(false)} rail={rail && !open} onRail={setRail} path={path} />
+      <div className={`console ${pane ? 'console-pane' : ''}`} style={{ '--pane-w': `${width}px` }}>
+        <NavRail path={path} paneOpen={paneOpen} onPane={setPane} />
+        {pane && <SessionPane path={path} width={width} onWidth={onWidth} />}
+        <div className="console-col">
+          {/* 提示横幅放在内容区上面：图标栏和会话栏从窗口顶上一直到底 */}
+          <GateBanner />
+          <TransferBanner />
+          <UpdateBanner />
+          <JustUpdatedBanner />
+          <RelayHint />
         <main className={`console-main ${wide ? 'console-wide' : 'shell'} ${sess ? 'console-session' : ''}`}>
+          {switcher && <ToolContext />}
           {/* 打开的会话排成顶部标签（电脑上，开始页和会话页） */}
           {(sess || path === '/') && <SessionTabs activeId={sess} />}
           {/* 刚切换电脑、新电脑的状态还没拿到时先不渲染页面，免得页面用上一台电脑的设置初始化 */}
@@ -540,7 +516,11 @@ function ConsoleLayout({ path, stale, children }) {
           {/* 打开过的会话一直挂着（不在会话页时隐藏），切回来不用重新连 */}
           <SessionStage activeId={sess} />
         </main>
+        </div>
       </div>
+      <MobileTabs path={path} />
+      <QuickSwitch />
+      <ShortcutsHelp />
     </>
   );
 }

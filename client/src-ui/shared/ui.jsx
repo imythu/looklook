@@ -5,6 +5,7 @@ import { createContext, useCallback, useContext, useEffect, useId, useMemo, useR
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
+import { copyText } from './chatCopy.js';
 import { errorText, setLocale } from './i18n.js';
 import { formatTime, relativeTime } from './time.js';
 
@@ -384,11 +385,10 @@ export function CopyButton({ text, variant = 'ghost', label }) {
       icon={done ? Check : Copy}
       aria-label={label === false ? t('action.copy') : undefined}
       onClick={async () => {
-        try {
-          await navigator.clipboard.writeText(text);
+        if (await copyText(text)) {
           setDone(true);
           toast(t('action.copied'));
-        } catch {
+        } else {
           window.prompt('', text);
         }
       }}

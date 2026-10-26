@@ -1,7 +1,9 @@
 // “更多”菜单：点按钮弹出一列操作。菜单按按钮在屏幕上的位置固定定位（下面放得下就往下，否则往上），
-// 不会被滚动列表、终端标题栏裁掉。
+// 不会被滚动列表、终端标题栏裁掉。菜单画在 body 下面（portal）：祖先元素有 contain / content-visibility（侧栏项目列表）
+// 或 transform 时，fixed 定位会改成相对那个元素、还会被它裁掉，菜单就看不见了。
 import { Check, ChevronDown, MoreHorizontal } from 'lucide-react';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 /**
@@ -78,8 +80,8 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
           </>
         )}
       </button>
-      {asSheet && <div className="menu-pop-backdrop" aria-hidden="true" />}
-      {open && (
+      {asSheet && createPortal(<div className="menu-pop-backdrop" aria-hidden="true" />, document.body)}
+      {open && createPortal(
         <ul ref={list} className={`menu-pop-list ${asSheet ? 'menu-pop-sheet' : 'menu-pop-fixed'}`} role="menu" aria-label={label} style={asSheet ? undefined : pos ?? { visibility: 'hidden', top: 0, left: 0 }}>
           {shown.map((x, i) =>
             x === 'sep' ? (
@@ -118,7 +120,8 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
             </li>
             ),
           )}
-        </ul>
+        </ul>,
+        document.body,
       )}
     </>
   );
