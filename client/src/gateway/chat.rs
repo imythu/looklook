@@ -195,6 +195,18 @@ pub async fn plan(State(app): State<App>, Path(id): Path<String>, Json(req): Jso
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+pub struct SwitchProfileReq {
+    profile: String,
+}
+
+/// 额度用完时换个 Claude Code 账号接着同一段对话继续
+pub async fn switch_profile(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SwitchProfileReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.switch_profile(&id, &req.profile).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn relaunch(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
     require_allowed(&app)?;
     app.chat.relaunch(&id).await?;

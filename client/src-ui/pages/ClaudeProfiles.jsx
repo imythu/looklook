@@ -21,7 +21,7 @@ export function profileName(t, p) {
   return p.id === 'official' ? t('cprof.builtin') : p.name || t('cprof.unnamed');
 }
 
-function KindIcon({ p, size = 15 }) {
+export function KindIcon({ p, size = 15 }) {
   const Icon = p.kind === 'api' ? Server : UserRound;
   return <Icon size={size} aria-hidden="true" />;
 }

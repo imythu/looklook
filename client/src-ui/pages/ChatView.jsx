@@ -46,6 +46,7 @@ import {
   Wrench,
   X,
   Zap,
+  UserRound,
 } from 'lucide-react';
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -90,7 +91,9 @@ import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { formatTime, parseInstant, spanText } from '../shared/time.js';
 import { runUpload } from '../shared/uploader.js';
-import { Button, CopyButton, useConfirm, useToast } from '../shared/ui.jsx';
+import PopMenu from '../shared/PopMenu.jsx';
+import { Button, CopyButton, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
+import { KindIcon, profileName } from './ClaudeProfiles.jsx';
 
 // ---------------- 数据 ----------------
 
@@ -1159,11 +1162,58 @@ function LimitWait({ id, waiting }) {
       </div>
       <p className="chat-note">{t('chat.limit.keep_open')}</p>
       <div className="chat-acts">
+        <SwitchProfile id={id} />
         <Button variant="ghost" onClick={cancel} busy={busy}>
           {t('chat.limit.cancel_wait')}
         </Button>
       </div>
     </div>
+  );
+}
+
+/** 额度用完时“换个账号继续”：这台电脑上另外的 Claude Code 账号 / 接口，选了就用它接着同一段对话、发 continue */
+function SwitchProfile({ id }) {
+  const { t } = useT();
+  const { navigate } = useRouter();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const [data] = useLoad(() => Promise.all([api.get('/claude-profiles'), api.get(`/instances/${id}`)]).catch(() => null), [id]);
+  if (!data) return null;
+  const [{ profiles, default: def }, inst] = data;
+  // 容器里的会话不用看看的账号
+  if (inst.container) return null;
+  const cur = inst.claude_profile ?? def;
+  const others = profiles.filter((p) => p.id !== cur);
+  if (!others.length) return null;
+  const pick = async (p) => {
+    setBusy(true);
+    try {
+      await api.post(`/instances/${id}/chat/switch-profile`, { profile: p.id });
+      toast(t('chat.limit.switched', { name: profileName(t, p) }), 'ok');
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <PopMenu
+      className="btn btn-ghost"
+      icon={UserRound}
+      text={t('chat.limit.switch')}
+      label={t('chat.limit.switch_hint')}
+      disabled={busy}
+      items={[
+        ...others.map((p) => ({
+          icon: (x) => <KindIcon p={p} {...x} />,
+          label: profileName(t, p),
+          hint: p.kind === 'api' ? p.base_url : p.id === def ? t('cprof.default') : undefined,
+          onClick: () => pick(p),
+        })),
+        'sep',
+        { label: t('cprof.manage'), onClick: () => navigate('/settings#claude-accounts') },
+      ]}
+    />
   );
 }
 
@@ -1911,7 +1961,7 @@ function Detached({ id, status }) {
   const adoptNow = () => run(`/instances/${id}/chat/adopt`);
   return (
     <div className="chat-detached">
-      {(reason === 'starting' || reason === 'adopting' || adoptable) && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
+      {(reason === 'starting' || reason === 'adopting' || reason === 'switching' || adoptable) && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
       <b>{t(`chat.detached_${key}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
       <p className="muted">{t(`chat.detached_${key}_body`, { defaultValue: '' })}</p>
       {adoptable && (

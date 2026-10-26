@@ -1238,22 +1238,75 @@ impl Chat {
             return Ok(());
         }
         Self::set_phase(&inst, &mut lock(&inst.st), Phase::Detached, Some("adopting"));
-        // Claude Code 连按两次 Ctrl+C 退出（在跑的话第一次是中断）
+        self.quit_claude(id).await?;
+        let cmd = self.instances.chat_relaunch_command(id, session.as_deref())?;
+        self.instances.send_literal(id, &cmd).await?;
+        self.instances.send_keys(id, &["Enter"]).await
+    }
+
+    /// 退出终端里的 Claude Code：连按两次 Ctrl+C（在跑的话第一次是中断）。退不掉时报 CHAT_CLAUDE_RUNNING。
+    async fn quit_claude(&self, id: &str) -> Result<(), LocalError> {
+        let agent = self.inst(id).agent;
         for _ in 0..3 {
             let _ = self.instances.send_keys(id, &["C-c"]).await;
             tokio::time::sleep(Duration::from_millis(200)).await;
             let _ = self.instances.send_keys(id, &["C-c"]).await;
             tokio::time::sleep(Duration::from_millis(1500)).await;
-            if self.instances.pane(id).await.is_some_and(|p| agent_state(inst.agent, &p).is_none()) {
+            if self.instances.pane(id).await.is_some_and(|p| agent_state(agent, &p).is_none()) {
                 break;
             }
         }
-        if self.instances.pane(id).await.is_some_and(|p| agent_state(inst.agent, &p).is_some()) {
+        if self.instances.pane(id).await.is_some_and(|p| agent_state(agent, &p).is_some()) {
             return Err(LocalError::new("CHAT_CLAUDE_RUNNING"));
         }
-        let cmd = self.instances.chat_relaunch_command(id, session.as_deref())?;
+        Ok(())
+    }
+
+    /// 额度用完时“换个账号继续”：退出 Claude Code，这个会话改用 `profile`（claude_profiles.rs），
+    /// 接着同一段对话重新启动（各账号的对话记录是共用的），起来后发一句 `continue`。
+    pub async fn switch_profile(self: &Arc<Self>, id: &str, profile: &str) -> Result<(), LocalError> {
+        self.require(id)?;
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        // 容器里的会话不用看看的账号（model_wrap）
+        if row.launch != "claude" || self.instances.container(id).is_some() {
+            return Err(LocalError::new("CHAT_UNAVAILABLE"));
+        }
+        crate::claude_profiles::get(&self.store, profile).ok_or_else(|| LocalError::invalid("claude_profile", "not_found"))?;
+        let inst = self.inst(id);
+        let session = lock(&inst.st).binding.as_ref().map(|b| b.session_id.clone()).ok_or_else(|| LocalError::new("CHAT_NOT_RUNNING"))?;
+        self.instances.pane(id).await.ok_or_else(|| LocalError::new("CHAT_NOT_RUNNING"))?;
+        Self::set_phase(&inst, &mut lock(&inst.st), Phase::Detached, Some("switching"));
+        // 正在等额度重置时先按 Esc 取消（不然退出前它可能刚好到点接着跑）
+        if lock(&inst.st).limit_wait.is_some() {
+            let _ = self.instances.send_keys(id, &["Escape"]).await;
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        self.quit_claude(id).await?;
+        // 退出的过程中抓屏可能把旧的那个记成了空闲：重新记成在换，下面等的是新起来的那个
+        Self::set_phase(&inst, &mut lock(&inst.st), Phase::Detached, Some("switching"));
+        crate::claude_profiles::pin(&self.store, id, Some(profile))?;
+        let cmd = self.instances.chat_relaunch_command(id, Some(&session))?;
         self.instances.send_literal(id, &cmd).await?;
-        self.instances.send_keys(id, &["Enter"]).await
+        self.instances.send_keys(id, &["Enter"]).await?;
+        // 起来（SessionStart 到了、空闲）后发 continue；一分钟还没起来就不发了，用户自己发
+        let me = self.clone();
+        let id = id.to_string();
+        tokio::spawn(async move {
+            let deadline = Instant::now() + Duration::from_secs(60);
+            while Instant::now() < deadline {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let inst = me.inst(&id);
+                let up = me.instances.pane(&id).await.is_some_and(|p| agent_state(inst.agent, &p).is_some());
+                if up && lock(&inst.st).phase == Phase::Idle {
+                    if let Err(e) = me.input(&id, "continue", &[]).await {
+                        tracing::warn!(id, error = ?e, "换账号后没能发出 continue");
+                    }
+                    return;
+                }
+            }
+            tracing::warn!(id, "换账号后一分钟内 Claude Code 没起来，不发 continue");
+        });
+        Ok(())
     }
 
     /// 以前的 Claude Code 用的是哪段对话：命令行里的 `--resume` / `-r` / `--session-id`；已经记着的；

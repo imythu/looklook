@@ -1510,6 +1510,8 @@
     "detached_adopt_wait_body": "The terminal is still running a {{agent}} opened earlier. When it's idle, Looklook continues the same conversation in the chat view — nothing for you to do. You can switch now instead; the turn in progress will be interrupted.",
     "detached_adopting_title": "Switching to the chat view…",
     "detached_adopting_body": "Continuing the same conversation; {{agent}} in the terminal will reopen in a few seconds.",
+    "detached_switching_title": "Switching accounts…",
+    "detached_switching_body": "Continuing the same conversation; {{agent}} in the terminal reopens with the new account and sends continue.",
     "adopt_now": "Switch now",
     "adopt_now_confirm": "This quits the earlier {{agent}} in the terminal (the turn in progress is interrupted), then continues the same conversation in the chat view.",
     "detached_not_attached_title": "This {{agent}} wasn't opened by Looklook, so the chat view can't be used",
@@ -1755,7 +1757,10 @@
       "waiting": "Usage limit reached. It continues automatically after the reset",
       "terminal_says": "The terminal says: continuing automatically {{when}}",
       "keep_open": "Keep Looklook running on this computer. After it continues, it still stops for anything that needs your approval.",
-      "cancel_wait": "Don't continue automatically"
+      "cancel_wait": "Don't continue automatically",
+      "switch": "Continue with another account",
+      "switch_hint": "Continue this conversation with another Claude Code account or API on this computer; it reopens and sends continue",
+      "switched": "Switching to {{name}}; it will send continue once it reopens"
     },
     "shells_unlisted_one": "1 more background command is running but isn't in this conversation's record (a subagent or something before /clear may have started it). Press ↓ in the terminal to see it.",
     "shells_unlisted_other": "{{count}} more background commands are running but aren't in this conversation's record (a subagent or something before /clear may have started them). Press ↓ in the terminal to see them.",

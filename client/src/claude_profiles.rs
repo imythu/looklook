@@ -1,6 +1,7 @@
 //! Claude Code 账号切换：本机默认账号、另外登录的官方账号、第三方接口（Anthropic 官方格式），选一个当默认，
 //! 新建的会话用默认的，也可以在新建时另选。会话用哪个在新建时定下（kv `instance_claude_profile.{实例ID}`），
-//! 之后切换默认不影响已有的会话（升级前就有的会话在升级时记下当时的默认）。
+//! 之后切换默认不影响已有的会话（升级前就有的会话在升级时记下当时的默认）。额度用完时可以给会话换一个，
+//! 接着同一段对话继续（chat::Chat::switch_profile）。
 //!
 //! 按 Anthropic 的规则来（docs/CLAUDE_ACCOUNTS.md）：
 //! - **官方账号**：每个账号一个 `CLAUDE_CONFIG_DIR`（官方文档“Log in with multiple accounts”的做法）。
