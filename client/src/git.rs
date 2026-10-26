@@ -1,5 +1,5 @@
-//! 终端页的 “Git” 标签：终端当前目录所在仓库的状态、改动对比、提交历史，以及提交选中的文件（可以顺便推送）。
-//! 暂存区、拉取、合并这些交给终端（AI 编程助手或 git 命令）。
+//! 终端页的 “Git” 标签（只读）：终端当前目录所在仓库的状态、改动对比、提交历史。
+//! 暂存、提交、拉取、推送都交给终端（AI 编程助手或 git 命令），这里不改动仓库。
 //!
 //! - 直接调用这台电脑上的 `git`（参数列表，不经过 shell）；没装 git → `GIT_MISSING`，不是仓库 → `{repo: false}`；
 //! - 读操作加 `--no-optional-locks`，不和终端里正在跑的 git 抢锁。
@@ -252,51 +252,6 @@ pub fn status(dir: &Path) -> R<Status> {
         s.commits = parse_log(&log);
     }
     Ok(s)
-}
-
-// ---------------- 提交 ----------------
-
-/// 提交的结果：新提交的短哈希；要推送时推上去没有（没推上去时带 git 的错误，提交照样留着）。
-#[derive(Debug, Serialize)]
-pub struct CommitResult {
-    pub hash: String,
-    pub pushed: bool,
-    pub push_error: Option<String>,
-}
-
-/// 推送可能要等网络
-const PUSH_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// `POST /api/instances/{id}/git/commit`：只提交选中的这几个文件（新文件也加进去、删掉的也算），
-/// 用 `commit --only`，暂存区里别的东西不会一起提交。`push` 时提交后推到上游（不弹密码，要靠已有的凭据）。
-pub fn commit(dir: &Path, files: &[String], message: &str, push: bool) -> R<CommitResult> {
-    let root = repo(dir)?;
-    let message = message.trim();
-    if message.is_empty() {
-        return Err(LocalError::invalid("message", "empty"));
-    }
-    if files.is_empty() {
-        return Err(LocalError::invalid("files", "empty"));
-    }
-    let files: Vec<&str> = files.iter().map(|f| repo_path(f)).collect::<R<_>>()?;
-    let mut add = vec!["add", "-A", "--"];
-    add.extend(&files);
-    run_ok(&root, &add, LOCAL_TIMEOUT)?;
-    let mut commit = vec!["commit", "-m", message, "--only", "--"];
-    commit.extend(&files);
-    // 提交前的钩子可能跑得久
-    run_ok(&root, &commit, Duration::from_secs(120))?;
-    let hash = run_ok(&root, &["rev-parse", "--short", "HEAD"], LOCAL_TIMEOUT)?.trim().to_string();
-    let push_error = if push {
-        match run(&root, &["push"], PUSH_TIMEOUT) {
-            Ok(out) if out.status.success() => None,
-            Ok(out) => Some(failed(&out).params.get("detail").and_then(|v| v.as_str()).unwrap_or("").to_string()),
-            Err(e) => Some(format!("{e:?}")),
-        }
-    } else {
-        None
-    };
-    Ok(CommitResult { hash, pushed: push && push_error.is_none(), push_error })
 }
 
 // ---------------- 对比 ----------------

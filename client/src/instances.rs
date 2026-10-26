@@ -961,7 +961,14 @@ impl Instances {
             };
         }
         let env = if row.launch == "claude" {
-            crate::claude_profiles::launch_env(&self.paths.home, &crate::claude_profiles::for_instance(&self.store, &row.id))
+            let profile = crate::claude_profiles::for_instance(&self.store, &row.id);
+            let env = crate::claude_profiles::launch_env(&self.paths.home, &profile);
+            // 所有 Claude Code 的启动命令都经过这里：在账号目录建好（launch_env）之后、命令交给 tmux 之前，
+            // 把引导、信任目录写成确认过了（时机、和运行中的 Claude Code 同时写怎么办见 skip_first_run）
+            if let Err(e) = crate::claude_profiles::skip_first_run(&self.paths.home, &profile, Path::new(&row.workdir)) {
+                tracing::warn!(error = %e, "无法跳过 Claude Code 启动时的确认");
+            }
+            env
         } else {
             crate::model::launch_env(&self.store, &self.paths.home, &row.launch)
         };
@@ -1453,7 +1460,7 @@ fn codex_token_env() -> Option<crate::model::LaunchEnv> {
 /// Codex：`--yolo`（即 `--dangerously-bypass-approvals-and-sandbox`，不再询问、不启用沙箱）。
 /// Claude Code：`--dangerously-skip-permissions`；它在 root 下会拒绝运行，需要同时设置 `IS_SANDBOX=1`。
 /// 没开全部权限时加 `--allow-dangerously-skip-permissions`：默认还是普通模式，但“全部权限”进了 Shift+Tab 的轮换，
-/// 对话界面的权限菜单能切过去（不加时切不到）。2.1.310 实测 root 下不带 `IS_SANDBOX` 也能启动、能切换。
+/// 对话界面的权限菜单能切过去（不加时切不到）。2.1.310 实测 root 下它同样拒绝运行，也要带 `IS_SANDBOX=1`。
 /// OpenCode：`--auto`（没有明确拒绝的权限都自动同意）。
 /// DSH：`dsh web` 只监听 127.0.0.1 的网页界面，经本机网页映射打开（本机、远程都是同一个地址）；
 /// 工作目录是默认项目，别的项目文件夹在网页里添加。
@@ -1463,6 +1470,7 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
         "codex" => Some("codex".into()),
         "claude" if opts.full_access && root => Some("IS_SANDBOX=1 claude --dangerously-skip-permissions".into()),
         "claude" if opts.full_access => Some("claude --dangerously-skip-permissions".into()),
+        "claude" if root => Some("IS_SANDBOX=1 claude --allow-dangerously-skip-permissions".into()),
         "claude" => Some("claude --allow-dangerously-skip-permissions".into()),
         "opencode" if opts.full_access => Some("opencode --auto".into()),
         "opencode" => Some("opencode".into()),
@@ -1941,7 +1949,8 @@ mod tests {
         assert_eq!(cmd(v, true), "codex fork 019a-x_1");
         let v = inst.create(mk("claude", false, true)).await.unwrap();
         assert_eq!(inst.store.get::<String>(&resume_key(&v.row.id)).unwrap(), None, "复制的一份不算接着原来的");
-        assert_eq!(cmd(v, true), "claude --allow-dangerously-skip-permissions --resume 019a-x_1 --fork-session");
+        let sandbox = if crate::platform::is_root() { "IS_SANDBOX=1 " } else { "" };
+        assert_eq!(cmd(v, true), format!("{sandbox}claude --allow-dangerously-skip-permissions --resume 019a-x_1 --fork-session"));
         let v = inst.create(mk("opencode", false, false)).await.unwrap();
         assert_eq!(inst.store.get::<String>(&resume_key(&v.row.id)).unwrap().as_deref(), Some(id));
         assert_eq!(cmd(v, false), "opencode --session 019a-x_1");
@@ -2022,7 +2031,8 @@ mod tests {
         r.launch = "claude".into();
         assert_eq!(launch_command_line(&r, on, false).as_deref(), Some("claude --dangerously-skip-permissions"));
         assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("IS_SANDBOX=1 claude --dangerously-skip-permissions"));
-        assert_eq!(launch_command_line(&r, Opts::default(), true).as_deref(), Some("claude --allow-dangerously-skip-permissions"));
+        assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("claude --allow-dangerously-skip-permissions"));
+        assert_eq!(launch_command_line(&r, Opts::default(), true).as_deref(), Some("IS_SANDBOX=1 claude --allow-dangerously-skip-permissions"));
         r.launch = "opencode".into();
         assert_eq!(launch_command_line(&r, on, true).as_deref(), Some("opencode --auto"));
         assert_eq!(launch_command_line(&r, Opts::default(), false).as_deref(), Some("opencode"));

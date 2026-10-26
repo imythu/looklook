@@ -327,6 +327,147 @@ pub fn launch_env(home: &Path, p: &Profile) -> Option<LaunchEnv> {
     }
 }
 
+/// Claude Code 启动时的几个确认用户不用管（小白看不懂，只会多一道坎），启动前在 `.claude.json` 里写成确认过了，
+/// 跟用户自己点过一样。只补缺的，已经有的不动：
+/// - 信任工作目录：`projects.<工作目录>.hasTrustDialogAccepted: true`（官方文档 permissions 里手动信任的写法）。
+///   哪个目录都一样：git 仓库里的子目录、家目录写目录本身 Claude Code 也认（2.1.310 实测；家目录的信任官方说它自己从不保存）。
+///   值是 `false` 也改：那是 Claude Code 第一次见到这个目录时自己记的默认值，不是用户选的。以后不认了也只是照常弹窗；
+/// - 首次启动的引导（选主题、安全提示）：文档里没有对应的设置，补上走完引导后 Claude Code 自己写的 `hasCompletedOnboarding`；
+///   同一次把主题设成 `auto`（跟随终端）。写在这里而不是用户设置里：这里的 `theme` 只在 settings 文件都没设时生效
+///   （官方文档 settings-reference `theme`），用户自己选的主题照样优先。
+///
+/// Bypass Permissions 警告不在这里：对话界面启动时 `--settings` 传进去（见 `chat::hooks::settings_json`），不碰用户设置。
+///
+/// **时机**：每次生成 Claude Code 的启动命令时调用（instances.rs 的 `model_wrap`：新建、自动启动、接着以前的对话、
+/// 对话界面里重新启动、ttyd 起来时的 `new-session -A`），命令交给 tmux 之前就写完了，Claude Code 启动时读到的是写好的。
+///
+/// **文件同时被改**：别的 Claude Code 会话随时在写这个文件。用它自己的锁（[`ConfigLock`]）：锁里重新读、只改缺的键、
+/// 写到临时文件再换上去；Claude Code 自己保存时也是锁里重新读再合并，两边都不会盖掉对方的改动，运行中的会话发现文件变了会重新读。
+/// 拿不到锁、读不了（例如是个目录）、不是 JSON 对象（让 Claude Code 自己处理）时这次不写，Claude Code 照常弹窗，下次启动再试。
+/// 写过之后用户或 Claude Code 再改：下次启动只补又缺了的，用户改过的主题不会被改回去。
+pub fn skip_first_run(home: &Path, p: &Profile, workdir: &Path) -> std::io::Result<()> {
+    let (_, state_file) = config_paths(home, p);
+    let trust = trust_key(workdir);
+    edit_locked(&state_file, |o| {
+        let mut changed = false;
+        if o.get("hasCompletedOnboarding").is_none() {
+            o.insert("hasCompletedOnboarding".into(), json!(true));
+            o.entry("theme").or_insert_with(|| json!("auto"));
+            changed = true;
+        }
+        if let Some(key) = trust {
+            let projects = o.entry("projects").or_insert_with(|| json!({}));
+            if let Some(entry) = projects.as_object_mut().map(|m| m.entry(key).or_insert_with(|| json!({}))) {
+                if let Some(e) = entry.as_object_mut().filter(|e| e.get("hasTrustDialogAccepted") != Some(&json!(true))) {
+                    e.insert("hasTrustDialogAccepted".into(), json!(true));
+                    changed = true;
+                }
+            }
+        }
+        changed
+    })
+}
+
+/// Claude Code 改 `.claude.json` 时拿的锁：`<文件>.lock` 目录（它内置的 proper-lockfile，`mkdir` 成功就是拿到了）。
+/// 持有的进程每 5 秒刷新目录的修改时间，超过 10 秒没刷新算进程已经没了，删掉重来（跟 proper-lockfile 一样）。
+/// 看看只拿很短一会儿（读、改、写一次），不用刷新。
+struct ConfigLock(PathBuf);
+
+impl ConfigLock {
+    const WAIT: Duration = Duration::from_secs(2);
+    const STALE: Duration = Duration::from_secs(10);
+
+    fn acquire(file: &Path) -> std::io::Result<Self> {
+        let mut lock = file.as_os_str().to_owned();
+        lock.push(".lock");
+        let lock = PathBuf::from(lock);
+        let deadline = std::time::Instant::now() + Self::WAIT;
+        loop {
+            match std::fs::create_dir(&lock) {
+                Ok(()) => return Ok(Self(lock)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    let age = std::fs::metadata(&lock).and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok());
+                    if age.is_some_and(|a| a > Self::STALE) {
+                        let _ = std::fs::remove_dir(&lock);
+                        continue;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock, format!("{} 被别的进程拿着", lock.display())));
+                    }
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+    }
+}
+
+impl Drop for ConfigLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir(&self.0);
+    }
+}
+
+/// 拿着 Claude Code 的锁改 JSON 对象文件：锁里读（没有文件时是空对象），`f` 返回改了没有，改了才写回。
+/// 文件不是 JSON 对象时不动。
+fn edit_locked(file: &Path, f: impl FnOnce(&mut serde_json::Map<String, Value>) -> bool) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let _lock = ConfigLock::acquire(file)?;
+    let mut v = match std::fs::read(file) {
+        Ok(raw) => match serde_json::from_slice::<Value>(&raw) {
+            Ok(v) if v.is_object() => v,
+            _ => return Ok(()),
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(e) => return Err(e),
+    };
+    if !f(v.as_object_mut().expect("object")) {
+        return Ok(());
+    }
+    replace_file(file, serde_json::to_string_pretty(&v)?.as_bytes())
+}
+
+/// 整个换掉文件内容：写到同目录的临时文件再改名（读的人不会读到写了一半的），权限沿用原来的（没有时 0600）；
+/// 文件是软链接时换的是它指向的文件，链接还在。
+fn replace_file(file: &Path, data: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let target = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
+    let mut tmp = target.as_os_str().to_owned();
+    tmp.push(format!(".looklook-{}.tmp", std::process::id()));
+    let tmp = PathBuf::from(tmp);
+    let perm = std::fs::metadata(&target).ok().map(|m| m.permissions());
+    let res = (|| {
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        let mut f = opts.open(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        drop(f);
+        if let Some(perm) = perm {
+            std::fs::set_permissions(&tmp, perm)?;
+        }
+        std::fs::rename(&tmp, &target)
+    })();
+    if res.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    res
+}
+
+/// 信任记在哪个路径下：工作目录的真实路径（Claude Code 的工作目录是解析过软链接的）。目录不存在时为 None。
+fn trust_key(workdir: &Path) -> Option<String> {
+    let key = std::fs::canonicalize(workdir).ok()?.to_string_lossy().into_owned();
+    // Windows：去掉 canonicalize 加的 `\\?\`，Claude Code 记路径用正斜杠
+    Some(if cfg!(windows) { key.trim_start_matches(r"\\?\").replace('\\', "/") } else { key })
+}
+
 // ---------------- 官方账号的配置目录 ----------------
 
 /// 建好账号目录：链上共用的东西，第一次时从默认的 `.claude.json` 抄一些不含账号信息的设置（见 [`seed_state`]），
@@ -374,25 +515,26 @@ fn seed_state(main: &Value) -> Value {
 
 fn sync_state(main_file: &Path, file: &Path) -> std::io::Result<()> {
     let main: Value = std::fs::read(main_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(Value::Null);
-    let Ok(raw) = std::fs::read(file) else {
-        return crate::util::write_private(file, serde_json::to_string_pretty(&seed_state(&main))?.as_bytes());
-    };
-    // Claude Code 自己在维护这个文件：只补上没有的 MCP 服务器（例如后来装上的看看 MCP），别的不动
-    let Ok(mut state) = serde_json::from_slice::<Value>(&raw) else { return Ok(()) };
-    let Some(main_servers) = main.get("mcpServers").and_then(Value::as_object) else { return Ok(()) };
-    let servers = state.as_object_mut().map(|o| o.entry("mcpServers").or_insert_with(|| json!({})));
-    let Some(servers) = servers.and_then(Value::as_object_mut) else { return Ok(()) };
-    let mut changed = false;
-    for (k, v) in main_servers {
-        if !servers.contains_key(k) {
-            servers.insert(k.clone(), v.clone());
-            changed = true;
+    // Claude Code 自己在维护这个文件：拿它的锁（见 [`edit_locked`]），第一次（还是空的）时抄过来，
+    // 之后只补上没有的 MCP 服务器（例如后来装上的看看 MCP），别的不动
+    edit_locked(file, |o| {
+        if o.is_empty() {
+            if let Value::Object(seed) = seed_state(&main) {
+                *o = seed;
+            }
+            return true;
         }
-    }
-    if changed {
-        crate::util::write_private(file, serde_json::to_string_pretty(&state)?.as_bytes())?;
-    }
-    Ok(())
+        let Some(main_servers) = main.get("mcpServers").and_then(Value::as_object) else { return false };
+        let Some(servers) = o.entry("mcpServers").or_insert_with(|| json!({})).as_object_mut() else { return false };
+        let mut changed = false;
+        for (k, v) in main_servers {
+            if !servers.contains_key(k) {
+                servers.insert(k.clone(), v.clone());
+                changed = true;
+            }
+        }
+        changed
+    })
 }
 
 fn is_link(p: &Path) -> bool {
@@ -923,6 +1065,104 @@ mod tests {
         assert!(store.get::<crate::model::Choice>("model_provider.claude").unwrap().is_none());
         migrate(&store, &dir);
         assert_eq!(list(&store).len(), 2, "只迁一次");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_run_skipped_once() {
+        let (dir, _store) = tmp_store("firstrun");
+        let read = |f: &Path| -> Value { serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap() };
+        let p = Profile { id: "acct1".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
+        let (cfg, state) = config_paths(&dir, &p);
+        // 信任记在工作目录本身；没有文件时建一个，用户设置不碰
+        let wd = dir.join("repo/src/a");
+        std::fs::create_dir_all(&wd).unwrap();
+        let wd_key = std::fs::canonicalize(&wd).unwrap().display().to_string();
+        skip_first_run(&dir, &p, &wd).unwrap();
+        assert_eq!(read(&state), json!({ "hasCompletedOnboarding": true, "theme": "auto", "projects": { wd_key: { "hasTrustDialogAccepted": true } } }));
+        assert!(!cfg.join("settings.json").exists());
+        assert!(!cfg.join(".claude.json.lock").exists(), "锁要放掉");
+        // 写过之后被改了（Claude Code 第一次见到目录记的 false、别的会话加的键、用户换的主题）：只补缺的
+        let plain = dir.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        let key = std::fs::canonicalize(&plain).unwrap().display().to_string();
+        std::fs::write(&state, json!({ "hasCompletedOnboarding": true, "theme": "light", "userID": "u", "projects": { key.clone(): { "hasTrustDialogAccepted": false, "mcpServers": {} } } }).to_string()).unwrap();
+        skip_first_run(&dir, &p, &plain).unwrap();
+        let v = read(&state);
+        assert_eq!((v["theme"].as_str(), v["userID"].as_str()), (Some("light"), Some("u")));
+        assert_eq!(v["projects"][&key], json!({ "mcpServers": {}, "hasTrustDialogAccepted": true }));
+        // 都确认过：不写文件
+        let before = std::fs::read_to_string(&state).unwrap();
+        skip_first_run(&dir, &p, &plain).unwrap();
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), before);
+        // 不是 JSON（不是 Claude Code 写的样子）：不动
+        std::fs::write(&state, "{").unwrap();
+        skip_first_run(&dir, &p, &plain).unwrap();
+        assert_eq!(std::fs::read_to_string(&state).unwrap(), "{");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn first_run_respects_claude_lock() {
+        let (dir, _store) = tmp_store("firstlock");
+        let p = Profile { id: "acct2".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
+        let (cfg, state) = config_paths(&dir, &p);
+        std::fs::create_dir_all(&cfg).unwrap();
+        let lock = cfg.join(".claude.json.lock");
+        // 别的 Claude Code 正拿着锁：等一会儿拿不到就不写，锁也不动
+        std::fs::create_dir(&lock).unwrap();
+        let err = skip_first_run(&dir, &p, &dir).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(!state.exists() && lock.is_dir());
+        // 拿着锁的进程没了（10 秒以上没刷新）：删掉重来
+        let old = std::time::SystemTime::now() - Duration::from_secs(30);
+        std::fs::File::open(&lock).unwrap().set_modified(old).unwrap();
+        skip_first_run(&dir, &p, &dir).unwrap();
+        assert!(state.exists() && !lock.exists());
+        // `.claude.json` 是软链接（例如 dotfiles 管着）：改它指向的文件，链接还在
+        let real = dir.join("dotfiles-claude.json");
+        std::fs::write(&real, "{}").unwrap();
+        std::fs::remove_file(&state).unwrap();
+        std::os::unix::fs::symlink(&real, &state).unwrap();
+        skip_first_run(&dir, &p, &dir).unwrap();
+        assert!(std::fs::symlink_metadata(&state).unwrap().file_type().is_symlink());
+        let v: Value = serde_json::from_slice(&std::fs::read(&real).unwrap()).unwrap();
+        assert_eq!(v["hasCompletedOnboarding"], true);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 真的 Claude Code 开着时写：它退出时自己也写这个文件，两边写的都要在。不用登录、不发消息。
+    /// `cargo test first_run_with_running_claude -- --ignored --nocapture`（要有 claude、tmux）
+    #[cfg(unix)]
+    #[test]
+    #[ignore]
+    fn first_run_with_running_claude() {
+        let (dir, _store) = tmp_store("firstlive");
+        let p = Profile { id: "live".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
+        let (cfg, state) = config_paths(&dir, &p);
+        let (x, y) = (dir.join("x"), dir.join("y"));
+        std::fs::create_dir_all(&x).unwrap();
+        std::fs::create_dir_all(&y).unwrap();
+        skip_first_run(&dir, &p, &x).unwrap();
+        let sock = dir.join("tmux.sock");
+        let tmux = |args: &[&str]| std::process::Command::new("tmux").arg("-S").arg(&sock).args(args).output().unwrap();
+        let cmd = format!("env CLAUDE_CONFIG_DIR='{}' claude --model haiku; sleep 30", cfg.display());
+        tmux(&["new-session", "-d", "-s", "a", "-x", "120", "-y", "40", "-c", x.to_str().unwrap(), &cmd]);
+        std::thread::sleep(Duration::from_secs(8));
+        let screen = String::from_utf8_lossy(&tmux(&["capture-pane", "-p", "-t", "a"]).stdout).to_string();
+        assert!(screen.contains('❯') && !screen.contains("trust this folder"), "{screen}");
+        // Claude Code 开着：写另一个目录的信任
+        skip_first_run(&dir, &p, &y).unwrap();
+        tmux(&["send-keys", "-t", "a", "/exit", "Enter"]);
+        std::thread::sleep(Duration::from_secs(4));
+        tmux(&["kill-server"]);
+        let v: Value = serde_json::from_slice(&std::fs::read(&state).unwrap()).unwrap();
+        let key = |d: &Path| std::fs::canonicalize(d).unwrap().display().to_string();
+        println!("{}", serde_json::to_string_pretty(&v["projects"]).unwrap());
+        assert_eq!(v["projects"][key(&y)]["hasTrustDialogAccepted"], true, "看看写的还在");
+        assert_eq!(v["projects"][key(&x)]["hasTrustDialogAccepted"], true);
+        assert!(v["projects"][key(&x)].get("lastSessionId").is_some() || v.get("firstStartTime").is_some(), "Claude Code 写的也在");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

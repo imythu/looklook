@@ -15,9 +15,7 @@ import { linkFailure, linkLabel, linkState, useLinks } from '../shared/paths.jsx
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { remainingOf, useAccountsUsage, usageAgent, Bar as UsageBar } from '../shared/StatusBar.jsx';
 import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
-import { spanText } from '../shared/time.js';
 import { Button, ErrorNote, Modal, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
 import { PrevConversations } from './History.jsx';
@@ -25,13 +23,7 @@ import { BackendNote, FolderPicker, InstallProgress, InstanceDialog, LogsDialog,
 import { TermPane } from './TerminalView.jsx';
 
 // 开始页能选的类型（DSH 一台电脑只有一个，已经有了就是打开它）
-const START_LAUNCHES = ['claude', 'codex', 'codex_term', 'opencode', 'shell', 'dsh', 'custom'];
-// 开始页里 Codex 分成两种：“Codex 对话”（看看的对话页）和“Codex 终端”（只有终端，和自己电脑上一样），开始后不能互换。
-// codex_term 只是开始页的叫法，建的还是 launch=codex、chat_ui=false 的会话
-const CODEX_TERM = 'codex_term';
-const baseLaunch = (l) => (l === CODEX_TERM ? 'codex' : l);
-/** 项目记住的类型（Codex 另记是不是对话） */
-const projectLaunch = (p) => (p?.launch === 'codex' && p.codex_chat === false ? CODEX_TERM : p?.launch);
+const START_LAUNCHES = ['claude', 'codex', 'opencode', 'shell', 'dsh', 'custom'];
 // 项目“⋯”里换个类型新建
 const QUICK_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
 const AI_TOOLS = ['codex', 'claude', 'opencode', 'dsh'];
@@ -48,10 +40,10 @@ export function fullAccessFor(p, settings) {
   return Boolean(settings?.default_full_access);
 }
 // 第一句话能用在哪些类型上（AI 工具作为第一条消息，普通终端当作启动后运行的命令）
-const PROMPT_LAUNCHES = ['claude', 'codex', CODEX_TERM, 'opencode', 'shell'];
+const PROMPT_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
 // 开始页直接摆出来的类型个数，其余收进“更多”；没用过时先摆这几个
-const SHOWN_TYPES = 4;
-const DEFAULT_TYPES = ['claude', 'codex', CODEX_TERM, 'shell'];
+const SHOWN_TYPES = 3;
+const DEFAULT_TYPES = ['claude', 'codex', 'shell'];
 
 /**
  * 开始页摆出来的类型：当前选中的 + 用得最多的（按各台电脑上的会话数），不够的用默认的补上，其余收进“更多”。
@@ -59,10 +51,7 @@ const DEFAULT_TYPES = ['claude', 'codex', CODEX_TERM, 'shell'];
  */
 export function shownTypes(launches, items, current) {
   const count = new Map();
-  for (const i of items) {
-    const l = i.launch === 'codex' && i.chat_ui === false ? CODEX_TERM : i.launch;
-    count.set(l, (count.get(l) ?? 0) + 1);
-  }
+  for (const i of items) count.set(i.launch, (count.get(i.launch) ?? 0) + 1);
   const ranked = [...launches].sort((a, b) => (count.get(b) ?? 0) - (count.get(a) ?? 0) || DEFAULT_TYPES.indexOf(a) - DEFAULT_TYPES.indexOf(b));
   const pick = new Set(launches.includes(current) ? [current] : []);
   for (const l of ranked) if (pick.size < SHOWN_TYPES && ((count.get(l) ?? 0) > 0 || DEFAULT_TYPES.includes(l))) pick.add(l);
@@ -289,11 +278,7 @@ function SessionRow({ inst, current, attn }) {
       <button type="button" className="srow-main" {...press} disabled={a.busy || !a.allowed} aria-current={current ? 'page' : undefined} title={tip}>
         <LaunchIcon launch={inst.launch} size={16} className="srow-icon" />
         <span className="srow-text">
-          <span className="srow-title">
-            <span className="ellipsis">{title}</span>
-            {/* Codex 有对话、终端两种会话，标出来（Claude Code 两边都有，不用标） */}
-            {inst.launch === 'codex' && <span className="srow-kind">{t(inst.chat_ui === false ? 'sess.kind_term' : 'sess.kind_chat')}</span>}
-          </span>
+          <span className="ellipsis">{title}</span>
           {attn && (
             <span className="srow-sub">
               <span className="ellipsis">{p?.name ?? baseName(dir)}</span>
@@ -416,8 +401,7 @@ export function SessionList({ currentId }) {
   const { navigate } = useRouter();
   const devices = useDevices();
   const s = useSessions();
-  // 找会话改在命令面板里（侧栏上面的“跳转、命令…”）；以前存下的搜索词不再生效，免得列表被看不见的条件筛掉
-  const [query, setQueryState] = useState('');
+  const [query, setQueryState] = useState(() => readStore(sessionStorage, QUERY_KEY, ''));
   const setQuery = (q) => {
     setQueryState(q);
     writeStore(sessionStorage, QUERY_KEY, q);
@@ -497,6 +481,12 @@ export function SessionList({ currentId }) {
   }
   return (
     <div className="slist">
+      {(s.items.length > 0 || s.projects.length > 3) && (
+        <label className="slist-search">
+          <Search size={15} aria-hidden="true" />
+          <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} placeholder={t('sess.search')} aria-label={t('sess.search')} spellCheck={false} />
+        </label>
+      )}
       {multi && (
         <div className="devbar" role="group" aria-label={t('sess.dev_filter')}>
           <button type="button" aria-pressed={filter === 'all'} onClick={() => setDevFilter('all')}>
@@ -786,7 +776,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   const project = s.projects.find((p) => p.device === device && p.workdir === workdir);
   // Docker 容器（{ name, dir, root, tools }）：选了时会话在容器里运行，只有终端
   const [container, setContainer] = useState(want.container ?? null);
-  const [launch, setLaunchState] = useState(want.launch ?? projectLaunch(project) ?? 'claude');
+  const [launch, setLaunchState] = useState(want.launch ?? project?.launch ?? 'claude');
   // 用户自己点过类型：换项目、换电脑都不再改它
   const chosen = useRef(Boolean(want.launch));
   const setLaunch = (l) => {
@@ -799,7 +789,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   const [picking, setPicking] = useState(Boolean(want.pick));
   const [dirPick, setDirPick] = useState(false);
   const [adv, setAdv] = useState(false);
-  const [moreKinds, setMoreKinds] = useState(false);
   const [name, setName] = useState('');
   const [shell, setShell] = useState(project?.shell ?? '');
   const [fullAccess, setFullAccessState] = useState(() => fullAccessFor(project, selectedStatus.settings));
@@ -839,7 +828,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
     setWorkdir(dir);
     const p = s.projects.find((x) => x.device === dev && x.workdir === dir);
     if (p) {
-      if (!chosen.current && p.launch) setLaunchState(projectLaunch(p));
+      if (!chosen.current && p.launch) setLaunchState(p.launch);
       setShell(p.shell ?? '');
       setFullAccessState(fullAccessFor(p, status?.settings));
       setAutoStart(Boolean(p.auto_start));
@@ -850,12 +839,9 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   useEffect(() => {
     if (!fullChosen.current) setFullAccessState(fullAccessFor(project, status?.settings));
   }, [device, status?.settings?.default_full_access]);
-  const missing = (b) => {
-    const l = baseLaunch(b);
-    return container ? AI_TOOLS.includes(l) && Array.isArray(container.tools) && !container.tools.includes(l) : AI_TOOLS.includes(l) && tools && !tools.tools?.[l];
-  };
+  const missing = (l) => (container ? AI_TOOLS.includes(l) && Array.isArray(container.tools) && !container.tools.includes(l) : AI_TOOLS.includes(l) && tools && !tools.tools?.[l]);
   const dshRow = launch === 'dsh' ? s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device)) : null;
-  const canFull = FULL_ACCESS.includes(baseLaunch(launch));
+  const canFull = FULL_ACCESS.includes(launch);
   const allowed = selectedStatus.account.allowed;
   const devObj = devices.multi ? devices.byId(device) : null;
   const offline = devices.multi && !devObj?.online;
@@ -925,9 +911,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
         name_custom: Boolean(name.trim()),
         workdir: container ? '' : workdir,
         container: container ? { name: container.name, dir: container.dir.trim() || '/' } : undefined,
-        launch: baseLaunch(launch),
-        // Codex 对话 / Codex 终端（其余类型按电脑的默认）
-        chat_ui: launch === CODEX_TERM ? false : launch === 'codex' ? true : undefined,
+        launch,
         command: launch === 'custom' ? text.trim() : '',
         prompt: prompt || undefined,
         shell: shell.trim(),
@@ -938,14 +922,7 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
       });
       if (device && r.id) rememberTerminals(device, [r]);
       // 全部权限只在能选的类型（AI 会话）上记：开个终端不该把这个项目记成“不要全部权限”
-      if (!container)
-        s.touchProject(device, r.workdir ?? workdir, {
-          launch: baseLaunch(launch),
-          ...(baseLaunch(launch) === 'codex' ? { codex_chat: launch !== CODEX_TERM } : {}),
-          shell: shell.trim(),
-          auto_start: autoStart,
-          ...(canFull ? { full_access: fullAccess } : {}),
-        });
+      if (!container) s.touchProject(device, r.workdir ?? workdir, { launch, shell: shell.trim(), auto_start: autoStart, ...(canFull ? { full_access: fullAccess } : {}) });
       s.reload();
       setText('');
       setName('');
@@ -960,28 +937,8 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
   };
   const placeholder = dshRow ? t('sess.ph_dsh_open') : t(`sess.ph_${launch}`, { tool: t(`launch.${launch}.title`) });
   const projName = container ? container.name : baseName(workdir) || workdir || '…';
-  // 没有会话保持（对话页靠它）或者在容器里时 Codex 只有终端，不分两种
-  const chatOk = Boolean(status?.capabilities?.persistent) && !container;
-  const launches = START_LAUNCHES.filter((l) => !(container && l === 'dsh') && !(!chatOk && l === CODEX_TERM));
-  const typeTitle = (l) => (l === 'codex' && chatOk ? t('launch.codex_chat.title') : t(`launch.${l}.title`));
-  const typeDesc = (l) => (l === 'codex' && chatOk ? t('launch.codex_chat.desc') : t(`launch.${l}.desc`));
+  const launches = container ? START_LAUNCHES.filter((l) => l !== 'dsh') : START_LAUNCHES;
   const types = shownTypes(launches, s.items, launch);
-  // 每种后面写上那个账号 5 小时额度还剩多少，选之前就知道该用哪个。用量只有当前这台电脑的、默认账号的：
-  // 给别的电脑开、在容器里、另选了 Claude 账号时不显示，免得数字对不上
-  const accUsage = useAccountsUsage();
-  const kindUsage = (l) => {
-    const a = usageAgent(l);
-    if (!a || container || (device && device !== devices.selected) || (a === 'claude' && profile)) return null;
-    const r = remainingOf(accUsage?.[a]?.five_hour);
-    return r && { ...r, name: a === 'claude' ? 'Claude' : 'Codex', resets: Date.parse(accUsage[a].five_hour.resets_at) - Date.now() };
-  };
-  const pickedUsage = kindUsage(launch);
-  // 列表里每种类型后面的小标签：有没有对话页（Claude Code 两边都有）
-  const kindTag = (l) => {
-    if (l === 'claude') return chatOk ? 'both' : 'term';
-    if (l === 'codex') return chatOk ? 'chat' : 'term';
-    return l === 'dsh' ? null : 'term';
-  };
   return (
     <div className="start">
       {!opensInPage() && !inModal && (
@@ -998,6 +955,29 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
           go();
         }}
       >
+        <div className="start-types" role="group" aria-label={t('form.launch')}>
+          {types.shown.map((l) => (
+            <button key={l} type="button" className="start-type" aria-pressed={launch === l} onClick={() => setLaunch(l)} title={t(`launch.${l}.desc`)}>
+              <LaunchIcon launch={l} size={16} />
+              {t(`launch.${l}.title`)}
+              {missing(l) && <span className="start-miss">{t('sess.not_installed')}</span>}
+            </button>
+          ))}
+          {types.more.length > 0 && (
+            <PopMenu
+              className="start-type"
+              text={t('sess.more_types')}
+              icon={Plus}
+              label={t('sess.more_types')}
+              items={types.more.map((l) => ({
+                icon: (p) => <LaunchIcon launch={l} {...p} />,
+                label: t(`launch.${l}.title`),
+                hint: missing(l) ? t('sess.not_installed') : t(`launch.${l}.desc`),
+                onClick: () => setLaunch(l),
+              }))}
+            />
+          )}
+        </div>
         {takesText && !dshRow ? (
           <textarea
             ref={input}
@@ -1118,44 +1098,6 @@ function StartForm({ want: wantProp, onDone, inModal = false }) {
           </div>
         )}
       </form>
-      {/* 用什么开始：一行一种，写清楚有没有对话页；常用的直接列出，其余在“更多类型”里 */}
-      <div className="start-kinds" role="radiogroup" aria-label={t('sess.kinds_title')}>
-        <div className="start-kinds-head">
-          <span className="sec">{t('sess.kinds_title')}</span>
-          {chatOk && <span className="small muted">{t('sess.kinds_note')}</span>}
-        </div>
-        {[...types.shown, ...(moreKinds ? types.more : [])].map((l) => (
-          <button key={l} type="button" role="radio" aria-checked={launch === l} className="start-kind" onClick={() => setLaunch(l)}>
-            <LaunchIcon launch={baseLaunch(l)} size={18} />
-            <span className="start-kind-text">
-              <span className="start-kind-name">
-                <b>{typeTitle(l)}</b>
-                {kindTag(l) && <span className="srow-kind">{t(`sess.kind_${kindTag(l)}`)}</span>}
-                {missing(l) && <span className="start-miss">{t('sess.not_installed')}</span>}
-              </span>
-              <span className="start-kind-desc">{t(`sess.kind_desc.${l}`, { defaultValue: typeDesc(l) })}</span>
-            </span>
-            {kindUsage(l) && (
-              <span className="start-kind-usage" data-level={kindUsage(l).level} title={t('sbar.usage_line', { name: kindUsage(l).name, n: kindUsage(l).left })}>
-                {t('sbar.left', { n: kindUsage(l).left })}
-                <UsageBar {...kindUsage(l)} />
-              </span>
-            )}
-          </button>
-        ))}
-        {types.more.length > 0 && (
-          <button type="button" className="start-kind start-kind-more" onClick={() => setMoreKinds(!moreKinds)} aria-expanded={moreKinds}>
-            <ChevronDown size={16} aria-hidden="true" />
-            {t(moreKinds ? 'sess.fewer_types' : 'sess.more_types')}
-          </button>
-        )}
-      </div>
-      {pickedUsage && pickedUsage.level === 'low' && (
-        <p className="start-usage-low small">
-          {t('sess.usage_low', { name: pickedUsage.name, n: pickedUsage.left })}
-          {pickedUsage.resets > 0 && ` ${t('sbar.resets', { in: spanText(t, pickedUsage.resets) })}`}
-        </p>
-      )}
       <ErrorNote error={error} />
       {missing(launch) && !container && (
         <button type="button" className="btn btn-plain small" onClick={reloadTools}>
@@ -1207,9 +1149,7 @@ function useFillHeight(ref, enabled) {
       const el = ref.current;
       if (!el) return;
       const top = el.getBoundingClientRect().top + window.scrollY;
-      // 宽屏底部的状态栏占的高度（见 styles.css 的 --sbar-h）
-      const bar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sbar-h')) || 0;
-      setH(Math.max(320, window.innerHeight - top - bar));
+      setH(Math.max(320, window.innerHeight - top));
     };
     on();
     const ro = new ResizeObserver(on);

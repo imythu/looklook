@@ -24,7 +24,6 @@ import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import ChatView from './ChatView.jsx';
 import FileBrowser from './FileBrowser.jsx';
 import GitPanel from './GitPanel.jsx';
-import { setStatusChrome } from '../shared/StatusBar.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 import { APP_CHROME, termTheme, termVars } from '../shared/termTheme.js';
 
@@ -176,15 +175,6 @@ function useTab(id, chat) {
   };
   const [tab, setTabState] = useState(() => read() ?? 'term');
   const chosen = useRef(read() != null);
-  // 命令面板里的“切到对话 / 终端 / Git / 文件”（只对当前打开的会话）
-  useEffect(() => {
-    const on = (e) => {
-      if (e.detail?.id !== id || (e.detail.tab === 'chat' && !chat)) return;
-      setTab(e.detail.tab);
-    };
-    window.addEventListener('ll-tab', on);
-    return () => window.removeEventListener('ll-tab', on);
-  });
   useEffect(() => {
     if (chat === undefined) return;
     if (chat && !chosen.current) setTabState('chat');
@@ -319,10 +309,6 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   useFocusWhenReady(frame, running && active && tab === 'term');
   const [selecting, setSelecting] = useTextSelect(frame, running && active && tab === 'term');
   const reconnect = useCodexReconnect(id, inst, frame);
-  // 底部状态栏跟着正在显示的面板换颜色（终端标签用终端配色，其他标签用管理台配色）
-  useEffect(() => {
-    if (active) setStatusChrome(tab === 'term' ? termVars(status.settings.theme) : APP_CHROME);
-  }, [active, tab, status.settings.theme]);
   useEffect(() => {
     if (!active) return undefined;
     const timer = setTimeout(() => {
@@ -403,7 +389,6 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
       hidden={!active}
       aria-label={inst?.name ?? id}
       data-pane-id={id}
-      data-agent={inst?.launch}
       data-scheme={tab === 'term' ? termTheme(status.settings.theme).scheme : 'app'}
       style={tab === 'term' ? termVars(status.settings.theme) : APP_CHROME}
     >
