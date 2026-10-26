@@ -29,6 +29,16 @@ const TABDEV_KEY = 'looklook.tabdev';
 // 顶部最多几个标签（再多就把最早打开的收起）
 export const TABS_MAX = 40;
 const CACHE_KEY = 'looklook.devcache';
+// 每台电脑最后一次拿到会话列表的时间：离线后显示“多久前看到的”
+const SEEN_KEY = 'looklook.devseen';
+const SEEN_EVERY_MS = 60000;
+const seenWrote = {};
+function markSeen(id) {
+  const now = Date.now();
+  if (now - (seenWrote[id] ?? 0) < SEEN_EVERY_MS) return;
+  seenWrote[id] = now;
+  writeJson(SEEN_KEY, { ...readJson(SEEN_KEY, {}), [id]: now });
+}
 // 后台保持连接的会话最多几个（每个都连着终端，太多会拖慢页面）
 export const RECENT_MAX = 8;
 
@@ -99,6 +109,12 @@ export function projectEntries(p, convs = p.convs) {
   return { live: live.map(inst), rest, stopped, count: live.length + terms.length + Math.max(p.total, convs.length) - (convs.length - open.length) };
 }
 
+/** 草稿所在的项目和侧栏里的项目是不是同一个（侧栏在这个项目最上面显示“新会话 · 草稿”）。 */
+export function isDraftProject(p, at) {
+  if (!at || p.device !== at.device) return false;
+  return at.container ? p.container?.name === at.container.name && p.container?.dir === at.container.dir : !p.container && p.workdir === at.workdir;
+}
+
 /** 会话现在的状态：等你处理 / 正在干活 / 运行中 / 后台运行中 / 已停止。 */
 export function sessionState(i) {
   if (i.running && i.chat?.pending) return 'attn';
@@ -138,6 +154,7 @@ function useDeviceGroups(online, key) {
         clearTimeout(timer);
         inflight.current.delete(id);
         if (!alive.current || !ids.current.includes(id)) return;
+        if (!g.error) markSeen(id);
         setGroups((all) => ({ ...all, [id]: g.error ? { ...all[id], id, items: all[id]?.items ?? [], error: g.error } : g }));
       });
   };
@@ -249,24 +266,84 @@ function useFolders(devIds, key) {
 }
 
 /**
+ * 每台在线电脑上各个项目文件夹的 git 远程地址（`POST /git/remotes`，规范后的 `host/path`）：`{ [电脑]: { [文件夹]: 地址 } }`。
+ * 文件夹有变化时才重新问；旧版客户端没有这个接口，当作都没有（不合并）。
+ */
+function useRemotes(dirsByDev, enabled) {
+  const [store, setStore] = useState({});
+  // 每台电脑上次问过的文件夹：只有变了的那台再问
+  const asked = useRef({});
+  const sigOf = (dirs) => [...dirs].sort().join('\n');
+  const sig = enabled ? Object.entries(dirsByDev).map(([d, dirs]) => `${d}=${sigOf(dirs)}`).sort().join('\t') : '';
+  useEffect(() => {
+    if (!sig) return;
+    for (const [dev, dirs] of Object.entries(dirsByDev)) {
+      const one = sigOf(dirs);
+      if (!dirs.length || asked.current[dev] === one) continue;
+      asked.current[dev] = one;
+      deviceApi(dev)
+        .post('/git/remotes', { dirs })
+        .then(
+          (r) => setStore((s) => ({ ...s, [dev]: r?.remotes && typeof r.remotes === 'object' ? r.remotes : {} })),
+          (e) => {
+            // 旧版客户端没有这个接口：不再问；网络出错下次再问
+            if (e?.status !== 404 && e?.status !== 405) delete asked.current[dev];
+            setStore((s) => (s[dev] ? s : { ...s, [dev]: {} }));
+          },
+        );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sig]);
+  return store;
+}
+
+/**
+ * 多台电脑上的同一个 git 仓库（远程地址相同）合成一组：`[{ key, name, members, primary }]`，顺序跟着项目列表。
+ * 每台电脑只取一个文件夹（同一台上的两份克隆各自是项目）；合不起来的项目自己一组（members 只有它）。
+ * `primary` 是新建时默认用的那个：在线的里面排在最前（最近用过）的。
+ */
+export function groupProjects(projects, multi) {
+  const groups = [];
+  const byRemote = new Map();
+  for (const p of projects) {
+    const r = multi && !p.container ? p.remote : null;
+    const g = r ? byRemote.get(r) : null;
+    if (g && !g.members.some((m) => m.device === p.device)) {
+      g.members.push(p);
+      continue;
+    }
+    const ng = { key: p.key, name: p.name, remote: r, members: [p] };
+    if (r && !g) byRemote.set(r, ng);
+    groups.push(ng);
+  }
+  for (const g of groups) {
+    if (g.members.length > 1) g.key = `git:${g.remote}`;
+    g.primary = g.members.find((m) => !m.offline) ?? g.members[0];
+  }
+  return groups;
+}
+
+/**
  * 把会话和记着的项目合成项目列表：[{ key, device, workdir, name, launch, shell, full_access, auto_start, pinned, items, used, offline,
- * convs, total, counts, convAt, persistent }]。
+ * convs, total, counts, convAt, persistent, remote }]。
+ * `remote` 是 git 远程地址（规范后的，见 groupProjects），不是仓库或不知道时为 null；离线电脑的项目 `seenAt` 是最后一次拿到那台电脑会话列表的时间（不知道时 0）。
  * `full_access` 是在这个项目里新建时选过的，没选过为 null（见 Sessions.jsx 的 fullAccessFor）。
  * `convs` 是这个文件夹里最近的几个以前的对话，`total` / `counts` 是一共多少个（各工具多少个），`convAt` 是最近一个的时间；
  * `persistent` 为 false 时那台电脑不能接着以前的对话（没有会话保持），null 是不知道（旧版客户端）。
  * 置顶的在前，再按有没有在运行、最近用过排；项目里的会话按启动时间。
  */
-function mergeProjects({ devIds, store, items, multi, cache, onlineIds, folders }) {
+function mergeProjects({ devIds, store, items, multi, cache, onlineIds, folders, remotes }) {
   const map = new Map();
   const add = (device, workdir, extra) => {
     const key = projectKey(device, workdir);
     if (!map.has(key)) map.set(key, { key, device, workdir, name: baseName(workdir) || workdir, launch: '', shell: '', full_access: null, auto_start: false, pinned: false, items: [], used: 0, convs: [], total: 0, counts: {}, convAt: 0, persistent: null, ...extra });
     return map.get(key);
   };
+  const seen = multi ? readJson(SEEN_KEY, {}) : {};
   for (const dev of devIds) {
     if (multi && !onlineIds.has(dev)) {
       // 离线的电脑：上一次看到的项目，灰着显示
-      for (const p of cache[dev] ?? []) add(dev, p.workdir, { offline: true, count: p.count ?? 0, used: p.used ?? 0, pinned: Boolean(p.pinned), convs: Array.isArray(p.convs) ? p.convs : [], total: p.total ?? 0 });
+      for (const p of cache[dev] ?? []) add(dev, p.workdir, { offline: true, count: p.count ?? 0, used: p.used ?? 0, pinned: Boolean(p.pinned), convs: Array.isArray(p.convs) ? p.convs : [], total: p.total ?? 0, remote: typeof p.remote === 'string' ? p.remote : null, seenAt: seen[dev] ?? 0 });
       continue;
     }
     for (const p of store[dev ?? ''] ?? []) add(dev, p.workdir, { launch: p.launch, shell: p.shell, full_access: typeof p.full_access === 'boolean' ? p.full_access : null, auto_start: p.auto_start, pinned: Boolean(p.pinned), used: ts(p.used_at) });
@@ -292,6 +369,7 @@ function mergeProjects({ devIds, store, items, multi, cache, onlineIds, folders 
       p.convAt = ts(f.updated_at);
     }
     if (!p.launch) p.launch = p.items[0]?.launch ?? f?.items[0]?.agent ?? 'claude';
+    if (!p.offline && !p.container) p.remote = remotes[p.device ?? '']?.[p.workdir] ?? null;
   }
   return list.sort((a, b) => b.pinned - a.pinned || b.active - a.active || b.used - a.used || a.name.localeCompare(b.name));
 }
@@ -323,9 +401,23 @@ export function SessionsProvider({ enabled, children }) {
   const [folders, reloadFolders] = useFolders(enabled ? onlineDevIds : [], `${enabled}:${multi}:${onlineKey}`);
   const items = data?.items ?? [];
   const [cache, setCache] = useState(() => readJson(CACHE_KEY, {}));
-  const projects = mergeProjects({ devIds, store, items, multi, cache, onlineIds: new Set(onlineDevIds), folders });
+  // 远程地址只在多台电脑时用得上（合并同一个仓库）
+  const dirsByDev = {};
+  if (multi && enabled) {
+    for (const dev of onlineDevIds) dirsByDev[dev] = [];
+    const seen = new Set();
+    const want = (dev, dir) => {
+      if (!dir || !(dev in dirsByDev) || seen.has(`${dev}\n${dir}`)) return;
+      seen.add(`${dev}\n${dir}`);
+      dirsByDev[dev].push(dir);
+    };
+    for (const dev of onlineDevIds) for (const p of store[dev] ?? []) want(dev, p.workdir);
+    for (const i of items) if (!i.container) want(terminalDevice(i.id), i.workdir);
+  }
+  const remotes = useRemotes(dirsByDev, multi && enabled);
+  const projects = mergeProjects({ devIds, store, items, multi, cache, onlineIds: new Set(onlineDevIds), folders, remotes });
   // 记下每台在线电脑的项目，它离线后还能灰着显示
-  const cacheSig = multi && data ? projects.filter((p) => !p.offline).map((p) => `${p.key}:${p.items.length}:${p.total}:${p.convAt}:${p.pinned}`).join('|') : '';
+  const cacheSig = multi && data ? projects.filter((p) => !p.offline).map((p) => `${p.key}:${p.items.length}:${p.total}:${p.convAt}:${p.pinned}:${p.remote ?? ''}`).join('|') : '';
   useEffect(() => {
     if (!cacheSig) return;
     const next = { ...cache };
@@ -334,7 +426,7 @@ export function SessionsProvider({ enabled, children }) {
       next[id] = projects
         .filter((p) => p.device === id)
         .slice(0, 30)
-        .map((p) => ({ workdir: p.workdir, count: p.items.length, used: p.used, pinned: p.pinned, total: p.total, convs: p.convs.map((c) => ({ agent: c.agent, id: c.id, title: c.title, updated_at: c.updated_at })) }));
+        .map((p) => ({ workdir: p.workdir, count: p.items.length, used: p.used, pinned: p.pinned, total: p.total, remote: p.remote, convs: p.convs.map((c) => ({ agent: c.agent, id: c.id, title: c.title, updated_at: c.updated_at })) }));
     }
     setCache(next);
     writeJson(CACHE_KEY, next);
@@ -456,6 +548,8 @@ export function SessionsProvider({ enabled, children }) {
     reload,
     reloadFolders,
     projects,
+    /** 项目合成的组（多台电脑上的同一个仓库一组，见 groupProjects） */
+    projectGroups: groupProjects(projects, multi),
     touchProject,
     removeProject,
     addProjects,

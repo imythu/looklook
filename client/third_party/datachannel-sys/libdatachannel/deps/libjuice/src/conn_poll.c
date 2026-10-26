@@ -84,6 +84,8 @@ int conn_poll_registry_init(conn_registry_t *registry, udp_socket_config_t *conf
 
 	fcntl(pipefds[0], F_SETFL, O_NONBLOCK);
 	fcntl(pipefds[1], F_SETFL, O_NONBLOCK);
+	sock_no_inherit(pipefds[0]); // looklook
+	sock_no_inherit(pipefds[1]); // looklook
 	registry_impl->interrupt_pipe_out = pipefds[1]; // read
 	registry_impl->interrupt_pipe_in = pipefds[0];  // write
 #endif

@@ -1,8 +1,8 @@
 // 以前的对话：电脑上 Claude Code、Codex、OpenCode 自己存的对话（客户端 src/history.rs），点一下在看看里接着聊。
-// 两个地方用：开始页里跟着当前项目的一节（PrevConversations），和“所有以前的对话”页面（/history）。
+// “所有以前的对话”页面（/history）；侧栏、项目页、草稿页里的也从这里接着聊。
 // 点一行先展开看最后几句，再点“继续”；正开在看看会话里的直接打开那个会话；
 // 可能正开在别处（文件两分钟内还在变）的默认“复制一份继续”，原来那份不动。
-import { AlertCircle, ChevronDown, Copy, ExternalLink, Eye, EyeOff, Folder, GitBranch, History, Play, Search, SlidersHorizontal, Star, X } from 'lucide-react';
+import { AlertCircle, ChevronDown, Copy, ExternalLink, Eye, EyeOff, Folder, GitBranch, Play, Search, SlidersHorizontal, Star, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -17,11 +17,8 @@ import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
 import { isTouch } from '../shared/KeyBar.jsx';
 import { useSessionUi } from './Sessions.jsx';
 
-const AGENTS = ['claude', 'codex', 'opencode'];
 // 能“复制一份继续”的（OpenCode 没有这个功能）
 export const CAN_FORK = ['claude', 'codex'];
-// 开始页里先列几个
-const START_SHOW = 5;
 // 页面里每个文件夹先列几个
 const GROUP_SHOW = 5;
 
@@ -160,102 +157,6 @@ export function ConvRow({ device, conv, open, onToggle, onHide, hidden }) {
       </button>
       {open && <ConvPeek device={device} conv={conv} onHide={onHide} hidden={hidden} />}
     </div>
-  );
-}
-
-function AgentChips({ items, value, onChange }) {
-  const { t } = useTranslation();
-  const count = (a) => items.filter((c) => a === 'all' || c.agent === a).length;
-  const shown = AGENTS.filter((a) => count(a) > 0);
-  if (shown.length < 2) return null;
-  return (
-    <span className="seg seg-xs" role="group" aria-label={t('hist.by_tool')}>
-      {['all', ...shown].map((a) => (
-        <button key={a} type="button" aria-pressed={value === a} onClick={() => onChange(a)}>
-          {a === 'all' ? t('hist.all') : t(`launch.${a}.title`)} {count(a)}
-        </button>
-      ))}
-    </span>
-  );
-}
-
-/**
- * 开始页里：当前项目里以前的对话。选了 AI 类型时只看那个工具的（也能切到“全部”），
- * 没有对话、普通终端、电脑不支持会话保持时不显示。
- */
-export function PrevConversations({ device, workdir, launch, focus }) {
-  const { t } = useTranslation();
-  const { navigate } = useRouter();
-  const [data, setData] = useState(null);
-  const [agent, setAgent] = useState(AGENTS.includes(launch) && !focus ? launch : 'all');
-  const [open, setOpen] = useState(null);
-  const [more, setMore] = useState(false);
-  const [q, setQ] = useState('');
-  const box = useRef(null);
-  // 换了类型才跟着换（从项目菜单进来时先看全部）
-  const lastLaunch = useRef(launch);
-  useEffect(() => {
-    if (lastLaunch.current === launch) return;
-    lastLaunch.current = launch;
-    if (AGENTS.includes(launch)) setAgent(launch);
-    setOpen(null);
-  }, [launch]);
-  useEffect(() => {
-    let alive = true;
-    setData(null);
-    setOpen(null);
-    setMore(false);
-    if (!workdir) return undefined;
-    deviceApi(device)
-      .get(`/history?workdir=${enc(workdir)}&limit=50`)
-      .then(
-        (r) => alive && setData(r),
-        // 旧版客户端没有这个接口
-        () => alive && setData({ items: [] }),
-      );
-    return () => {
-      alive = false;
-    };
-  }, [device, workdir]);
-  useEffect(() => {
-    if (focus && data?.items?.length) box.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [focus, data]);
-  const all = Array.isArray(data?.items) ? data.items : [];
-  if (!data?.persistent || all.length === 0 || !AGENTS.includes(launch)) return null;
-  const words = q.trim().toLowerCase();
-  const list = all.filter((c) => (agent === 'all' || c.agent === agent) && (!words || [c.title, c.last, c.branch].filter(Boolean).join('\n').toLowerCase().includes(words)));
-  const shown = list.slice(0, more ? 20 : START_SHOW);
-  return (
-    <section ref={box} className="prev" aria-label={t('hist.title')}>
-      <div className="prev-head">
-        <h2 className="prev-title">
-          <History size={14} aria-hidden="true" />
-          {t('hist.in_project', { name: baseName(workdir) })}
-        </h2>
-        {all.length > START_SHOW && (
-          <input className="prev-search" type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('hist.search_here')} aria-label={t('hist.search_here')} spellCheck={false} />
-        )}
-        <AgentChips items={all} value={agent} onChange={setAgent} />
-      </div>
-      <div className="conv-list">
-        {shown.map((c) => (
-          <ConvRow key={`${c.agent}:${c.id}`} device={device} conv={c} open={open === c.id} onToggle={() => setOpen(open === c.id ? null : c.id)} />
-        ))}
-        {shown.length === 0 && <p className="conv-empty">{words ? t('hist.no_match') : t('hist.none_for', { tool: t(`launch.${agent}.title`) })}</p>}
-      </div>
-      <div className="prev-foot">
-        {!more && list.length > START_SHOW && (
-          <button type="button" className="btn btn-plain btn-sm" onClick={() => setMore(true)}>
-            <ChevronDown size={14} aria-hidden="true" />
-            {t('hist.more', { count: Math.min(list.length, 20) - START_SHOW })}
-          </button>
-        )}
-        <span className="grow" />
-        <button type="button" className="btn btn-plain btn-sm prev-all" onClick={() => navigate('/history')}>
-          {t('hist.all_link')}
-        </button>
-      </div>
-    </section>
   );
 }
 

@@ -131,4 +131,12 @@ typedef int sockopt_t;
 	 (((const uint32_t *)(a))[2] == htonl(0xFFFF)))
 #endif
 
+// looklook: 子进程不继承这个 socket / pipe。看看起的终端、tmux 会继承没带 CLOEXEC 的描述符，
+// 看看自己关掉连接后它们还一直占着 UDP 端口，端口范围（50000-50031）被占满后只能退到随机端口，配了端口转发也连不上
+#ifdef _WIN32
+#define sock_no_inherit(fd) SetHandleInformation((HANDLE)(fd), HANDLE_FLAG_INHERIT, 0)
+#else
+#define sock_no_inherit(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
+#endif
+
 #endif // JUICE_SOCKET_H

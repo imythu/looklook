@@ -66,6 +66,7 @@ shared_ptr<TcpTransport> TcpServer::accept() {
 			socket_t incomingSock = ::accept(mSock, (struct sockaddr *)&addr, &addrlen);
 
 			if (incomingSock != INVALID_SOCKET) {
+				sock_no_inherit(incomingSock); // looklook
 				try {
 					return std::make_shared<TcpTransport>(incomingSock, nullptr); // no state callback
 				} catch(const std::exception &e) {
@@ -126,6 +127,7 @@ void TcpServer::listen(uint16_t port, const char *bindAddress) {
 		mSock = ::socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
 		if (mSock == INVALID_SOCKET)
 			throw std::runtime_error("TCP server socket creation failed");
+		sock_no_inherit(mSock); // looklook
 
 		const sockopt_t enabled = 1;
 		const sockopt_t disabled = 0;

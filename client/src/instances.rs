@@ -883,7 +883,10 @@ impl Instances {
     fn command_for(&self, row: &InstanceRow) -> Result<Vec<String>, LocalError> {
         if cfg!(windows) {
             if let Backend::Tmux(tmux) = &self.backend {
-                return Ok(vec![tmux.display().to_string(), "-L".into(), TMUX_SOCKET.into(), "attach-session".into(), "-t".into(), Self::session_name(&row.id)]);
+                let mut v = vec![tmux.display().to_string()];
+                v.extend(self.tmux_socket_args());
+                v.extend(["attach-session".into(), "-t".into(), Self::session_name(&row.id)]);
+                return Ok(v);
             }
         }
         let (program, typed) = self.program_for(row)?;
@@ -1134,8 +1137,22 @@ impl Instances {
 
     fn tmux_base_args(&self) -> Vec<String> {
         let mut v: Vec<String> = if cfg!(windows) { vec![] } else { vec!["-u".into()] };
-        v.extend(["-L".into(), TMUX_SOCKET.into(), "-f".into(), self.paths.tmux_conf().display().to_string()]);
+        v.extend(self.tmux_socket_args());
+        v.extend(["-f".into(), self.paths.tmux_conf().display().to_string()]);
         v
+    }
+
+    /// 连哪个 tmux 服务器。测试里用各自数据目录下的 socket：用 `-L looklook` 会连到这台机器上正在用的看看，
+    /// 测试里的 `kill-server` 会把用户所有的终端都结束掉
+    pub(crate) fn tmux_socket_args(&self) -> Vec<String> {
+        if cfg!(all(test, windows)) {
+            // psmux 不一定认 -S：换个名字
+            vec!["-L".into(), format!("{TMUX_SOCKET}-test-{}", std::process::id())]
+        } else if cfg!(test) {
+            vec!["-S".into(), self.paths.tmux_conf().with_file_name("tmux.sock").display().to_string()]
+        } else {
+            vec!["-L".into(), TMUX_SOCKET.into()]
+        }
     }
 
     async fn tmux(&self, args: &[&str]) -> Result<std::process::Output, LocalError> {

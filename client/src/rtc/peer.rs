@@ -649,7 +649,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread")]
     async fn connects_through_the_public_candidate_alone() {
         let strip = |sdp: &str| sdp.split_inclusive('\n').filter(|l| !l.contains(" typ host")).collect::<String>();
-        let net = NetConfig { public_v4: Some(std::net::Ipv4Addr::LOCALHOST), ..NetConfig::DEFAULT };
+        // 不用默认范围（50000-50031）：本机正在运行的看看占着那些端口时这里会失败
+        let net = NetConfig { port_begin: 50140, port_end: 50147, public_v4: Some(std::net::Ipv4Addr::LOCALHOST), ..NetConfig::DEFAULT };
         let (mut a, mut ctl) = Pc::offer_in(&[], &net, true).unwrap();
         let offer = strip(&a.local_offer(Duration::from_secs(3)).await.unwrap());
         assert!(offer.contains("a=candidate:llpub4 ") && !offer.contains(" typ host"), "{offer}");
@@ -661,6 +662,32 @@ mod tests {
         assert!(path.remote.starts_with("127.0.0.1 srflx"), "{path:?}");
         drop(ctl);
         tokio::task::spawn_blocking(move || drop((a, b))).await.unwrap();
+    }
+
+    /// libjuice / libdatachannel 建的 socket、pipe 都不让子进程继承（third_party 的补丁）：
+    /// 否则看看起的终端、tmux 一直占着 UDP 端口，端口范围被占满
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn sockets_are_not_inherited() {
+        // 按“编号 + 指向的 socket / pipe”比较：并行的测试关掉的编号会被复用
+        let fds = || {
+            std::fs::read_dir("/proc/self/fd")
+                .unwrap()
+                .filter_map(|e| {
+                    let e = e.ok()?;
+                    Some((e.file_name().to_str()?.parse::<i32>().ok()?, std::fs::read_link(e.path()).ok()?))
+                })
+                .collect::<std::collections::HashSet<_>>()
+        };
+        let before = fds();
+        let (mut pc, _ch) = Pc::offer_in(&[], &NetConfig::DEFAULT, false).unwrap();
+        pc.local_offer(Duration::from_secs(5)).await.unwrap();
+        let new: Vec<_> = fds().difference(&before).cloned().collect();
+        assert!(new.iter().any(|(_, l)| l.to_string_lossy().starts_with("socket:")), "{new:?}");
+        for (fd, link) in new {
+            let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+            assert!(flags < 0 || flags & libc::FD_CLOEXEC != 0, "fd {fd} -> {link:?} 会被子进程继承");
+        }
     }
 
     /// 本机候选地址不含 Clash/mihomo 的 TUN / fake-ip 地址（198.18.0.0/15），私有 IPv4 排在最前（third_party 的 libjuice 补丁）。

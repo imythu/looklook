@@ -52,6 +52,7 @@ static socket_t create_socket_for_addrinfo(const udp_socket_config_t *config,
 		JLOG_WARN("UDP socket creation failed, errno=%d", sockerrno);
 		return INVALID_SOCKET;
 	}
+	sock_no_inherit(sock); // looklook
 
 	// Listen on both IPv6 and IPv4
 	const sockopt_t disabled = 0;
@@ -462,6 +463,7 @@ static int get_local_default_inet6(uint16_t port, struct sockaddr_in6 *result) {
 	socket_t sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
 	if (sock == INVALID_SOCKET)
 		return -1;
+	sock_no_inherit(sock); // looklook
 
 	if (connect(sock, (const struct sockaddr *)&sin6, sizeof(sin6)))
 		goto error;

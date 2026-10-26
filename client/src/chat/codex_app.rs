@@ -129,16 +129,22 @@ fn free_port() -> Option<u16> {
 }
 
 fn kill_pid(pid: u32) {
-    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
     let mut sys = System::new();
     let p = Pid::from_u32(pid);
-    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing());
-    if let Some(proc_) = sys.process(p) {
-        // 只结束我们起的那个（名字对得上），进程号被别的程序重用时不动
-        if proc_.name().to_string_lossy().to_ascii_lowercase().starts_with("codex") {
-            proc_.kill();
-        }
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&[p]), true, ProcessRefreshKind::nothing().with_cmd(UpdateKind::Always));
+    let Some(proc_) = sys.process(p) else { return };
+    // 只结束我们起的那个，进程号被别的程序重用时不动。npm 装的 codex 是 node 脚本，进程名是 node，所以还要看命令行
+    let ours = proc_.name().to_string_lossy().to_ascii_lowercase().starts_with("codex") || proc_.cmd().iter().any(|a| a.to_str() == Some("app-server"));
+    if !ours {
+        return;
     }
+    // 起的时候单独一个进程组（见 spawn）：连 node 起的 codex 本体一起结束，只结束 node 的话它会留在后台
+    #[cfg(unix)]
+    if unsafe { libc::kill(-(pid as i32), libc::SIGTERM) } == 0 {
+        return;
+    }
+    proc_.kill();
 }
 
 impl AppServer {

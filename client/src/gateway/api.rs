@@ -71,6 +71,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/image", get(super::chat::image))
         .route("/instances/{id}/chat/agent", get(super::chat::agent))
         .route("/instances/{id}/chat/commands", get(super::chat::commands))
+        .route("/instances/{id}/chat/prompts", get(super::chat::prompts))
         .route("/instances/{id}/chat/input", post(super::chat::input))
         .route("/instances/{id}/chat/interrupt", post(super::chat::interrupt))
         .route("/instances/{id}/chat/permission", post(super::chat::permission))
@@ -137,6 +138,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/sync", get(get_sync).put(put_sync))
         .route("/sync/exchange", post(sync_exchange))
         .route("/projects", get(get_projects).put(put_projects))
+        .route("/git/remotes", post(git_remotes))
         .route("/history", get(list_history))
         .route("/history/marks", put(put_history_mark))
         .route("/history/folders", get(history_folders))
@@ -1430,6 +1432,29 @@ async fn put_projects(State(app): State<App>, Json(req): Json<Projects>) -> R<Js
     let items = normalize_projects(req.items)?;
     app.store.set(PROJECTS_KEY, &items)?;
     Ok(Json(Projects { items }))
+}
+
+#[derive(Deserialize)]
+struct RemotesReq {
+    dirs: Vec<String>,
+}
+
+/// 一批文件夹各自所在仓库的远程地址（规范后的 `host/path`）：多台电脑上的同一个仓库在侧栏里合成一个项目。
+/// 只读 `.git/config`；不是仓库、没有远程的不出现在结果里。
+async fn git_remotes(Json(req): Json<RemotesReq>) -> R<Json<Value>> {
+    if req.dirs.len() > PROJECTS_MAX * 2 {
+        return Err(LocalError::invalid("dirs", "too_long"));
+    }
+    let map = blocking(move || {
+        Ok(req
+            .dirs
+            .into_iter()
+            .filter(|d| !d.trim().is_empty() && std::path::Path::new(d).is_absolute())
+            .filter_map(|d| crate::git::remote(std::path::Path::new(&d)).map(|r| (d, r)))
+            .collect::<std::collections::HashMap<String, String>>())
+    })
+    .await?;
+    Ok(Json(json!({ "remotes": map })))
 }
 
 // ---------------- 以前的对话（history.rs） ----------------

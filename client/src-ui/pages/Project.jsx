@@ -2,18 +2,19 @@
 // 以前的对话每次取 50 个（GET /history?workdir=…&before=…），翻到底再取。搜索先在取到的里找，回车在对话全文里搜。
 // 停了的 Claude Code / Codex / OpenCode 会话收在最下面：它们的对话已经在上面的列表里了，点一下就接着聊。
 // `c=工具:对话号` 时展开那个对话（侧栏里点了可能正开在别处的对话，在这里看提示再选）。
-import { ChevronDown, Folder, GitBranch, Pin, PinOff, Plus, Search, SlidersHorizontal, SquareTerminal, Trash2 } from 'lucide-react';
+// 多台电脑上的同一个仓库（侧栏里合成一个项目）：上面可以切到别的电脑上的那个文件夹。
+import { ChevronDown, Folder, GitBranch, Pin, PinOff, Plus, Search, SquareTerminal, Trash2 } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { deviceApi } from '../shared/api.js';
-import { DeviceTag, LaunchIcon } from '../shared/brands.jsx';
-import { useDevices } from '../shared/devices.jsx';
+import { deviceColor, DeviceTag, LaunchIcon } from '../shared/brands.jsx';
+import { deviceName, useDevices } from '../shared/devices.jsx';
 import { errorText } from '../shared/i18n.js';
 import PopMenu from '../shared/PopMenu.jsx';
 import { Link, query, useRouter } from '../shared/router.jsx';
-import { AGENTS, projectEntries, sessionState, sessionTitle, useSessions } from '../shared/sessions.jsx';
+import { AGENTS, projectEntries, projectPath, sessionState, sessionTitle, useSessions } from '../shared/sessions.jsx';
 import { Spinner, useConfirm, useToast } from '../shared/ui.jsx';
 import { ConvRow, timeBucket } from './History.jsx';
 import { QUICK_LAUNCHES, shortAgo, useActions, useSessionUi } from './Sessions.jsx';
@@ -45,7 +46,8 @@ export function ProjectPage() {
       </div>
     );
   }
-  return <ProjectView key={p.key} p={p} focus={query(search, 'c')} />;
+  const g = s.projectGroups.find((x) => x.members.includes(p));
+  return <ProjectView key={p.key} p={p} group={g?.members.length > 1 ? g : null} focus={query(search, 'c')} />;
 }
 
 /** 以前的对话，一页一页取；项目的对话有变化（侧栏的汇总变了）时重取第一页，已经翻出来的更早的留着。 */
@@ -115,7 +117,7 @@ function useDeep(p, q) {
   return [res, run];
 }
 
-function ProjectView({ p, focus }) {
+function ProjectView({ p, group, focus }) {
   const { t } = useTranslation();
   const { navigate } = useRouter();
   const { status } = useStatus();
@@ -183,7 +185,6 @@ function ProjectView({ p, focus }) {
     s.reload();
   };
 
-  const launchName = t(`launch.${p.launch}.title`);
   const branch = convs.items.find((c) => c.branch)?.branch;
   const running = p.items.filter((i) => i.running).length;
   const termCount = p.items.filter((i) => !AGENTS.includes(i.launch)).length;
@@ -226,7 +227,7 @@ function ProjectView({ p, focus }) {
           </h1>
           <span className="proj-meta">
             <span className="mono ellipsis">{p.workdir}</span>
-            {dev && <DeviceTag device={dev} />}
+            {dev && !group && <DeviceTag device={dev} />}
             {branch && (
               <span className="proj-branch">
                 <GitBranch size={12} aria-hidden="true" />
@@ -239,9 +240,9 @@ function ProjectView({ p, focus }) {
         </div>
         <div className="proj-acts">
           <span className="split">
-            <button type="button" className="btn btn-primary" onClick={() => ui.quickCreate(p)} disabled={!allowed}>
+            <button type="button" className="btn btn-primary" onClick={() => ui.draftIn(p)} disabled={!allowed}>
               <Plus size={16} aria-hidden="true" />
-              {t('sess.new_type', { type: launchName })}
+              {t('sess.new')}
             </button>
             <PopMenu items={newMenu} className="btn btn-primary split-more" icon={ChevronDown} label={t('proj.new_other')} disabled={!allowed} />
           </span>
@@ -249,13 +250,21 @@ function ProjectView({ p, focus }) {
             <SquareTerminal size={16} aria-hidden="true" />
             {t('proj.terminal')}
           </button>
-          <button type="button" className="btn btn-ghost" onClick={() => ui.newSession({ device: p.device, workdir: p.workdir })} disabled={!allowed}>
-            <SlidersHorizontal size={16} aria-hidden="true" />
-            {t('sess.more_options')}
-          </button>
           <PopMenu items={menu} className="btn btn-ghost btn-icon" label={t('sess.project_menu')} />
         </div>
       </header>
+
+      {group && (
+        <div className="seg seg-sm proj-devs" role="group" aria-label={t('proj.on_devices')}>
+          {group.members.map((m) => (
+            <button key={m.key} type="button" aria-pressed={m === p} onClick={() => m !== p && navigate(projectPath(m), { replace: true })} title={m.workdir}>
+              <span className={`dev-dot ${m.offline ? 'off' : ''}`} style={{ '--dc': deviceColor(devices, m.device) }} aria-hidden="true" />
+              {deviceName(t, devices.byId(m.device))}
+              <span className="muted">{m.offline ? t('devices.offline') : projectEntries(m).count}</span>
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="proj-tools">
         <label className="proj-search">

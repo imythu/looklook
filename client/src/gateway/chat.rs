@@ -128,6 +128,10 @@ pub async fn commands(State(app): State<App>, Path(id): Path<String>) -> R<Json<
     Ok(Json(app.chat.commands(&id)?))
 }
 
+pub async fn prompts(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.prompts(&id)?))
+}
+
 #[derive(Deserialize)]
 pub struct InputReq {
     #[serde(default)]

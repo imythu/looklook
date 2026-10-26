@@ -21,7 +21,8 @@ import System from './pages/System.jsx';
 import { HistoryPage } from './pages/History.jsx';
 import { ProjectPage } from './pages/Project.jsx';
 import PullRefresh from './shared/pull.jsx';
-import { opensInPage, SessionHome, SessionList, SessionStage, SessionTabs, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
+import { opensInPage, SessionHome, SessionList, SessionStage, SessionTabs, SessionUiProvider, useSessionUi } from './pages/Sessions.jsx';
+import { DraftPane } from './pages/Draft.jsx';
 import TerminalView from './pages/TerminalView.jsx';
 import { api, rtcMode, selectedDevice } from './shared/api.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
@@ -663,8 +664,8 @@ function Shell() {
     // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
     // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
     const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
-    const home = opensInPage() ? <StartPane key={`start:${login}`} /> : <SessionHome />;
-    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/history': <HistoryPage />, '/project': <ProjectPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
+    const home = opensInPage() ? <DraftPane key={`start:${login}`} /> : <SessionHome />;
+    const page = SESS.test(path) ? null : { '/': home, '/new': <DraftPane key={`start:${login}`} />, '/history': <HistoryPage />, '/project': <ProjectPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
     const drawerPage = route.drawer && { '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[route.drawer];
     body = (
       <SessionsProvider key={login} enabled>

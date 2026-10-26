@@ -42,7 +42,7 @@ pub const EFFORTS: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhi
 
 #[derive(Default)]
 pub struct Hub {
-    server: tokio::sync::Mutex<Option<Arc<AppServer>>>,
+    pub(super) server: tokio::sync::Mutex<Option<Arc<AppServer>>>,
     /// 第几个 app-server 进程（0 表示还没起过）；thread 只在加载它的那个进程里有效
     generation: AtomicU64,
     /// thread id → 终端 id
@@ -72,6 +72,10 @@ pub struct CodexSt {
     /// 这个会话累计的 token（app-server 的 `tokenUsage.total`）
     pub totals: Option<Value>,
     preview_at: Option<Instant>,
+    /// 运行中插话发出去、Codex 还没读到的（做完正在跑的这一步才会进对话），界面上显示成“排队中”
+    pub steered: Vec<String>,
+    /// 正在重连模型服务（`error` 带 `willRetry`）：活动文字是 Codex 的提示，有新进展就去掉
+    retrying: bool,
 }
 
 fn resets_iso(secs: Option<i64>) -> Value {
@@ -179,6 +183,22 @@ pub fn decision(tool: &str, kind: &str, input: &Value, req: &PermissionAnswer) -
     };
     let _ = tool;
     Ok(json!({ "decision": d }))
+}
+
+/// 用户消息条目（`userMessage`）里的文字，和发出去时的一样拼起来
+fn user_text(item: &Value) -> String {
+    let parts: Vec<&str> = item["content"].as_array().map(|a| a.iter().filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect()).unwrap_or_default();
+    parts.join("\n")
+}
+
+/// 运行中的命令显示成什么：Codex 拆出来的命令（`commandActions`），没有就是整条（带着 `bash -lc` 之类的外壳）
+fn command_shown(item: &Value) -> Option<String> {
+    let parts: Vec<&str> = item["commandActions"].as_array().map(|a| a.iter().filter_map(|c| c["command"].as_str()).collect()).unwrap_or_default();
+    if parts.is_empty() {
+        item["command"].as_str().map(String::from)
+    } else {
+        Some(parts.join(" && "))
+    }
 }
 
 fn text_input(text: &str, images: &[String]) -> Value {
@@ -346,6 +366,32 @@ impl Chat {
         Ok(tid)
     }
 
+    /// 换成接着以前的另一段对话：加载它、界面重新取；终端里开着同步的 TUI 时也换过去。
+    async fn codex_resume(&self, id: &str, old: Option<String>, to: &str) -> Result<(), LocalError> {
+        self.codex_forget(old).await;
+        self.codex_bind(id, to);
+        let inst = self.inst(id);
+        {
+            let mut st = lock(&inst.st);
+            st.title = None;
+            st.context = None;
+        }
+        self.codex_attach(id).await?;
+        *inst.tr.lock().await = None;
+        let _ = inst.tx.send(super::Event::Reset);
+        if matches!(self.codex_terminal_kind(id).await, TermCodex::Remote) {
+            if let Some(me) = self.me.upgrade() {
+                let id = id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = me.codex_reconnect_terminal(&id).await {
+                        tracing::warn!(id, error = ?e, "换了对话后没能让终端里的 Codex 跟过去");
+                    }
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// 记录文件路径还没有时（新建的会话第一轮开始后才写文件）问一下 app-server
     async fn codex_fill_path(&self, inst: &Inst) {
         let tid = {
@@ -436,12 +482,15 @@ impl Chat {
             match method {
                 "turn/started" => {
                     st.codex.turn = p["turn"]["id"].as_str().map(String::from);
+                    st.codex.retrying = false;
                     st.error = None;
                     inst.prompts.send_modify(|n| *n += 1);
                     Self::set_phase(&inst, &mut st, Phase::Running, None);
                 }
                 "turn/completed" => {
                     st.codex.turn = None;
+                    st.codex.steered.clear();
+                    st.codex.retrying = false;
                     Self::drop_pending(&mut st);
                     if p["turn"]["status"] == "failed" {
                         st.error = p["turn"]["error"]["message"].as_str().map(|s| s.chars().take(500).collect());
@@ -453,13 +502,22 @@ impl Chat {
                 "item/started" => {
                     let item = &p["item"];
                     let (tool, activity) = match item["type"].as_str() {
-                        Some("commandExecution") => (Some("Bash"), item["command"].as_str().map(String::from)),
+                        Some("commandExecution") => (Some("Bash"), command_shown(item)),
                         Some("fileChange") => (Some("Edit"), None),
                         Some("mcpToolCall") => (Some("mcp"), item["tool"].as_str().map(String::from)),
                         Some("webSearch") => (Some("WebSearch"), None),
                         Some("reasoning") => (None, Some("thinking".to_string())),
+                        // 压缩（手动 /compact 和一轮当中自动压缩都是这个条目）
+                        Some("contextCompaction") => (None, Some("compacting".to_string())),
+                        // 等子代理交回结果
+                        Some("collabAgentToolCall") if item["tool"] == "wait" => (Some("Agent"), Some("waiting_agents".to_string())),
                         _ => (None, None),
                     };
+                    st.codex.retrying = false;
+                    // 新的一段回复：正在输出的从头来。运行中插话时 Codex 会丢掉写了一半的那段（没有 item/completed）重新写
+                    if item["type"] == "agentMessage" {
+                        st.live.text = None;
+                    }
                     if st.phase != Phase::Approval {
                         st.tool = tool.map(String::from);
                         st.live.activity = activity;
@@ -471,6 +529,9 @@ impl Chat {
                     }
                 }
                 "item/agentMessage/delta" => {
+                    if std::mem::take(&mut st.codex.retrying) {
+                        st.live.activity = None;
+                    }
                     let text = st.live.text.get_or_insert_with(String::new);
                     text.push_str(p["delta"].as_str().unwrap_or(""));
                     if text.chars().count() > PREVIEW_LIMIT {
@@ -486,6 +547,15 @@ impl Chat {
                     if p["item"]["type"] == "agentMessage" {
                         st.live.text = None;
                     }
+                    // 插话进了对话：从“排队中”里拿掉。只按文字对：跟读记录时可能已经拿掉了（Chat::poll），
+                    // 对不上就拿最早的那条会误删另一条还在排队的
+                    if p["item"]["type"] == "userMessage" {
+                        let text = user_text(&p["item"]);
+                        if let Some(at) = st.codex.steered.iter().position(|q| *q == text) {
+                            st.codex.steered.remove(at);
+                        }
+                    }
+                    st.codex.retrying = false;
                     if let Some(item) = p["item"]["id"].as_str() {
                         lock(&self.codex.patches).remove(item);
                     }
@@ -512,6 +582,14 @@ impl Chat {
                 "model/rerouted" => {
                     st.actual_model = p["toModel"].as_str().or_else(|| p["model"].as_str()).map(String::from).or(st.actual_model.take());
                     Self::emit_status(&inst, &st);
+                }
+                // 连不上模型服务、正在重试（“Reconnecting... 2/5”）：不算出错，运行中的活动文字换成它
+                "error" if p["willRetry"] == true => {
+                    if st.phase == Phase::Running {
+                        st.codex.retrying = true;
+                        st.live.activity = p["error"]["message"].as_str().map(|s| s.chars().take(120).collect());
+                        Self::emit_status(&inst, &st);
+                    }
                 }
                 "error" if p["willRetry"] != true => {
                     st.error = p["error"]["message"].as_str().map(|s| s.chars().take(500).collect());
@@ -580,6 +658,19 @@ impl Chat {
         if phase == Phase::Approval {
             return Err(LocalError::new("CHAT_BUSY"));
         }
+        // /resume <会话>：界面上选的以前的对话，在这个终端里接着（原来的留在“以前的对话”里）
+        if let Some(to) = text.trim().strip_prefix("/resume ").map(str::trim).filter(|s| !s.is_empty() && images.is_empty()) {
+            if phase == Phase::Running {
+                return Err(LocalError::new("CHAT_RUNNING"));
+            }
+            if !to.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Err(LocalError::invalid("resume", "invalid"));
+            }
+            if thread.as_deref() != Some(to) {
+                self.codex_resume(id, thread, to).await?;
+            }
+            return Ok(json!({ "delivered": true }));
+        }
         let thread = match thread {
             Some(t) => t,
             None => self.codex_new_thread(&server, &inst).await?,
@@ -603,7 +694,18 @@ impl Chat {
         let input = text_input(text, images);
         // 这一轮还在跑：插话（Codex 会在下一步之前看到）
         if let (Phase::Running, Some(turn)) = (phase, turn) {
-            server.call("turn/steer", json!({ "threadId": thread, "input": input, "expectedTurnId": turn })).await?;
+            // 先记下再发：Codex 读到它的通知可能比这次请求的答复先到
+            lock(&inst.st).codex.steered.push(text.to_string());
+            let r = server.call("turn/steer", json!({ "threadId": thread, "input": input, "expectedTurnId": turn })).await;
+            let mut st = lock(&inst.st);
+            if r.is_err() {
+                if let Some(at) = st.codex.steered.iter().rposition(|q| q == text) {
+                    st.codex.steered.remove(at);
+                }
+            }
+            Self::emit_status(&inst, &st);
+            drop(st);
+            r?;
             return Ok(json!({ "delivered": true }));
         }
         let mut params = json!({ "threadId": thread, "input": input });

@@ -27,6 +27,7 @@ import {
   FileText,
   GitBranch,
   Globe,
+  History,
   Hourglass,
   Image as ImageIcon,
   Layers,
@@ -52,7 +53,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useReducer,
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
-import { api, fetchRaw, plainLinksWork } from '../shared/api.js';
+import { api, deviceApi, fetchRaw, plainLinksWork, terminalDevice } from '../shared/api.js';
 import { spinnerText } from '../shared/spinner.js';
 import {
   CODEX_COMMANDS,
@@ -89,8 +90,11 @@ import {
 import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { formatTime, parseInstant, spanText } from '../shared/time.js';
+import { useSessions } from '../shared/sessions.jsx';
+import { formatTime, parseInstant, relativeTime, spanText } from '../shared/time.js';
+import { dropFirst, retryFirst, useFirstSend } from '../shared/firstSend.js';
 import { runUpload } from '../shared/uploader.js';
+import { inputHistory, rememberInput, searchInputs } from '../shared/inputHistory.js';
 import PopMenu from '../shared/PopMenu.jsx';
 import { Button, CopyButton, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { KindIcon, profileName } from './ClaudeProfiles.jsx';
@@ -115,10 +119,23 @@ function useT(name) {
   return { t: useCallback((key, opts) => t(key, { agent, ...opts }), [t, agent]), i18n };
 }
 
-/** Codex（app-server）：`thinking` → 正在思考；其余是正在运行的命令，原样显示 */
-function activityText(t, activity) {
-  if (activity === 'compacting') return t('chat.compacting');
-  return activity === 'thinking' ? t('chat.codex_thinking') : activity;
+/**
+ * Codex（app-server）运行中的那一行：`thinking`、`compacting`、重连提示换成中文（原文跟在后面），
+ * 正在跑的命令放进后面的小胶囊（主文字说在做什么）。拆法和 Claude 的 `spinnerText` 一样：`{ text, detail, orig }`
+ */
+const RETRY_RE = /^Reconnecting\.*\s*(\d+)\s*\/\s*(\d+)/i;
+function codexActivity(t, activity, tool) {
+  const s = (activity ?? '').trim();
+  if (s === 'compacting') return { text: t('chat.compacting'), detail: '', orig: '' };
+  if (s === 'thinking') return { text: t('chat.codex_thinking'), detail: '', orig: '' };
+  if (s === 'waiting_agents') return { text: t('chat.codex_waiting_agents'), detail: '', orig: '' };
+  const retry = s.match(RETRY_RE);
+  if (retry) return { text: t('chat.codex_retry', { n: retry[1], total: retry[2] }), detail: '', orig: s };
+  if (s && tool === 'Bash') return { text: t('chat.codex_running_cmd'), detail: s, orig: '', code: true };
+  if (s && tool === 'mcp') return { text: t('chat.running_tool', { tool: s }), detail: '', orig: '' };
+  if (!s && tool === 'Edit') return { text: t('chat.codex_editing'), detail: '', orig: '' };
+  if (!s && tool === 'WebSearch') return { text: t('chat.codex_searching'), detail: '', orig: '' };
+  return { text: s, detail: '', orig: '' };
 }
 
 /** 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。 */
@@ -395,7 +412,8 @@ function useAgentSteps(id, { agent, tool, enabled }) {
         if (!alive) return;
         setData(d);
         setError(null);
-        if (!agentDone(d.items)) timer = setTimeout(load, 2000);
+        // Codex 的子代理最后是“这一轮用了几秒”，由服务端说做没做完
+        if (!(d.done ?? agentDone(d.items))) timer = setTimeout(load, 2000);
       } catch (e) {
         if (!alive) return;
         setError(e);
@@ -409,7 +427,7 @@ function useAgentSteps(id, { agent, tool, enabled }) {
     };
   }, [enabled, agent, tool]);
   const items = data?.items ?? [];
-  return { data, items, error, done: agentDone(items) };
+  return { data, items, error, done: data?.done ?? agentDone(items) };
 }
 
 /** 子代理的步骤一次先画这么多（每一步都可能展开成 diff），更早的点了再显示 */
@@ -422,7 +440,8 @@ const SUB_STEPS = 25;
 function SubAgent({ id, block, result }) {
   const { t } = useT();
   const [open, setOpen] = useState(true);
-  const { data, items, error, done } = useAgentSteps(id, { agent: result?.extra?.agentId, tool: block.id, enabled: open });
+  // Codex 的子代理：子会话 id 在参数里，还没交回结果时也能看步骤
+  const { data, items, error, done } = useAgentSteps(id, { agent: result?.extra?.agentId ?? block.input?.agent_thread_id, tool: block.id, enabled: open });
   return (
     <div className="chat-sub">
       <button type="button" className="chat-more" onClick={() => setOpen(!open)} aria-expanded={open}>
@@ -470,7 +489,8 @@ function ToolBody({ id, block, result }) {
     case 'Agent':
       return (
         <>
-          <Pre text={input.prompt} />
+          {/* Codex 的任务说明是加密的，没有 prompt */}
+          {input.prompt && <Pre text={input.prompt} />}
           <SubAgent id={id} block={block} result={result} />
         </>
       );
@@ -823,8 +843,9 @@ function Lightbox({ urls, index, onIndex, onClose }) {
 /** 不是 assistant 回复的条目（用户消息、单独的工具结果、分隔线、提示……） */
 function Item({ id, item }) {
   const { t } = useT();
-  const agent = useContext(AgentCtx).id;
-  const thumbs = item.images > 0 && agent === 'claude';
+  const { id: agent, caps } = useContext(AgentCtx);
+  // 老版本的 Codex 端取不出图片（不带 caps.user_images）：照旧只写几张
+  const thumbs = item.images > 0 && (agent === 'claude' || caps?.user_images === true);
   switch (item.k) {
     case 'user':
       return (
@@ -836,7 +857,7 @@ function Item({ id, item }) {
               {t('chat.mid_tag')}
             </span>
           )}
-          {/* 图片小图只有 Claude Code 有（图片存在 transcript 里）；Codex 照旧只写几张 */}
+          {/* 图片小图：从记录里取（Claude 的 transcript、Codex 的 rollout 里都有图片本身） */}
           {thumbs && <UserImages id={id} itemKey={item.key} n={item.images} />}
           {(item.text.trim() || (item.images > 0 && !thumbs)) && (
             <div className="chat-bubble">
@@ -1473,6 +1494,162 @@ function ModeMenu({ id, status, onClose }) {
   );
 }
 
+/** 以前说过的话（Ctrl+R）：搜索框 + 列表，上下键选、回车或点一下接到输入框里。 */
+function InputsMenu({ all, onPick, onClose }) {
+  const { t } = useT();
+  const [q, setQ] = useState('');
+  const [pick, setPick] = useState(0);
+  const list = useMemo(() => searchInputs(all, q).slice(0, 100), [all, q]);
+  const box = useRef(null);
+  useEffect(() => setPick(0), [q]);
+  useEffect(() => {
+    box.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
+  }, [pick]);
+  const onKey = (e) => {
+    if (e.nativeEvent.isComposing) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (e.key === 'r' && e.ctrlKey)) {
+      // Ctrl+R 再按一下：往更早的找（像命令行）
+      e.preventDefault();
+      if (list.length) setPick((p) => (p + (e.key === 'ArrowUp' ? -1 : 1) + list.length) % list.length);
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (list[pick]) onPick(list[pick].text);
+    }
+  };
+  return (
+    <Popover onClose={onClose} className="chat-pop-left chat-inputs" label={t('chat.inputs')}>
+      <label className="chat-inputs-search">
+        <Search size={14} aria-hidden="true" />
+        <input autoFocus type="search" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={onKey} placeholder={t('chat.inputs_search')} aria-label={t('chat.inputs_search')} spellCheck={false} />
+      </label>
+      <div className="chat-inputs-list" ref={box} role="listbox">
+        {list.map((x, n) => (
+          <button key={x.text} type="button" role="option" className="chat-inputs-row" aria-selected={n === pick} onPointerMove={() => setPick(n)} onClick={() => onPick(x.text)} title={x.text}>
+            <span className="chat-inputs-text">{x.text}</span>
+            <small>{x.here ? t('chat.inputs_here') : x.at ? relativeTime(t, x.at) : ''}</small>
+          </button>
+        ))}
+        {!list.length && <p className="chat-note chat-inputs-empty">{t(q.trim() ? 'chat.inputs_no_match' : 'chat.inputs_empty')}</p>}
+      </div>
+      <div className="chat-pop-h chat-inputs-foot">
+        <span>{t('chat.inputs_foot')}</span>
+      </div>
+    </Popover>
+  );
+}
+
+/**
+ * /resume：这台电脑、这个项目里同一个工具以前的对话，选一个在这里接着（不离开这一页）。
+ * 当前这段标出来、不能选；已经开在别的看看会话里的，点了打开那个会话。
+ */
+function ResumeMenu({ id, status, onClose }) {
+  const { t } = useT();
+  const { id: agentId } = useContext(AgentCtx);
+  const sessions = useSessions();
+  const { navigate } = useRouter();
+  const toast = useToast();
+  const [workdir, setWorkdir] = useState(() => sessions?.known(id)?.workdir ?? null);
+  const [data, setData] = useState(null);
+  const [q, setQ] = useState('');
+  const [busy, setBusy] = useState(null);
+  useEffect(() => {
+    if (workdir) return undefined;
+    let alive = true;
+    api.get(`/instances/${id}`).then(
+      (r) => alive && (r?.workdir ? setWorkdir(r.workdir) : setData({ items: [] })),
+      (e) => alive && setData({ error: e }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, workdir]);
+  useEffect(() => {
+    if (!workdir) return undefined;
+    let alive = true;
+    deviceApi(terminalDevice(id))
+      .get(`/history?workdir=${encodeURIComponent(workdir)}&limit=50`)
+      .then(
+        (r) => alive && setData(r ?? { items: [] }),
+        (e) => alive && setData({ error: e }),
+      );
+    return () => {
+      alive = false;
+    };
+  }, [id, workdir]);
+  const running = status?.phase === 'running';
+  const isHere = (c) => c.instance_id === id || (status?.session_id && c.id === status.session_id);
+  const words = q.trim().toLowerCase();
+  const list = (Array.isArray(data?.items) ? data.items : []).filter((c) => c.agent === agentId && (!words || [c.title, c.last, c.branch].filter(Boolean).join('\n').toLowerCase().includes(words)));
+  const go = async (c) => {
+    if (isHere(c) || busy) return;
+    if (c.instance_id) {
+      onClose();
+      navigate(`/s/${c.instance_id}`);
+      return;
+    }
+    setBusy(c.id);
+    try {
+      await api.post(`/instances/${id}/chat/input`, { text: `/resume ${c.id}`, images: [] });
+      onClose();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+      setBusy(null);
+    }
+  };
+  return (
+    <Popover onClose={onClose} className="chat-pop-left chat-resume" label={t('chat.resume_title')}>
+      <div className="chat-pop-h">
+        <span>{t('chat.resume_title')}</span>
+        {workdir && <span className="ellipsis" title={workdir}>{workdir.split(/[\\/]/).filter(Boolean).pop()}</span>}
+      </div>
+      {(Array.isArray(data?.items) ? data.items.length : 0) > 6 && (
+        <label className="chat-inputs-search">
+          <Search size={14} aria-hidden="true" />
+          <input autoFocus type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('chat.resume_search')} aria-label={t('chat.resume_search')} spellCheck={false} />
+        </label>
+      )}
+      {running && <p className="chat-note chat-resume-note">{t('chat.resume_running')}</p>}
+      <div className="chat-inputs-list">
+        {data === null ? (
+          <LoaderCircle size={16} className="spin chat-pop-wait" />
+        ) : data.error ? (
+          <p className="chat-note chat-inputs-empty">{errorText(t, data.error)}</p>
+        ) : !list.length ? (
+          <p className="chat-note chat-inputs-empty">{t(words ? 'chat.inputs_no_match' : 'chat.resume_empty')}</p>
+        ) : (
+          list.map((c) => {
+            const here = isHere(c);
+            const other = !here && c.instance_id;
+            return (
+              <button key={c.id} type="button" className="chat-mi chat-resume-row" aria-current={here || undefined} disabled={here || (running && !other) || (busy && busy !== c.id)} onClick={() => go(c)} title={c.last || c.title}>
+                <span className="chat-mi-text">
+                  <span className="ellipsis">{c.title}</span>
+                  <small className="ellipsis">
+                    {[c.branch, c.last].filter(Boolean).join(' · ')}
+                  </small>
+                </span>
+                {busy === c.id ? (
+                  <LoaderCircle size={15} className="spin" />
+                ) : here ? (
+                  <span className="badge badge-brand">{t('chat.resume_here')}</span>
+                ) : other ? (
+                  <span className="badge" title={t('chat.resume_other_hint')}>
+                    <ExternalLink size={11} aria-hidden="true" /> {t('chat.resume_other')}
+                  </span>
+                ) : c.live ? (
+                  <span className="badge badge-warn" title={t('hist.live')}>{t('hist.live_badge')}</span>
+                ) : (
+                  <small className="chat-resume-when">{relativeTime(t, c.updated_at)}</small>
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
+    </Popover>
+  );
+}
+
 /** `2.1.310` 这样的版本号不低于 min（不知道版本时当作够新，服务端还会再查） */
 function versionAtLeast(v, min) {
   if (!v) return true;
@@ -1524,7 +1701,7 @@ function writeDraft(id, text) {
   }
 }
 
-function Composer({ id, status, phase, touch, offline, models, usage, onAction, onSide }) {
+function Composer({ id, status, phase, touch, offline, models, usage, items, onAction, onSide }) {
   const { t } = useT();
   // 权限模式只有 Claude Code 有；模型、思考强度、上下文用量按工具的能力（caps）显示
   const { id: agentId, caps } = useContext(AgentCtx);
@@ -1609,8 +1786,7 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
     const action = !images.length && slashAction(body);
     if (action) {
       setText('');
-      if (action === 'model') setMenu('model');
-      else onAction(action);
+      menuFor(action);
       return;
     }
     // 第一次发消息时（有用户操作）申请通知权限：需要确认、做完了在后台也能知道
@@ -1619,6 +1795,8 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
     // 先清空输入框（斜杠命令也一样）；没送出去时再放回来，不丢用户打的字
     inflight.current = body;
     setText('');
+    hist.current = -1;
+    if (body && agentId !== 'claude') rememberInput(body);
     try {
       const r = await api.post(`/instances/${id}/chat/input`, now && canNow ? { text: body, images, now: true } : { text: body, images });
       inflight.current = '';
@@ -1634,6 +1812,61 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
       setSending(false);
     }
   };
+  // 界面自己做的命令：/model 开模型菜单，/resume 开以前的对话（不离开这一页）
+  const menuFor = (action) => {
+    if (action === 'model') setMenu('model');
+    else if (action === 'history') setMenu('resume');
+    else onAction(action);
+  };
+  // 以前说过的话：Claude Code 用它自己的 history.jsonl（和终端里按上键翻的同一份），发出一句后重新取；
+  // 取不到（别的工具、旧版客户端）用本机存着的
+  const said = useMemo(() => (items ?? []).filter((x) => x.k === 'user').length, [items]);
+  const [prompts, setPrompts] = useState(null);
+  const hasStatus = status != null;
+  useEffect(() => {
+    if (agentId !== 'claude' || !hasStatus) return undefined;
+    let alive = true;
+    api.get(`/instances/${id}/chat/prompts`).then(
+      (r) => alive && Array.isArray(r?.items) && setPrompts(r.items),
+      () => {},
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, agentId, hasStatus, said, status?.session_id]);
+  // Claude Code 的照它自己的顺序（这个项目里最新的在前，和终端里一样）；对话里新说的话一出现就重新取了
+  const fromCli = agentId === 'claude' && prompts;
+  const inputList = useMemo(() => (fromCli ? inputHistory([], prompts, status?.session_id) : inputHistory(items)), [fromCli, prompts, items, status?.session_id]);
+  // 上下键翻以前说过的话：光标在第一行时往上、最后一行时往下；翻到头再往下回到原来打的字
+  const hist = useRef(-1);
+  const histDraft = useRef('');
+  const recall = (dir, el) => {
+    const before = el.value.slice(0, el.selectionStart);
+    const after = el.value.slice(el.selectionEnd);
+    if (el.selectionStart !== el.selectionEnd || (dir > 0 ? before.includes('\n') : after.includes('\n'))) return false;
+    if (dir < 0 && hist.current < 0) return false;
+    const list = inputList;
+    const next = hist.current + dir;
+    if (next >= list.length) return false;
+    if (hist.current < 0) histDraft.current = text;
+    hist.current = next;
+    const value = next < 0 ? histDraft.current : list[next].text;
+    setText(value);
+    requestAnimationFrame(() => area.current?.setSelectionRange(value.length, value.length));
+    return true;
+  };
+  // 历史里点的一句：接在输入框已有的字后面
+  const appendInput = (s) => {
+    setMenu(null);
+    hist.current = -1;
+    setText((cur) => (cur.trim() ? `${cur.replace(/\s+$/, '')}\n${s}` : s));
+    requestAnimationFrame(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  };
   const stop = async () => {
     try {
       await api.post(`/instances/${id}/chat/interrupt`);
@@ -1642,7 +1875,13 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
     }
   };
   const onKey = (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && canNow) {
+    if (e.key === 'r' && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      // 像命令行：Ctrl+R 搜以前说过的话
+      e.preventDefault();
+      setMenu('inputs');
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !slash.length && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing && recall(e.key === 'ArrowUp' ? 1 : -1, e.currentTarget)) {
+      e.preventDefault();
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && canNow) {
       // 和 Claude Code 一样：Ctrl+Enter 立即发送
       e.preventDefault();
       send(true);
@@ -1694,8 +1933,7 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
   const pickSlash = (c) => {
     if (c.action) {
       setText('');
-      if (c.action === 'model') setMenu('model');
-      else onAction(c.action);
+      menuFor(c.action);
       return;
     }
     setText(`${c.name} `);
@@ -1738,6 +1976,17 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
       )}
       {menu === 'model' && <ModelMenu id={id} status={status} models={models} view={view} onClose={() => setMenu(null)} />}
       {menu === 'mode' && <ModeMenu id={id} status={status} onClose={() => setMenu(null)} />}
+      {menu === 'inputs' && (
+        <InputsMenu
+          all={inputList}
+          onPick={appendInput}
+          onClose={() => {
+            setMenu(null);
+            area.current?.focus();
+          }}
+        />
+      )}
+      {menu === 'resume' && <ResumeMenu id={id} status={status} onClose={() => setMenu(null)} />}
       {/* 运行中发的、还在 Claude Code 队列里的消息：这一步做完会并进对话 */}
       {status?.queued?.length > 0 && (
         <div className="chat-queued" role="status">
@@ -1754,7 +2003,7 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
           </span>
           {status.queued.map((q, n) => (
             <p key={n} className="chat-queued-text">
-              {q}
+              {q || <ImageIcon size={14} aria-label={t('chat.images', { n: 1 })} />}
             </p>
           ))}
         </div>
@@ -1806,7 +2055,10 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
           value={text}
           disabled={disabled}
           placeholder={suggestion ?? t(offline ? 'chat.placeholder_offline' : disabled ? `chat.placeholder_${phase}` : running ? 'chat.placeholder_running' : touch ? 'chat.placeholder_touch' : 'chat.placeholder')}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            hist.current = -1;
+            setText(e.target.value);
+          }}
           onKeyDown={onKey}
           onPaste={(e) => {
             const imgs = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'));
@@ -1832,6 +2084,10 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
             <ChevronDown size={13} aria-hidden="true" />
           </button>
           )}
+          {/* 以前说过的话：点开搜（电脑上 Ctrl+R），选一句接到输入框里 */}
+          <button type="button" className="btn btn-plain btn-icon chat-inputs-btn" data-pop-anchor="" aria-expanded={menu === 'inputs'} disabled={disabled} onClick={() => setMenu(menu === 'inputs' ? null : 'inputs')} aria-label={t('chat.inputs')} title={touch ? t('chat.inputs') : t('chat.inputs_hint')}>
+            <History size={17} />
+          </button>
           <span className="grow" />
           {/* 还在跑的后台子代理、命令：点了打开右侧的“任务” */}
           {bg.subagent > 0 && (
@@ -1936,8 +2192,83 @@ function SideToggle({ side, onSide }) {
 }
 
 /** Claude Code 没在运行或没接上对话界面时的说明 */
-function Detached({ id, status }) {
+/**
+ * 草稿页发出的第一句（shared/firstSend.js）：会话还没起来时先显示出来，下面一行“正在启动…”；
+ * 起来了自动发出去。没起来时字不丢：重试，或者带着字回到草稿换个类型、项目。
+ */
+function FirstSend({ id, first, onBack }) {
   const { t } = useT();
+  const [busy, setBusy] = useState(false);
+  const failed = first.state === 'failed';
+  const why = (f) => {
+    if (f.kind === 'instance') return t(`instance.error.${f.code}`, { defaultValue: t('instance.error.other') });
+    if (f.kind === 'detached') return t(`chat.detached_${f.reason}_title`, { defaultValue: t('chat.first_timeout') });
+    if (f.kind === 'timeout') return t('chat.first_timeout');
+    return f.error?.message === 'not_delivered' ? t('chat.not_delivered') : errorText(t, f.error);
+  };
+  const retry = async () => {
+    setBusy(true);
+    try {
+      await retryFirst(id);
+    } finally {
+      setBusy(false);
+    }
+  };
+  // 放回输入框：会话起来了（只是发送出错）时在这里接着发
+  const toInput = () => {
+    const x = dropFirst(id);
+    if (x?.text) window.dispatchEvent(new CustomEvent(`ll-chat-fill:${id}`, { detail: x.text }));
+  };
+  return (
+    <>
+      <div className="chat-user">
+        {first.files.length > 0 && (
+          <div className="chat-user-imgs">
+            {first.files.map((f) => (
+              <span key={f.url} className="chat-user-img">
+                <img src={f.url} alt="" />
+              </span>
+            ))}
+          </div>
+        )}
+        {first.text && <div className="chat-bubble">{first.text}</div>}
+      </div>
+      {failed ? (
+        <div className="chat-first-fail" role="alert">
+          <b>{t(first.fail.kind === 'send' ? 'chat.first_send_failed' : 'chat.first_start_failed')}</b>
+          <span>
+            {why(first.fail)} {t('chat.first_kept')}
+          </span>
+          <span className="chat-acts">
+            <Button variant="secondary" busy={busy} onClick={retry}>
+              {t('chat.first_retry')}
+            </Button>
+            {first.fail.kind === 'send' ? (
+              <Button variant="secondary" onClick={toInput}>
+                {t('chat.first_to_input')}
+              </Button>
+            ) : (
+              onBack && (
+                <Button variant="secondary" onClick={onBack}>
+                  {t('chat.first_back')}
+                </Button>
+              )
+            )}
+          </span>
+        </div>
+      ) : first.state !== 'sent' && (
+        <p className="chat-first-wait">
+          <LoaderCircle size={14} className="spin" aria-hidden="true" />
+          {first.state === 'sending' ? t('chat.first_sending') : t('chat.first_waiting')}
+          {first.state === 'waiting' && <span className="muted">{t('chat.first_waiting_note')}</span>}
+        </p>
+      )}
+    </>
+  );
+}
+
+function Detached({ id, status }) {
+  const { t, i18n } = useT();
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
@@ -1959,11 +2290,14 @@ function Detached({ id, status }) {
   const adoptable = reason === 'not_attached';
   const key = adoptable ? 'adopt_wait' : reason;
   const adoptNow = () => run(`/instances/${id}/chat/adopt`);
+  // 有的状态没有说明：不能用 defaultValue: ''，空的兜底值会让 i18next 显示键名（配置了 returnEmptyString: false）
+  const bodyKey = `chat.detached_${key}_body`;
+  const body = i18n.exists(bodyKey) ? t(bodyKey) : '';
   return (
     <div className="chat-detached">
       {(reason === 'starting' || reason === 'adopting' || reason === 'switching' || adoptable) && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
       <b>{t(`chat.detached_${key}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
-      <p className="muted">{t(`chat.detached_${key}_body`, { defaultValue: '' })}</p>
+      {body && <p className="muted">{body}</p>}
       {adoptable && (
         <div className="chat-acts">
           {confirming ? (
@@ -2586,7 +2920,7 @@ function Live({ status, items, since }) {
   const head = preview.slice(0, 30);
   const shown = preview && !(head && lastText.replace(/\s+/g, '').includes(head.replace(/\s+/g, '')));
   // Claude Code 的状态行（`Unraveling… (8s · ↓ 22 tokens)`）：中文界面把动词换成中文；Codex 的另有说法
-  const act = status?.agent === 'claude' || !status?.agent ? spinnerText(status?.activity, i18n.language) : { text: activityText(t, status?.activity) ?? '', detail: '', orig: '' };
+  const act = status?.agent === 'claude' || !status?.agent ? spinnerText(status?.activity, i18n.language) : codexActivity(t, status?.activity, status?.tool);
   return (
     <>
       {shown && <div className="chat-preview">{preview}</div>}
@@ -2594,7 +2928,11 @@ function Live({ status, items, since }) {
         <SpinGlyph />
         <span className="ellipsis">{act.text || (status?.tool ? t('chat.running_tool', { tool: status.tool }) : t('chat.working'))}</span>
         {act.orig && <span className="chat-working-orig" lang="en">{act.orig}</span>}
-        {act.detail && <span className="chat-working-detail">{act.detail}</span>}
+        {act.detail && (
+          <span className="chat-working-detail" data-code={act.code ? '' : undefined} title={act.code ? act.detail : undefined}>
+            {act.detail}
+          </span>
+        )}
         {secs > 0 && <span className="chat-working-time">{duration(secs * 1000)}</span>}
       </p>
     </>
@@ -2744,10 +3082,13 @@ const readSide = () => {
  * offline：终端所在的电脑连不上（对话照样显示，连不上时不能发送）；onTab(tab)：切到终端的别的标签（例如右侧“改动”里的“在 Git 里查看”）。
  * 对话页里不出现终端：Claude Code 的选择框显示成弹窗，界面做不了的就不做，用户自己切到“终端”标签去。
  */
-export default function ChatView({ id, launch, active, touch, offline = false, onTab }) {
+export default function ChatView({ id, launch, active, touch, offline = false, onTab, onDraftBack }) {
   const router = useRouter();
   const chat = useChat(id);
   const { status, items } = chat;
+  // 草稿页发出的第一句：起来前先显示；发出去、记录里有了之后换成真的那条
+  const firstRaw = useFirstSend(id);
+  const first = firstRaw && !(firstRaw.state === 'sent' && items.some((x) => x.k === 'user')) ? firstRaw : null;
   // 状态还没取到（刚切过来、连不上）时按终端的启动类型，不能先显示成 Claude Code
   const agentId = status?.agent ?? (AGENT_NAMES[launch] ? launch : 'claude');
   const agentName = AGENT_NAMES[agentId] ?? AGENT_NAMES.claude;
@@ -2800,10 +3141,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   const { following, toBottom } = useFollow(list, inner, [items, status?.pending?.id, active, side]);
   const toast = useToast();
   const onAction = (a) => {
-    if (a === 'history') {
-      if (router?.navigate) router.navigate('/history');
-      else window.location.assign('/history');
-    } else if (SIDE_TABS.includes(a)) setSide(a);
+    if (SIDE_TABS.includes(a)) setSide(a);
   };
   const compact = () => api.post(`/instances/${id}/chat/input`, { text: '/compact', images: [] }).catch((e) => toast(errorText(t, e), 'error'));
   const loading = useRef(false);
@@ -2842,7 +3180,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           <div className="chat-list" ref={list} onScroll={onScroll} tabIndex={-1}>
             <div className="chat-items" ref={inner}>
               {chat.start > 0 && <p className="chat-event">{t('chat.older')}</p>}
-              {!items.length && status && phase !== 'detached' && (
+              {!items.length && status && phase !== 'detached' && !first && (
                 <div className="chat-empty">
                   <span className="chat-empty-mark" aria-hidden="true">
                     <Asterisk size={40} />
@@ -2860,6 +3198,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
                 </div>
               )}
               <Rows id={id} items={items} live={live} />
+              {first && <FirstSend id={id} first={first} onBack={onDraftBack} />}
               {phase === 'running' && <Live status={status} items={items} since={since} />}
               {/* 推荐的下一句放在对话最后：点一下填进输入框（电脑上也可以按 Tab） */}
               {phase === 'idle' && status?.suggestion && items.length > 0 && (
@@ -2906,10 +3245,11 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
               <TodoList todos={todos} />
             </details>
           )}
-          {phase === 'detached' && <Detached id={id} status={status} />}
+          {/* 第一句在等它起来：上面已经写着“正在启动”，这里不再说一遍 */}
+          {phase === 'detached' && !first && <Detached id={id} status={status} />}
           {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
-          <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} onAction={onAction} onSide={setSide} />
+          <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
       </div>
       {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} />}
