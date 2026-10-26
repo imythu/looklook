@@ -233,7 +233,7 @@
   "CODEX_APP_SERVER": "Couldn't reach the Codex background service. Please try again",
   "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer",
   "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}",
-  "CHAT_TERMINAL_ONLY": "Codex is still running this conversation directly; it reconnects automatically once it's idle",
+  "CHAT_TERMINAL_ONLY": "The chat can't reach Codex right now; use the terminal for now",
   "CODEX_TERMINAL_BUSY": "The program in the terminal didn't exit. Quit it in the terminal, then reconnect",
   "CODEX_TERMINAL_STOPPED": "The terminal isn't running. Start it first",
   "SYNC_NEED_RTC": "Settings sync only runs between computers over the end-to-end channel.",

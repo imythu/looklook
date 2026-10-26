@@ -80,12 +80,9 @@ fn home() -> PathBuf {
     dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
-/// Claude Code 的用户级配置文件：默认 `~/.claude.json`；设置了 `CLAUDE_CONFIG_DIR` 时在那个目录里。
+/// Claude Code 的用户级配置文件：默认 `~/.claude.json`；设置了 `CLAUDE_CONFIG_DIR` 时在那个目录里（见 `chat::models::state_file`）。
 fn claude_json() -> PathBuf {
-    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
-        Some(v) => PathBuf::from(v).join(".claude.json"),
-        None => home().join(".claude.json"),
-    }
+    crate::chat::models::state_file()
 }
 
 /// 找 `claude` 命令：先在登录 shell 的 PATH 里找；找不到再看官方安装脚本的固定位置

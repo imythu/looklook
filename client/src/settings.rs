@@ -36,8 +36,6 @@ pub struct Settings {
     pub default_shell: String,
     /// 有新版本时在空闲时（没有打开的终端）自动下载安装并重启
     pub auto_update: bool,
-    /// 更新通道：`stable`（只收正式版）或 `beta`（正式版和测试版都收，装版本号大的）
-    pub update_channel: String,
     /// 粘贴的截图、“发给 AI”的文件（附件目录）保留几天，过期自动删除
     pub attach_days: u16,
     /// 新建 AI 会话（Claude Code / Codex / OpenCode）默认带全部权限。项目里用过的跟着那个项目上次的（界面决定）
@@ -55,7 +53,6 @@ impl Default for Settings {
             device_name: String::new(),
             default_shell: String::new(),
             auto_update: true,
-            update_channel: "stable".into(),
             attach_days: 7,
             default_full_access: false,
         }
@@ -132,9 +129,6 @@ impl Settings {
             self.theme = DEFAULT_THEME.into();
         }
         self.theme_rev = THEME_REV;
-        if self.update_channel != "beta" {
-            self.update_channel = "stable".into();
-        }
         self.font_size = self.font_size.clamp(10, 28);
         self.attach_days = self.attach_days.clamp(1, 365);
         self.default_workdir = self.default_workdir.trim().to_string();
@@ -144,10 +138,6 @@ impl Settings {
         self.default_shell = self.default_shell.trim().to_string();
         self.device_name = self.device_name.trim().chars().filter(|c| !c.is_control()).take(64).collect();
         self
-    }
-
-    pub fn beta(&self) -> bool {
-        self.update_channel == "beta"
     }
 
     pub fn device_name(&self) -> String {

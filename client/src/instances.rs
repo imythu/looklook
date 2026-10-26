@@ -987,7 +987,7 @@ impl Instances {
         let cmd = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
         match self.chat_settings(row) {
             Some(settings) => Some(with_chat(row, &cmd, &settings, None)),
-            None => Some(cmd),
+            None => Some(self.with_terminal_settings(row, cmd)),
         }
     }
 
@@ -999,7 +999,7 @@ impl Instances {
         match row.launch.as_str() {
             "claude" => Some(match self.chat_settings(row) {
                 Some(settings) => format!("{}{fork}", with_chat_hooks(&base, &row.id, &settings, Some(&r.id))),
-                None => format!("{base} --resume {}{fork}", r.id),
+                None => format!("{} --resume {}{fork}", self.with_terminal_settings(row, base), r.id),
             }),
             // 对话模式由 app-server 接着（见 gateway 的新建），终端里是 shell
             "codex" if self.codex_app_mode(row) => None,
@@ -1028,6 +1028,21 @@ impl Instances {
             Err(e) => {
                 tracing::warn!(error = %e, launch = %row.launch, "无法写入对话界面的 hooks 配置，按普通方式启动");
                 None
+            }
+        }
+    }
+
+    /// 不带对话界面的 Claude Code：加上只有 `skipDangerousModePermissionPrompt` 的 `--settings`，全部权限启动时不弹 Bypass 警告
+    /// （对话界面的在 hooks 配置里）。写不进去时原样启动，Claude Code 照常弹窗。
+    fn with_terminal_settings(&self, row: &InstanceRow, cmd: String) -> String {
+        if row.launch != "claude" {
+            return cmd;
+        }
+        match crate::chat::hooks::ensure_terminal_settings(&self.paths) {
+            Ok(p) => format!("{cmd} --settings \"{}\"", p.display().to_string().replace('"', "")),
+            Err(e) => {
+                tracing::warn!(error = %e, "无法写入 Claude Code 终端的配置，Bypass 警告照常弹");
+                cmd
             }
         }
     }
@@ -1950,7 +1965,11 @@ mod tests {
         let v = inst.create(mk("claude", false, true)).await.unwrap();
         assert_eq!(inst.store.get::<String>(&resume_key(&v.row.id)).unwrap(), None, "复制的一份不算接着原来的");
         let sandbox = if crate::platform::is_root() { "IS_SANDBOX=1 " } else { "" };
-        assert_eq!(cmd(v, true), format!("{sandbox}claude --allow-dangerously-skip-permissions --resume 019a-x_1 --fork-session"));
+        // 不带对话界面也带上只跳过 Bypass 警告的 --settings
+        let term = crate::chat::hooks::terminal_settings_path(&inst.paths);
+        assert_eq!(cmd(v, true), format!("{sandbox}claude --allow-dangerously-skip-permissions --settings \"{}\" --resume 019a-x_1 --fork-session", term.display()));
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&term).unwrap()).unwrap();
+        assert_eq!(written, serde_json::json!({ "skipDangerousModePermissionPrompt": true }));
         let v = inst.create(mk("opencode", false, false)).await.unwrap();
         assert_eq!(inst.store.get::<String>(&resume_key(&v.row.id)).unwrap().as_deref(), Some(id));
         assert_eq!(cmd(v, false), "opencode --session 019a-x_1");

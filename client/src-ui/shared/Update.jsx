@@ -95,9 +95,6 @@ export function UpdateProvider({ children }) {
   );
 }
 
-/** 带 `-` 的版本号（`1.38.0-beta.1`）是测试版 */
-const isBeta = (v) => Boolean(v?.includes('-'));
-
 function fmtSize(n) {
   if (!n) return '';
   return n > 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
@@ -196,7 +193,6 @@ function UpdateDialog({ open, onClose }) {
             <span className="mono">{u.current}</span>
             <ArrowRight size={16} aria-hidden="true" />
             <b className="mono">{u.version}</b>
-            {isBeta(u.version) && <span className="badge badge-brand">{t('update.beta_badge')}</span>}
             {u.required && <span className="badge badge-warn">{t('update.required_badge')}</span>}
           </div>
           {u.published_at && <p className="small muted">{t('update.published', { when: formatTime(u.published_at) })}</p>}
@@ -394,40 +390,6 @@ function AutoUpdate() {
   );
 }
 
-/** 接收测试版：立即保存并按新通道重查一次。 */
-function BetaChannel() {
-  const { t, i18n } = useTranslation();
-  const { status, reload } = useStatus();
-  const toast = useToast();
-  const { busy, error, run } = useAction();
-  const on = status.settings.update_channel === 'beta';
-  const set = async (v) => {
-    const r = await run(async () => {
-      await api.put('/settings', { update_channel: v ? 'beta' : 'stable' });
-      return api.get(`/update?locale=${i18n.language}`);
-    });
-    if (r) {
-      toast(t('common.saved'));
-      reload();
-    }
-  };
-  return (
-    <div className="stack" style={{ gap: 6, marginBottom: 12 }}>
-      <div className="between" style={{ flexWrap: 'nowrap' }}>
-        <span>
-          <b>{t('update.beta')}</b>
-          <span className="small muted" style={{ display: 'block' }}>
-            {t('update.beta_hint')}
-          </span>
-        </span>
-        <Switch checked={on} disabled={busy} onChange={set} label={t('update.beta')} />
-      </div>
-      {!on && isBeta(status.version) && <Note>{t('update.beta_off_note', { version: status.version })}</Note>}
-      <ErrorNote error={error} />
-    </div>
-  );
-}
-
 /** 关于里的版本与检查更新。 */
 export function UpdateCheck() {
   const { t } = useTranslation();
@@ -437,7 +399,6 @@ export function UpdateCheck() {
   return (
     <>
     <AutoUpdate />
-    <BetaChannel />
     <div className="between" style={{ flexWrap: 'wrap', gap: 10 }}>
       <span className="small">
         {u.available ? (

@@ -57,6 +57,9 @@ const QUIET: Duration = Duration::from_secs(3);
 const COMPACT_MAX: Duration = Duration::from_secs(600);
 /// claude 在运行却一直没有 SessionStart：没带 hooks 启动，或者 hooks 被用户配置关掉了
 const ATTACH_GRACE: Duration = Duration::from_secs(10);
+/// Claude Code 启动后头几秒屏幕是空的（2.1.310 实测 3 秒多，登录 shell 慢时更久），之后才画出输入框：
+/// 这段时间里认不出来的屏幕算“还在启动”，不弹“在等你选择”。读得出来的选择框（信任目录等）照常马上弹
+const STARTUP_WAIT: Duration = Duration::from_secs(20);
 /// 额度用完的菜单多久没人选，就替用户选“等重置后自动继续”
 /// Claude Code 从这个版本起有“立即发送”（`chat:sendNow`，Ctrl+X Ctrl+S）
 const SEND_NOW_SINCE: (u32, u32, u32) = (2, 1, 275);
@@ -160,6 +163,8 @@ struct State {
     codex: codex_chat::CodexSt,
     /// 连续几次抓屏都认不出输入框、也读不出选择框（重绘、缩放到一半时会抓到这种半截屏幕）
     odd_screens: u8,
+    /// 这次启动后屏幕上出现过输入框（之前认不出来的屏幕多半是还在启动，见 [`STARTUP_WAIT`]）
+    drawn: bool,
     /// 正在压缩上下文（PreCompact 到 PostCompact）：这期间屏幕上的转圈认不出来，不能按屏幕改成空闲
     compacting: Option<Instant>,
 }
@@ -320,6 +325,7 @@ impl Chat {
                         suggestion: None,
                         codex: Default::default(),
                         odd_screens: 0,
+                        drawn: false,
                         compacting: None,
                     }),
                     tx: broadcast::channel(256).0,
@@ -774,11 +780,13 @@ impl Chat {
         match (&pane, screen) {
             (None, _) => {
                 st.claude_since = None;
+                st.drawn = false;
                 Self::set_phase(inst, &mut st, Phase::Detached, Some("no_session"));
             }
             (Some(_), None) => {
                 // 面板里是 shell：claude 没在运行
                 st.claude_since = None;
+                st.drawn = false;
                 st.agents.clear();
                 st.background.clear();
                 Self::drop_pending(&mut st);
@@ -795,6 +803,8 @@ impl Chat {
                 // 读不出来的界面要连着看到两次才算：只看到一次多半是正在重绘，弹出“在等你选择”过一会儿又自己消失
                 let odd = scr == Screen::Modal && st.dialog.is_none() && st.phase != Phase::Tui;
                 st.odd_screens = if odd { st.odd_screens.saturating_add(1) } else { 0 };
+                st.drawn |= matches!(scr, Screen::Input { .. });
+                let starting = !st.drawn && since.elapsed() < STARTUP_WAIT;
                 match (st.phase, scr) {
                     // 确认框已经不在了（在终端里按了 Esc 或选了“否”：这两种都没有 hook）。
                     // Codex 要等 hook 答复之后才在 TUI 上弹确认框，挂起时屏幕上本来就是输入框，不能据此放掉
@@ -805,7 +815,7 @@ impl Chat {
                     (Phase::Approval, _) => {}
                     (_, Screen::Modal) if st.phase == Phase::Tui => {}
                     (Phase::Running, Screen::Modal) if !quiet => {}
-                    (_, Screen::Modal) if st.odd_screens == 1 => {}
+                    (_, Screen::Modal) if st.odd_screens == 1 || (odd && starting) => {}
                     (_, Screen::Modal) => Self::set_phase(inst, &mut st, Phase::Tui, None),
                     (_, Screen::Input { busy, ref text }) if !attached => {
                         Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached"));
@@ -1455,41 +1465,6 @@ impl Chat {
             }
         }
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
-    }
-
-    /// 状态栏右下角：这台电脑上登录了的 Claude、Codex 账号的限额（5 小时、每周），没登录或取不到时为 null。
-    /// Codex 只在登录了 ChatGPT（有 auth.json）时才去问 app-server，免得为了这个起一个用不上的进程。
-    pub async fn accounts_usage(&self) -> Value {
-        let has = |v: &Value| !v["five_hour"].is_null() || !v["seven_day"].is_null();
-        // Claude：默认账号（官方登录的才有订阅用量），只读 Claude Code 自己缓存在 .claude.json 里的——
-        // 不拿它的凭据去问 Anthropic（不允许第三方这么用）。缓存旧了在后台请它自己取（`claude -p /usage`，
-        // 不调模型、不耗额度，每个账号两分钟最多一次），下次来就是新的
-        let claude = async {
-            let profile = crate::claude_profiles::get(&self.store, &crate::claude_profiles::default_id(&self.store))?;
-            if profile.kind != crate::claude_profiles::Kind::Official {
-                return None;
-            }
-            let (config_dir, state_file) = crate::claude_profiles::config_paths(&self.paths.home, &profile);
-            let here = PathBuf::from(".");
-            let ctx = models::Ctx { config_dir, state_file, workdir: &here, env: HashMap::new() };
-            let limits = tokio::task::block_in_place(|| models::limits(&ctx));
-            if crate::util::system_ms() - limits["fetched_at"].as_i64().unwrap_or(0) > models::LIMITS_STALE_MS {
-                let shell = self.instances.shell().to_string();
-                let account = (profile.id != crate::claude_profiles::OFFICIAL).then(|| crate::claude_profiles::account_dir(&self.paths.home, &profile.id));
-                let cwd = self.paths.home.join("run").join("usage");
-                let dir = ctx.config_dir.clone();
-                tokio::spawn(async move { models::refresh_limits(&shell, &dir, account.as_deref(), &cwd).await });
-            }
-            Some(limits).filter(has)
-        };
-        let codex = async {
-            if !crate::agents::codex_home().join("auth.json").is_file() {
-                return None;
-            }
-            self.codex_limits().await.ok().filter(has)
-        };
-        let (claude, codex) = tokio::join!(claude, codex);
-        json!({ "claude": claude, "codex": codex })
     }
 
     /// 对话生成的文件（目前只有 Codex 生成的图片）
@@ -2376,7 +2351,6 @@ mod tests {
     /// （claude_profiles::skip_first_run），选主题、安全提示、信任目录、Bypass 警告都不出现，直接到输入框。不发消息，不用额度。
     /// `CHAT_E2E_DIR` 可以是普通文件夹、git 仓库里的子目录，或者家目录（同时把 `HOME` 设成它）：都是写工作目录本身。
     /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_onboarding -- --ignored --nocapture`
-    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn chat_e2e_onboarding() {
@@ -2405,8 +2379,11 @@ mod tests {
         instances.ensure_session(&row).await.unwrap();
         let (_rx, viewer) = chat.subscribe(&id).unwrap();
         let mut seen = Vec::new();
-        for _ in 0..30 {
-            tokio::time::sleep(Duration::from_millis(1000)).await;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            // 启动时屏幕先空着几秒：界面上要一直是“正在启动”，不能变成“在等你选择”
+            let s = chat.snapshot(&id).await.unwrap();
+            assert_ne!(s["status"]["phase"], "tui", "启动中不该当成选择框：{}", s["status"]);
             let raw = instances.screen(&id).await.unwrap_or_default();
             let cap = raw.lines().map(|l| screen::strip(l).0).collect::<Vec<_>>().join("\n");
             for (k, s) in [("theme", "Choose the text style"), ("security", "Security notes:"), ("trust", "trust this folder"), ("bypass", "Yes, I accept")] {

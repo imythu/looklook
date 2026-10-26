@@ -3,6 +3,7 @@
 //! - `run/claude-hooks.json`：启动对话模式的 Claude Code 时用 `--settings` 传进去，不改用户自己的 settings。
 //!   每个事件挂一条 command hook：`<looklook> hook <run/hook.json>`；另外带上 `skipDangerousModePermissionPrompt`，
 //!   以全部权限启动时不弹 Bypass Permissions 警告（2.1.310 判断要不要弹时也看 `--settings` 里的值）。
+//! - `run/claude-terminal.json`：不带对话界面的 Claude Code 终端用的 `--settings`，只有 `skipDangerousModePermissionPrompt`。
 //! - `run/hook.json`：客户端每次启动写入（0600）：管理台的本机地址和这次运行的随机令牌。
 //! - `looklook hook`：Claude Code 调用的子命令。读 stdin 的 hook 输入，转给客户端的 `POST /hook`，
 //!   把客户端的答复原样写到 stdout。**出什么错都放行**：连不上、超时、出错一律退出 0、不输出，Claude Code 照常运行。
@@ -49,6 +50,10 @@ const PERMISSION_TIMEOUT: u64 = 600;
 
 pub fn settings_path(paths: &Paths) -> PathBuf {
     paths.home.join("run").join("claude-hooks.json")
+}
+
+pub fn terminal_settings_path(paths: &Paths) -> PathBuf {
+    paths.home.join("run").join("claude-terminal.json")
 }
 
 pub fn endpoint_path(paths: &Paths) -> PathBuf {
@@ -105,7 +110,20 @@ pub fn ensure_settings(paths: &Paths) -> std::io::Result<PathBuf> {
     let exe = hook_exe(paths);
     let path = settings_path(paths);
     let text = serde_json::to_string_pretty(&settings_json(&exe, &endpoint_path(paths)))?;
+    write_changed(path, text)
+}
+
+/// 写好 `claude-terminal.json`（内容没变就不动）：不带对话界面的 Claude Code 以全部权限启动时也不弹 Bypass 警告，不碰用户设置。
+pub fn ensure_terminal_settings(paths: &Paths) -> std::io::Result<PathBuf> {
+    let text = serde_json::to_string_pretty(&json!({ "skipDangerousModePermissionPrompt": true }))?;
+    write_changed(terminal_settings_path(paths), text)
+}
+
+fn write_changed(path: PathBuf, text: String) -> std::io::Result<PathBuf> {
     if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
         std::fs::write(&path, text)?;
     }
     Ok(path)

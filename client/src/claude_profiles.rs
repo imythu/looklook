@@ -138,7 +138,7 @@ pub fn config_paths(home: &Path, p: &Profile) -> (PathBuf, PathBuf) {
     match p.kind {
         Kind::Official if p.id != OFFICIAL => {
             let dir = account_dir(home, &p.id);
-            let state = dir.join(".claude.json");
+            let state = crate::chat::models::state_in(&dir, dir.join(".claude.json"));
             (dir, state)
         }
         _ => (crate::chat::models::config_dir(), crate::chat::models::state_file()),
@@ -335,6 +335,8 @@ pub fn launch_env(home: &Path, p: &Profile) -> Option<LaunchEnv> {
 /// - 首次启动的引导（选主题、安全提示）：文档里没有对应的设置，补上走完引导后 Claude Code 自己写的 `hasCompletedOnboarding`；
 ///   同一次把主题设成 `auto`（跟随终端）。写在这里而不是用户设置里：这里的 `theme` 只在 settings 文件都没设时生效
 ///   （官方文档 settings-reference `theme`），用户自己选的主题照样优先。
+///   值是 `false` 也改：`claude auth login` / `logout` 会把它写成 `false`（2.1.310 的 performLogout），
+///   只补缺的话登录过账号就又要走一遍引导；
 ///
 /// Bypass Permissions 警告不在这里：对话界面启动时 `--settings` 传进去（见 `chat::hooks::settings_json`），不碰用户设置。
 ///
@@ -343,14 +345,15 @@ pub fn launch_env(home: &Path, p: &Profile) -> Option<LaunchEnv> {
 ///
 /// **文件同时被改**：别的 Claude Code 会话随时在写这个文件。用它自己的锁（[`ConfigLock`]）：锁里重新读、只改缺的键、
 /// 写到临时文件再换上去；Claude Code 自己保存时也是锁里重新读再合并，两边都不会盖掉对方的改动，运行中的会话发现文件变了会重新读。
-/// 拿不到锁、读不了（例如是个目录）、不是 JSON 对象（让 Claude Code 自己处理）时这次不写，Claude Code 照常弹窗，下次启动再试。
+/// `.claude.json` 是个目录时写到 `.config.json`（见 `chat::models::state_in`）。
+/// 拿不到锁、读不了、不是 JSON 对象（让 Claude Code 自己处理）时这次不写，Claude Code 照常弹窗，下次启动再试。
 /// 写过之后用户或 Claude Code 再改：下次启动只补又缺了的，用户改过的主题不会被改回去。
 pub fn skip_first_run(home: &Path, p: &Profile, workdir: &Path) -> std::io::Result<()> {
     let (_, state_file) = config_paths(home, p);
     let trust = trust_key(workdir);
     edit_locked(&state_file, |o| {
         let mut changed = false;
-        if o.get("hasCompletedOnboarding").is_none() {
+        if o.get("hasCompletedOnboarding") != Some(&json!(true)) {
             o.insert("hasCompletedOnboarding".into(), json!(true));
             o.entry("theme").or_insert_with(|| json!("auto"));
             changed = true;
@@ -493,7 +496,7 @@ pub fn prepare_dir(home: &Path, id: &str) -> std::io::Result<()> {
             tracing::debug!(error = %e, item = name, "无法链接到默认的 Claude Code 配置");
         }
     }
-    sync_state(&crate::chat::models::state_file(), &dir.join(".claude.json"))
+    sync_state(&crate::chat::models::state_file(), &crate::chat::models::state_in(&dir, dir.join(".claude.json")))
 }
 
 /// 从默认的状态文件抄过来的键：不含账号（`oauthAccount`、`userID`）和用量缓存
@@ -1091,6 +1094,11 @@ mod tests {
         let v = read(&state);
         assert_eq!((v["theme"].as_str(), v["userID"].as_str()), (Some("light"), Some("u")));
         assert_eq!(v["projects"][&key], json!({ "mcpServers": {}, "hasTrustDialogAccepted": true }));
+        // 登录 / 退出账号后 Claude Code 写的 false：改成走完了，主题有了就不动
+        std::fs::write(&state, json!({ "hasCompletedOnboarding": false, "theme": "light" }).to_string()).unwrap();
+        skip_first_run(&dir, &p, &plain).unwrap();
+        let v = read(&state);
+        assert_eq!((v["hasCompletedOnboarding"].as_bool(), v["theme"].as_str()), (Some(true), Some("light")));
         // 都确认过：不写文件
         let before = std::fs::read_to_string(&state).unwrap();
         skip_first_run(&dir, &p, &plain).unwrap();
@@ -1099,6 +1107,20 @@ mod tests {
         std::fs::write(&state, "{").unwrap();
         skip_first_run(&dir, &p, &plain).unwrap();
         assert_eq!(std::fs::read_to_string(&state).unwrap(), "{");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn first_run_when_state_is_a_directory() {
+        let (dir, _store) = tmp_store("firstdir");
+        let p = Profile { id: "acct3".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
+        let cfg = account_dir(&dir, &p.id);
+        // Docker 把不存在的 .claude.json 映射成了目录：写到 .config.json，Claude Code 下次启动用它
+        std::fs::create_dir_all(cfg.join(".claude.json")).unwrap();
+        skip_first_run(&dir, &p, &dir).unwrap();
+        let v: Value = serde_json::from_slice(&std::fs::read(cfg.join(".config.json")).unwrap()).unwrap();
+        assert_eq!(v["hasCompletedOnboarding"], true);
+        assert_eq!(config_paths(&dir, &p).1, cfg.join(".config.json"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

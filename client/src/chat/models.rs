@@ -63,9 +63,23 @@ pub fn config_dir() -> PathBuf {
 }
 
 pub fn state_file() -> PathBuf {
-    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
+    let main = match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|v| !v.is_empty()) {
         Some(v) => PathBuf::from(v).join(".claude.json"),
         None => home().join(".claude.json"),
+    };
+    state_in(&config_dir(), main)
+}
+
+/// 配置目录 `dir` 下 Claude Code 实际用的状态文件，`main` 是平常的位置（`.claude.json`）。跟它自己的找法一样（2.1.310）：
+/// `dir` 里有旧版的 `.config.json`、不是空文件（或者 `main` 还不存在）时用它。
+/// `main` 是个目录时也用 `.config.json`：Docker 把宿主机上不存在的文件映射进来会建成目录，Claude Code 存不了，
+/// 引导、信任目录每次都要重来；看看在 `.config.json` 写上内容后，Claude Code 下次启动就改用它。
+pub fn state_in(dir: &Path, main: PathBuf) -> PathBuf {
+    let legacy = dir.join(".config.json");
+    if std::fs::metadata(&legacy).is_ok_and(|m| m.is_file() && (m.len() > 0 || !main.exists())) || main.is_dir() {
+        legacy
+    } else {
+        main
     }
 }
 
@@ -494,6 +508,26 @@ mod tests {
         json!({ "id": id, "name": name, "description": format!("{name} desc"), "section": section,
             "thinking": { "type": "effort", "effort_options": efforts.iter().map(|e| json!({ "id": e })).collect::<Vec<_>>() },
             "runtime": { "default_effort": "medium" } })
+    }
+
+    #[test]
+    fn state_file_follows_claude() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (dir, main) = (tmp.path(), tmp.path().join(".claude.json"));
+        let legacy = dir.join(".config.json");
+        // 平常：.claude.json；空的旧文件在 .claude.json 已经有时不算
+        assert_eq!(state_in(dir, main.clone()), main);
+        std::fs::write(&main, "{}").unwrap();
+        std::fs::write(&legacy, "").unwrap();
+        assert_eq!(state_in(dir, main.clone()), main);
+        // 旧文件有内容：Claude Code 用它
+        std::fs::write(&legacy, "{}").unwrap();
+        assert_eq!(state_in(dir, main.clone()), legacy);
+        // .claude.json 是目录（Docker 映射）：用 .config.json，还没有也是
+        std::fs::remove_file(&main).unwrap();
+        std::fs::remove_file(&legacy).unwrap();
+        std::fs::create_dir(&main).unwrap();
+        assert_eq!(state_in(dir, main.clone()), legacy);
     }
 
     #[test]
