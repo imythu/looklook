@@ -237,6 +237,12 @@ impl Updater {
         Ok(())
     }
 
+    /// 换了更新通道：丢掉按旧通道查到的结果（不拿它自动更新），后台循环会马上重查。
+    pub fn channel_changed(&self) {
+        *lock(&self.latest) = None;
+        *lock(&self.check_error) = None;
+    }
+
     /// 界面语言（更新说明按它取中文或英文）
     pub fn set_locale(&self, locale: &str) {
         let l = if locale == "en-US" { "en-US" } else { "zh-CN" };
@@ -247,11 +253,21 @@ impl Updater {
         }
     }
 
-    /// 向平台查询最新版本。
+    async fn query(&self, channel: &str, locale: &str) -> Result<Latest, crate::platform::PlatformError> {
+        let path = format!("/updates/latest?target={}&channel={channel}&current={VERSION}&locale={locale}", crate::paths::target());
+        self.account.platform().public(&path).await
+    }
+
+    /// 向平台查询最新版本。收测试版时正式版和测试版都查，用版本号大的：平台的测试版通道只列测试版，
+    /// 出了更新的正式版也要能收到。
     pub async fn check(&self) -> Result<Latest, LocalError> {
         let locale = lock(&self.locale).clone();
-        let path = format!("/updates/latest?target={}&channel=stable&current={VERSION}&locale={locale}", crate::paths::target());
-        let r: Result<Latest, _> = self.account.platform().public(&path).await;
+        let mut r = self.query("stable", &locale).await;
+        if crate::settings::Settings::load(&self.store).beta() {
+            if let Ok(stable) = &r {
+                r = self.query("beta", &locale).await.map(|beta| newer(stable.clone(), beta));
+            }
+        }
         *lock(&self.checked_at) = Some(crate::util::now_rfc3339());
         match r {
             Ok(l) => {
@@ -325,6 +341,7 @@ impl Updater {
         let available = latest.as_ref().is_some_and(|l| l.available);
         let version = latest.as_ref().map(|l| l.version.clone());
         let has_package = latest.as_ref().is_some_and(|l| l.packages.iter().any(|p| p.package == package_kind()));
+        let settings = crate::settings::Settings::load(&self.store);
         json!({
             "current": VERSION,
             "available": available,
@@ -342,7 +359,8 @@ impl Updater {
                 _ => None,
             },
             "job": &*lock(&self.job),
-            "auto": crate::settings::Settings::load(&self.store).auto_update,
+            "auto": settings.auto_update,
+            "channel": settings.update_channel,
             "just_updated": self.just_updated().map(|j| json!({ "from": j.from, "notes": j.notes, "auto": j.auto })),
         })
     }
@@ -504,6 +522,16 @@ impl Updater {
         // 新版本启动后提示“已更新”，带上这次的更新说明
         let _ = self.store.set(JUST_UPDATED_KEY, &JustUpdated { from: VERSION.into(), to: version.clone(), notes: latest.notes.clone(), auto });
         Ok(version)
+    }
+}
+
+/// 两个通道的结果里版本号大的那个（认不出的版本号算最小；一样大时用正式版）。
+fn newer(stable: Latest, beta: Latest) -> Latest {
+    let v = |l: &Latest| semver::Version::parse(&l.version).ok();
+    if v(&beta) > v(&stable) {
+        beta
+    } else {
+        stable
     }
 }
 
@@ -832,6 +860,15 @@ mod tests {
         drop(g);
         TERMINALS_SEEN.store(crate::util::system_ms() - AUTO_IDLE_MS, std::sync::atomic::Ordering::Relaxed);
         assert!(terminals_idle_ms().is_some_and(|ms| ms >= AUTO_IDLE_MS));
+    }
+
+    #[test]
+    fn beta_channel_takes_the_newer_release() {
+        let l = |v: &str| Latest { version: v.into(), ..Default::default() };
+        assert_eq!(newer(l("1.37.1"), l("1.38.0-beta.1")).version, "1.38.0-beta.1");
+        assert_eq!(newer(l("1.38.0"), l("1.38.0-beta.2")).version, "1.38.0", "正式版出了就用正式版");
+        assert_eq!(newer(l("1.37.1"), l("")).version, "1.37.1", "还没有测试版");
+        assert_eq!(newer(l(""), l("1.38.0-beta.1")).version, "1.38.0-beta.1");
     }
 
     #[test]

@@ -679,27 +679,30 @@ impl Chat {
         Ok(json!({ "options": options, "provider": provider, "model": st.model, "actual_model": st.actual_model, "effort": st.effort }))
     }
 
+    /// 账号的限额（5 小时、每周）：用第三方接口、没登录 ChatGPT 时是 null
+    pub(super) async fn codex_limits(&self) -> Result<Value, LocalError> {
+        if let Some(v) = lock(&self.codex.limits).as_ref().filter(|(t, _)| t.elapsed() < LIMITS_TTL).map(|(_, v)| v.clone()) {
+            return Ok(v);
+        }
+        let server = self.codex_server().await?;
+        let mut v = match server.call("account/rateLimits/read", Value::Null).await {
+            Ok(r) => limits_view(&r),
+            Err(_) => Value::Null,
+        };
+        let account = server.call("account/read", json!({})).await.ok();
+        if let (Some(a), Some(o)) = (account, v.as_object_mut()) {
+            o.insert("account".into(), json!({ "type": a["account"]["type"], "plan": a["account"]["planType"], "email": a["account"]["email"] }));
+        }
+        // 没读到（app-server 刚断开等）不缓存：下次马上重查，不让空结果挂 30 秒
+        if !v["five_hour"].is_null() || !v["seven_day"].is_null() {
+            *lock(&self.codex.limits) = Some((Instant::now(), v.clone()));
+        }
+        Ok(v)
+    }
+
     /// 账号用量（5 小时、每周的限额）和这个会话的上下文、token
     pub(super) async fn codex_usage(&self, id: &str) -> Result<Value, LocalError> {
-        let cached = lock(&self.codex.limits).as_ref().filter(|(t, _)| t.elapsed() < LIMITS_TTL).map(|(_, v)| v.clone());
-        let limits = match cached {
-            Some(v) => v,
-            None => {
-                let server = self.codex_server().await?;
-                // 用第三方接口、没登录 ChatGPT 时没有限额
-                let v = match server.call("account/rateLimits/read", Value::Null).await {
-                    Ok(r) => limits_view(&r),
-                    Err(_) => Value::Null,
-                };
-                let account = server.call("account/read", json!({})).await.ok();
-                let mut v = v;
-                if let (Some(a), Some(o)) = (account, v.as_object_mut()) {
-                    o.insert("account".into(), json!({ "type": a["account"]["type"], "plan": a["account"]["planType"], "email": a["account"]["email"] }));
-                }
-                *lock(&self.codex.limits) = Some((Instant::now(), v.clone()));
-                v
-            }
-        };
+        let limits = self.codex_limits().await?;
         let inst = self.inst(id);
         let st = lock(&inst.st);
         let t = st.codex.totals.clone().unwrap_or(Value::Null);

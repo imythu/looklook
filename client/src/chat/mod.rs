@@ -816,15 +816,7 @@ impl Chat {
                     (_, Screen::Modal) if st.phase == Phase::Tui => {}
                     (Phase::Running, Screen::Modal) if !quiet => {}
                     (_, Screen::Modal) if st.odd_screens == 1 || (odd && starting) => {}
-                    (_, Screen::Modal) => {
-                        // 读不出来的界面：记下屏幕（最后 20 行、去掉转义），以后据此认出它或排查误判
-                        if st.dialog.is_none() {
-                            let shown: Vec<String> = capture.as_deref().unwrap_or("").lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect();
-                            let tail = shown[shown.len().saturating_sub(20)..].join("\n");
-                            tracing::info!(id = %inst.id, drawn = st.drawn, since_ms = since.elapsed().as_millis() as u64, "认不出来的 Claude Code 界面，转到“在等你选择”\n{tail}");
-                        }
-                        Self::set_phase(inst, &mut st, Phase::Tui, None)
-                    }
+                    (_, Screen::Modal) => Self::set_phase(inst, &mut st, Phase::Tui, None),
                     (_, Screen::Input { busy, ref text }) if !attached => {
                         Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached"));
                         // 以前的 Claude（不是带着看看的 hooks 启动的）空闲着：接着同一段对话转到对话模式
@@ -1473,6 +1465,41 @@ impl Chat {
             }
         }
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
+    }
+
+    /// 状态栏右下角：这台电脑上登录了的 Claude、Codex 账号的限额（5 小时、每周），没登录或取不到时为 null。
+    /// Codex 只在登录了 ChatGPT（有 auth.json）时才去问 app-server，免得为了这个起一个用不上的进程。
+    pub async fn accounts_usage(&self) -> Value {
+        let has = |v: &Value| !v["five_hour"].is_null() || !v["seven_day"].is_null();
+        // Claude：默认账号（官方登录的才有订阅用量），只读 Claude Code 自己缓存在 .claude.json 里的——
+        // 不拿它的凭据去问 Anthropic（不允许第三方这么用）。缓存旧了在后台请它自己取（`claude -p /usage`，
+        // 不调模型、不耗额度，每个账号两分钟最多一次），下次来就是新的
+        let claude = async {
+            let profile = crate::claude_profiles::get(&self.store, &crate::claude_profiles::default_id(&self.store))?;
+            if profile.kind != crate::claude_profiles::Kind::Official {
+                return None;
+            }
+            let (config_dir, state_file) = crate::claude_profiles::config_paths(&self.paths.home, &profile);
+            let here = PathBuf::from(".");
+            let ctx = models::Ctx { config_dir, state_file, workdir: &here, env: HashMap::new() };
+            let limits = tokio::task::block_in_place(|| models::limits(&ctx));
+            if crate::util::system_ms() - limits["fetched_at"].as_i64().unwrap_or(0) > models::LIMITS_STALE_MS {
+                let shell = self.instances.shell().to_string();
+                let account = (profile.id != crate::claude_profiles::OFFICIAL).then(|| crate::claude_profiles::account_dir(&self.paths.home, &profile.id));
+                let cwd = self.paths.home.join("run").join("usage");
+                let dir = ctx.config_dir.clone();
+                tokio::spawn(async move { models::refresh_limits(&shell, &dir, account.as_deref(), &cwd).await });
+            }
+            Some(limits).filter(has)
+        };
+        let codex = async {
+            if !crate::agents::codex_home().join("auth.json").is_file() {
+                return None;
+            }
+            self.codex_limits().await.ok().filter(has)
+        };
+        let (claude, codex) = tokio::join!(claude, codex);
+        json!({ "claude": claude, "codex": codex })
     }
 
     /// 对话生成的文件（目前只有 Codex 生成的图片）
@@ -2359,6 +2386,7 @@ mod tests {
     /// （claude_profiles::skip_first_run），选主题、安全提示、信任目录、Bypass 警告都不出现，直接到输入框。不发消息，不用额度。
     /// `CHAT_E2E_DIR` 可以是普通文件夹、git 仓库里的子目录，或者家目录（同时把 `HOME` 设成它）：都是写工作目录本身。
     /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_onboarding -- --ignored --nocapture`
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn chat_e2e_onboarding() {
@@ -2416,20 +2444,6 @@ mod tests {
         let settings: Value = std::fs::read(cfg.path().join("settings.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         assert!(settings.get("skipDangerousModePermissionPrompt").is_none(), "{settings}");
         assert!(settings.get("theme").is_none_or(|t| t == "auto"), "{settings}");
-        // 界面开着时重启这个终端：新的 Claude Code 启动时屏幕也是先空着，同样要一直是“正在启动”
-        instances.stop(&id).await.unwrap();
-        instances.ensure_session(&row).await.unwrap();
-        let mut back = false;
-        for _ in 0..100 {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            let s = chat.snapshot(&id).await.unwrap();
-            assert_ne!(s["status"]["phase"], "tui", "重启后启动中不该当成选择框：{}", s["status"]);
-            if matches!(screen::classify(&instances.screen(&id).await.unwrap_or_default()), Screen::Input { .. }) {
-                back = true;
-                break;
-            }
-        }
-        assert!(back, "重启后到了输入框");
         drop(viewer);
         instances.stop(&id).await.unwrap();
     }

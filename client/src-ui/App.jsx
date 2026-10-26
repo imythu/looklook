@@ -4,7 +4,7 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, Link2, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, Link2, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Search, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -33,6 +33,8 @@ import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
 import { ConnChip } from './shared/RelayStatus.jsx';
+import Palette, { openPalette } from './shared/Palette.jsx';
+import StatusBar, { SideUsage } from './shared/StatusBar.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
 import { TransferBanner } from './pages/SshTransfer.jsx';
 
@@ -77,6 +79,8 @@ export function SafetyNote({ full = false }) {
   );
 }
 
+// 侧栏直接列出的常用工具（以前的对话、文件、本机网页），其余收进“更多工具”
+const MAIN_TOOLS = ['/files', '/pages'];
 // 侧栏“工具”里的页面（会话在侧栏下面，账户在用户菜单里）
 const TOOLS = [
   { to: '/files', icon: FolderOpen, key: 'nav.files' },
@@ -264,33 +268,30 @@ function ToolGroup({ path }) {
     writeFlag(TOOLS_KEY, !open);
     setOpen(!open);
   };
+  // 设置在侧栏最下面的齿轮里
+  const more = TOOLS.filter((x) => !MAIN_TOOLS.includes(x.to) && x.to !== '/settings');
+  const link = (x) => (
+    <Link key={x.to} to={x.to} className={`side-link ${path === x.to ? 'active' : ''}`}>
+      <x.icon size={17} aria-hidden="true" />
+      {t(x.key)}
+      <ToolMeta x={x} />
+    </Link>
+  );
   return (
     <div className="side-tools">
-      <button type="button" className="side-group-head" onClick={toggle} aria-expanded={open} title={t(open ? 'sess.tools_fold' : 'sess.tools_unfold')}>
-        <ChevronDown size={14} aria-hidden="true" />
-        {t('sess.tools')}
-      </button>
       {(devices.multi || devices.localOnly) && <DeviceSwitcher perDevice side helpUrl={webUrl(status, '/docs/faq')} />}
-      {open ? (
-        <nav className="side-group" aria-label={t('sess.tools')}>
-          {TOOLS.map((x) => (
-            <Link key={x.to} to={x.to} className="side-link">
-              <x.icon size={18} aria-hidden="true" />
-              {t(x.key)}
-              <ToolMeta x={x} />
-            </Link>
-          ))}
-        </nav>
-      ) : (
-        <nav className="tool-strip" aria-label={t('sess.tools')}>
-          {TOOLS.map((x) => (
-            <Link key={x.to} to={x.to} className={`btn btn-plain btn-icon tool-ico ${path === x.to ? 'active' : ''}`} aria-label={t(x.key)} title={t(x.key)}>
-              <x.icon size={18} aria-hidden="true" />
-              {x.badge === 'update' && shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
-            </Link>
-          ))}
-        </nav>
-      )}
+      <nav className="side-group" aria-label={t('sess.tools')}>
+        <Link to="/history" className={`side-link ${path === '/history' ? 'active' : ''}`}>
+          <History size={17} aria-hidden="true" />
+          {t('hist.title')}
+        </Link>
+        {TOOLS.filter((x) => MAIN_TOOLS.includes(x.to)).map(link)}
+        <button type="button" className="side-link side-more" onClick={toggle} aria-expanded={open}>
+          <ChevronDown size={17} aria-hidden="true" />
+          {t('sess.more_tools')}
+        </button>
+        {open && more.map(link)}
+      </nav>
     </div>
   );
 }
@@ -359,18 +360,12 @@ function SideNav({ open, onClose, rail, onRail, path }) {
     <>
       {open && <div className="side-backdrop" onClick={onClose} aria-hidden="true" />}
       <aside className={`side ${open ? 'open' : ''}`} id="side-nav" aria-label={t('nav.main')}>
-        <Link to="/" className="brand side-brand">
-          <BrandMark size={28} />
-          <span className="brand-text">{t('brand')}</span>
-        </Link>
         <div className="side-head">
-          <PopMenu items={userMenu} className="side-me" label={s.user.nickname}>
-            <Initial name={s.user.nickname} />
-            <span className="grow">
-              <b className="ellipsis">{s.user.nickname}</b>
-              <span className={`small ${left > 30 ? 'muted' : 'warn-text'}`}>{left > 0 ? t('account.days_left', { n: left }) : t('account.expired')}</span>
-            </span>
-          </PopMenu>
+          <Link to="/" className="brand side-brand">
+            <BrandMark size={24} />
+            <span className="brand-text">{t('brand')}</span>
+          </Link>
+          <span className="grow" />
           <button type="button" className="btn btn-plain btn-icon side-collapse" onClick={() => onRail(true)} aria-label={t('sess.collapse_side')} title={`${t('sess.collapse_side')} (Ctrl+Shift+S)`}>
             <PanelLeftClose size={18} />
           </button>
@@ -378,22 +373,37 @@ function SideNav({ open, onClose, rail, onRail, path }) {
             <X size={20} />
           </button>
         </div>
+        {/* 跳转、找会话、执行命令都在命令面板里（Ctrl+K） */}
+        <button type="button" className="side-jump" onClick={openPalette}>
+          <Search size={15} aria-hidden="true" />
+          <span className="grow">{t('pal.placeholder')}</span>
+          <kbd className="side-kbd">Ctrl K</kbd>
+        </button>
         <div className="side-new-row">
           <button type="button" className="side-new" onClick={() => ui.newSession()} disabled={!allowed}>
             <Plus size={18} aria-hidden="true" />
             {t('sess.new')}
             <kbd className="side-kbd">Ctrl ⇧ O</kbd>
           </button>
-          <Link to="/history" className="btn side-hist" aria-label={t('hist.title')} title={t('hist.title')}>
-            <History size={18} aria-hidden="true" />
-          </Link>
         </div>
         <ToolGroup path={path} />
         <div className="side-sessions">
           <SessionList currentId={current} />
         </div>
+        {/* 手机上打开菜单时在底部显示额度（宽屏看底部状态栏）；open 只在手机上会是 true */}
+        {open && <SideUsage />}
         <div className="side-foot">
-          <ConnChip />
+          <PopMenu items={userMenu} className="side-me" label={s.user.nickname}>
+            <Initial name={s.user.nickname} />
+            <span className="grow">
+              <b className="ellipsis">{s.user.nickname}</b>
+              <span className={`small ${left > 30 ? 'muted' : 'warn-text'}`}>{left > 0 ? t('account.days_left', { n: left }) : t('account.expired')}</span>
+            </span>
+          </PopMenu>
+          <Link to="/settings" className="btn btn-plain btn-icon side-gear" aria-label={t('nav.settings')} title={t('nav.settings')}>
+            <SettingsIcon size={18} aria-hidden="true" />
+            {shouldRemind(status.update) && <span className="dot-badge" aria-label={t('update.badge')} />}
+          </Link>
           <LangSwitch />
         </div>
       </aside>
@@ -403,6 +413,22 @@ function SideNav({ open, onClose, rail, onRail, path }) {
 
 function ConsoleLayout({ path, stale, children }) {
   const { t } = useTranslation();
+  // 宽屏整个页面固定一屏、不滚动：侧栏和主区域占满提示条（更新、断线……）下面到状态栏上面，内容区各自滚动。
+  // 提示条有几条、多高不固定，量出侧栏和主区域的顶部给样式用（--console-top）
+  const consoleRef = useRef(null);
+  useEffect(() => {
+    const el = consoleRef.current;
+    if (!el) return undefined;
+    const fit = () => document.documentElement.style.setProperty('--console-top', `${Math.max(0, el.getBoundingClientRect().top)}px`);
+    fit();
+    const ro = new ResizeObserver(fit);
+    ro.observe(document.body);
+    window.addEventListener('resize', fit);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', fit);
+    };
+  }, []);
   const { status } = useStatus();
   const devices = useDevices();
   const ui = useSessionUi();
@@ -470,7 +496,7 @@ function ConsoleLayout({ path, stale, children }) {
       <UpdateBanner />
       <JustUpdatedBanner />
       <RelayHint />
-      <div className={`console ${rail ? 'console-rail' : ''}`}>
+      <div ref={consoleRef} className={`console ${rail ? 'console-rail' : ''}`}>
         <SideNav open={open} onClose={() => setOpen(false)} rail={rail && !open} onRail={setRail} path={path} />
         <main className={`console-main ${wide ? 'console-wide' : 'shell'} ${sess ? 'console-session' : ''}`}>
           {/* 打开的会话排成顶部标签（电脑上，开始页和会话页） */}
@@ -490,6 +516,8 @@ function ConsoleLayout({ path, stale, children }) {
           <SessionStage activeId={sess} />
         </main>
       </div>
+      <StatusBar />
+      <Palette />
     </>
   );
 }
