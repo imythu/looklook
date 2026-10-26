@@ -19,6 +19,7 @@ import Settings from './pages/Settings.jsx';
 import SshHosts from './pages/SshHosts.jsx';
 import System from './pages/System.jsx';
 import { HistoryPage } from './pages/History.jsx';
+import { ProjectPage } from './pages/Project.jsx';
 import PullRefresh from './shared/pull.jsx';
 import { opensInPage, SessionHome, SessionList, SessionStage, SessionTabs, SessionUiProvider, StartPane, useSessionUi } from './pages/Sessions.jsx';
 import TerminalView from './pages/TerminalView.jsx';
@@ -95,7 +96,7 @@ const ACCOUNT_PAGES = ['/devices', '/membership', '/account'];
 // 从右边滑出来的抽屉（地址照旧，链接、刷新都能直接打开）：盖在会话上面，不换掉它。文件、SSH 这类要干活的工具还是整页
 const DRAWER_PAGES = { '/settings': 'nav.settings', '/devices': 'acct.computers', '/account': 'acct.account', '/membership': 'acct.membership' };
 const isDrawer = (p) => Object.hasOwn(DRAWER_PAGES, p);
-const PAGES = ['/', '/new', '/history', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
+const PAGES = ['/', '/new', '/history', '/project', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
 // 开源仓库（客户端 AGPL-3.0-or-later）
 export const SOURCE_URL = 'https://github.com/imythu/looklook';
 const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
@@ -663,7 +664,7 @@ function Shell() {
     // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
     const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
     const home = opensInPage() ? <StartPane key={`start:${login}`} /> : <SessionHome />;
-    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/history': <HistoryPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
+    const page = SESS.test(path) ? null : { '/': home, '/new': <StartPane key={`start:${login}`} />, '/history': <HistoryPage />, '/project': <ProjectPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
     const drawerPage = route.drawer && { '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[route.drawer];
     body = (
       <SessionsProvider key={login} enabled>

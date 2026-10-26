@@ -139,6 +139,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/projects", get(get_projects).put(put_projects))
         .route("/history", get(list_history))
         .route("/history/marks", put(put_history_mark))
+        .route("/history/folders", get(history_folders))
         .route("/docker/containers", get(docker_containers))
         .route("/docker/containers/{name}", get(docker_probe))
         .route("/docker/containers/{name}/fs", get(docker_fs))
@@ -1391,6 +1392,9 @@ struct Project {
     /// 上次在这里新建会话的时间（RFC 3339，界面用来排“最近用过的”）
     #[serde(default)]
     used_at: String,
+    /// 侧栏里置顶
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pinned: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1434,8 +1438,19 @@ async fn put_projects(State(app): State<App>, Json(req): Json<Projects>) -> R<Js
 /// 按这个会话接着的对话号，Claude Code 对话界面还按 hooks 记下的当前会话号。
 async fn list_history(State(app): State<App>, Query(q): Query<crate::history::Query>) -> R<Json<Value>> {
     let mut items = crate::history::list(q).await;
-    let mut open: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for v in app.instances.list().await? {
+    let open = open_convs(&app, &app.instances.list().await?);
+    for c in &mut items {
+        c.instance_id = open.get(&c.id).cloned();
+    }
+    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY).ok().flatten().unwrap_or_default();
+    Ok(Json(json!({ "items": items, "marks": marks, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
+}
+
+/// 正开在看看会话里的对话：对话号 → 会话 ID。按这个会话接着的对话号、Claude Code 对话界面 hooks 记下的当前会话号，
+/// 还有从记录里认出来的（[`crate::instances::View::conv_id`]）。
+fn open_convs(app: &App, views: &[crate::instances::View]) -> std::collections::HashMap<String, String> {
+    let mut open = std::collections::HashMap::new();
+    for v in views {
         if !v.running || v.task_alive == Some(false) {
             continue;
         }
@@ -1446,12 +1461,36 @@ async fn list_history(State(app): State<App>, Query(q): Query<crate::history::Qu
         if let Some(b) = crate::chat::binding(&app.store, id) {
             open.insert(b.session_id, id.clone());
         }
+        if let Some(c) = &v.conv_id {
+            open.insert(c.clone(), id.clone());
+        }
     }
-    for c in &mut items {
+    open
+}
+
+#[derive(Deserialize)]
+struct FoldersQuery {
+    /// 每个文件夹带最近几个对话（最多 20）
+    per: Option<usize>,
+    /// `projects`：只要记着的项目和会话所在的文件夹（侧栏）；不给时是所有有过对话的文件夹（添加项目时挑）
+    scope: Option<String>,
+}
+
+/// 以前的对话按文件夹分组：各工具的数量和最近几个。隐藏了的不算。
+async fn history_folders(State(app): State<App>, Query(q): Query<FoldersQuery>) -> R<Json<Value>> {
+    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY)?.unwrap_or_default();
+    let mut items = crate::history::folders(q.per.unwrap_or(5).min(20), move |c| !marks.get(&format!("{}:{}", c.agent, c.id)).is_some_and(|m| m.hide)).await;
+    let views = app.instances.list().await?;
+    if q.scope.as_deref() == Some("projects") {
+        let stored = app.store.get::<Vec<Project>>(PROJECTS_KEY)?.unwrap_or_default();
+        let dirs: std::collections::HashSet<String> = stored.iter().map(|p| p.workdir.as_str()).chain(views.iter().map(|v| v.row.workdir.as_str())).map(crate::history::dir_key).collect();
+        items.retain(|f| dirs.contains(&crate::history::dir_key(&f.workdir)));
+    }
+    let open = open_convs(&app, &views);
+    for c in items.iter_mut().flat_map(|f| f.items.iter_mut()) {
         c.instance_id = open.get(&c.id).cloned();
     }
-    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY).ok().flatten().unwrap_or_default();
-    Ok(Json(json!({ "items": items, "marks": marks, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
+    Ok(Json(json!({ "items": items, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
 }
 
 /// 以前的对话上的标记（收藏、隐藏），存在这台电脑上：`工具:会话号` → 标记。

@@ -1,6 +1,7 @@
 // 会话数据：所有电脑上的会话（终端）和项目，侧栏、开始页、会话页共用，每 5 秒刷新一次。
 // 项目 = 某台电脑上的一个文件夹（或某个 Docker 容器里的目录）：那台电脑上记着的（GET/PUT /api/projects，上次用的类型和“高级”选项）
 // 加上从会话的文件夹推出来的。离线的电脑拿不到列表，用上一次看到的（记在浏览器里）灰着显示。
+// 每个项目还带着这个文件夹里以前的对话（GET /history/folders：各工具多少个、最近 5 个），侧栏里和会话合在一起列。
 // 顺序：有会话在运行的在前，再按启动时间从新到旧——不按最后输出的时间，否则 agent 一输出列表就跳。
 // 打开的会话在顶部排成标签（tabs，按打开的先后，可以拖动），最近看过的几个在后台保持连接（recent）。
 import { createContext, useContext, useEffect, useRef, useState } from 'react';
@@ -16,6 +17,10 @@ export function useSessions() {
 
 const GROUP_TIMEOUT_MS = 10000;
 const POLL_MS = 5000;
+// 以前的对话变得慢，而且要扫记录文件：半分钟取一次（新建、接着聊之后马上取）
+const FOLDERS_POLL_MS = 30000;
+// 侧栏每个项目带几个以前的对话
+const FOLDER_PER = 5;
 const RECENT_KEY = 'looklook.recent';
 const TABS_KEY = 'looklook.tabs';
 // 标签所在的电脑（会话 id → 电脑 id，单台时为 'self'）：重新打开页面后还没拿到各台的会话列表时，
@@ -49,6 +54,11 @@ export function baseName(p) {
 }
 
 export const projectKey = (device, workdir) => `${device ?? ''}\n${workdir}`;
+/** 比较文件夹用：去掉末尾的分隔符；Windows 路径（`C:\…`）不分大小写、`/` 和 `\` 一样（同客户端 history.rs 的 dir_key）。 */
+export function dirKey(p) {
+  const s = /^[a-z]:[\\/]/i.test(p ?? '') || (p ?? '').includes('\\') ? p.replace(/\//g, '\\').toLowerCase() : p ?? '';
+  return s.replace(/[\\/]+$/, '');
+}
 const ts = (s) => Date.parse(s || '') || 0;
 /** 会话最近一次有动静的时间（毫秒）。 */
 export const lastUsed = (i) => Math.max(ts(i.last_activity_at), ts(i.started_at), ts(i.created_at));
@@ -65,7 +75,29 @@ export const customName = (i) => (i?.agent_title && i.name_custom && i.name !== 
 /** 会话的目录：容器里的会话是容器里的目录。 */
 export const sessionDir = (i) => i?.container?.dir ?? i?.workdir ?? '';
 /** 项目用的“文件夹”键：容器里的目录带上容器名，和电脑上同名的文件夹分开。 */
-const dirKey = (i) => (i.container ? `docker://${i.container.name}${i.container.dir}` : i.workdir);
+const instDir = (i) => (i.container ? `docker://${i.container.name}${i.container.dir}` : i.workdir);
+
+/** 能接着以前的对话的工具（客户端 history.rs 的 AGENTS）。 */
+export const AGENTS = ['claude', 'codex', 'opencode'];
+/** 项目页的地址。 */
+export const projectPath = (p) => `/project?${new URLSearchParams({ d: p.device ?? '', w: p.workdir })}`;
+
+/**
+ * 项目里的会话合成一个列表：在运行的（`live`）+ 停了的终端和以前的对话（`rest`，从新到旧）。
+ * 那台电脑能接着以前的对话时，停了的 Claude Code / Codex / OpenCode 会话不单列（`stopped`）：它的对话在以前的对话里，
+ * 点一下接着聊；不能接着、或者不知道能不能（旧版客户端）时照旧列出来。正开在会话里的对话只列那个会话。
+ * `count` 是一共多少个（以前的对话按总数算，不只是带着的这几个）。`convs` 不给时用项目上带着的最近几个。
+ */
+export function projectEntries(p, convs = p.convs) {
+  const live = p.items.filter(isActive);
+  const liveIds = new Set(live.map((i) => i.id));
+  const stopped = p.persistent === true ? p.items.filter((i) => !isActive(i) && AGENTS.includes(i.launch)) : [];
+  const terms = p.items.filter((i) => !isActive(i) && !stopped.includes(i));
+  const open = convs.filter((c) => !(c.instance_id && liveIds.has(c.instance_id)));
+  const inst = (i) => ({ kind: 'inst', key: i.id, inst: i, at: lastUsed(i) });
+  const rest = [...terms.map(inst), ...open.map((c) => ({ kind: 'conv', key: `${c.agent}:${c.id}`, conv: c, at: ts(c.updated_at) }))].sort((a, b) => b.at - a.at);
+  return { live: live.map(inst), rest, stopped, count: live.length + terms.length + Math.max(p.total, convs.length) - (convs.length - open.length) };
+}
 
 /** 会话现在的状态：等你处理 / 正在干活 / 运行中 / 后台运行中 / 已停止。 */
 export function sessionState(i) {
@@ -178,28 +210,70 @@ function useStoredProjects(devIds, key) {
 }
 
 /**
- * 把会话和记着的项目合成项目列表：[{ key, device, workdir, name, launch, shell, full_access, auto_start, items, used, offline }]。
- * `full_access` 是在这个项目里新建时选过的，没选过为 null（见 Sessions.jsx 的 fullAccessFor）。
- * 项目按最近用过排序，项目里的会话也是。
+ * 每台电脑上项目文件夹里以前的对话（只要记着的项目和会话所在的文件夹）。旧版客户端没有这个接口：当作没有。
+ * `{ [电脑]: { items: [{ workdir, counts, total, updated_at, items }], persistent } }`
  */
-function mergeProjects({ devIds, store, items, multi, cache, onlineIds }) {
+function useFolders(devIds, key) {
+  const [store, setStore] = useState({});
+  const ids = useRef(devIds);
+  ids.current = devIds;
+  const inflight = useRef(new Set());
+  const load = (dev) => {
+    const k = dev ?? '';
+    if (inflight.current.has(k)) return;
+    inflight.current.add(k);
+    deviceApi(dev)
+      .get(`/history/folders?scope=projects&per=${FOLDER_PER}`)
+      .then(
+        (r) => setStore((s) => ({ ...s, [k]: { items: Array.isArray(r?.items) ? r.items : [], persistent: Boolean(r?.persistent) } })),
+        // 出错：保留上一次的（离线、超时），没有过就当作没有（旧版客户端）
+        () => setStore((s) => (s[k] ? s : { ...s, [k]: { items: [], persistent: null } })),
+      )
+      .finally(() => inflight.current.delete(k));
+  };
+  const reload = () => ids.current.forEach(load);
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
+  useEffect(() => {
+    reload();
+    const id = setInterval(() => !document.hidden && reloadRef.current(), FOLDERS_POLL_MS);
+    const onFocus = () => reloadRef.current();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener('focus', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return [store, reload];
+}
+
+/**
+ * 把会话和记着的项目合成项目列表：[{ key, device, workdir, name, launch, shell, full_access, auto_start, pinned, items, used, offline,
+ * convs, total, counts, convAt, persistent }]。
+ * `full_access` 是在这个项目里新建时选过的，没选过为 null（见 Sessions.jsx 的 fullAccessFor）。
+ * `convs` 是这个文件夹里最近的几个以前的对话，`total` / `counts` 是一共多少个（各工具多少个），`convAt` 是最近一个的时间；
+ * `persistent` 为 false 时那台电脑不能接着以前的对话（没有会话保持），null 是不知道（旧版客户端）。
+ * 置顶的在前，再按有没有在运行、最近用过排；项目里的会话按启动时间。
+ */
+function mergeProjects({ devIds, store, items, multi, cache, onlineIds, folders }) {
   const map = new Map();
   const add = (device, workdir, extra) => {
     const key = projectKey(device, workdir);
-    if (!map.has(key)) map.set(key, { key, device, workdir, name: baseName(workdir) || workdir, launch: '', shell: '', full_access: null, auto_start: false, items: [], used: 0, ...extra });
+    if (!map.has(key)) map.set(key, { key, device, workdir, name: baseName(workdir) || workdir, launch: '', shell: '', full_access: null, auto_start: false, pinned: false, items: [], used: 0, convs: [], total: 0, counts: {}, convAt: 0, persistent: null, ...extra });
     return map.get(key);
   };
   for (const dev of devIds) {
     if (multi && !onlineIds.has(dev)) {
       // 离线的电脑：上一次看到的项目，灰着显示
-      for (const p of cache[dev] ?? []) add(dev, p.workdir, { offline: true, count: p.count ?? 0, used: p.used ?? 0 });
+      for (const p of cache[dev] ?? []) add(dev, p.workdir, { offline: true, count: p.count ?? 0, used: p.used ?? 0, pinned: Boolean(p.pinned), convs: Array.isArray(p.convs) ? p.convs : [], total: p.total ?? 0 });
       continue;
     }
-    for (const p of store[dev ?? ''] ?? []) add(dev, p.workdir, { launch: p.launch, shell: p.shell, full_access: typeof p.full_access === 'boolean' ? p.full_access : null, auto_start: p.auto_start, used: ts(p.used_at) });
+    for (const p of store[dev ?? ''] ?? []) add(dev, p.workdir, { launch: p.launch, shell: p.shell, full_access: typeof p.full_access === 'boolean' ? p.full_access : null, auto_start: p.auto_start, pinned: Boolean(p.pinned), used: ts(p.used_at) });
   }
   for (const i of items) {
     const dev = multi ? terminalDevice(i.id) : null;
-    const p = add(dev, dirKey(i), i.container ? { launch: i.launch, container: i.container, name: baseName(i.container.dir) || i.container.dir } : { launch: i.launch });
+    const p = add(dev, instDir(i), i.container ? { launch: i.launch, container: i.container, name: baseName(i.container.dir) || i.container.dir } : { launch: i.launch });
     p.items.push(i);
   }
   const list = [...map.values()];
@@ -207,9 +281,19 @@ function mergeProjects({ devIds, store, items, multi, cache, onlineIds }) {
     p.items.sort(bySessionOrder);
     p.active = p.items.some(isActive);
     p.used = Math.max(p.used, ...p.items.map(startedAt), 0);
-    if (!p.launch) p.launch = p.items[0]?.launch ?? 'claude';
+    const fs = !p.offline && !p.container ? folders[p.device ?? ''] : null;
+    const f = fs?.items.find((x) => dirKey(x.workdir) === dirKey(p.workdir));
+    if (fs) p.persistent = fs.persistent;
+    // 没有会话保持的电脑接不了以前的对话，就不列
+    if (f && fs.persistent !== false) {
+      p.convs = f.items;
+      p.total = f.total;
+      p.counts = f.counts ?? {};
+      p.convAt = ts(f.updated_at);
+    }
+    if (!p.launch) p.launch = p.items[0]?.launch ?? f?.items[0]?.agent ?? 'claude';
   }
-  return list.sort((a, b) => b.active - a.active || b.used - a.used || a.name.localeCompare(b.name));
+  return list.sort((a, b) => b.pinned - a.pinned || b.active - a.active || b.used - a.used || a.name.localeCompare(b.name));
 }
 
 export function SessionsProvider({ enabled, children }) {
@@ -236,17 +320,21 @@ export function SessionsProvider({ enabled, children }) {
   const devIds = multi ? devices.items.map((d) => d.id) : [null];
   const onlineDevIds = multi ? online.map((d) => d.id) : [null];
   const [store, saveStore] = useStoredProjects(enabled ? onlineDevIds : [], `${enabled}:${multi}:${onlineKey}`);
+  const [folders, reloadFolders] = useFolders(enabled ? onlineDevIds : [], `${enabled}:${multi}:${onlineKey}`);
   const items = data?.items ?? [];
   const [cache, setCache] = useState(() => readJson(CACHE_KEY, {}));
-  const projects = mergeProjects({ devIds, store, items, multi, cache, onlineIds: new Set(onlineDevIds) });
+  const projects = mergeProjects({ devIds, store, items, multi, cache, onlineIds: new Set(onlineDevIds), folders });
   // 记下每台在线电脑的项目，它离线后还能灰着显示
-  const cacheSig = multi && data ? projects.filter((p) => !p.offline).map((p) => `${p.key}:${p.items.length}`).join('|') : '';
+  const cacheSig = multi && data ? projects.filter((p) => !p.offline).map((p) => `${p.key}:${p.items.length}:${p.total}:${p.convAt}:${p.pinned}`).join('|') : '';
   useEffect(() => {
     if (!cacheSig) return;
     const next = { ...cache };
     for (const id of onlineDevIds) {
       if (!data.groups?.[id] || data.groups[id].error) continue;
-      next[id] = projects.filter((p) => p.device === id).slice(0, 30).map((p) => ({ workdir: p.workdir, count: p.items.length, used: p.used }));
+      next[id] = projects
+        .filter((p) => p.device === id)
+        .slice(0, 30)
+        .map((p) => ({ workdir: p.workdir, count: p.items.length, used: p.used, pinned: p.pinned, total: p.total, convs: p.convs.map((c) => ({ agent: c.agent, id: c.id, title: c.title, updated_at: c.updated_at })) }));
     }
     setCache(next);
     writeJson(CACHE_KEY, next);
@@ -261,6 +349,20 @@ export function SessionsProvider({ enabled, children }) {
     return saveStore(device, next);
   };
   const removeProject = (device, workdir) => saveStore(device, (store[device ?? ''] ?? []).filter((p) => p.workdir !== workdir));
+  /** 添加项目（`list`：[{ workdir, used_at }]，used_at 不给时是现在），已经有的只更新时间。 */
+  const addProjects = (device, list) => {
+    const cur = store[device ?? ''] ?? [];
+    const now = new Date().toISOString();
+    const keys = new Set(list.map((x) => dirKey(x.workdir)));
+    const added = list.map((x) => ({ ...cur.find((p) => dirKey(p.workdir) === dirKey(x.workdir)), workdir: x.workdir, used_at: x.used_at || now }));
+    return saveStore(device, [...added, ...cur.filter((p) => !keys.has(dirKey(p.workdir)))]).then(reloadFolders);
+  };
+  /** 置顶 / 取消置顶（从会话推出来、还没记着的项目这时记下）。 */
+  const pinProject = (device, workdir, pinned) => {
+    const cur = store[device ?? ''] ?? [];
+    const next = cur.some((p) => p.workdir === workdir) ? cur.map((p) => (p.workdir === workdir ? { ...p, pinned } : p)) : [...cur, { workdir, pinned, used_at: '' }];
+    return saveStore(device, next);
+  };
 
   // 最近打开的会话（在后台保持连接，切回去不用重新连）
   const [recent, setRecent] = useState(() => {
@@ -352,9 +454,14 @@ export function SessionsProvider({ enabled, children }) {
     loading: enabled && !data && !(multi ? false : singleError),
     error: multi ? null : singleError,
     reload,
+    reloadFolders,
     projects,
     touchProject,
     removeProject,
+    addProjects,
+    pinProject,
+    /** 那台电脑上记着的项目已经取到了（还没取到时项目列表里可能还缺它的项目） */
+    storeLoaded: (device) => store[device ?? ''] !== undefined,
     recent,
     openRecent,
     closeRecent,

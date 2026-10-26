@@ -120,7 +120,8 @@ pub struct Instances {
     /// 新建时要接着的以前的对话：同第一句话，只在第一次建会话时用一次
     first_resume: Mutex<HashMap<String, Resume>>,
     /// agent 会话名（终端 ID → 名字）和算出来的时间
-    titles: Mutex<(Option<Instant>, HashMap<String, String>)>,
+    /// 上次算 agent 会话名的时间、终端 ID → 会话名、终端 ID → 对话号
+    titles: Mutex<(Option<Instant>, HashMap<String, String>, HashMap<String, String>)>,
 }
 
 /// 接着以前的对话（会话页的“以前的对话”，见 history.rs）：`fork` 为复制一份接着，原来的不动
@@ -160,6 +161,8 @@ pub struct View {
     pub name_custom: bool,
     /// agent 自己的会话名：对话标题（/rename、自动标题），否则 agent 设置的终端标题（见 [`Instances::agent_titles`]）
     pub agent_title: Option<String>,
+    /// 正在写的是哪个对话（history.rs 的会话号，同样见 [`Instances::agent_titles`]）；不知道时 null
+    pub conv_id: Option<String>,
     /// 在 Docker 容器里运行（docker.rs）
     pub container: Option<crate::docker::Container>,
     /// Claude Code 用哪个账号 / 接口（claude_profiles.rs）；新建时记下的，没记下时 null
@@ -278,7 +281,7 @@ impl Instances {
             changed: tokio::sync::watch::channel(0).0,
             first_prompt: Mutex::new(HashMap::new()),
             first_resume: Mutex::new(HashMap::new()),
-            titles: Mutex::new((None, HashMap::new())),
+            titles: Mutex::new((None, HashMap::new(), HashMap::new())),
         })
     }
 
@@ -307,11 +310,12 @@ impl Instances {
         let mut views: Vec<View> = rows.into_iter().map(|r| self.view(r, sessions.as_ref())).collect();
         let stale = lock(&self.titles).0.is_none_or(|at| at.elapsed() >= TITLE_TTL);
         if stale {
-            let titles = self.agent_titles(&views).await;
-            *lock(&self.titles) = (Some(Instant::now()), titles);
+            let (titles, convs) = self.agent_titles(&views).await;
+            *lock(&self.titles) = (Some(Instant::now()), titles, convs);
             let cache = lock(&self.titles);
             for v in &mut views {
                 v.agent_title = cache.1.get(&v.row.id).cloned();
+                v.conv_id = cache.2.get(&v.row.id).cloned();
             }
         }
         Ok(views)
@@ -328,13 +332,18 @@ impl Instances {
         let sess = sessions.and_then(|m| m.get(&Self::session_name(&row.id)));
         let ts = |s: i64| crate::util::fmt_ms(s * 1000);
         let opts = self.opts(&row.id);
+        let (agent_title, conv_id) = {
+            let titles = lock(&self.titles);
+            (titles.1.get(&row.id).cloned(), titles.2.get(&row.id).cloned())
+        };
         View {
             full_access: opts.full_access,
             root_confirmed: opts.root_confirmed,
             web_port: opts.web_port,
             chat_ui: opts.chat_ui,
             name_custom: opts.name_custom,
-            agent_title: lock(&self.titles).1.get(&row.id).cloned(),
+            agent_title,
+            conv_id,
             claude_profile: crate::claude_profiles::pinned(&self.store, &row.id),
             container: self.container(&row.id),
             running,
@@ -356,11 +365,13 @@ impl Instances {
     ///    接着以前的对话时的会话号；都没有时，同一文件夹里只有这一个该工具的终端在跑，就取它启动之后最新的那个对话。
     /// 2. agent 设置的终端标题（tmux `pane_title`，例如 Claude Code 的“✳ 修登录页”），去掉前面的状态符号。
     /// 容器里的会话拿不到对话记录，只用 2。
-    async fn agent_titles(&self, views: &[View]) -> HashMap<String, String> {
+    /// 同时返回 1 里认出的是哪个对话（终端 ID → 对话号），会话列表里这个对话就不再单列。
+    async fn agent_titles(&self, views: &[View]) -> (HashMap<String, String>, HashMap<String, String>) {
         let live: Vec<&View> = views.iter().filter(|v| v.task_alive == Some(true) && crate::history::AGENTS.contains(&v.row.launch.as_str())).collect();
         let mut out = HashMap::new();
+        let mut ids = HashMap::new();
         if live.is_empty() {
-            return out;
+            return (out, ids);
         }
         let panes = self.pane_titles().await;
         let local: Vec<&&View> = live.iter().filter(|v| v.container.is_none()).collect();
@@ -393,12 +404,15 @@ impl Instances {
                     .then(|| convs.iter().filter(|x| x.agent == v.row.launch && !taken.contains(x.id.as_str()) && x.updated_ms >= started - 5000 && crate::history::same_dir(&x.workdir, &v.row.workdir)).max_by_key(|x| x.updated_ms))
                     .flatten()
             };
+            if let Some(c) = conv {
+                ids.insert(id.to_string(), c.id.clone());
+            }
             let title = conv.map(|c| c.title.clone()).filter(|t| !t.trim().is_empty()).or_else(|| panes.get(&Self::session_name(id)).cloned());
             if let Some(t) = title {
                 out.insert(id.to_string(), clip_title(&t));
             }
         }
-        out
+        (out, ids)
     }
 
     /// 每个 tmux 会话当前面板的标题（agent 用 OSC 设置的）。没设置过的（默认是主机名）、shell 的提示符标题不算。

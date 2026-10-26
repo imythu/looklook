@@ -19,7 +19,7 @@ import { useSessionUi } from './Sessions.jsx';
 
 const AGENTS = ['claude', 'codex', 'opencode'];
 // 能“复制一份继续”的（OpenCode 没有这个功能）
-const CAN_FORK = ['claude', 'codex'];
+export const CAN_FORK = ['claude', 'codex'];
 // 开始页里先列几个
 const START_SHOW = 5;
 // 页面里每个文件夹先列几个
@@ -28,7 +28,7 @@ const GROUP_SHOW = 5;
 const enc = encodeURIComponent;
 
 /** 展开后的一行：最后几句和按钮。 */
-function ConvPeek({ device, conv }) {
+function ConvPeek({ device, conv, onHide, hidden }) {
   const { t } = useTranslation();
   const [msgs, setMsgs] = useState(null);
   useEffect(() => {
@@ -60,13 +60,13 @@ function ConvPeek({ device, conv }) {
           </div>
         )
       )}
-      <ConvPeekActions device={device} conv={conv} />
+      <ConvPeekActions device={device} conv={conv} onHide={onHide} hidden={hidden} />
     </div>
   );
 }
 
 /** 继续 / 复制一份继续 / 打开已在看看里的会话，可能正开在别处时先提示。 */
-function ConvPeekActions({ device, conv }) {
+function ConvPeekActions({ device, conv, onHide, hidden }) {
   const { t } = useTranslation();
   const ui = useSessionUi();
   const toast = useToast();
@@ -124,12 +124,18 @@ function ConvPeekActions({ device, conv }) {
             )}
           </>
         )}
+        {onHide && (
+          <button type="button" className="btn btn-plain btn-sm" onClick={onHide}>
+            {t(hidden ? 'hist.unhide' : 'hist.hide')}
+          </button>
+        )}
       </div>
     </>
   );
 }
 
-function ConvRow({ device, conv, open, onToggle }) {
+/** 一个以前的对话：点开看最后几句和“继续”。`onHide` 给了时多一个“隐藏”（`hidden` 时是“取消隐藏”）。 */
+export function ConvRow({ device, conv, open, onToggle, onHide, hidden }) {
   const { t } = useTranslation();
   const status = conv.instance_id ? (
     <span className="badge badge-brand">{t('hist.in_looklook')}</span>
@@ -152,7 +158,7 @@ function ConvRow({ device, conv, open, onToggle }) {
           {conv.last && <span className="ellipsis conv-last">{conv.last}</span>}
         </span>
       </button>
-      {open && <ConvPeek device={device} conv={conv} />}
+      {open && <ConvPeek device={device} conv={conv} onHide={onHide} hidden={hidden} />}
     </div>
   );
 }
@@ -320,7 +326,7 @@ function parseQuery(q) {
 }
 
 /** 按时间分组的组名。 */
-function timeBucket(ms, now) {
+export function timeBucket(ms, now) {
   const start = new Date(now);
   start.setHours(0, 0, 0, 0);
   const today = start.getTime();
