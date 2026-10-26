@@ -209,7 +209,7 @@ impl Chat {
     /// 拿到能用的 app-server：没起过、退出了、第三方服务商的设置变了（且没有在跑的对话）就起一个新的。
     async fn codex_server(&self) -> Result<Arc<AppServer>, LocalError> {
         let env = crate::model::launch_env(&self.store, &self.paths.home, "codex");
-        let program = codex_app::program();
+        let program = codex_app::program(self.instances.shell()).await;
         let signature = format!("{}|{}", program.display(), env.as_ref().map(|e| e.signature()).unwrap_or_default());
         let mut slot = self.codex.server.lock().await;
         if let Some(s) = slot.as_ref().filter(|s| s.alive()) {

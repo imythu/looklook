@@ -74,9 +74,13 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// 在交互 shell 里找到过的 `codex`：再找要起一次 shell，记下来
+static FOUND: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 /// 启动 Codex 用的程序。Windows：npm 装的 `codex.exe`（见 [`super::codex_launch::program`]）；
-/// 其他平台：PATH 里的 `codex`，找不到时问登录 shell（从程序坞打开的客户端拿不到用户 shell 里加的 PATH）。
-pub fn program() -> PathBuf {
+/// 其他平台：PATH 里的 `codex`，找不到时问用户的交互登录 shell（和“工具”页的检测一样，见 [`crate::tools::detect`]）：
+/// 从程序坞打开的客户端拿不到用户 shell 里加的 PATH，nvm / fnm 之类常只写在 `~/.zshrc`，只问登录 shell 也找不到。
+pub async fn program(shell: &str) -> PathBuf {
     if let Some(p) = super::codex_launch::program() {
         return p;
     }
@@ -84,18 +88,15 @@ pub fn program() -> PathBuf {
         if let Some(p) = std::env::var_os("PATH").and_then(|path| std::env::split_paths(&path).map(|d| d.join("codex")).find(|p| p.is_file())) {
             return p;
         }
-        if let Some(p) = login_shell_which("codex") {
+        if let Some(p) = lock(&FOUND).clone().filter(|p| p.is_file()) {
+            return p;
+        }
+        if let Some(p) = crate::tools::detect(shell).await.codex.map(PathBuf::from).filter(|p| p.is_file()) {
+            *lock(&FOUND) = Some(p.clone());
             return p;
         }
     }
     PathBuf::from("codex")
-}
-
-fn login_shell_which(name: &str) -> Option<PathBuf> {
-    let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty()).unwrap_or_else(|| "/bin/sh".into());
-    let out = std::process::Command::new(shell).args(["-lc", &format!("command -v {name}")]).stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
-    let p = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    (out.status.success() && p.is_absolute() && p.is_file()).then_some(p)
 }
 
 /// 口令：第一次用时生成，之后一直用同一个（只有本机的看看和终端里的 TUI 读得到）
@@ -321,13 +322,14 @@ impl AppServer {
 /// 单独起一个 app-server（不挂在客户端进程上：客户端退出它照常运行）。返回进程号。
 fn spawn(run: &Path, program: &Path, env: Option<&crate::model::LaunchEnv>, port: u16, token_file: &Path) -> Result<u32, LocalError> {
     // 不是 Windows 时经登录 shell 启动（和 agents::cli_command 一样）：npm / Homebrew 装的 codex 是 node 脚本，
-    // 从程序坞打开的客户端 PATH 里没有 node，直接起会立刻退出，对话界面就用不了（终端里的 shell 有 PATH，照常能用）
+    // 从程序坞打开的客户端 PATH 里没有 node，直接起会立刻退出，对话界面就用不了（终端里的 shell 有 PATH，照常能用）。
+    // codex 所在的目录也放进 PATH：nvm 之类只在 ~/.zshrc 里加 PATH，登录 shell 没有，node 就在 codex 旁边
     #[cfg(windows)]
     let mut cmd = tokio::process::Command::new(program);
     #[cfg(not(windows))]
     let mut cmd = {
         let mut c = tokio::process::Command::new(crate::shells::login_shell());
-        c.args(["-lc", "exec \"$0\" \"$@\""]).arg(program);
+        c.args(["-lc", "case $0 in */*) PATH=\"${0%/*}:$PATH\"; export PATH;; esac; exec \"$0\" \"$@\""]).arg(program);
         c
     };
     if let Some(e) = env {
@@ -382,10 +384,10 @@ pub fn tui_command(base: &str, ep: &Endpoint, thread: Option<&str>, cwd: &str) -
 mod tests {
     use super::*;
 
-    #[test]
-    fn program_falls_back_to_name() {
+    #[tokio::test]
+    async fn program_falls_back_to_name() {
         // 找不到时至少给出名字，由系统去找（报错由 spawn 返回）
-        let p = program();
+        let p = program(&crate::shells::login_shell()).await;
         assert!(p.file_stem().is_some_and(|s| s.to_string_lossy().starts_with("codex")));
     }
 
