@@ -1135,12 +1135,13 @@ function limitOption(t, label) {
   return k ? t(`chat.limit.opt_${k}`) : label;
 }
 
-/** 额度什么时候重置：用量接口给的准确时间（用完的那个窗口；都没满时取最近的），按浏览器时区显示 */
+/** 额度什么时候重置：用量接口给的准确时间（用完的那个窗口；都没满时取 5 小时的），按浏览器时区显示。
+ *  不拿 7 天的兜底：5 小时的刚重置完时接口里没有它的时间，会显示成几天后 */
 function LimitReset({ id }) {
   const { data } = usePoll(`/instances/${id}/chat/usage`);
-  const wins = [data?.limits?.five_hour, data?.limits?.seven_day].filter((w) => w?.resets_at);
-  const full = wins.find((w) => w.used >= 100);
-  const at = (full ?? wins.sort((a, b) => parseInstant(a.resets_at) - parseInstant(b.resets_at))[0])?.resets_at;
+  const { five_hour: five, seven_day: week } = data?.limits ?? {};
+  const full = [five, week].find((w) => w?.resets_at && w.used >= 100);
+  const at = (full ?? five)?.resets_at;
   return at ? <ResetAt at={at} /> : null;
 }
 
