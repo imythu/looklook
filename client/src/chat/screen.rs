@@ -423,16 +423,18 @@ impl Dialog {
     }
 }
 
-/// 已经在等额度重置、到点自动继续：屏幕上的 `Usage limit reached · continuing automatically at 3pm · esc to cancel`
-/// （再次用完时是 `Usage limit reached again · …`，等待中是 `Continuing automatically …`），返回中间的 `at 3pm`
+/// 已经在等额度重置、到点自动继续：状态栏里的 `Continuing automatically at 3pm · esc to cancel`（快到点时是
+/// `Continuing shortly · esc to cancel`），返回中间的 `at 3pm` / `shortly`。等待取消、到点继续之后这一行就没了。
+/// 开始等时 Claude Code 还会往对话里追加一条 `Usage limit reached · continuing automatically at 3pm · esc to cancel`
+/// （再次用完是 `… reached again · …`）：它会一直留在屏幕上，不算（小写的 continuing）
 pub fn limit_wait(capture: &str) -> Option<String> {
-    const KEY: &str = "ontinuing automatically ";
+    const KEYS: [&str; 2] = ["Continuing automatically ", "Continuing shortly"];
     capture.lines().rev().map(|l| strip(l).0).find_map(|t| {
-        let i = t.find(KEY)?;
+        let (i, key) = KEYS.iter().find_map(|k| t.find(k).map(|i| (i, *k)))?;
         if !t.contains("esc to cancel") {
             return None;
         }
-        let when = t[i + KEY.len()..].split('·').next()?.trim();
+        let when = if key.ends_with(' ') { t[i + key.len()..].split('·').next()?.trim() } else { "shortly" };
         (!when.is_empty()).then(|| when.to_string())
     })
 }
@@ -762,9 +764,12 @@ mod tests {
 
     #[test]
     fn limit_wait_line() {
-        let cap = format!("● 我先跑一下测试\n\n  Usage limit reached · continuing automatically at 3pm (Asia/Shanghai) · esc to cancel\n{RULE}\n❯ \n{RULE}\n");
-        assert_eq!(limit_wait(&cap).as_deref(), Some("at 3pm (Asia/Shanghai)"));
-        assert_eq!(limit_wait("  Continuing automatically when your usage limit resets · esc to cancel\n").as_deref(), Some("when your usage limit resets"));
+        // 对话里追加的那条：取消、到点继续、又跑起来之后都还在屏幕上，不算
+        let note = "● 我先跑一下测试\n\n  ⎿  Usage limit reached · continuing automatically at 12am · esc to cancel\n";
+        assert_eq!(limit_wait(&format!("{note}{RULE}\n❯ \n{RULE}\n")), None);
+        assert_eq!(limit_wait(&format!("{note}{RULE}\n❯ \n{RULE}\n  Usage limit reached · limit resets 12am  Continuing automatically at 12am (Asia/Shanghai) · esc to cancel\n")).as_deref(), Some("at 12am (Asia/Shanghai)"));
+        assert_eq!(limit_wait("  Continuing automatically when it resets · esc to cancel\n").as_deref(), Some("when it resets"));
+        assert_eq!(limit_wait("  Continuing shortly · esc to cancel\n").as_deref(), Some("shortly"));
         // 对话内容里提到这句话不算（没有 esc to cancel）
         assert_eq!(limit_wait("● Claude Code shows continuing automatically at 3pm in the footer\n"), None);
     }
