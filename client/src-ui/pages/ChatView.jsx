@@ -87,10 +87,12 @@ import {
 } from '../shared/chat.js';
 import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
+import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
+import { remainingOf, useAccountsUsage, usageRows, UsageRows } from '../shared/StatusBar.jsx';
 import { formatTime, parseInstant, spanText } from '../shared/time.js';
 import { runUpload } from '../shared/uploader.js';
-import { Button, CopyButton, useConfirm, useToast } from '../shared/ui.jsx';
+import { Button, CopyButton, Modal, useConfirm, useToast } from '../shared/ui.jsx';
 
 // ---------------- 数据 ----------------
 
@@ -112,14 +114,24 @@ function useT(name) {
   return { t: useCallback((key, opts) => t(key, { agent, ...opts }), [t, agent]), i18n };
 }
 
-/** Codex（app-server）：`thinking` → 正在思考；其余是正在运行的命令，原样显示 */
-function activityText(t, activity) {
-  if (activity === 'compacting') return t('chat.compacting');
-  return activity === 'thinking' ? t('chat.codex_thinking') : activity;
+/**
+ * Codex 运行中那一行：按正在用的工具说中文（运行命令、修改文件、联网搜索、调用工具），命令、工具名这些原文放在后面的小字里。
+ * 和 Claude 的状态动词一样（`spinner.js`）：中文在前，原文跟着。
+ */
+function codexActivity(t, activity, tool) {
+  if (activity === 'compacting') return { text: t('chat.compacting'), orig: '' };
+  if (activity === 'thinking') return { text: t('chat.codex_thinking'), orig: '' };
+  const key = { Bash: 'act_cmd', Edit: 'act_edit', WebSearch: 'act_search', mcp: 'act_mcp' }[tool];
+  if (key) return { text: t(`chat.${key}`), orig: activity ?? '' };
+  return { text: activity ?? '', orig: '' };
 }
 
-/** 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。 */
-function useChat(id) {
+/**
+ * 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。
+ * 只在 `live`（这个对话页正显示着）时连着：浏览器对同一个地址最多开 6 个普通连接，开着好几个会话时每个都挂一条推送，
+ * 名额占满后整个页面的请求都会卡住。切走就断开，切回来重连时服务端先发一份快照，中间漏的都补上。
+ */
+function useChat(id, live = true) {
   const [state, dispatch] = useReducer((s, a) => applyEvent(s, a.type, a.data), EMPTY);
   const [online, setOnline] = useState(false);
   const [error, setError] = useState(null);
@@ -162,13 +174,14 @@ function useChat(id) {
         }
       };
     };
-    connect();
+    if (live) connect();
+    else setOnline(false);
     return () => {
       alive = false;
       clearTimeout(retry);
       es?.close();
     };
-  }, [id]);
+  }, [id, live]);
   const loadOlder = useCallback(async () => {
     if (state.start <= 0) return;
     const data = await api.get(`/instances/${id}/chat/history?before=${state.start}&limit=200`);
@@ -942,6 +955,8 @@ function QuestionForm({ pending, onAnswer, busy }) {
 
 /** 权限审批、Claude 的提问、计划审批 */
 function PendingCard({ id, pending, active }) {
+  // “⋯”里选了“说明理由再拒绝”才显示理由输入框
+  const [why, setWhy] = useState(false);
   const { t } = useT();
   const { caps } = useContext(AgentCtx);
   const toast = useToast();
@@ -1039,33 +1054,39 @@ function PendingCard({ id, pending, active }) {
         )}
         {pending.tool !== 'apply_patch' && (open || (diff && diff.length <= 40)) && (diff ? <DiffView lines={diff} /> : <Pre text={JSON.stringify(input, null, 2)} />)}
         {input.description && <p className="chat-note">{input.description}</p>}
+        {/* 常用的只有允许、拒绝；本次会话都允许、允许这些目录、说明理由再拒绝收进“⋯” */}
         <div className="chat-acts">
           <Button busy={busy} onClick={() => answer('allow')}>
             {t('chat.allow')} <kbd className="chat-kbd">↵</kbd>
           </Button>
-          {caps.allow_session !== false && (
-            <Button variant="secondary" busy={busy} onClick={() => answer('allow_session')} title={t('chat.allow_session_hint')}>
-              {t('chat.allow_session')}
-            </Button>
-          )}
-          {caps.allow_dirs !== false && dirs.length > 0 && (
-            <Button variant="secondary" busy={busy} onClick={() => answer('allow_dirs')} title={dirs.flatMap((d) => d.directories ?? []).join('\n')}>
-              {t('chat.allow_dirs')}
-            </Button>
-          )}
-        </div>
-        <form
-          className="chat-acts"
-          onSubmit={(e) => {
-            e.preventDefault();
-            answer('deny', { message: reason });
-          }}
-        >
-          <input className="chat-field grow" placeholder={t('chat.deny_reason')} value={reason} onChange={(e) => setReason(e.target.value)} />
-          <Button type="submit" variant="ghost" busy={busy}>
+          <Button variant="secondary" busy={busy} onClick={() => answer('deny', { message: reason })}>
             {t('chat.deny')}
           </Button>
-        </form>
+          <PopMenu
+            className="btn btn-ghost btn-icon"
+            label={t('chat.more_choices')}
+            disabled={busy}
+            items={[
+              caps.allow_session !== false && { label: t('chat.allow_session'), hint: t('chat.allow_session_hint'), onClick: () => answer('allow_session') },
+              caps.allow_dirs !== false && dirs.length > 0 && { label: t('chat.allow_dirs'), hint: dirs.flatMap((d) => d.directories ?? []).join('、'), onClick: () => answer('allow_dirs') },
+              { label: t('chat.deny_with_reason'), onClick: () => setWhy(true) },
+            ].filter(Boolean)}
+          />
+        </div>
+        {why && (
+          <form
+            className="chat-acts"
+            onSubmit={(e) => {
+              e.preventDefault();
+              answer('deny', { message: reason });
+            }}
+          >
+            <input className="chat-field grow" placeholder={t('chat.deny_reason')} value={reason} onChange={(e) => setReason(e.target.value)} autoFocus />
+            <Button type="submit" variant="ghost" busy={busy}>
+              {t('chat.deny')}
+            </Button>
+          </form>
+        )}
       </>
     );
   }
@@ -1433,21 +1454,78 @@ function versionAtLeast(v, min) {
 }
 
 /** 上下文用量的小圆环（点开右侧的“用量”） */
-function ContextRing({ used, window: win, onClick }) {
+/**
+ * 输入框旁的小圆环：账号 5 小时额度还剩多少（和状态栏一样的颜色），悬停时也写上下文用了多少；
+ * 拿不到额度（第三方接口没有订阅用量）时退回显示上下文用了多少。点开右侧的“用量”。
+ */
+/**
+ * 手机上点圆环弹出来的面板：这个会话用的账号还剩多少、什么时候回满，上下文用了多少；
+ * 下面是这台电脑另一个工具（Claude / Codex）的额度，方便决定接下来用哪个。
+ */
+function UsageSheet({ limits, ctxText, onClose, onMore }) {
   const { t } = useT();
-  if (!used) return null;
-  const total = win || 200000;
-  const p = Math.min(1, used / total);
-  const label = t('chat.context_ring', { pct: Math.round(p * 100), used: tokens(used), total: tokens(total) });
+  const agent = useContext(AgentCtx);
+  const others = usageRows(useAccountsUsage()).filter((x) => x.key !== agent.id);
+  const left = remainingOf(limits?.five_hour);
+  const mine = left ? [{ key: agent.id, name: agent.id === 'codex' ? 'Codex' : 'Claude', d: limits, r: left }] : [];
   return (
-    <button type="button" className="btn btn-plain chat-ring" data-level={p > 0.85 ? 'high' : p > 0.6 ? 'mid' : 'low'} onClick={onClick} aria-label={label} title={label}>
-      <svg viewBox="0 0 36 36" width="16" height="16" aria-hidden="true">
-        <circle cx="18" cy="18" r="14" fill="none" stroke="var(--line)" strokeWidth="5" />
-        <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" strokeWidth="5" strokeDasharray={`${(88 * p).toFixed(1)} 88`} transform="rotate(-90 18 18)" />
-      </svg>
-      {/* 只有圆环时像在转圈加载，写上百分比 */}
-      <span>{Math.round(p * 100)}%</span>
-    </button>
+    <Modal open onClose={onClose} title={t('sbar.usage_title')} className="usage-sheet">
+      <UsageRows rows={[...mine, ...others]} />
+      {ctxText && <p className="muted small usage-sheet-ctx">{ctxText}</p>}
+      <div className="modal-actions">
+        <Button variant="ghost" onClick={onMore}>{t('chat.usage_more')}</Button>
+        <Button onClick={onClose}>{t('action.close')}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+const NARROW = '(max-width: 899px)';
+
+function ContextRing({ used, window: win, limits, onClick }) {
+  const { t } = useT();
+  // 手机上点开底部面板；宽屏打开侧栏的用量页（宽屏底部状态栏也一直显示着）
+  const [sheet, setSheet] = useState(false);
+  const total = win || 200000;
+  const ctx = used ? Math.min(1, used / total) : null;
+  const ctxText = ctx != null ? t('chat.context_ring', { pct: Math.round(ctx * 100), used: tokens(used), total: tokens(total) }) : null;
+  const left = remainingOf(limits?.five_hour);
+  let p;
+  let level;
+  let label;
+  if (left) {
+    p = left.left / 100;
+    level = left.level === 'low' ? 'high' : left.level === 'warn' ? 'mid' : 'low';
+    const resets = Date.parse(limits.five_hour.resets_at) - Date.now();
+    label = [t('chat.usage_ring', { n: left.left }), resets > 0 ? t('sbar.resets', { in: spanText(t, resets) }) : null, ctxText].filter(Boolean).join(' · ');
+  } else {
+    if (ctx == null) return null;
+    p = ctx;
+    level = p > 0.85 ? 'high' : p > 0.6 ? 'mid' : 'low';
+    label = ctxText;
+  }
+  return (
+    <>
+      {sheet && (
+        <UsageSheet
+          limits={limits}
+          ctxText={ctxText}
+          onClose={() => setSheet(false)}
+          onMore={() => {
+            setSheet(false);
+            onClick();
+          }}
+        />
+      )}
+      <button type="button" className="btn btn-plain chat-ring" data-level={level} onClick={() => (window.matchMedia(NARROW).matches ? setSheet(true) : onClick())} aria-label={label} title={label}>
+        <svg viewBox="0 0 36 36" width="16" height="16" aria-hidden="true">
+          <circle cx="18" cy="18" r="14" fill="none" stroke="var(--line)" strokeWidth="5" />
+          <circle cx="18" cy="18" r="14" fill="none" stroke="currentColor" strokeWidth="5" strokeDasharray={`${(88 * p).toFixed(1)} 88`} transform="rotate(-90 18 18)" />
+        </svg>
+        {/* 只有圆环时像在转圈加载，写上百分比 */}
+        <span>{Math.round(p * 100)}%</span>
+      </button>
+    </>
   );
 }
 
@@ -1812,7 +1890,7 @@ function Composer({ id, status, phase, touch, offline, models, usage, onAction, 
             <ChevronDown size={13} aria-hidden="true" />
           </button>
           )}
-          {caps.usage !== false && <ContextRing used={status?.context} window={usage?.window} onClick={() => onAction('usage')} />}
+          {caps.usage !== false && <ContextRing used={status?.context} window={usage?.window} limits={usage?.limits} onClick={() => onAction('usage')} />}
           {showStop ? (
             <button type="button" className="btn btn-icon chat-send chat-stop" onClick={stop} aria-label={t('chat.stop')} title={t('chat.stop_hint')}>
               <Square size={14} fill="currentColor" />
@@ -1935,10 +2013,10 @@ function Detached({ id, status }) {
           )}
         </div>
       )}
-      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server') && (
+      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server' || reason === 'terminal_only') && (
         <div className="chat-acts">
           <Button busy={busy} onClick={relaunch}>
-            {t(reason === 'app_server' ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
+            {t(reason === 'app_server' || reason === 'terminal_only' ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
           </Button>
         </div>
       )}
@@ -2536,7 +2614,7 @@ function Live({ status, items, since }) {
   const head = preview.slice(0, 30);
   const shown = preview && !(head && lastText.replace(/\s+/g, '').includes(head.replace(/\s+/g, '')));
   // Claude Code 的状态行（`Unraveling… (8s · ↓ 22 tokens)`）：中文界面把动词换成中文；Codex 的另有说法
-  const act = status?.agent === 'claude' || !status?.agent ? spinnerText(status?.activity, i18n.language) : { text: activityText(t, status?.activity) ?? '', detail: '', orig: '' };
+  const act = status?.agent === 'claude' || !status?.agent ? spinnerText(status?.activity, i18n.language) : { detail: '', ...codexActivity(t, status?.activity, status?.tool) };
   return (
     <>
       {shown && <div className="chat-preview">{preview}</div>}
@@ -2696,7 +2774,7 @@ const readSide = () => {
  */
 export default function ChatView({ id, launch, active, touch, offline = false, onTab }) {
   const router = useRouter();
-  const chat = useChat(id);
+  const chat = useChat(id, active);
   const { status, items } = chat;
   // 状态还没取到（刚切过来、连不上）时按终端的启动类型，不能先显示成 Claude Code
   const agentId = status?.agent ?? (AGENT_NAMES[launch] ? launch : 'claude');
@@ -2786,7 +2864,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   return (
     <AgentCtx.Provider value={agentCtx}>
       <ArtifactCtx.Provider value={artifactCtx}>
-    <div className="chat-view" data-side={side ? '' : undefined}>
+    <div className="chat-view" data-agent={agentId} data-side={side ? '' : undefined}>
       <div className="chat-col">
         <div className="chat-main">
           <div className="chat-list" ref={list} onScroll={onScroll} tabIndex={-1}>

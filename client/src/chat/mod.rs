@@ -1457,6 +1457,41 @@ impl Chat {
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
     }
 
+    /// 状态栏右下角：这台电脑上登录了的 Claude、Codex 账号的限额（5 小时、每周），没登录或取不到时为 null。
+    /// Codex 只在登录了 ChatGPT（有 auth.json）时才去问 app-server，免得为了这个起一个用不上的进程。
+    pub async fn accounts_usage(&self) -> Value {
+        let has = |v: &Value| !v["five_hour"].is_null() || !v["seven_day"].is_null();
+        // Claude：默认账号（官方登录的才有订阅用量），只读 Claude Code 自己缓存在 .claude.json 里的——
+        // 不拿它的凭据去问 Anthropic（不允许第三方这么用）。缓存旧了在后台请它自己取（`claude -p /usage`，
+        // 不调模型、不耗额度，每个账号两分钟最多一次），下次来就是新的
+        let claude = async {
+            let profile = crate::claude_profiles::get(&self.store, &crate::claude_profiles::default_id(&self.store))?;
+            if profile.kind != crate::claude_profiles::Kind::Official {
+                return None;
+            }
+            let (config_dir, state_file) = crate::claude_profiles::config_paths(&self.paths.home, &profile);
+            let here = PathBuf::from(".");
+            let ctx = models::Ctx { config_dir, state_file, workdir: &here, env: HashMap::new() };
+            let limits = tokio::task::block_in_place(|| models::limits(&ctx));
+            if crate::util::system_ms() - limits["fetched_at"].as_i64().unwrap_or(0) > models::LIMITS_STALE_MS {
+                let shell = self.instances.shell().to_string();
+                let account = (profile.id != crate::claude_profiles::OFFICIAL).then(|| crate::claude_profiles::account_dir(&self.paths.home, &profile.id));
+                let cwd = self.paths.home.join("run").join("usage");
+                let dir = ctx.config_dir.clone();
+                tokio::spawn(async move { models::refresh_limits(&shell, &dir, account.as_deref(), &cwd).await });
+            }
+            Some(limits).filter(has)
+        };
+        let codex = async {
+            if !crate::agents::codex_home().join("auth.json").is_file() {
+                return None;
+            }
+            self.codex_limits().await.ok().filter(has)
+        };
+        let (claude, codex) = tokio::join!(claude, codex);
+        json!({ "claude": claude, "codex": codex })
+    }
+
     /// 对话生成的文件（目前只有 Codex 生成的图片）
     pub fn files(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
@@ -2341,6 +2376,7 @@ mod tests {
     /// （claude_profiles::skip_first_run），选主题、安全提示、信任目录、Bypass 警告都不出现，直接到输入框。不发消息，不用额度。
     /// `CHAT_E2E_DIR` 可以是普通文件夹、git 仓库里的子目录，或者家目录（同时把 `HOME` 设成它）：都是写工作目录本身。
     /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_onboarding -- --ignored --nocapture`
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn chat_e2e_onboarding() {
