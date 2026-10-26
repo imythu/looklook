@@ -762,6 +762,19 @@ impl Chat {
             Some(_) => self.instances.screen(&inst.id).await,
             None => None,
         };
+        // 首次启动的引导（选主题、安全提示）：用户不关心，替他按掉。按完停 1.5 秒再看屏幕，
+        // 免得读到还没重绘的旧画面多按一次回车（下一屏信任目录默认选中的是“No, exit”）
+        if let Some(key) = capture.as_deref().filter(|_| inst.agent.launch() == "claude").and_then(screen::onboarding) {
+            {
+                let mut st = lock(&inst.st);
+                if st.hold.is_some_and(|h| h > Instant::now()) {
+                    return;
+                }
+                st.hold = Some(Instant::now() + Duration::from_millis(1500));
+            }
+            let _ = self.instances.send_keys(&inst.id, &[key]).await;
+            return;
+        }
         // 在运行、但不是带着看看的 hooks 启动的（开启对话界面之前就开着的、在终端里手动开的）
         let unhooked = running == Some(Some(false));
         let screen = capture.as_deref().map(|c| inst.agent.classify(c));
@@ -1455,6 +1468,41 @@ impl Chat {
             }
         }
         Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
+    }
+
+    /// 状态栏右下角：这台电脑上登录了的 Claude、Codex 账号的限额（5 小时、每周），没登录或取不到时为 null。
+    /// Codex 只在登录了 ChatGPT（有 auth.json）时才去问 app-server，免得为了这个起一个用不上的进程。
+    pub async fn accounts_usage(&self) -> Value {
+        let has = |v: &Value| !v["five_hour"].is_null() || !v["seven_day"].is_null();
+        // Claude：默认账号（官方登录的才有订阅用量），只读 Claude Code 自己缓存在 .claude.json 里的——
+        // 不拿它的凭据去问 Anthropic（不允许第三方这么用）。缓存旧了在后台请它自己取（`claude -p /usage`，
+        // 不调模型、不耗额度，每个账号两分钟最多一次），下次来就是新的
+        let claude = async {
+            let profile = crate::claude_profiles::get(&self.store, &crate::claude_profiles::default_id(&self.store))?;
+            if profile.kind != crate::claude_profiles::Kind::Official {
+                return None;
+            }
+            let (config_dir, state_file) = crate::claude_profiles::config_paths(&self.paths.home, &profile);
+            let here = PathBuf::from(".");
+            let ctx = models::Ctx { config_dir, state_file, workdir: &here, env: HashMap::new() };
+            let limits = tokio::task::block_in_place(|| models::limits(&ctx));
+            if crate::util::system_ms() - limits["fetched_at"].as_i64().unwrap_or(0) > models::LIMITS_STALE_MS {
+                let shell = self.instances.shell().to_string();
+                let account = (profile.id != crate::claude_profiles::OFFICIAL).then(|| crate::claude_profiles::account_dir(&self.paths.home, &profile.id));
+                let cwd = self.paths.home.join("run").join("usage");
+                let dir = ctx.config_dir.clone();
+                tokio::spawn(async move { models::refresh_limits(&shell, &dir, account.as_deref(), &cwd).await });
+            }
+            Some(limits).filter(has)
+        };
+        let codex = async {
+            if !crate::agents::codex_home().join("auth.json").is_file() {
+                return None;
+            }
+            self.codex_limits().await.ok().filter(has)
+        };
+        let (claude, codex) = tokio::join!(claude, codex);
+        json!({ "claude": claude, "codex": codex })
     }
 
     /// 对话生成的文件（目前只有 Codex 生成的图片）
@@ -2337,10 +2385,9 @@ mod tests {
         let _ = std::fs::remove_file(format!("{dir}/chat-e2e.txt"));
     }
 
-    /// 端到端：空的配置目录、没信任过的文件夹、全部权限首次启动：启动前已按官方文档写成都确认过了
-    /// （claude_profiles::skip_first_run），选主题、安全提示、信任目录、Bypass 警告都不出现，直接到输入框。不发消息，不用额度。
-    /// `CHAT_E2E_DIR` 可以是普通文件夹、git 仓库里的子目录，或者家目录（同时把 `HOME` 设成它）：都是写工作目录本身。
+    /// 端到端：空的配置目录首次启动，选主题、安全提示由对话界面自己按掉，测试只替用户信任目录；不发消息，不用额度。
     /// `CHAT_E2E_BIN=… CHAT_E2E_DIR=… cargo test chat_e2e_onboarding -- --ignored --nocapture`
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread")]
     #[ignore]
     async fn chat_e2e_onboarding() {
@@ -2369,7 +2416,8 @@ mod tests {
         instances.ensure_session(&row).await.unwrap();
         let (_rx, viewer) = chat.subscribe(&id).unwrap();
         let mut seen = Vec::new();
-        for _ in 0..30 {
+        let mut trusted = false;
+        for _ in 0..60 {
             tokio::time::sleep(Duration::from_millis(1000)).await;
             let raw = instances.screen(&id).await.unwrap_or_default();
             let cap = raw.lines().map(|l| screen::strip(l).0).collect::<Vec<_>>().join("\n");
@@ -2378,23 +2426,25 @@ mod tests {
                     seen.push(k);
                 }
             }
-            if matches!(screen::classify(&raw), Screen::Input { .. }) {
+            // 信任目录、Bypass Permissions 警告：和界面一样，从状态里拿弹窗，用户点“是”
+            let s = chat.snapshot(&id).await.unwrap();
+            let d = &s["status"]["dialog"];
+            if s["status"]["phase"] == "tui" && d.is_object() {
+                let opts: Vec<&str> = d["options"].as_array().unwrap().iter().map(|o| o["label"].as_str().unwrap()).collect();
+                println!("弹窗：{} {opts:?}", d["title"]);
+                assert!(!d.to_string().contains("]8;"), "说明里不能带转义：{d}");
+                let yes = opts.iter().position(|o| o.starts_with("Yes")).unwrap();
+                let _ = chat.dialog_choose(&id, d["title"].as_str().unwrap(), opts[yes], yes).await;
+                trusted = true;
+            } else if trusted && matches!(screen::classify(&raw), Screen::Input { .. }) {
                 break;
             }
         }
-        println!("---- 屏幕\n{}", instances.screen(&id).await.unwrap_or_default().lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));
-        assert!(seen.is_empty(), "不该出现确认：{seen:?}");
+        println!("看到过：{seen:?}\n---- 屏幕\n{}", instances.screen(&id).await.unwrap_or_default().lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect::<Vec<_>>().join("\n"));
+        assert_eq!(seen[..3], ["theme", "security", "trust"]);
         assert!(matches!(screen::classify(&instances.screen(&id).await.unwrap()), Screen::Input { .. }), "到了输入框");
         let state: Value = serde_json::from_slice(&std::fs::read(cfg.path().join(".claude.json")).unwrap()).unwrap();
         assert_eq!(state["hasCompletedOnboarding"], true);
-        let key = std::fs::canonicalize(&dir).unwrap().display().to_string();
-        assert_eq!(state["projects"][&key]["hasTrustDialogAccepted"], true, "{}", state["projects"]);
-        assert_eq!(state["theme"], "auto");
-        // 看看不写用户设置（Bypass 警告靠 `--settings` 传的 skipDangerousModePermissionPrompt）；
-        // 用户设置里没选过主题时，Claude Code 启动时自己把 `.claude.json` 里的 `theme` 迁过去
-        let settings: Value = std::fs::read(cfg.path().join("settings.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        assert!(settings.get("skipDangerousModePermissionPrompt").is_none(), "{settings}");
-        assert!(settings.get("theme").is_none_or(|t| t == "auto"), "{settings}");
         drop(viewer);
         instances.stop(&id).await.unwrap();
     }
@@ -2458,7 +2508,7 @@ mod tests {
         let texts = |s: &Value| -> String {
             s["items"].as_array().unwrap().iter().filter(|i| i["k"] == "assistant").map(|i| i.to_string()).collect::<Vec<_>>().join("\n")
         };
-        // 启动时的确认已经在启动前跳过（claude_profiles::skip_first_run）；万一还有信任目录，替用户点
+        // 首次启动的引导：主题、安全提示由对话界面自己按掉（screen::onboarding），这里只替用户信任目录
         for _ in 0..60 {
             let s = chat.snapshot(&id).await.unwrap();
             if s["status"]["session_id"].is_string() && s["status"]["phase"] == "idle" {

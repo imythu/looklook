@@ -675,7 +675,7 @@ impl Account {
         HeartbeatRequest {
             client_version: client_version(),
             target: paths::target().into(),
-            channel: "stable".into(),
+            channel: settings.update_channel.clone(),
             device_name: Some(settings.device_name()),
             uptime_seconds: Some(self.started.elapsed().as_secs() as i64),
             // 每次都带全量终端列表，作为单独上报失败时的兜底；读不到本机列表时不更新（None）

@@ -437,6 +437,21 @@ pub fn limit_wait(capture: &str) -> Option<String> {
     })
 }
 
+/// Claude Code 首次启动的引导里用户不关心的两屏：选主题（选“跟随终端”）、安全提示。返回要按的键；
+/// 光标还没到“Auto”时按 Up（第一项，到顶不会绕回去），到了按 Enter。信任目录、登录不在这里，要用户自己选。
+pub fn onboarding(capture: &str) -> Option<&'static str> {
+    if classify(capture) != Screen::Modal {
+        return None;
+    }
+    let lines: Vec<String> = capture.lines().map(|l| strip(l).0).collect();
+    let has = |s: &str| lines.iter().any(|l| l.contains(s));
+    if has("Choose the text style") {
+        let sel = lines.iter().find(|l| l.trim_start().starts_with('❯'))?;
+        return Some(if sel.contains("Auto (match terminal)") { "Enter" } else { "Up" });
+    }
+    (has("Security notes:") && has("Press Enter to continue")).then_some("Enter")
+}
+
 /// 选项前面的编号（`1. `、`12.  `）：返回编号后面的文字
 fn numbered(t: &str) -> Option<&str> {
     let (n, rest) = t.split_once('.')?;
@@ -794,12 +809,23 @@ mod tests {
     }
 
 
-    /// 以 Bypass Permissions 启动、还没接受过时的警告（2.1.310，60 列）：要用户自己确认；说明里的链接（OSC 8）不能带着转义显示出来
+    /// 2.1.310 首次启动（空的配置目录，60 列）：主题、安全提示替用户按掉；登录方式要用户自己选
     #[test]
-    fn bypass_warning() {
-        let d = dialog(include_str!("testdata/bypass.txt")).unwrap();
+    fn onboarding_screens() {
+        let theme = include_str!("testdata/onboarding-theme.txt");
+        assert_eq!(onboarding(theme), Some("Up"));
+        assert_eq!(onboarding(include_str!("testdata/onboarding-theme-auto.txt")), Some("Enter"));
+        assert_eq!(onboarding(include_str!("testdata/onboarding-security.txt")), Some("Enter"));
+        assert_eq!(onboarding(include_str!("testdata/onboarding-login.txt")), None);
+        assert_eq!(onboarding(include_str!("testdata/trust.txt")), None);
+        // 以 Bypass Permissions 启动时的警告要用户自己确认；说明里的链接（OSC 8）不能带着转义显示出来
+        let bypass = include_str!("testdata/bypass.txt");
+        assert_eq!(onboarding(bypass), None);
+        let d = dialog(bypass).unwrap();
         assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["No, exit", "Yes, I accept"]);
         assert!(d.body.iter().any(|l| l == "https://code.claude.com/docs/en/security"), "{:?}", d.body);
+        // 对话里提到这几句话不算
+        assert_eq!(onboarding(&format!("● Security notes: Press Enter to continue\n{RULE}\n❯ \n{RULE}\n")), None);
     }
 
     #[test]

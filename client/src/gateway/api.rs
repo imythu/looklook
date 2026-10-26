@@ -63,6 +63,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/git", get(git_status))
         .route("/instances/{id}/git/diff", get(git_diff))
         .route("/instances/{id}/git/show", get(git_show))
+        .route("/instances/{id}/git/commit", post(git_commit))
         .route("/instances/{id}/page", post(instance_page))
         .route("/instances/{id}/chat", get(super::chat::snapshot))
         .route("/instances/{id}/chat/events", get(super::chat::events))
@@ -78,6 +79,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/relaunch", post(super::chat::relaunch))
         .route("/instances/{id}/chat/codex-terminal", post(super::chat::codex_terminal))
         .route("/instances/{id}/chat/adopt", post(super::chat::adopt))
+        .route("/usage/accounts", get(super::chat::accounts_usage))
         .route("/instances/{id}/chat/setting", post(super::chat::setting))
         .route("/instances/{id}/chat/tasks", get(super::chat::tasks))
         .route("/instances/{id}/chat/models", get(super::chat::models))
@@ -934,6 +936,23 @@ async fn git_show(State(app): State<App>, Path(id): Path<String>, Query(q): Quer
     Ok(Json(blocking(move || crate::git::show(&dir, &q.commit)).await?))
 }
 
+#[derive(Deserialize)]
+struct GitCommitReq {
+    #[serde(default)]
+    path: String,
+    files: Vec<String>,
+    message: String,
+    #[serde(default)]
+    push: bool,
+}
+
+/// 提交选中的文件（Git 标签左下角），可以顺便推送
+async fn git_commit(State(app): State<App>, Path(id): Path<String>, Json(req): Json<GitCommitReq>) -> R<Json<crate::git::CommitResult>> {
+    require_allowed(&app)?;
+    let dir = git_dir(&app, &id, &req.path).await?;
+    Ok(Json(blocking(move || crate::git::commit(&dir, &req.files, &req.message, req.push)).await?))
+}
+
 // ---------------- SSH 主机（ssh.rs） ----------------
 
 async fn ssh_list(State(app): State<App>) -> Json<Value> {
@@ -1553,8 +1572,12 @@ async fn put_settings(State(app): State<App>, Json(patch): Json<serde_json::Map<
         }
         _ => return Err(LocalError::new("WORKDIR_NOT_FOUND").with("path", s.default_workdir)),
     }
+    let channel = Settings::load(&app.store).update_channel;
     if app.account.save_settings(&s).await? {
         app.sync.poke();
+    }
+    if channel != s.update_channel {
+        app.updater.channel_changed();
     }
     Ok(Json(s))
 }
