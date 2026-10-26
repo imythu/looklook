@@ -699,6 +699,7 @@ function ProjectPicker({ projects, device, workdir, container, onPick, onClose }
   const { t } = useTranslation();
   const devices = useDevices();
   const ref = useRef(null);
+  // 正在浏览哪台电脑的文件夹：{ dev }，dev 只有一台电脑时是 null，所以不能直接用 null 表示“没打开”
   const [browse, setBrowse] = useState(null);
   useEffect(() => {
     const close = (e) => !ref.current?.contains(e.target) && !browse && onClose();
@@ -737,7 +738,7 @@ function ProjectPicker({ projects, device, workdir, container, onPick, onClose }
                 <span className="ppick-path mono ellipsis">{p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}</span>
               </button>
             ))}
-            <button type="button" className="ppick-item ppick-other" onClick={() => setBrowse(d?.id ?? null)}>
+            <button type="button" className="ppick-item ppick-other" onClick={() => setBrowse({ dev: d?.id ?? null })}>
               <FolderPlus size={15} aria-hidden="true" />
               <span className="grow">{t('sess.pick_other')}</span>
             </button>
@@ -747,10 +748,10 @@ function ProjectPicker({ projects, device, workdir, container, onPick, onClose }
       })}
       <FolderPicker
         open={browse !== null}
-        initial={browse === device ? workdir : ''}
-        client={deviceApi(browse)}
+        initial={browse && browse.dev === device ? workdir : ''}
+        client={deviceApi(browse?.dev ?? null)}
         onClose={() => setBrowse(null)}
-        onPick={(path) => onPick(browse, path, null)}
+        onPick={(path) => onPick(browse.dev, path, null)}
       />
     </div>
   );
