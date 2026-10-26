@@ -816,7 +816,15 @@ impl Chat {
                     (_, Screen::Modal) if st.phase == Phase::Tui => {}
                     (Phase::Running, Screen::Modal) if !quiet => {}
                     (_, Screen::Modal) if st.odd_screens == 1 || (odd && starting) => {}
-                    (_, Screen::Modal) => Self::set_phase(inst, &mut st, Phase::Tui, None),
+                    (_, Screen::Modal) => {
+                        // 读不出来的界面：记下屏幕（最后 20 行、去掉转义），以后据此认出它或排查误判
+                        if st.dialog.is_none() {
+                            let shown: Vec<String> = capture.as_deref().unwrap_or("").lines().map(|l| screen::strip(l).0).filter(|l| !l.trim().is_empty()).collect();
+                            let tail = shown[shown.len().saturating_sub(20)..].join("\n");
+                            tracing::info!(id = %inst.id, drawn = st.drawn, since_ms = since.elapsed().as_millis() as u64, "认不出来的 Claude Code 界面，转到“在等你选择”\n{tail}");
+                        }
+                        Self::set_phase(inst, &mut st, Phase::Tui, None)
+                    }
                     (_, Screen::Input { busy, ref text }) if !attached => {
                         Self::set_phase(inst, &mut st, Phase::Detached, Some("not_attached"));
                         // 以前的 Claude（不是带着看看的 hooks 启动的）空闲着：接着同一段对话转到对话模式
@@ -2408,6 +2416,20 @@ mod tests {
         let settings: Value = std::fs::read(cfg.path().join("settings.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
         assert!(settings.get("skipDangerousModePermissionPrompt").is_none(), "{settings}");
         assert!(settings.get("theme").is_none_or(|t| t == "auto"), "{settings}");
+        // 界面开着时重启这个终端：新的 Claude Code 启动时屏幕也是先空着，同样要一直是“正在启动”
+        instances.stop(&id).await.unwrap();
+        instances.ensure_session(&row).await.unwrap();
+        let mut back = false;
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let s = chat.snapshot(&id).await.unwrap();
+            assert_ne!(s["status"]["phase"], "tui", "重启后启动中不该当成选择框：{}", s["status"]);
+            if matches!(screen::classify(&instances.screen(&id).await.unwrap_or_default()), Screen::Input { .. }) {
+                back = true;
+                break;
+            }
+        }
+        assert!(back, "重启后到了输入框");
         drop(viewer);
         instances.stop(&id).await.unwrap();
     }
