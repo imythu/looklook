@@ -2175,7 +2175,7 @@ async fn set_default_claude_profile(State(app): State<App>, Json(req): Json<Defa
 /// 返回授权页地址；界面上用户去登录，再把授权码贴回来。
 async fn login_claude_profile(State(app): State<App>, Path(id): Path<String>) -> R<Json<crate::claude_profiles::LoginView>> {
     let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
-    Ok(Json(crate::claude_profiles::login_start(app.instances.shell(), &app.paths.home, &p).await?))
+    Ok(Json(crate::claude_profiles::login_start(app.instances.shell(), &app.paths.home, app.store.clone(), &p).await?))
 }
 
 async fn claude_login_state(Path(id): Path<String>) -> R<Json<crate::claude_profiles::LoginView>> {

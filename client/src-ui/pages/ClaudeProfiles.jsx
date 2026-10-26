@@ -16,9 +16,9 @@ import { Disclaimer, ProviderLogo } from './ModelProviders.jsx';
 const CUSTOM = 'custom';
 const MODEL_KEYS = ['main', 'opus', 'sonnet', 'haiku'];
 
-/** 配置显示的名字：本机默认账号没有名字 */
+/** 配置显示的名字：本机默认账号没有名字；另外的官方账号登录成功后才有（登录的邮箱） */
 export function profileName(t, p) {
-  return p.id === 'official' ? t('cprof.builtin') : p.name;
+  return p.id === 'official' ? t('cprof.builtin') : p.name || t('cprof.unnamed');
 }
 
 function KindIcon({ p, size = 15 }) {
@@ -58,9 +58,17 @@ function UsageLine({ limits }) {
   ));
 }
 
+/** 登录失败时 Claude Code 说的话：授权码被拒（400）换成能照着做的说明 */
+function loginError(t, st) {
+  if (!st.error) return t('cprof.login_failed');
+  if (/status code 400\b/.test(st.error)) return t('cprof.login_code_rejected');
+  return t('cprof.login_failed_detail', { detail: st.error });
+}
+
 /**
- * 登录官方账号：电脑上在后台运行 Claude Code 自己的 `claude auth login`，这里只显示它给的授权页地址（不做成链接，
- * 旁边的按钮打开、复制），用户在 claude.com 登录后把授权码贴回来。
+ * 登录官方账号：电脑上在后台运行 Claude Code 自己的 `claude auth login`，这里只显示它给的登录地址（不做成链接，
+ * 旁边的按钮打开、复制），用户在 claude.com 登录后把页面上的 Authentication Code 贴回来。
+ * `onClose(ok)`：登录成功时为 true。
  */
 function LoginModal({ profile, onClose }) {
   const { t } = useTranslation();
@@ -86,11 +94,11 @@ function LoginModal({ profile, onClose }) {
   useEffect(() => {
     if (st?.state !== 'ok') return;
     toast(t('cprof.login_done', { name: profileName(t, profile) }));
-    onClose();
+    onClose(true);
   }, [st?.state]);
   const close = () => {
     if (st?.state === 'running') api.del(`/claude-profiles/${profile.id}/login`).catch(() => {});
-    onClose();
+    onClose(false);
   };
   const submit = (e) => {
     e.preventDefault();
@@ -99,7 +107,8 @@ function LoginModal({ profile, onClose }) {
   };
   const waiting = st?.state === 'running' && st.code_sent;
   return (
-    <Modal open onClose={close} title={t('cprof.login_title', { name: profileName(t, profile) })}>
+    <Modal open onClose={close} title={profile.fresh ? t('cprof.add_official') : t('cprof.login_title', { name: profileName(t, profile) })}>
+      {profile.fresh && <p className="small muted">{t('cprof.official_intro')}</p>}
       {!st && !error && <Skeleton height={80} />}
       {st?.state === 'running' && !st.url && (
         <p className="muted small">
@@ -119,10 +128,10 @@ function LoginModal({ profile, onClose }) {
               </span>
             </div>
           </Field>
-          <Field label={t('cprof.login_code')}>
-            <input value={code} onChange={(e) => setCode(e.target.value)} autoComplete="off" spellCheck={false} autoCapitalize="none" disabled={st.state !== 'running' || waiting} autoFocus />
+          <Field label="Authentication Code" hint={t('cprof.login_code_hint')}>
+            <input className="mono" value={code} onChange={(e) => setCode(e.target.value)} autoComplete="off" spellCheck={false} autoCapitalize="none" disabled={st.state !== 'running' || waiting} autoFocus />
           </Field>
-          {st.state === 'failed' && <Note kind="warn">{st.error ? t('cprof.login_failed_detail', { detail: st.error }) : t('cprof.login_failed')}</Note>}
+          {st.state === 'failed' && <Note kind="warn">{loginError(t, st)}</Note>}
           <ErrorNote error={error} />
           <div className="modal-actions">
             <Button variant="ghost" onClick={close}>
@@ -142,7 +151,7 @@ function LoginModal({ profile, onClose }) {
       )}
       {(!st?.url || st.state === 'ok') && (
         <>
-          {st?.state === 'failed' && <Note kind="warn">{st.error ? t('cprof.login_failed_detail', { detail: st.error }) : t('cprof.login_failed')}</Note>}
+          {st?.state === 'failed' && <Note kind="warn">{loginError(t, st)}</Note>}
           <ErrorNote error={error} />
           <div className="modal-actions">
             <Button variant="ghost" onClick={close}>
@@ -160,21 +169,18 @@ function LoginModal({ profile, onClose }) {
   );
 }
 
+/** 改官方账号的名字（添加时不用起名字，登录成功后用邮箱） */
 function OfficialForm({ initial, onClose, onSaved }) {
   const { t } = useTranslation();
-  const [name, setName] = useState(initial?.name ?? '');
+  const [name, setName] = useState(initial.name);
   const { busy, error, run } = useAction();
   const save = (e) => {
     e.preventDefault();
-    run(async () => {
-      const r = initial ? await api.put(`/claude-profiles/${initial.id}`, { name }) : await api.post('/claude-profiles', { kind: 'official', name });
-      onSaved(r, !initial);
-    });
+    run(async () => onSaved(await api.put(`/claude-profiles/${initial.id}`, { name })));
   };
   return (
-    <Modal open onClose={onClose} title={t(initial ? 'cprof.rename' : 'cprof.add_official')}>
+    <Modal open onClose={onClose} title={t('cprof.rename')}>
       <form onSubmit={save}>
-        {!initial && <p className="small muted">{t('cprof.official_intro')}</p>}
         <Field label={t('cprof.name')}>
           <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={t('cprof.name_ph_official')} required autoFocus />
         </Field>
@@ -184,7 +190,7 @@ function OfficialForm({ initial, onClose, onSaved }) {
             {t('action.cancel')}
           </Button>
           <Button type="submit" busy={busy} disabled={!name.trim()}>
-            {t(initial ? 'action.save' : 'cprof.add_and_login')}
+            {t('action.save')}
           </Button>
         </div>
       </form>
@@ -225,7 +231,7 @@ function ApiForm({ initial, accepted, onClose, onSaved }) {
       };
       if (urlChanged) Object.assign(body, pick === CUSTOM ? { base_url: baseUrl } : { provider_id: pick });
       const r = initial ? await api.put(`/claude-profiles/${initial.id}`, body) : await api.post('/claude-profiles', body);
-      onSaved(r, !initial);
+      onSaved(r);
     });
   };
   return (
@@ -449,13 +455,27 @@ export default function ClaudeProfilesCard() {
     const r = await run(() => api.del(`/claude-profiles/${p.id}`));
     if (r) apply(r);
   };
-  const saved = (r, added) => {
+  // 添加官方账号：不用先填什么，直接去登录；登录框没登录成功就关掉时删掉这个空账号
+  const addOfficial = async () => {
+    const r = await run(() => api.post('/claude-profiles', { kind: 'official' }));
+    const p = r?.profiles?.find((x) => x.id === r.added);
+    if (!p) return;
+    apply(r);
+    setLoggingIn({ ...p, fresh: true });
+  };
+  const loginClosed = async (ok) => {
+    const p = loggingIn;
+    setLoggingIn(null);
+    if (p?.fresh && !ok) {
+      const r = await api.del(`/claude-profiles/${p.id}`).catch(() => null);
+      if (r) apply(r);
+    } else reload();
+    setNonce((n) => n + 1);
+  };
+  const saved = (r) => {
     setForm(null);
     apply(r);
-    const p = r.profiles?.find((x) => x.id === r.added);
-    // 新加的官方账号：接着去登录
-    if (added && p?.kind === 'official') login(p);
-    else toast(t('cprof.saved'));
+    toast(t('cprof.saved'));
   };
   return (
     <div id="claude-accounts" className="anchor">
@@ -469,7 +489,7 @@ export default function ClaudeProfilesCard() {
               text={t('cprof.add')}
               label={t('cprof.add')}
               items={[
-                { icon: UserRound, label: t('cprof.add_official'), hint: t('cprof.add_official_hint'), onClick: () => setForm({ kind: 'official' }) },
+                { icon: UserRound, label: t('cprof.add_official'), hint: t('cprof.add_official_hint'), onClick: addOfficial },
                 { icon: Server, label: t('cprof.add_api'), hint: t('cprof.add_api_hint'), onClick: () => setForm({ kind: 'api' }) },
               ]}
             />
@@ -501,13 +521,7 @@ export default function ClaudeProfilesCard() {
         </p>
       </Card>
       {loggingIn && (
-        <LoginModal
-          profile={loggingIn}
-          onClose={() => {
-            setLoggingIn(null);
-            setNonce((n) => n + 1);
-          }}
-        />
+        <LoginModal profile={loggingIn} onClose={loginClosed} />
       )}
       {form?.kind === 'official' && <OfficialForm initial={form.initial} onClose={() => setForm(null)} onSaved={saved} />}
       {form?.kind === 'api' && data && <ApiForm initial={form.initial} accepted={Boolean(data.accepted_at)} onClose={() => setForm(null)} onSaved={saved} />}

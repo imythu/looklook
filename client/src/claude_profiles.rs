@@ -77,7 +77,8 @@ impl Models {
 pub struct Profile {
     pub id: String,
     pub kind: Kind,
-    /// 用户起的名字；本机默认账号为空（界面上显示“本机默认账号”）
+    /// 用户起的名字；本机默认账号为空（界面上显示“本机默认账号”）。
+    /// 另外的官方账号添加时不用填，第一次登录成功后用登录的邮箱
     pub name: String,
     /// 平台推荐列表里的服务商（第三方接口）；自填地址时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -201,7 +202,12 @@ pub fn add(store: &Store, home: &Path, input: Input) -> Result<Profile, LocalErr
         }
     };
     let kind = input.kind.ok_or_else(|| LocalError::invalid("kind", "required"))?;
-    let mut p = Profile { id, kind, name: clean_name(input.name.as_deref())?, provider_id: None, base_url: None, models: Models::default(), created_at: crate::util::now_rfc3339() };
+    // 官方账号先不要名字：登录成功后用邮箱（见 login_start）
+    let name = match kind {
+        Kind::Api => clean_name(input.name.as_deref())?,
+        Kind::Official => clean_name(input.name.as_deref()).unwrap_or_default(),
+    };
+    let mut p = Profile { id, kind, name, provider_id: None, base_url: None, models: Models::default(), created_at: crate::util::now_rfc3339() };
     if kind == Kind::Api {
         let url = input.base_url.as_deref().unwrap_or("").trim().trim_end_matches('/').to_string();
         crate::model::check_base_url(&url)?;
@@ -679,7 +685,8 @@ fn login_slot(id: &str) -> Option<std::sync::Arc<Login>> {
 }
 
 /// 开始登录（同一个账号上一次没完成的先结束掉）；等到授权页地址出来（最多几秒）再返回。
-pub async fn login_start(shell: &str, home: &Path, p: &Profile) -> Result<LoginView, LocalError> {
+/// 登录成功后，还没有名字的账号用登录的邮箱当名字。
+pub async fn login_start(shell: &str, home: &Path, store: std::sync::Arc<Store>, p: &Profile) -> Result<LoginView, LocalError> {
     if p.kind != Kind::Official {
         return Err(LocalError::invalid("id", "not_official"));
     }
@@ -729,6 +736,7 @@ pub async fn login_start(shell: &str, home: &Path, p: &Profile) -> Result<LoginV
         })
         .collect();
     let task_login = login.clone();
+    let (shell, home, profile) = (shell.to_string(), home.to_path_buf(), p.clone());
     tokio::spawn(async move {
         let status = tokio::select! {
             s = child.wait() => s.ok(),
@@ -742,8 +750,12 @@ pub async fn login_start(shell: &str, home: &Path, p: &Profile) -> Result<LoginV
             let _ = r.await;
         }
         task_login.stdin.lock().await.take();
+        let ok = status.is_some_and(|s| s.success());
+        if ok {
+            name_from_email(&store, &shell, &home, &profile).await;
+        }
         let mut v = task_login.view.lock().unwrap_or_else(|e| e.into_inner());
-        if status.is_some_and(|s| s.success()) {
+        if ok {
             v.state = "ok";
         } else {
             v.state = "failed";
@@ -761,14 +773,31 @@ pub async fn login_start(shell: &str, home: &Path, p: &Profile) -> Result<LoginV
     Ok(v)
 }
 
+/// 还没有名字的官方账号：用 `claude auth status` 里的邮箱
+async fn name_from_email(store: &Store, shell: &str, home: &Path, p: &Profile) {
+    if p.id == OFFICIAL || get(store, &p.id).is_none_or(|x| !x.name.is_empty()) {
+        return;
+    }
+    let st = status(shell, home, p).await;
+    let Some(email) = st["email"].as_str().filter(|e| !e.is_empty()) else { return };
+    let mut all = stored(store);
+    if let Some(x) = all.iter_mut().find(|x| x.id == p.id && x.name.is_empty()) {
+        x.name = email.chars().take(NAME_MAX).collect();
+        if let Err(e) = store.set(LIST_KEY, &all) {
+            tracing::warn!(error = %e, "无法保存账号名字");
+        }
+    }
+}
+
 pub fn login_state(id: &str) -> Option<LoginView> {
     login_slot(id).map(|l| l.view.lock().unwrap_or_else(|e| e.into_inner()).clone())
 }
 
 /// 把用户粘贴的授权码交给 `claude auth login`（不保存、不写日志）
 pub async fn login_code(id: &str, code: &str) -> Result<LoginView, LocalError> {
-    let code = code.trim();
-    if code.is_empty() || code.len() > 2048 || code.chars().any(|c| c.is_whitespace() || c.is_control()) {
+    // 页面上的码会折行，手动选中复制时可能夹着换行、空格：去掉，不当成错误
+    let code: String = code.chars().filter(|c| !c.is_whitespace()).collect();
+    if code.is_empty() || code.len() > 2048 || code.chars().any(char::is_control) {
         return Err(LocalError::invalid("code", "invalid"));
     }
     let login = login_slot(id).ok_or_else(|| LocalError::invalid("code", "not_running"))?;
@@ -1023,13 +1052,16 @@ mod tests {
     #[ignore]
     async fn real_login_flow() {
         let (dir, store) = tmp_store("login");
-        let p = add(&store, &dir, Input { kind: Some(Kind::Official), name: Some("t".into()), ..Default::default() }).unwrap();
+        let store = std::sync::Arc::new(store);
+        let p = add(&store, &dir, Input { kind: Some(Kind::Official), ..Default::default() }).unwrap();
+        assert_eq!(p.name, "", "官方账号不用先起名字");
         let shell = crate::shells::login_shell();
-        let v = login_start(&shell, &dir, &p).await.unwrap();
+        let v = login_start(&shell, &dir, store.clone(), &p).await.unwrap();
         assert_eq!(v.state, "running");
         assert!(v.url.as_deref().is_some_and(|u| u.starts_with("https://") && u.contains("/oauth/authorize?")), "{v:?}");
-        assert!(login_code(&p.id, "bad code").await.is_err(), "有空格的不收");
-        login_code(&p.id, "fakecode123#fakestate").await.unwrap();
+        assert!(login_code(&p.id, "bad\u{7}code").await.is_err(), "控制字符不收");
+        // 折行复制带进来的换行、空格去掉
+        login_code(&p.id, "fakecode123\n#fake state").await.unwrap();
         let mut v = login_state(&p.id).unwrap();
         for _ in 0..300 {
             if v.state != "running" {

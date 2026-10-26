@@ -320,7 +320,16 @@ impl AppServer {
 
 /// 单独起一个 app-server（不挂在客户端进程上：客户端退出它照常运行）。返回进程号。
 fn spawn(run: &Path, program: &Path, env: Option<&crate::model::LaunchEnv>, port: u16, token_file: &Path) -> Result<u32, LocalError> {
+    // 不是 Windows 时经登录 shell 启动（和 agents::cli_command 一样）：npm / Homebrew 装的 codex 是 node 脚本，
+    // 从程序坞打开的客户端 PATH 里没有 node，直接起会立刻退出，对话界面就用不了（终端里的 shell 有 PATH，照常能用）
+    #[cfg(windows)]
     let mut cmd = tokio::process::Command::new(program);
+    #[cfg(not(windows))]
+    let mut cmd = {
+        let mut c = tokio::process::Command::new(crate::shells::login_shell());
+        c.args(["-lc", "exec \"$0\" \"$@\""]).arg(program);
+        c
+    };
     if let Some(e) = env {
         e.apply(&mut cmd);
     }

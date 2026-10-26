@@ -191,6 +191,7 @@ export function Empty({ icon: Icon, title, children }) {
 const ToastCtx = createContext(() => {});
 
 export function ToastProvider({ children }) {
+  const { t } = useTranslation();
   const [items, setItems] = useState([]);
   // action：{ label, onClick }，例如“撤销”；带操作的提示多留一会儿
   const push = useCallback((text, kind = 'ok', action = null) => {
@@ -203,16 +204,18 @@ export function ToastProvider({ children }) {
   return (
     <ToastCtx.Provider value={push}>
       {children}
+      {/* 手机上在顶部（底部是输入框、标签栏），点一下或往上 / 往旁边划就关掉 */}
       <div className="toasts" aria-live="polite">
         {items.map((x) => (
-          <div key={x.id} className={`toast ${x.kind === 'error' ? 'error' : ''}`}>
+          <div key={x.id} className={`toast ${x.kind === 'error' ? 'error' : ''}`} onClick={x.drop} {...swipeAway(x.drop)}>
             {x.kind === 'error' ? <XCircle size={18} /> : <CheckCircle2 size={18} />}
             <span className="grow">{x.text}</span>
             {x.action && (
               <button
                 type="button"
                 className="toast-action"
-                onClick={() => {
+                onClick={(e) => {
+                  e.stopPropagation();
                   x.drop();
                   x.action.onClick();
                 }}
@@ -220,11 +223,28 @@ export function ToastProvider({ children }) {
                 {x.action.label}
               </button>
             )}
+            <button type="button" className="toast-close" aria-label={t('action.close')}>
+              <X size={16} />
+            </button>
           </div>
         ))}
       </div>
     </ToastCtx.Provider>
   );
+}
+
+/** 划走提示：往上或往左右划过 40px 就关。 */
+function swipeAway(drop) {
+  let start = null;
+  return {
+    onPointerDown: (e) => {
+      start = { x: e.clientX, y: e.clientY };
+    },
+    onPointerUp: (e) => {
+      if (start && (start.y - e.clientY > 40 || Math.abs(e.clientX - start.x) > 40)) drop();
+      start = null;
+    },
+  };
 }
 
 export function useToast() {

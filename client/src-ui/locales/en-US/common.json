@@ -1011,7 +1011,6 @@
     "name": "Name",
     "name_ph_official": "e.g. Work",
     "name_hint_provider": "Leave empty to use the provider's name",
-    "add_and_login": "Add and sign in",
     "rename": "Rename",
     "edit": "Edit",
     "edit_api": "Edit third-party endpoint",
@@ -1056,14 +1055,16 @@
     "manage": "Manage accounts…",
     "login_title": "Sign in to {{name}}",
     "login_starting": "Starting Claude Code's sign-in…",
-    "login_url": "Authorization page",
-    "login_url_hint": "Open this address in a browser and sign in to your Claude account. The page then shows an authorization code.",
-    "login_code": "Authorization code",
+    "login_url": "Sign-in address",
+    "login_url_hint": "Open this address in a browser and sign in to the Claude account you want. If the browser is already signed in to a different account, sign out of claude.ai first or use a private window.",
     "login_submit": "Finish sign-in",
     "login_failed": "Sign-in didn't succeed. Try again.",
     "login_failed_detail": "Sign-in didn't succeed: {{detail}}",
     "login_retry": "Get a new address",
-    "login_done": "{{name}} is signed in"
+    "login_done": "{{name}} is signed in",
+    "unnamed": "Official account (not signed in)",
+    "login_code_hint": "After you sign in, the page shows an Authentication Code. Use the copy button next to it and paste it here.",
+    "login_code_rejected": "The Authentication Code is wrong or has expired. Each sign-in address only accepts its own code: click “Get a new address”, sign in with it, then paste the new code."
   },
   "att": {
     "title": "Pasted images & attachments",

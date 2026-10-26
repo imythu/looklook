@@ -1011,7 +1011,6 @@
     "name": "名称",
     "name_ph_official": "例如：工作账号",
     "name_hint_provider": "不填使用服务商的名字",
-    "add_and_login": "添加并登录",
     "rename": "重命名",
     "edit": "编辑",
     "edit_api": "编辑第三方接口",
@@ -1056,14 +1055,16 @@
     "manage": "管理账号…",
     "login_title": "登录 {{name}}",
     "login_starting": "正在启动 Claude Code 的登录…",
-    "login_url": "授权页地址",
-    "login_url_hint": "在浏览器里打开这个地址并登录 Claude 账号，页面上会显示一段授权码。",
-    "login_code": "授权码",
+    "login_url": "登录地址",
+    "login_url_hint": "在浏览器里打开这个地址，登录要用的 Claude 账号。要登录的不是浏览器里已经登录的那个账号时，先在 claude.ai 退出，或者用无痕窗口打开。",
     "login_submit": "完成登录",
     "login_failed": "登录没有成功，请重试。",
     "login_failed_detail": "登录没有成功：{{detail}}",
     "login_retry": "重新获取地址",
-    "login_done": "{{name}} 已登录"
+    "login_done": "{{name}} 已登录",
+    "unnamed": "官方账号（未登录）",
+    "login_code_hint": "登录后页面上会显示 Authentication Code，点旁边的复制按钮，粘贴到这里。",
+    "login_code_rejected": "Authentication Code 不对或已经过期。每个登录地址只能用它自己的 Authentication Code：点“重新获取地址”，用新地址登录后再粘贴。"
   },
   "att": {
     "title": "粘贴的图片与附件",
