@@ -93,6 +93,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/task/output", get(super::chat::task_output))
         .route("/instances/{id}/chat/task/stop", post(super::chat::task_stop))
         .route("/instances/{id}/chat/dialog", post(super::chat::dialog))
+        .route("/instances/{id}/chat/seen", post(super::chat::seen))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/keys/info", post(ssh_key_info))

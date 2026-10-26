@@ -27,6 +27,7 @@ import FileBrowser from './FileBrowser.jsx';
 import GitPanel from './GitPanel.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 import { APP_CHROME, termTheme, termVars } from '../shared/termTheme.js';
+import { useSeenPing } from '../shared/board.js';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -313,6 +314,8 @@ function PaneNotice({ title, body, children }) {
  */
 export function TermPane({ id, inst, active, missing, offline = false, onStart, lead, sub, menu, named = true, focusN = 0 }) {
   const { t } = useTranslation();
+  // 有人正在看这个会话（任务看板：结束的这一轮算看过，不发通知）
+  useSeenPing(id, Boolean(active && hasChat(inst) && !offline));
   const { status } = useStatus();
   const wrap = useRef(null);
   const frame = useRef(null);
@@ -528,6 +531,7 @@ export default function TerminalView({ id }) {
   const [loaded, setLoaded] = useState(false);
   const link = { src: termSrc(id) };
   const [loadedInst, loadError, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
+  useSeenPing(id, hasChat(loadedInst));
   // 连不上电脑（重连中、网络断了）时轮询会失败：沿用上一次的终端信息，不把终端换成错误页（那样会关掉终端、要点“返回”）
   const last = useRef(null);
   if (loadedInst) last.current = { id, inst: loadedInst };

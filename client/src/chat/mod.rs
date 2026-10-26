@@ -12,6 +12,7 @@
 //! 不跑 TUI、没有 hooks。快照、事件推送、读记录文件（rollout）和审批挂起两边共用；任务面板、后台命令只有 Claude Code 有。
 
 pub mod agent;
+pub mod board;
 pub mod codex_app;
 pub mod codex_artifacts;
 pub mod codex_chat;
@@ -22,6 +23,7 @@ pub mod commands;
 pub mod hooks;
 pub mod models;
 pub mod prompts;
+pub mod risk;
 pub mod screen;
 pub mod transcript;
 
@@ -68,10 +70,11 @@ const LIMIT_AUTO_AFTER: Duration = Duration::from_secs(60);
 /// 额度用完（StopFailure）后多久还没看到菜单，就不再等它
 const LIMIT_MENU_WAIT: Duration = Duration::from_secs(30);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum Phase {
     /// Claude Code 没在运行，或者没接上 hooks（`reason` 说明）
+    #[default]
     Detached,
     Idle,
     Running,
@@ -119,6 +122,7 @@ impl Pending {
     }
 }
 
+#[derive(Default)]
 struct State {
     binding: Option<Binding>,
     phase: Phase,
@@ -168,6 +172,22 @@ struct State {
     drawn: bool,
     /// 正在压缩上下文（PreCompact 到 PostCompact）：这期间屏幕上的转圈认不出来，不能按屏幕改成空闲
     compacting: Option<Instant>,
+    /// 看板（board.rs）：进入当前状态的时间（毫秒）
+    since: i64,
+    /// 看板：这一轮、看过没有、标题（存在本机数据库里）
+    board: board::Meta,
+    /// `board` 改了、还没存
+    board_dirty: bool,
+    /// 这一轮怎么结束的（hook 先知道，切到空闲时用）
+    end_hint: Option<board::Outcome>,
+    /// 有人正在看这个会话（会话页可见且有焦点）到这个时间（毫秒）
+    active_until: i64,
+    /// 正在做的事（`board::doing`）
+    doing: Option<Value>,
+    /// 这一轮的摘要已经找过了
+    summary_tried: bool,
+    /// Codex 最后一段回复（摘要用）
+    last_reply: Option<String>,
 }
 
 /// 推给界面的事件
@@ -290,6 +310,7 @@ impl Chat {
         map.entry(id.to_string())
             .or_insert_with(|| {
                 let binding: Option<Binding> = self.store.get(&binding_key(id)).ok().flatten();
+                let meta: board::Meta = self.store.get(&board::key(id)).ok().flatten().unwrap_or_default();
                 // 只有带对话界面的启动类型才会走到这里（require 查过 chat_ui），认不出时按 Claude Code
                 let agent = self.store.instance(id).ok().flatten().and_then(|r| agent::for_launch(&r.launch)).unwrap_or(&agent::Claude);
                 Arc::new(Inst {
@@ -328,6 +349,14 @@ impl Chat {
                         odd_screens: 0,
                         drawn: false,
                         compacting: None,
+                        since: crate::util::system_ms(),
+                        board: meta,
+                        board_dirty: false,
+                        end_hint: None,
+                        active_until: 0,
+                        doing: None,
+                        summary_tried: false,
+                        last_reply: None,
                     }),
                     tx: broadcast::channel(256).0,
                     tr: tokio::sync::Mutex::new(None),
@@ -356,6 +385,7 @@ impl Chat {
             }
         }
         let _ = self.store.remove(&binding_key(id));
+        let _ = self.store.remove(&board::key(id));
     }
 
     fn require(&self, id: &str) -> Result<(), LocalError> {
@@ -415,10 +445,12 @@ impl Chat {
 
     fn set_phase(inst: &Inst, st: &mut State, phase: Phase, reason: Option<&'static str>) {
         if st.phase != phase || st.reason != reason {
+            Self::enter(st, phase);
             st.phase = phase;
             st.reason = reason;
             if phase != Phase::Running {
                 st.tool = None;
+                st.doing = None;
                 st.live = Default::default();
             }
             if phase != Phase::Tui {
@@ -428,6 +460,46 @@ impl Chat {
                 st.suggestion = None;
             }
             Self::emit_status(inst, st);
+        }
+    }
+
+    /// 状态要换了（还没换）：记下时间，按需开始或结束一轮（看板，docs/TASK_BOARD.md §3.2）
+    fn enter(st: &mut State, phase: Phase) {
+        if st.phase == phase {
+            return;
+        }
+        let now = crate::util::system_ms();
+        let (was, since) = (st.phase, st.since);
+        st.since = now;
+        let active = st.board.turn.as_ref().is_some_and(board::Turn::active);
+        match phase {
+            Phase::Running | Phase::Approval if !active => {
+                st.board.turn = Some(board::Turn { started_at: now, ..Default::default() });
+                st.end_hint = None;
+                st.summary_tried = false;
+                st.last_reply = None;
+                st.board_dirty = true;
+            }
+            // 没看到开始的那一轮（客户端重启时正在跑）也算一轮，从进入上个状态时算起
+            Phase::Idle | Phase::Detached if active || matches!(was, Phase::Running | Phase::Approval) => {
+                let mut turn = st.board.turn.take().filter(board::Turn::active).unwrap_or(board::Turn { started_at: since, ..Default::default() });
+                let outcome = match st.end_hint.take() {
+                    Some(o) => o,
+                    None if st.error.is_some() => board::Outcome::Failed,
+                    None if phase == Phase::Detached => board::Outcome::Interrupted,
+                    None => board::Outcome::Done,
+                };
+                turn.ended_at = Some(now);
+                turn.outcome = Some(outcome);
+                turn.error = st.error.clone().filter(|_| outcome == board::Outcome::Failed);
+                // 结束的时候有人正看着：不算“没看过”
+                if st.active_until > now {
+                    st.board.seen_at = now;
+                }
+                st.board.turn = Some(turn);
+                st.board_dirty = true;
+            }
+            _ => {}
         }
     }
 
@@ -474,12 +546,17 @@ impl Chat {
                 "UserPromptSubmit" => {
                     Self::drop_pending(&mut st);
                     st.error = None;
+                    if let Some(p) = ev["prompt"].as_str() {
+                        Self::note_prompt(&mut st, p);
+                    }
                     inst.prompts.send_modify(|n| *n += 1);
                     Self::set_phase(&inst, &mut st, Phase::Running, None);
                 }
                 "PreToolUse" => {
                     if st.phase != Phase::Approval {
                         st.tool = tool.clone();
+                        st.doing = tool.as_deref().map(|t| board::doing(t, &ev["tool_input"]));
+                        Self::enter(&mut st, Phase::Running);
                         st.phase = Phase::Running;
                         st.reason = None;
                         Self::emit_status(&inst, &st);
@@ -493,6 +570,10 @@ impl Chat {
                 }
                 // Codex 有 Interrupt（Esc 中断）；Claude Code 没有，靠抓屏
                 "Stop" | "Interrupt" => {
+                    st.end_hint = Some(if name == "Stop" { board::Outcome::Done } else { board::Outcome::Interrupted });
+                    if let Some(r) = ev["last_assistant_message"].as_str().and_then(board::first_para) {
+                        st.last_reply = Some(r);
+                    }
                     Self::drop_pending(&mut st);
                     st.compacting = None;
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
@@ -580,6 +661,12 @@ impl Chat {
             return false;
         }
         let _ = self.store.set(&binding_key(id), &b);
+        // 换了一段对话（/clear、/resume）：看板上的标题跟着换
+        if st.binding.is_some() {
+            st.board.title = None;
+            st.board.first_prompt = None;
+            st.board_dirty = true;
+        }
         st.binding = Some(b);
         st.version = None;
         true
@@ -600,6 +687,7 @@ impl Chat {
             Self::drop_pending(&mut st);
             let kind = inst.agent.pending_kind(&tool);
             st.pending = Some(Pending { id, at: Instant::now(), tool, kind, input: ev["tool_input"].clone(), suggestions: ev["permission_suggestions"].clone(), tx: Some(tx) });
+            Self::enter(&mut st, Phase::Approval);
             st.phase = Phase::Approval;
             st.reason = None;
             Self::emit_status(inst, &st);
@@ -767,7 +855,7 @@ impl Chat {
                 self.poll(&inst).await;
                 // Codex 的状态来自 app-server，不用看屏幕
                 if tick.is_multiple_of(3) && inst.agent.launch() != "codex" {
-                    self.check_screen(&inst).await;
+                    self.check_screen(&inst, true).await;
                     if lock(&inst.st).dialog.as_ref().is_some_and(screen::Dialog::is_limit) {
                         self.guard_limit(&inst);
                     }
@@ -784,7 +872,8 @@ impl Chat {
     }
 
     /// 抓屏纠正状态：hooks 覆盖不到信任对话框、选择器、Esc 中断，也看不出 claude 退出了（docs/CLAUDE_UI.md §4.3）。
-    async fn check_screen(&self, inst: &Inst) {
+    /// `adopt`：可以把没带 hooks 的 Claude 接到对话模式（要重启 claude，只在有人看着时做）
+    async fn check_screen(&self, inst: &Inst, adopt_ok: bool) {
         let pane = self.instances.pane(&inst.id).await;
         let running = pane.as_ref().and_then(|p| agent_state(inst.agent, p));
         let capture = match running {
@@ -855,7 +944,11 @@ impl Chat {
                     }
                     // 压缩中（最多算 10 分钟，防止丢了 PostCompact 一直卡着）
                     (Phase::Running, Screen::Input { .. }) if st.compacting.is_some_and(|t| t.elapsed() < COMPACT_MAX) => {}
-                    (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => Self::set_phase(inst, &mut st, Phase::Idle, None),
+                    // 运行中没有 hook 就变回输入框：Esc 中断了（Claude Code 中断没有 hook）
+                    (Phase::Running, Screen::Input { busy, .. }) if quiet && !busy => {
+                        st.end_hint.get_or_insert(board::Outcome::Interrupted);
+                        Self::set_phase(inst, &mut st, Phase::Idle, None)
+                    }
                     (Phase::Running, Screen::Input { .. }) => {}
                     (_, Screen::Input { busy, .. }) => Self::set_phase(inst, &mut st, if busy { Phase::Running } else { Phase::Idle }, None),
                 }
@@ -903,18 +996,156 @@ impl Chat {
             }
         }
         drop(st);
-        if adopt {
+        if adopt && adopt_ok {
             if let Some(me) = self.me.upgrade() {
                 me.claude_adopt_later(&inst.id);
             }
         }
     }
 
-    /// 会话列表上的角标：等待确认、要到终端里操作。没收到过这个终端的 hook 时为 None。
+    /// 会话列表的角标和任务看板（docs/TASK_BOARD.md §4.4）。没收到过这个终端的 hook 时为 None。
     pub fn brief(&self, id: &str) -> Option<Value> {
         let inst = lock(&self.insts).get(id).cloned()?;
         let st = lock(&inst.st);
-        Some(json!({ "phase": st.phase, "pending": st.pending.as_ref().map(|p| p.kind()) }))
+        let attn = match (&st.pending, &st.dialog) {
+            (Some(p), _) => {
+                let (detail, options) = board::attn(&p.tool, p.kind, &p.input);
+                let risk = (p.kind == "permission").then(|| risk::level(&p.tool, &p.input));
+                // 回答提问要用问题原文
+                let question = (p.kind == "question").then(|| &p.input["questions"][0]["question"]);
+                Some(json!({ "kind": p.kind, "pending_id": p.id, "tool": p.tool, "detail": detail, "risk": risk, "options": options, "question": question }))
+            }
+            (None, Some(d)) if st.phase == Phase::Tui => Some(json!({
+                "kind": if d.is_limit() { "limit" } else { "dialog" },
+                "detail": d.title,
+                "title": d.title,
+                "options": d.options.iter().map(|o| &o.label).collect::<Vec<_>>(),
+            })),
+            (None, None) if st.phase == Phase::Tui => Some(json!({ "kind": "dialog" })),
+            _ => None,
+        };
+        let turn = st.board.turn.as_ref();
+        let ended = turn.is_some_and(|t| t.ended_at.is_some_and(|e| e > st.board.seen_at) && t.outcome.is_some_and(|o| o != board::Outcome::Interrupted));
+        let state = match st.phase {
+            Phase::Approval | Phase::Tui => "attn",
+            Phase::Running => "working",
+            // 额度用完、正在等重置后自动继续
+            _ if st.limit_wait.is_some() => "working",
+            _ if ended => "ended",
+            Phase::Idle => "idle",
+            Phase::Detached => "stopped",
+        };
+        let title = st.title.clone().or_else(|| st.board.title.clone()).or_else(|| st.board.first_prompt.clone());
+        Some(json!({
+            "phase": st.phase,
+            "pending": st.pending.as_ref().map(|p| p.kind()),
+            "agent": inst.agent.launch(),
+            "board": state,
+            "since": st.since,
+            "attn": attn,
+            "title": title,
+            "doing": st.doing,
+            "activity": st.live.activity,
+            "turn": turn,
+            "limit": (st.limit_wait.is_some() || st.limit_auto_at.is_some()).then(|| json!({ "waiting": st.limit_wait, "auto_at": st.limit_auto_at })),
+            "seen_at": st.board.seen_at,
+        }))
+    }
+
+    /// 看过这个会话了。`active`：会话页可见且有焦点（每 20 秒报一次），这段时间里结束的一轮直接算看过
+    pub fn seen(&self, id: &str, active: bool) -> Result<(), LocalError> {
+        self.require(id)?;
+        let inst = self.inst(id);
+        let mut st = lock(&inst.st);
+        let now = crate::util::system_ms();
+        st.board.seen_at = now;
+        if active {
+            st.active_until = now + 30_000;
+        }
+        st.board_dirty = true;
+        Ok(())
+    }
+
+    /// 第一条用户消息：没有标题时看板上用它（斜杠命令不算）
+    fn note_prompt(st: &mut State, text: &str) {
+        let text = text.trim();
+        if st.board.first_prompt.is_none() && !text.is_empty() && !text.starts_with('/') {
+            st.board.first_prompt = Some(board::clip(text, 40));
+            st.board_dirty = true;
+        }
+    }
+
+    /// 没人看着的会话也要知道准确的状态（docs/TASK_BOARD.md §4.1）。每 3 秒：
+    /// - Claude Code 在运行、等审批、有选择框的会话抓一次屏（Esc 中断、选择框、额度菜单、claude 退出都没有 hook）；
+    ///   空闲的 15 秒一次（看额度等重置、claude 退出）。额度菜单没人选时照样替用户选“等重置后自动继续”；
+    /// - 补上一轮结束时的摘要、记下标题，改过的存进数据库。
+    pub async fn background(self: Arc<Self>) {
+        let mut tick = 0u32;
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            tick = tick.wrapping_add(1);
+            let insts: Vec<Arc<Inst>> = lock(&self.insts).values().cloned().collect();
+            for inst in insts {
+                let claude = inst.agent.launch() != "codex";
+                let phase = lock(&inst.st).phase;
+                let due = match phase {
+                    Phase::Running | Phase::Approval | Phase::Tui => true,
+                    Phase::Idle => tick.is_multiple_of(5),
+                    Phase::Detached => false,
+                };
+                if claude && due && inst.viewers.load(Ordering::SeqCst) == 0 {
+                    self.check_screen(&inst, false).await;
+                    if lock(&inst.st).dialog.as_ref().is_some_and(screen::Dialog::is_limit) {
+                        self.guard_limit(&inst);
+                    }
+                }
+                self.board_upkeep(&inst).await;
+            }
+        }
+    }
+
+    async fn board_upkeep(&self, inst: &Inst) {
+        let path = {
+            let mut st = lock(&inst.st);
+            if st.title.is_some() && st.title != st.board.title {
+                st.board.title = st.title.clone();
+                st.board_dirty = true;
+            }
+            let wants = st.board.turn.as_ref().is_some_and(|t| t.ended_at.is_some() && t.summary.is_none()) && !st.summary_tried;
+            if wants {
+                st.summary_tried = true;
+                match st.last_reply.clone() {
+                    Some(r) => {
+                        if let Some(t) = st.board.turn.as_mut() {
+                            t.summary = Some(r);
+                        }
+                        st.board_dirty = true;
+                        None
+                    }
+                    None if inst.agent.launch() == "claude" => st.binding.as_ref().map(|b| b.transcript_path.clone()),
+                    None => None,
+                }
+            } else {
+                None
+            }
+        };
+        if let Some(path) = path {
+            let reply = tokio::task::spawn_blocking(move || board::last_reply(&path)).await.ok().flatten();
+            let mut st = lock(&inst.st);
+            if let (Some(r), Some(t)) = (reply, st.board.turn.as_mut()) {
+                t.summary = Some(r);
+                st.board_dirty = true;
+            }
+        }
+        let meta = {
+            let mut st = lock(&inst.st);
+            std::mem::take(&mut st.board_dirty).then(|| st.board.clone())
+        };
+        if let Some(m) = meta {
+            if let Err(e) = self.store.set(&board::key(&inst.id), &m) {
+                tracing::warn!(error = %e, "看板状态没存上");
+            }
+        }
     }
 
     /// 输入 / 时提示的自定义命令和技能
@@ -1013,6 +1244,7 @@ impl Chat {
         let inst = self.inst(id);
         let text = text.replace("\r\n", "\n").replace('\r', "\n");
         let text = text.trim_end();
+        Self::note_prompt(&mut lock(&inst.st), text);
         let now = now && inst.agent.launch() == "claude" && lock(&inst.st).phase == Phase::Running;
         if text.is_empty() && images.is_empty() && !now {
             return Err(LocalError::invalid("text", "required"));
@@ -2210,6 +2442,75 @@ fn screen_plain(line: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+
+    mod board_turns {
+        use super::super::*;
+
+        fn go(st: &mut State, p: Phase) {
+            Chat::enter(st, p);
+            st.phase = p;
+        }
+
+        fn outcome(st: &State) -> Option<board::Outcome> {
+            st.board.turn.as_ref().and_then(|t| t.outcome)
+        }
+
+        #[test]
+        fn turn_starts_and_ends() {
+            let mut st = State { phase: Phase::Idle, ..Default::default() };
+            go(&mut st, Phase::Running);
+            assert!(st.board.turn.as_ref().unwrap().active());
+            // 审批、选择框都还在这一轮里
+            go(&mut st, Phase::Approval);
+            go(&mut st, Phase::Running);
+            go(&mut st, Phase::Tui);
+            go(&mut st, Phase::Running);
+            assert!(st.board.turn.as_ref().unwrap().active());
+            st.end_hint = Some(board::Outcome::Done);
+            go(&mut st, Phase::Idle);
+            assert_eq!(outcome(&st), Some(board::Outcome::Done));
+            assert!(st.board_dirty);
+        }
+
+        #[test]
+        fn failure_interrupt_and_session_end() {
+            let mut st = State { phase: Phase::Idle, ..Default::default() };
+            go(&mut st, Phase::Running);
+            st.error = Some("overloaded".into());
+            go(&mut st, Phase::Idle);
+            assert_eq!(outcome(&st), Some(board::Outcome::Failed));
+            assert_eq!(st.board.turn.as_ref().unwrap().error.as_deref(), Some("overloaded"));
+            st.error = None;
+            go(&mut st, Phase::Running);
+            st.end_hint = Some(board::Outcome::Interrupted);
+            go(&mut st, Phase::Idle);
+            assert_eq!(outcome(&st), Some(board::Outcome::Interrupted));
+            go(&mut st, Phase::Running);
+            go(&mut st, Phase::Detached);
+            assert_eq!(outcome(&st), Some(board::Outcome::Interrupted));
+        }
+
+        #[test]
+        fn startup_dialog_is_not_a_turn_but_unseen_running_is() {
+            let mut st = State { phase: Phase::Detached, ..Default::default() };
+            go(&mut st, Phase::Tui);
+            go(&mut st, Phase::Idle);
+            assert!(st.board.turn.is_none());
+            // 客户端重启时正在跑（没看到开始）：结束时也算一轮
+            let mut st = State { phase: Phase::Running, since: 5, ..Default::default() };
+            go(&mut st, Phase::Idle);
+            assert_eq!(st.board.turn.as_ref().unwrap().started_at, 5);
+            assert_eq!(outcome(&st), Some(board::Outcome::Done));
+        }
+
+        #[test]
+        fn ended_while_watched_counts_as_seen() {
+            let mut st = State { phase: Phase::Idle, active_until: crate::util::system_ms() + 30_000, ..Default::default() };
+            go(&mut st, Phase::Running);
+            go(&mut st, Phase::Idle);
+            assert!(st.board.seen_at >= st.board.turn.as_ref().unwrap().ended_at.unwrap());
+        }
+    }
     use super::*;
 
     #[test]

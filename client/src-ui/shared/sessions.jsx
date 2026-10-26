@@ -117,6 +117,7 @@ export function isDraftProject(p, at) {
 
 /** 会话现在的状态：等你处理 / 正在干活 / 运行中 / 后台运行中 / 已停止。 */
 export function sessionState(i) {
+  if (i.running && i.chat?.board === 'attn') return 'attn';
   if (i.running && i.chat?.pending) return 'attn';
   if (i.running && i.chat?.phase === 'tui') return 'attn';
   if (i.running && i.chat?.phase === 'running') return 'working';

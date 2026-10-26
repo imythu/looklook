@@ -495,6 +495,9 @@ impl Chat {
                     if p["turn"]["status"] == "failed" {
                         st.error = p["turn"]["error"]["message"].as_str().map(|s| s.chars().take(500).collect());
                     }
+                    if p["turn"]["status"] == "interrupted" {
+                        st.end_hint = Some(super::board::Outcome::Interrupted);
+                    }
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                     Self::emit_status(&inst, &st);
                     poll = true;
@@ -520,8 +523,16 @@ impl Chat {
                     }
                     if st.phase != Phase::Approval {
                         st.tool = tool.map(String::from);
+                        if let Some(t) = tool {
+                            let detail = match t {
+                                "Edit" => super::board::changed_files(&item["changes"]),
+                                _ => activity.clone(),
+                            };
+                            st.doing = Some(json!({ "tool": t, "detail": detail }));
+                        }
                         st.live.activity = activity;
                         if st.phase != Phase::Running {
+                            Self::enter(&mut st, Phase::Running);
                             st.phase = Phase::Running;
                             st.reason = None;
                         }
@@ -546,6 +557,9 @@ impl Chat {
                 "item/completed" => {
                     if p["item"]["type"] == "agentMessage" {
                         st.live.text = None;
+                        if let Some(r) = p["item"]["text"].as_str().and_then(super::board::first_para) {
+                            st.last_reply = Some(r);
+                        }
                     }
                     // 插话进了对话：从“排队中”里拿掉。只按文字对：跟读记录时可能已经拿掉了（Chat::poll），
                     // 对不上就拿最早的那条会误删另一条还在排队的
@@ -635,6 +649,7 @@ impl Chat {
             let mut st = lock(&inst.st);
             Self::drop_pending(&mut st);
             st.pending = Some(Pending { id: pid, at: Instant::now(), tool: tool.to_string(), kind, input, suggestions: Value::Null, tx: Some(tx) });
+            Self::enter(&mut st, Phase::Approval);
             st.phase = Phase::Approval;
             st.reason = None;
             Self::emit_status(&inst, &st);

@@ -582,6 +582,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(app.outbound.clone().watch(account.clone())),
         tokio::spawn(rtc::signal::run(app.clone(), shutdown.clone())),
         tokio::spawn(app.sync.clone().run(app.clone(), shutdown.clone())),
+        tokio::spawn(chat.clone().background()),
         // libdatachannel 默认第一条连接时才初始化（usrsctp、OpenSSL、线程池），提前做掉，第一次建连少等一会儿
         tokio::task::spawn_blocking(datachannel::preload),
         {

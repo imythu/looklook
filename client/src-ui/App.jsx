@@ -4,11 +4,12 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, Link2, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, ChevronDown, FolderOpen, Github, Globe, History, House, Laptop, Link2, ListTodo, LogOut, Menu, MessageSquare, PanelLeftClose, PanelLeftOpen, Plus, Server, Settings as SettingsIcon, ShieldCheck, X } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Account from './pages/Account.jsx';
+import Board, { useAttnCount } from './pages/Board.jsx';
 import AiPage from './pages/Ai.jsx';
 import Computers from './pages/Computers.jsx';
 import Files from './pages/Files.jsx';
@@ -97,12 +98,12 @@ const ACCOUNT_PAGES = ['/devices', '/membership', '/account'];
 // 从右边滑出来的抽屉（地址照旧，链接、刷新都能直接打开）：盖在会话上面，不换掉它。文件、SSH 这类要干活的工具还是整页
 const DRAWER_PAGES = { '/settings': 'nav.settings', '/devices': 'acct.computers', '/account': 'acct.account', '/membership': 'acct.membership' };
 const isDrawer = (p) => Object.hasOwn(DRAWER_PAGES, p);
-const PAGES = ['/', '/new', '/history', '/project', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
+const PAGES = ['/', '/new', '/tasks', '/history', '/project', ...ACCOUNT_PAGES, ...TOOLS.map((x) => x.to)];
 // 开源仓库（客户端 AGPL-3.0-or-later）
 export const SOURCE_URL = 'https://github.com/imythu/looklook';
 const isKnown = (p) => PAGES.includes(p) || TERM.test(p) || SESS.test(p);
 // 会话相关的页面铺满主区域（不限宽度）
-const isWide = (p) => p === '/' || p === '/new' || p === '/history' || SESS.test(p);
+const isWide = (p) => p === '/' || p === '/new' || p === '/tasks' || p === '/history' || SESS.test(p);
 const RAIL_KEY = 'looklook.rail';
 const TOOLS_KEY = 'looklook.tools';
 
@@ -297,6 +298,50 @@ function ToolGroup({ path }) {
   );
 }
 
+/**
+ * 任务看板的入口（docs/TASK_BOARD.md §5.1），带“等你处理”的个数：展开的侧栏里一行、收起的侧栏里一个图标、
+ * 手机顶栏上一个图标（有要处理的才显示）。
+ */
+function TasksLink({ rail = false, top = false, active }) {
+  const { t } = useTranslation();
+  const n = useAttnCount();
+  const label = n > 0 ? t('board.nav_count', { count: n }) : t('board.title');
+  if (top) {
+    if (n === 0 || active) return null;
+    return (
+      <Link to="/tasks" className="btn btn-plain btn-icon tasks-top" aria-label={label} title={label}>
+        <ListTodo size={20} aria-hidden="true" />
+        <span className="rail-count">{n}</span>
+      </Link>
+    );
+  }
+  if (rail) {
+    return (
+      <Link to="/tasks" className={`btn btn-plain btn-icon tool-ico rail-tasks ${active ? 'active' : ''}`} aria-label={label} title={label}>
+        <ListTodo size={18} aria-hidden="true" />
+        {n > 0 && <span className="rail-count">{n}</span>}
+      </Link>
+    );
+  }
+  return (
+    <Link to="/tasks" className={`side-link side-tasks ${active ? 'active' : ''}`}>
+      <ListTodo size={18} aria-hidden="true" />
+      {t('board.title')}
+      {n > 0 && <span className="side-tasks-count">{n}</span>}
+    </Link>
+  );
+}
+
+/** 标签页标题前加上等你处理的个数：`(2) 看看`。每次重画都对一遍（对话页会临时在标题前加 ●，之后还原） */
+function useTitleCount() {
+  const n = useAttnCount();
+  useEffect(() => {
+    const base = document.title.replace(/^\(\d+\) /, '');
+    const want = n > 0 ? `(${n}) ${base}` : base;
+    if (document.title !== want) document.title = want;
+  });
+}
+
 function SideNav({ open, onClose, rail, onRail, path }) {
   const { t } = useTranslation();
   const { status } = useStatus();
@@ -334,6 +379,7 @@ function SideNav({ open, onClose, rail, onRail, path }) {
         <Link to="/history" className="btn btn-plain btn-icon" aria-label={t('hist.title')} title={t('hist.title')}>
           <History size={18} aria-hidden="true" />
         </Link>
+        <TasksLink rail active={path === '/tasks'} />
         <button
           type="button"
           className="btn btn-plain btn-icon rail-sessions"
@@ -390,6 +436,7 @@ function SideNav({ open, onClose, rail, onRail, path }) {
             <History size={18} aria-hidden="true" />
           </Link>
         </div>
+        <TasksLink active={path === '/tasks'} />
         <ToolGroup path={path} />
         <div className="side-sessions">
           <SessionList currentId={current} />
@@ -439,6 +486,7 @@ function ConsoleLayout({ path, stale, children }) {
   const s = status.account.session;
   const wide = isWide(path);
   const sess = path.match(SESS)?.[1] ?? null;
+  useTitleCount();
   return (
     <>
       {/* 手机上的顶栏；宽屏上这些都在侧栏里（连接、语言在侧栏底部），不再占一整行 */}
@@ -460,6 +508,7 @@ function ConsoleLayout({ path, stale, children }) {
               <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />
             </span>
           )}
+          <TasksLink top active={path === '/tasks'} />
           <ConnChip />
           <LangSwitch />
           <Link to="/account" aria-label={t('nav.account')}>
@@ -665,7 +714,7 @@ function Shell() {
     // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
     const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
     const home = opensInPage() ? <DraftPane key={`start:${login}`} /> : <SessionHome />;
-    const page = SESS.test(path) ? null : { '/': home, '/new': <DraftPane key={`start:${login}`} />, '/history': <HistoryPage />, '/project': <ProjectPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
+    const page = SESS.test(path) ? null : { '/': home, '/new': <DraftPane key={`start:${login}`} />, '/tasks': <Board />, '/history': <HistoryPage />, '/project': <ProjectPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
     const drawerPage = route.drawer && { '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[route.drawer];
     body = (
       <SessionsProvider key={login} enabled>

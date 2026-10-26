@@ -333,6 +333,19 @@ pub struct DialogReq {
     label: String,
 }
 
+#[derive(Deserialize)]
+pub struct SeenReq {
+    #[serde(default)]
+    active: bool,
+}
+
+/// 看过了（看板上点“知道了”），或者会话页正开着（`active`，每 20 秒一次）
+pub async fn seen(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SeenReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.seen(&id, req.active)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// TUI 上的选择框：选一项或取消
 pub async fn dialog(State(app): State<App>, Path(id): Path<String>, Json(req): Json<DialogReq>) -> R<StatusCode> {
     require_allowed(&app)?;
