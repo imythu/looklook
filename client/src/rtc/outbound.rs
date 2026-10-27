@@ -637,9 +637,9 @@ pub fn take_device_hint(path_and_query: &str) -> (String, Option<String>) {
     (out, hint.filter(|h| !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')))
 }
 
-/// 路径里的终端 id：`/i/{id}…` 或 `/api/instances/{id}…`。
+/// 路径里的终端 id：`/i/{id}…`、`/w/{id}…`（DSH 的网页界面）或 `/api/instances/{id}…`。
 pub fn terminal_of(path: &str) -> Option<&str> {
-    let rest = path.strip_prefix("/i/").or_else(|| path.strip_prefix("/api/instances/"))?;
+    let rest = path.strip_prefix("/i/").or_else(|| path.strip_prefix("/w/")).or_else(|| path.strip_prefix("/api/instances/"))?;
     let id = rest.split(['/', '?']).next()?;
     (!id.is_empty() && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())).then_some(id)
 }
@@ -655,6 +655,7 @@ mod tests {
         assert_eq!(take_device_hint("/api/x?y=1"), ("/api/x?y=1".into(), None));
         assert_eq!(take_device_hint("/i/abc/?__lldev=a%2Fb").1, None, "只接受设备 id 的字符");
         assert_eq!(terminal_of("/i/abcd2345/ws"), Some("abcd2345"));
+        assert_eq!(terminal_of("/w/abcd2345/api/remote.mux"), Some("abcd2345"));
         assert_eq!(terminal_of("/api/instances/abcd2345/chat/events"), Some("abcd2345"));
         assert_eq!(terminal_of("/api/instances"), None);
         assert_eq!(terminal_of("/api/instances?x"), None);

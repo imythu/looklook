@@ -25,7 +25,9 @@ import {
   ExternalLink,
   FilePen,
   FileText,
+  FolderGit2,
   GitBranch,
+  GitFork,
   Globe,
   History,
   Hourglass,
@@ -59,6 +61,7 @@ import { chatEventsMode, onChatEventsMode, subscribeChat } from '../shared/chatE
 import { spinnerText } from '../shared/spinner.js';
 import {
   CODEX_COMMANDS,
+  CODEX_ONLY,
   COMMANDS,
   EFFORTS,
   EMPTY,
@@ -1790,6 +1793,119 @@ function InputsMenu({ all, onPick, onClose }) {
  * /resume：这台电脑、这个项目里同一个工具以前的对话，选一个在这里接着（不离开这一页）。
  * 当前这段标出来、不能选；已经开在别的看看会话里的，点了打开那个会话。
  */
+/**
+ * Codex 的 Git 工作树（Codex 0.164 的 /new、/worktree，见 src/chat/codex_worktree.rs）：
+ * kind=new：/new 时先问“新对话在哪运行”——当前目录（照常送 /new）或新建一个工作树；不是 Git 仓库就直接 /new。
+ * kind=menu：/worktree——在新工作树里接着这段对话（fork）、开新对话，或者回到已有工作树里的那段对话。
+ */
+function WorktreeMenu({ id, status, kind, onClose }) {
+  const { t } = useT();
+  const toast = useToast();
+  const [data, setData] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const plain = async () => {
+    setBusy('plain');
+    try {
+      await api.post(`/instances/${id}/chat/input`, { text: '/new', images: [] });
+      onClose();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+      setBusy(null);
+    }
+  };
+  useEffect(() => {
+    let alive = true;
+    api.get(`/instances/${id}/chat/worktrees`).then(
+      (r) => {
+        if (!alive) return;
+        // 不在 Git 仓库里没得选：/new 就是 /new
+        if (kind === 'new' && !r?.available) plain();
+        else setData(r ?? { items: [] });
+      },
+      (e) => alive && setData({ error: e }),
+    );
+    return () => {
+      alive = false;
+    };
+  }, [id, kind]);
+  const run = async (mode, root) => {
+    if (busy) return;
+    setBusy(root ?? mode);
+    try {
+      const r = await api.post(`/instances/${id}/chat/worktree`, root ? { mode, root } : { mode });
+      if (mode !== 'open') toast(t('chat.wt_created', { path: r?.cwd ?? '' }), 'ok');
+      onClose();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+      setBusy(null);
+    }
+  };
+  const running = status?.phase === 'running';
+  const items = Array.isArray(data?.items) ? data.items : [];
+  const name = (p) => String(p ?? '').split(/[\\/]/).filter(Boolean).slice(-2).join('/');
+  const wait = (key) => (busy === key ? <LoaderCircle size={15} className="spin" /> : null);
+  const title = t(kind === 'new' ? 'chat.wt_where' : 'chat.wt_title');
+  return (
+    <Popover onClose={onClose} className="chat-pop-left chat-resume" label={title}>
+      <div className="chat-pop-h">
+        <span>{title}</span>
+        {data?.repo && <span className="ellipsis" title={data.repo}>{name(data.repo)}</span>}
+      </div>
+      {running && <p className="chat-note chat-resume-note">{t('chat.resume_running')}</p>}
+      <div className="chat-inputs-list">
+        {data === null ? (
+          <LoaderCircle size={16} className="spin chat-pop-wait" />
+        ) : data.error ? (
+          <p className="chat-note chat-inputs-empty">{errorText(t, data.error)}</p>
+        ) : !data.available ? (
+          <p className="chat-note chat-inputs-empty">{t('chat.wt_no_repo')}</p>
+        ) : (
+          <>
+            {kind === 'new' ? (
+              <button type="button" className="chat-mi" disabled={running || !!busy} onClick={plain}>
+                <FolderGit2 size={15} aria-hidden="true" />
+                <span className="chat-mi-text">
+                  <span>{t('chat.wt_here')}</span>
+                  <small className="ellipsis">{t('chat.wt_here_hint')}</small>
+                </span>
+                {wait('plain')}
+              </button>
+            ) : (
+              <button type="button" className="chat-mi" disabled={running || !!busy || !status?.session_id} onClick={() => run('fork')}>
+                <GitFork size={15} aria-hidden="true" />
+                <span className="chat-mi-text">
+                  <span>{t('chat.wt_fork')}</span>
+                  <small className="ellipsis">{t('chat.wt_fork_hint')}</small>
+                </span>
+                {wait('fork')}
+              </button>
+            )}
+            <button type="button" className="chat-mi" disabled={running || !!busy} onClick={() => run('new')}>
+              <Plus size={15} aria-hidden="true" />
+              <span className="chat-mi-text">
+                <span>{t(kind === 'new' ? 'chat.wt_new' : 'chat.wt_new_conv')}</span>
+                <small className="ellipsis">{t('chat.wt_new_hint')}</small>
+              </span>
+              {wait('new')}
+            </button>
+            {kind === 'menu' && items.length > 0 && <div className="chat-pop-h"><span>{t('chat.wt_existing')}</span></div>}
+            {kind === 'menu' &&
+              items.map((w) => (
+                <button key={w.root} type="button" className="chat-mi chat-resume-row" aria-current={w.current || undefined} disabled={w.current || !w.owner || running || !!busy} onClick={() => run('open', w.root)} title={w.cwd}>
+                  <span className="chat-mi-text">
+                    <span className="ellipsis">{name(w.root)}</span>
+                    <small className="ellipsis">{[w.head?.slice(0, 7), !w.owner && t('chat.wt_no_owner')].filter(Boolean).join(' · ')}</small>
+                  </span>
+                  {busy === w.root ? <LoaderCircle size={15} className="spin" /> : w.current ? <span className="badge badge-brand">{t('chat.resume_here')}</span> : null}
+                </button>
+              ))}
+          </>
+        )}
+      </div>
+    </Popover>
+  );
+}
+
 function ResumeMenu({ id, status, onClose }) {
   const { t } = useT();
   const { id: agentId } = useContext(AgentCtx);
@@ -1949,7 +2065,15 @@ function writeDraft(id, text) {
   }
 }
 
-function Composer({ id, status, phase, touch, offline, models, usage, items, onAction, onSide }) {
+/** 把光标放进对话输入框；别处正在输入（另一个输入框、弹窗）时不抢。 */
+function claimFocus(el) {
+  if (!el || el.disabled || !el.offsetParent) return;
+  const a = document.activeElement;
+  const elsewhere = a && a !== document.body && a !== el && !el.closest('.chat-composer')?.contains(a) && (a.matches?.('input, textarea, select, [contenteditable="true"]') || a.closest?.('[role="dialog"]'));
+  if (!elsewhere) el.focus({ preventScroll: true });
+}
+
+function Composer({ id, active, status, phase, touch, offline, models, usage, items, onAction, onSide }) {
   const { t } = useT();
   // 权限模式只有 Claude Code 有；模型、思考强度、上下文用量按工具的能力（caps）显示
   const { id: agentId, caps } = useContext(AgentCtx);
@@ -2001,6 +2125,14 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
     window.addEventListener(`ll-chat-resume:${id}`, open);
     return () => window.removeEventListener(`ll-chat-resume:${id}`, open);
   }, [id]);
+  // 电脑上：打开会话、切回这个标签、输入框从不可用变成可用（刚连上、等选择的框关掉了）时，光标放进输入框。
+  // 以前只在切换的那一刻试一次，那时对话还没加载完、输入框还不可用，焦点就落空了。
+  // 别处正在输入（侧栏搜索、弹窗里的框）时不抢。
+  useEffect(() => {
+    if (!active || disabled || touch) return undefined;
+    const timer = setTimeout(() => claimFocus(area.current), 30);
+    return () => clearTimeout(timer);
+  }, [active, disabled, touch]);
   // 换成了新会话（/new、/clear）：回到空的首页，光标放回输入框。发出命令时输入框暂时不可用，焦点已经丢了，等能用了再放
   const sid = status?.session_id ?? null;
   const seenSid = useRef(sid);
@@ -2046,10 +2178,16 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
     const images = files.filter((f) => f.path).map((f) => f.path);
     if ((!body && !images.length && !now) || sending || uploading || disabled) return;
     // 界面自己能做的命令（/model、/resume、/context……）不送进去
-    const action = !images.length && slashAction(body);
+    const action = !images.length && slashAction(body, agentId);
     if (action) {
       setText('');
       menuFor(action);
+      return;
+    }
+    // Codex 的 /new：在 Git 仓库里先问在哪运行（当前目录 / 新建工作树），菜单里再送
+    if (agentId === 'codex' && !images.length && body.toLowerCase() === '/new') {
+      setText('');
+      setMenu('new');
       return;
     }
     // 第一次发消息时（有用户操作）申请通知权限：需要确认、做完了在后台也能知道
@@ -2073,12 +2211,15 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
       toast(errorText(t, e), 'error');
     } finally {
       setSending(false);
+      // 点了发送按钮时焦点在按钮上：发完放回输入框，接着打下一句
+      if (!touch) requestAnimationFrame(() => claimFocus(area.current));
     }
   };
   // 界面自己做的命令：/model 开模型菜单，/resume 开以前的对话（不离开这一页）
   const menuFor = (action) => {
     if (action === 'model') setMenu('model');
     else if (action === 'history') setMenu('resume');
+    else if (action === 'worktree') setMenu('worktree');
     else onAction(action);
   };
   // 以前说过的话：Claude Code 用它自己的 history.jsonl（和终端里按上键翻的同一份），发出一句后重新取；
@@ -2186,7 +2327,7 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
   const slash = useMemo(() => {
     if (!wantSlash) return [];
     const q = text.toLowerCase();
-    const builtin = COMMANDS.filter(([name]) => agentId !== 'codex' || CODEX_COMMANDS.includes(name)).map(([name, action]) => ({ name, action, description: t(`chat.cmd.${name.slice(1)}`) }));
+    const builtin = COMMANDS.filter(([name]) => (agentId === 'codex' ? CODEX_COMMANDS.includes(name) : !CODEX_ONLY.includes(name))).map(([name, action]) => ({ name, action, description: t(`chat.cmd.${name.slice(1)}`) }));
     const names = new Set([...builtin.map((c) => c.name), ...TERMINAL_ONLY]);
     const mine = (custom ?? []).filter((c) => !names.has(c.name));
     const all = [...builtin, ...mine];
@@ -2217,6 +2358,10 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
   const ready = phase === 'idle' || phase === 'running';
   const showStop = running && !text.trim() && !files.length;
   const canSend = !!text.trim() || files.some((f) => f.path);
+  // Codex 这段对话在另一个 Git 工作树里跑（/worktree、/new 选了新建）：输入框上标出来，点开换
+  const workdir = useSessions()?.known(id)?.workdir;
+  const trim = (p) => String(p ?? '').replace(/[\\/]+$/, '');
+  const elsewhere = agentId === 'codex' && status?.cwd && workdir && !trim(status.cwd).startsWith(trim(workdir)) ? status.cwd : null;
   // 运行中能不能“立即发送”：Claude Code 2.1.275 起才有
   const canNow = running && agentId === 'claude' && versionAtLeast(status?.version, [2, 1, 275]);
   // 运行中打了字：讲清楚“排队”和“立即发送”
@@ -2250,6 +2395,7 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
         />
       )}
       {menu === 'resume' && <ResumeMenu id={id} status={status} onClose={() => setMenu(null)} />}
+      {(menu === 'new' || menu === 'worktree') && <WorktreeMenu id={id} status={status} kind={menu === 'new' ? 'new' : 'menu'} onClose={() => setMenu(null)} />}
       {/* 运行中发的、还在 Claude Code 队列里的消息：这一步做完会并进对话 */}
       {status?.queued?.length > 0 && (
         <div className="chat-queued" role="status">
@@ -2351,6 +2497,12 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
           <button type="button" className="btn btn-plain btn-icon chat-inputs-btn" data-pop-anchor="" aria-expanded={menu === 'inputs'} disabled={disabled} onClick={() => setMenu(menu === 'inputs' ? null : 'inputs')} aria-label={t('chat.inputs')} title={touch ? t('chat.inputs') : t('chat.inputs_hint')}>
             <History size={17} />
           </button>
+          {elsewhere && (
+            <button type="button" className="btn btn-plain chat-chip" data-pop-anchor="" aria-expanded={menu === 'worktree'} disabled={!ready} onClick={() => setMenu(menu === 'worktree' ? null : 'worktree')} title={elsewhere}>
+              <GitBranch size={14} aria-hidden="true" />
+              <span className="ellipsis">{t('chat.wt_chip')}</span>
+            </button>
+          )}
           <span className="grow" />
           {/* 还在跑的后台子代理、命令：点了打开右侧的“任务” */}
           {bg.subagent > 0 && (
@@ -3555,7 +3707,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
           {agentId === 'codex' && status != null && <CodexSetup id={id} phase={phase} onTab={onTab} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
-          <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
+          <Composer id={id} active={active} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
       </div>
       {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} outline={{ list, inner, agent: agentName, title, more: chat.start > 0 }} />}

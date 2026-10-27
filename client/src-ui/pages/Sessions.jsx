@@ -22,8 +22,9 @@ import { keyLabel } from '../shared/hotkeys.js';
 import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
 import { AddProjectDialog } from './AddProject.jsx';
 import { CAN_FORK } from './History.jsx';
-import { BackendNote, InstanceDialog, LogsDialog, openDsh, useInstanceActions } from './Terminals.jsx';
+import { BackendNote, InstanceDialog, LogsDialog, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
+import { WebPane } from './WebPane.jsx';
 
 // 项目“⋯”里换个类型新建
 export const QUICK_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
@@ -94,7 +95,8 @@ export function SessionUiProvider({ children }) {
   // 草稿页开着时它在哪个项目（{ device, workdir, container }）：侧栏、标签栏显示“新会话 · 草稿”
   const [draftAt, setDraftAt] = useState(null);
   const openSession = (id) => {
-    if (!opensInPage()) return navigate(`/t/${id}`);
+    // 手机上整页打开；网页类型（DSH）打开的是它的网页
+    if (!opensInPage()) return navigate(s.byId(id)?.launch === 'dsh' ? `/t/${id}?web` : `/t/${id}`);
     s.openTab(id);
     s.openRecent(id);
     s.requestFocus(id);
@@ -144,8 +146,7 @@ export function SessionUiProvider({ children }) {
       if (!p.container) s.touchProject(p.device, p.workdir, { launch });
       s.reload();
       s.reloadFolders();
-      if (launch === 'dsh') openDsh(r, t, toast);
-      else openSession(r.id);
+      openSession(r.id);
       toast(t('sess.quick_done', { name: r.name }), 'ok', {
         label: t('sess.undo'),
         onClick: async () => {
@@ -169,6 +170,12 @@ export function SessionUiProvider({ children }) {
       return;
     }
     const p = s.projects.find((x) => x.device === device && x.workdir === c.workdir);
+    // 这台电脑上已经没有这个工具了（卸载了、换了电脑）：去草稿页，那里会引导安装
+    const tools = AI_TOOLS.includes(c.agent) ? await deviceApi(device).get('/tools').catch(() => null) : null;
+    if (tools && !tools.tools?.[c.agent]) {
+      newSession({ device, workdir: c.workdir, launch: c.agent });
+      return;
+    }
     const r = await deviceApi(device).post('/instances', {
       name: c.title.replace(/…$/, '').slice(0, 40),
       workdir: c.workdir,
@@ -960,14 +967,25 @@ export function SessionHome() {
 
 // ---------------- 右边打开的会话 ----------------
 
-/** 让元素正好填满窗口剩下的高度（上面的横幅、提示有多高都行）。 */
+/** 电脑上会话页由 CSS 撑满（.console-sess，见 styles.css），不用量高度。 */
+const DESK = '(min-width: 900px)';
+
+/**
+ * 手机上让元素正好填满窗口剩下的高度（上面的横幅、提示有多高都行）。
+ * 电脑上量出来的高度会过时（上面的横幅收起时 body 高度不一定变），输入框离底部留一大块空白，改由 CSS 布局撑满。
+ */
 function useFillHeight(ref, enabled) {
   const [h, setH] = useState(null);
   useLayoutEffect(() => {
     if (!enabled) return undefined;
+    const desk = window.matchMedia(DESK);
     const on = () => {
       const el = ref.current;
       if (!el) return;
+      if (desk.matches) {
+        setH(null);
+        return;
+      }
       const top = el.getBoundingClientRect().top + window.scrollY;
       setH(Math.max(320, window.innerHeight - top));
     };
@@ -975,9 +993,11 @@ function useFillHeight(ref, enabled) {
     const ro = new ResizeObserver(on);
     ro.observe(document.body);
     window.addEventListener('resize', on);
+    desk.addEventListener?.('change', on);
     return () => {
       ro.disconnect();
       window.removeEventListener('resize', on);
+      desk.removeEventListener?.('change', on);
     };
   }, [enabled]);
   return h;
@@ -1037,6 +1057,21 @@ export function SessionStage({ activeId }) {
       {ids.map((id) => {
         // 电脑离线时用最后一次看到的：终端不卸载，内容还能看
         const inst = s.known(id);
+        if (inst?.launch === 'dsh') {
+          return (
+            <WebPane
+              key={id}
+              id={id}
+              inst={inst}
+              missing={missing(id)}
+              active={id === activeId}
+              lead={<LaunchIcon launch="dsh" size={16} />}
+              sub={<SessionLead inst={inst} />}
+              named={!opensInPage()}
+              menu={<SessionMenu inst={inst} />}
+            />
+          );
+        }
         return (
           <TermPane
             key={id}

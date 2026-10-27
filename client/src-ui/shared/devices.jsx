@@ -29,8 +29,9 @@ function stored() {
     window.history.replaceState(window.history.state, '', u.pathname + u.search + u.hash);
     return want;
   }
+  // 记在这个浏览器里（关掉再开、新标签页都还是它）；以前只记在当前标签页里，换个标签就回到默认电脑
   try {
-    return sessionStorage.getItem(KEY);
+    return localStorage.getItem(KEY) ?? sessionStorage.getItem(KEY);
   } catch {
     return null;
   }
@@ -38,17 +39,21 @@ function stored() {
 
 function store(id) {
   try {
-    if (id) sessionStorage.setItem(KEY, id);
-    else sessionStorage.removeItem(KEY);
+    if (id) localStorage.setItem(KEY, id);
+    else localStorage.removeItem(KEY);
+    sessionStorage.removeItem(KEY);
   } catch {
     /* 无痕模式等：只是不记住选择 */
   }
 }
 
-/** 选中的电脑：记住的那台还在线就用它，否则用入口的默认电脑，再否则第一台在线的。 */
+/**
+ * 选中的电脑：记住的那台还在列表里就一直用它（短暂离线也不换，离线时页面显示离线，回来了接着用，
+ * 不在几台电脑之间跳来跳去），否则用入口的默认电脑，再否则第一台在线的。
+ */
 export function pickSelected(items, def, want) {
   const online = items.filter((d) => d.online);
-  if (want && online.some((d) => d.id === want)) return want;
+  if (want && items.some((d) => d.id === want)) return want;
   if (def && items.some((d) => d.id === def)) return def;
   return online[0]?.id ?? items[0]?.id ?? null;
 }
@@ -126,8 +131,9 @@ export function useDeviceState(remote, onSelect) {
   const selected = multi ? pickSelected(items, list.default, want) : null;
   // 在渲染时同步给 api.js（幂等），子组件的请求从第一次渲染起就带上正确的设备
   configureDevices({ multi, selected, devices: items });
-  const select = (id) => {
-    store(id);
+  // remember 为假：只是这次临时换过去（选中的那台连不上），不改记住的选择
+  const select = (id, remember = true) => {
+    if (remember) store(id);
     setWant(id);
     configureDevices({ multi, selected: pickSelected(items, list.default, id), devices: items });
     onSelect?.();

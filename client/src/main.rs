@@ -27,7 +27,6 @@ mod agents;
 mod chat;
 mod checkpoint;
 mod claude_profiles;
-mod codex_profiles;
 mod clock;
 mod diag;
 mod docker;
@@ -43,13 +42,11 @@ mod instances;
 mod listen;
 mod metrics;
 mod model;
-mod model_presets;
 mod notify;
 mod paths;
 mod platform;
 mod ports;
 mod proctree;
-mod pricing;
 mod prompts;
 mod provider_quota;
 mod push;
@@ -67,7 +64,6 @@ mod transfer;
 #[cfg(any(windows, target_os = "macos"))]
 mod desktop;
 mod updater;
-mod usage_stats;
 mod util;
 mod versions;
 
@@ -603,11 +599,6 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(rtc::signal::run(app.clone(), shutdown.clone())),
         tokio::spawn(app.sync.clone().run(app.clone(), shutdown.clone())),
         tokio::spawn(chat.clone().background()),
-        tokio::spawn(pricing::run(paths.home.clone())),
-        tokio::spawn({
-            usage_stats::preload(&paths.home);
-            usage_stats::run(paths.home.clone())
-        }),
         tokio::spawn(app.notify.clone().run(app.clone(), shutdown.clone())),
         // libdatachannel 默认第一条连接时才初始化（usrsctp、OpenSSL、线程池），提前做掉，第一次建连少等一会儿
         tokio::task::spawn_blocking(datachannel::preload),

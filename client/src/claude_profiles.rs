@@ -12,7 +12,6 @@
 //!   （见 [`SHARED`]），只有登录状态和 `.claude.json` 是各自的。
 //! - **第三方接口**：用户自己的 Key，`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`（见 model.rs），
 //!   可选指定模型（`ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`）。只支持官方格式的接口，不做格式转换。
-//!   要求 `x-api-key` 头的接口（Anthropic Console 的 API Key、部分服务商）改用 `ANTHROPIC_API_KEY`（[`Auth::ApiKey`]）。
 //!   Key 只写在本机文件 `<数据目录>/model/claude-<ID>.key`，启动命令让 shell 自己读。
 
 use std::path::{Path, PathBuf};
@@ -44,17 +43,6 @@ pub enum Kind {
     Api,
 }
 
-/// 第三方接口的 Key 怎么发
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Auth {
-    /// `ANTHROPIC_AUTH_TOKEN`：`Authorization: Bearer <Key>`，大多数服务商用这个
-    #[default]
-    Bearer,
-    /// `ANTHROPIC_API_KEY`：`x-api-key: <Key>`，Anthropic 自己的 API 只认这个
-    ApiKey,
-}
-
 /// 第三方接口指定的模型；都不填时用 Claude Code 自己的默认（接口那边映射）
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Models {
@@ -74,7 +62,14 @@ impl Models {
     }
 
     fn clean(self) -> Result<Self, LocalError> {
-        let f = |v: Option<String>| crate::model::clean_model(v.as_deref()).map_err(|_| LocalError::invalid("models", "invalid"));
+        let f = |v: Option<String>| -> Result<Option<String>, LocalError> {
+            match v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) {
+                None => Ok(None),
+                // 会原样拼进启动命令：只收模型名里常见的字符
+                Some(s) if s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-._:/[]@".contains(c)) => Ok(Some(s)),
+                Some(_) => Err(LocalError::invalid("models", "invalid")),
+            }
+        };
         Ok(Models { main: f(self.main)?, opus: f(self.opus)?, sonnet: f(self.sonnet)?, haiku: f(self.haiku)? })
     }
 }
@@ -89,21 +84,16 @@ pub struct Profile {
     /// 平台推荐列表里的服务商（第三方接口）；自填地址时为 None
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
-    /// 常见服务商的快速配置（model_presets.rs）
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub preset: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_url: Option<String>,
     #[serde(default)]
     pub models: Models,
     #[serde(default)]
-    pub auth: Auth,
-    #[serde(default)]
     pub created_at: String,
 }
 
 fn builtin() -> Profile {
-    Profile { id: OFFICIAL.into(), kind: Kind::Official, name: String::new(), provider_id: None, preset: None, base_url: None, models: Models::default(), auth: Auth::Bearer, created_at: String::new() }
+    Profile { id: OFFICIAL.into(), kind: Kind::Official, name: String::new(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() }
 }
 
 fn stored(store: &Store) -> Vec<Profile> {
@@ -166,13 +156,9 @@ pub struct Input {
     #[serde(default)]
     pub provider_id: Option<String>,
     #[serde(default)]
-    pub preset: Option<String>,
-    #[serde(default)]
     pub base_url: Option<String>,
     #[serde(default)]
     pub models: Option<Models>,
-    #[serde(default)]
-    pub auth: Option<Auth>,
     /// 不填沿用已保存的 Key
     #[serde(default)]
     pub api_key: Option<String>,
@@ -222,15 +208,13 @@ pub fn add(store: &Store, home: &Path, input: Input) -> Result<Profile, LocalErr
         Kind::Api => clean_name(input.name.as_deref())?,
         Kind::Official => clean_name(input.name.as_deref()).unwrap_or_default(),
     };
-    let mut p = Profile { id, kind, name, provider_id: None, preset: None, base_url: None, models: Models::default(), auth: Auth::Bearer, created_at: crate::util::now_rfc3339() };
+    let mut p = Profile { id, kind, name, provider_id: None, base_url: None, models: Models::default(), created_at: crate::util::now_rfc3339() };
     if kind == Kind::Api {
         let url = input.base_url.as_deref().unwrap_or("").trim().trim_end_matches('/').to_string();
         crate::model::check_base_url(&url)?;
         p.base_url = Some(url);
         p.provider_id = input.provider_id.filter(|s| !s.is_empty());
-        p.preset = input.preset.filter(|s| crate::model_presets::get(s).is_some());
         p.models = input.models.unwrap_or_default().clean()?;
-        p.auth = input.auth.unwrap_or_default();
         save_key(home, &p.id, input.api_key.as_deref())?;
     } else {
         prepare_dir(home, &p.id)?;
@@ -253,13 +237,9 @@ pub fn update(store: &Store, home: &Path, id: &str, input: Input) -> Result<Prof
             crate::model::check_base_url(&url)?;
             p.base_url = Some(url);
             p.provider_id = input.provider_id.filter(|s| !s.is_empty());
-            p.preset = input.preset.filter(|s| crate::model_presets::get(s).is_some());
         }
         if let Some(m) = input.models {
             p.models = m.clean()?;
-        }
-        if let Some(a) = input.auth {
-            p.auth = a;
         }
         save_key(home, id, input.api_key.as_deref())?;
     }
@@ -343,11 +323,7 @@ pub fn launch_env(home: &Path, p: &Profile) -> Option<LaunchEnv> {
             if !key_set(home, &p.id) {
                 return None;
             }
-            let key = key_path(home, &p.id);
-            let mut env = match p.auth {
-                Auth::Bearer => crate::model::claude_api_env(url, key),
-                Auth::ApiKey => crate::model::claude_api_key_env(url, key),
-            };
+            let mut env = crate::model::claude_api_env(url, key_path(home, &p.id));
             for (k, v) in p.models.vars() {
                 if let Some(v) = v {
                     env = env.lit(k, v.clone());
@@ -369,10 +345,6 @@ pub fn launch_env(home: &Path, p: &Profile) -> Option<LaunchEnv> {
 ///   值是 `false` 也改：`claude auth login` / `logout` 会把它写成 `false`（2.1.310 的 performLogout），
 ///   只补缺的话登录过账号就又要走一遍引导；
 ///
-/// - 用 `x-api-key` 的第三方接口（[`Auth::ApiKey`]）：Claude Code 第一次见到环境里的 `ANTHROPIC_API_KEY` 会问要不要用，
-///   回答记在 `customApiKeyResponses.approved`（Key 去掉首尾空白后的末 20 位，2.1.311 的 `Ffe`；先看 approved 再看 rejected）。
-///   用户配了这个接口就是要用这个 Key，补进 approved；
-///
 /// Bypass Permissions 警告不在这里：对话界面启动时 `--settings` 传进去（见 `chat::hooks::settings_json`），不碰用户设置。
 ///
 /// **时机**：每次生成 Claude Code 的启动命令时调用（instances.rs 的 `model_wrap`：新建、自动启动、接着以前的对话、
@@ -386,25 +358,8 @@ pub fn launch_env(home: &Path, p: &Profile) -> Option<LaunchEnv> {
 pub fn skip_first_run(home: &Path, p: &Profile, workdir: &Path) -> std::io::Result<()> {
     let (_, state_file) = config_paths(home, p);
     let trust = trust_key(workdir);
-    let approve = (p.kind == Kind::Api && p.auth == Auth::ApiKey)
-        .then(|| std::fs::read_to_string(key_path(home, &p.id)).ok())
-        .flatten()
-        .map(|k| {
-            let k: Vec<char> = k.trim().chars().collect();
-            k[k.len().saturating_sub(20)..].iter().collect::<String>()
-        })
-        .filter(|k| !k.is_empty());
     edit_locked(&state_file, |o| {
         let mut changed = false;
-        if let Some(tail) = approve {
-            let responses = o.entry("customApiKeyResponses").or_insert_with(|| json!({}));
-            if let Some(list) = responses.as_object_mut().and_then(|r| r.entry("approved").or_insert_with(|| json!([])).as_array_mut()) {
-                if !list.contains(&json!(tail)) {
-                    list.push(json!(tail));
-                    changed = true;
-                }
-            }
-        }
         if o.get("hasCompletedOnboarding") != Some(&json!(true)) {
             o.insert("hasCompletedOnboarding".into(), json!(true));
             o.entry("theme").or_insert_with(|| json!("auto"));
@@ -686,7 +641,15 @@ pub async fn usage(shell: &str, home: &Path, p: &Profile) -> Value {
 
 /// 第三方接口的套餐用量：问服务商（见 provider_quota.rs）。`unsupported`：认不出是哪家；`no_limits`：没取到
 pub async fn api_usage(home: &Path, p: &Profile) -> Value {
-    crate::provider_quota::usage_view(p.base_url.as_deref(), &key_path(home, &p.id)).await
+    let Some(url) = p.base_url.as_deref().filter(|u| crate::provider_quota::supported(u)) else { return json!({ "state": "unsupported" }) };
+    let key = std::fs::read_to_string(key_path(home, &p.id)).unwrap_or_default();
+    if key.trim().is_empty() {
+        return json!({ "state": "no_limits" });
+    }
+    match crate::provider_quota::fetch(url, key.trim()).await {
+        Some(limits) => json!({ "state": "ok", "limits": limits }),
+        None => json!({ "state": "no_limits" }),
+    }
 }
 
 fn parse_status(stdout: &str) -> Value {
@@ -955,7 +918,7 @@ fn migrate_choice(store: &Store, home: &Path) {
     let old_key = home.join("model").join("claude.key");
     let key = std::fs::read_to_string(&old_key).ok().map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
     if let Some(key) = key {
-        let input = Input { kind: Some(Kind::Api), name: Some(old.name.clone()), provider_id: old.provider_id.clone(), preset: None, base_url: Some(old.base_url.clone()), models: None, auth: None, api_key: Some(key) };
+        let input = Input { kind: Some(Kind::Api), name: Some(old.name.clone()), provider_id: old.provider_id.clone(), base_url: Some(old.base_url.clone()), models: None, api_key: Some(key) };
         match add(store, home, input) {
             Ok(p) => {
                 let _ = set_default(store, &p.id);
@@ -1016,11 +979,6 @@ mod tests {
         assert!(launch_env(&dir, &builtin()).is_none());
         let bad = Models { main: Some("x; rm -rf /".into()), ..Default::default() };
         assert!(update(&store, &dir, &p.id, Input { models: Some(bad), ..Default::default() }).is_err());
-        // Anthropic 自己的 API Key：走 x-api-key
-        let p = update(&store, &dir, &p.id, Input { auth: Some(Auth::ApiKey), ..Default::default() }).unwrap();
-        let cmd = launch_env(&dir, &p).unwrap().wrap("claude", crate::shells::Family::Posix);
-        assert!(cmd.contains(" ANTHROPIC_API_KEY=\"$(cat ") && cmd.contains(" ANTHROPIC_AUTH_TOKEN= "), "{cmd}");
-        assert_eq!(get(&store, &p.id).unwrap().auth, Auth::ApiKey);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1144,7 +1102,7 @@ mod tests {
     #[test]
     fn migrate_old_choice() {
         let (dir, store) = tmp_store("mig");
-        let c = crate::model::Choice { provider_id: None, name: "Old".into(), base_url: "https://old.example.com".into(), model: None, selected_at: String::new() };
+        let c = crate::model::Choice { provider_id: None, name: "Old".into(), base_url: "https://old.example.com".into(), selected_at: String::new() };
         store.set("model_provider.claude", &c).unwrap();
         std::fs::create_dir_all(dir.join("model")).unwrap();
         std::fs::write(dir.join("model/claude.key"), "sk-old\n").unwrap();
@@ -1163,7 +1121,7 @@ mod tests {
     fn first_run_skipped_once() {
         let (dir, _store) = tmp_store("firstrun");
         let read = |f: &Path| -> Value { serde_json::from_slice(&std::fs::read(f).unwrap()).unwrap() };
-        let p = Profile { id: "acct1".into(), kind: Kind::Official, name: "a".into(), provider_id: None, preset: None, base_url: None, models: Models::default(), auth: Auth::Bearer, created_at: String::new() };
+        let p = Profile { id: "acct1".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
         let (cfg, state) = config_paths(&dir, &p);
         // 信任记在工作目录本身；没有文件时建一个，用户设置不碰
         let wd = dir.join("repo/src/a");
@@ -1201,7 +1159,7 @@ mod tests {
     #[test]
     fn first_run_when_state_is_a_directory() {
         let (dir, _store) = tmp_store("firstdir");
-        let p = Profile { id: "acct3".into(), kind: Kind::Official, name: "a".into(), provider_id: None, preset: None, base_url: None, models: Models::default(), auth: Auth::Bearer, created_at: String::new() };
+        let p = Profile { id: "acct3".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
         let cfg = account_dir(&dir, &p.id);
         // Docker 把不存在的 .claude.json 映射成了目录：写到 .config.json，Claude Code 下次启动用它
         std::fs::create_dir_all(cfg.join(".claude.json")).unwrap();
@@ -1216,7 +1174,7 @@ mod tests {
     #[test]
     fn first_run_respects_claude_lock() {
         let (dir, _store) = tmp_store("firstlock");
-        let p = Profile { id: "acct2".into(), kind: Kind::Official, name: "a".into(), provider_id: None, preset: None, base_url: None, models: Models::default(), auth: Auth::Bearer, created_at: String::new() };
+        let p = Profile { id: "acct2".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
         let (cfg, state) = config_paths(&dir, &p);
         std::fs::create_dir_all(&cfg).unwrap();
         let lock = cfg.join(".claude.json.lock");
@@ -1249,7 +1207,7 @@ mod tests {
     #[ignore]
     fn first_run_with_running_claude() {
         let (dir, _store) = tmp_store("firstlive");
-        let p = Profile { id: "live".into(), kind: Kind::Official, name: "a".into(), provider_id: None, preset: None, base_url: None, models: Models::default(), auth: Auth::Bearer, created_at: String::new() };
+        let p = Profile { id: "live".into(), kind: Kind::Official, name: "a".into(), provider_id: None, base_url: None, models: Models::default(), created_at: String::new() };
         let (cfg, state) = config_paths(&dir, &p);
         let (x, y) = (dir.join("x"), dir.join("y"));
         std::fs::create_dir_all(&x).unwrap();

@@ -254,5 +254,10 @@
   "CHECKPOINT_MOVED": "会话的文件夹已经不是拍这个检查点时的仓库了，没法恢复。",
   "CHECKPOINT_GONE": "这个检查点的内容已经被 git 清理掉了，没法对比或恢复。",
   "INSTALL_KEY_INVALID": "安装密钥不对、已过期、已撤销或次数用完了，请在看看网页的“电脑”页重新生成。",
-  "INSTALL_KEY_UNSUPPORTED": "这个看看服务器还不支持安装密钥，请改用浏览器授权登录。"
+  "INSTALL_KEY_UNSUPPORTED": "这个看看服务器还不支持安装密钥，请改用浏览器授权登录。",
+  "MAC_ONLY": "只能在这台 Mac 上的看看里操作",
+  "CODEX_WORKTREE_FAILED": "没能建好 Git 工作树：{{detail}}",
+  "CODEX_WORKTREE_NO_REPO": "这个项目不是 Git 仓库，用不了工作树",
+  "CODEX_WORKTREE_NO_OWNER": "这个工作树里没有记录对应的对话",
+  "CODEX_WORKTREE_NO_THREAD": "还没有对话，先说一句再接到新工作树里"
 }

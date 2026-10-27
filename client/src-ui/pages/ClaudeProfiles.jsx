@@ -1,7 +1,6 @@
-// 设置 → Claude Code 账号、Codex 配置：本机默认、（Claude Code）另外登录的官方账号、第三方接口，选一个当默认。
-// 新建的会话用默认的（开始页可以另选），之后切换默认不影响已经建好的会话。两个助手共用这里的组件，`agent` 区分。
+// 设置 → Claude Code 账号：本机默认账号、另外登录的官方账号、第三方接口（Anthropic 官方格式），选一个当默认。
+// 新建的会话用默认的（开始页可以另选），之后切换默认不影响已经建好的会话。
 // 官方账号的登录由 Claude Code 自己完成（后台运行 `claude auth login`，界面显示授权页地址、收授权码），看看不经手令牌。
-// 第三方接口可以从“常见服务商”里选（model_presets.rs）：地址填好了，贴上 Key 就行，模型从 models.dev 的列表里选。
 import { Check, Cpu, ExternalLink, Gauge, KeyRound, LogIn, Plus, Server, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -19,44 +18,9 @@ const CUSTOM = 'custom';
 const OLLAMA = 'ollama';
 const MODEL_KEYS = ['main', 'opus', 'sonnet', 'haiku'];
 
-// 每个助手的接口路径和文案前缀
-const AGENTS = {
-  claude: { base: '/claude-profiles', t: 'cprof', anchor: 'claude-accounts' },
-  codex: { base: '/codex-profiles', t: 'xprof', anchor: 'codex-profiles' },
-};
-const PRESET = 'preset:';
-
 /** 配置显示的名字：本机默认账号没有名字；另外的官方账号登录成功后才有（登录的邮箱） */
-export function profileName(t, p, agent = 'claude') {
-  return p.id === 'official' ? t(`${AGENTS[agent].t}.builtin`) : p.name || t('cprof.unnamed');
-}
-
-/** models.dev 的价格（美元 / 百万 token）：“$1.2 / $4.2” */
-function priceText(cost) {
-  if (!cost) return '';
-  const f = (n) => `$${Number(n.toFixed(n < 1 ? 3 : 2))}`;
-  return `${f(cost.input ?? 0)} / ${f(cost.output ?? 0)}`;
-}
-
-/** 模型名输入框，下拉里是这家现在的模型（models.dev，带价格），也能自己填 */
-function ModelInput({ id, value, onChange, available, placeholder }) {
-  const { t } = useTranslation();
-  const hit = available?.find((m) => m.id === value);
-  return (
-    <>
-      <input className="mono" list={available?.length ? id : undefined} value={value} onChange={(e) => onChange(e.target.value)} maxLength={100} spellCheck={false} autoCapitalize="none" placeholder={placeholder} />
-      {available?.length > 0 && (
-        <datalist id={id}>
-          {available.map((m) => (
-            <option key={m.id} value={m.id}>
-              {[m.name, priceText(m.cost)].filter(Boolean).join(' · ')}
-            </option>
-          ))}
-        </datalist>
-      )}
-      {hit?.cost && <span className="field-hint">{t('cprof.price', { price: priceText(hit.cost) })}</span>}
-    </>
-  );
+export function profileName(t, p) {
+  return p.id === 'official' ? t('cprof.builtin') : p.name || t('cprof.unnamed');
 }
 
 export function KindIcon({ p, size = 15 }) {
@@ -242,48 +206,29 @@ function OfficialForm({ initial, onClose, onSaved }) {
   );
 }
 
-/**
- * 第三方接口：平台推荐的服务商（含推广）、常见服务商的快速配置（贴上 Key 就行）或自己填地址；Key 只存在这台电脑上。
- * Claude Code 还能一键用本机的 Ollama。
- */
-function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
+/** 第三方接口：平台推荐的服务商（含推广）或自己填地址；Key 只存在这台电脑上 */
+function ApiForm({ initial, accepted, onClose, onSaved }) {
   const { t, i18n } = useTranslation();
-  const cfg = AGENTS[agent];
-  const client = agent === 'codex' ? 'codex' : 'claude_code';
   const [data] = useLoad(() => api.get(`/model-providers?locale=${i18n.language}`).catch(() => ({ providers: [], error: 'x' })), [i18n.language]);
-  const [presetData] = useLoad(() => api.get(`/model-presets?agent=${agent}&locale=${i18n.language}`).catch(() => ({ presets: [] })), [agent, i18n.language]);
-  const providers = (data?.providers ?? []).filter((p) => p.clients.some((c) => c.client === client));
-  const presets = presetData?.presets ?? [];
-  const [pick, setPick] = useState(initial ? (initial.preset ? PRESET + initial.preset : (initial.provider_id ?? CUSTOM)) : null);
+  const providers = (data?.providers ?? []).filter((p) => p.clients.some((c) => c.client === 'claude_code'));
+  const [pick, setPick] = useState(initial ? (initial.provider_id ?? CUSTOM) : null);
   const [name, setName] = useState(initial?.name ?? '');
-  const [baseUrl, setBaseUrl] = useState(initial && !initial.provider_id && !initial.preset ? initial.base_url : '');
-  // Claude Code：四个档位；用快速配置时只问主模型和快速模型（Opus、Sonnet 档跟主模型）
+  const [baseUrl, setBaseUrl] = useState(initial && !initial.provider_id ? initial.base_url : '');
   const [models, setModels] = useState(() => Object.fromEntries(MODEL_KEYS.map((k) => [k, initial?.models?.[k] ?? ''])));
-  const [main, setMain] = useState(agent === 'codex' ? (initial?.model ?? '') : (initial?.models?.main ?? ''));
-  const [fast, setFast] = useState(initial?.models?.haiku ?? '');
   const [key, setKey] = useState('');
-  // Key 放 x-api-key 头（ANTHROPIC_API_KEY）：Anthropic Console 的 Key（sk-ant-api…）只认这个，填进来时自动勾上
-  const [xApiKey, setXApiKey] = useState(initial?.auth === 'api_key');
   const [agree, setAgree] = useState(false);
   const { busy, error, run } = useAction();
-  const [local] = useLoad(() => (initial || agent !== 'claude' ? Promise.resolve(null) : api.get('/ollama').then((r) => r.ollama, () => null)), []);
+  const [local] = useLoad(() => (initial ? Promise.resolve(null) : api.get('/ollama').then((r) => r.ollama, () => null)), []);
   const [localModel, setLocalModel] = useState('');
   const ollama = pick === OLLAMA && local;
-  // 列表到了还没选：有推荐的选第一个，没有就选第一个常见服务商
+  // 列表到了还没选：有推荐的选第一个，没有就自定义
   useEffect(() => {
-    if (pick === null && data && presetData) setPick(providers[0]?.id ?? (presets[0] ? PRESET + presets[0].id : CUSTOM));
-  }, [data, presetData]);
-  const preset = pick?.startsWith(PRESET) ? presets.find((p) => PRESET + p.id === pick) : null;
-  // 换了一家常见服务商：模型换成这家推荐的（编辑原来那家时保留已填的）
-  useEffect(() => {
-    if (!preset || (initial && PRESET + initial.preset === pick)) return;
-    setMain(preset.models.main ?? '');
-    setFast(preset.models.fast ?? '');
-  }, [pick, Boolean(preset)]);
+    if (pick === null && data) setPick(providers[0]?.id ?? CUSTOM);
+  }, [data]);
   const chosen = providers.find((p) => p.id === pick);
-  const endpoint = chosen?.clients.find((c) => c.client === client)?.base_url;
+  const endpoint = chosen?.clients.find((c) => c.client === 'claude_code')?.base_url;
   const keepKey = Boolean(initial?.key_set);
-  const urlChanged = !initial || pick !== (initial.preset ? PRESET + initial.preset : (initial.provider_id ?? CUSTOM)) || (pick === CUSTOM && baseUrl.trim() !== initial.base_url);
+  const urlChanged = !initial || pick !== (initial.provider_id ?? CUSTOM) || (pick === CUSTOM && baseUrl.trim() !== initial.base_url);
   const ready = ollama
     ? (accepted || agree) && local.new_enough && Boolean(localModel || local.models[0])
     : pick !== null && pick !== OLLAMA && (accepted || agree) && (pick !== CUSTOM || (name.trim() && baseUrl.trim())) && (keepKey || key.trim());
@@ -293,7 +238,7 @@ function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
       if (ollama) {
         // Ollama 不认 Key（随便填），所有档位都用选的模型：Claude Code 的后台小任务默认用 haiku，本机没有
         const m = localModel || local.models[0];
-        const r = await api.post(cfg.base, {
+        const r = await api.post('/claude-profiles', {
           kind: 'api',
           name: name.trim() || 'Ollama',
           base_url: local.base_url,
@@ -307,33 +252,17 @@ function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
       const body = {
         kind: 'api',
         name: pick === CUSTOM || initial || name.trim() ? name : undefined,
+        models,
         api_key: key.trim() || undefined,
         accept: !accepted && agree,
       };
-      if (agent === 'codex') body.model = main.trim();
-      else if (preset) {
-        body.models = { main: main.trim(), opus: main.trim(), sonnet: main.trim(), haiku: fast.trim() };
-        body.auth = preset.auth;
-      } else {
-        body.models = models;
-        body.auth = xApiKey ? 'api_key' : 'bearer';
-      }
-      if (urlChanged) Object.assign(body, pick === CUSTOM ? { base_url: baseUrl } : preset ? { preset: preset.id } : { provider_id: pick });
-      const r = initial ? await api.put(`${cfg.base}/${initial.id}`, body) : await api.post(cfg.base, body);
+      if (urlChanged) Object.assign(body, pick === CUSTOM ? { base_url: baseUrl } : { provider_id: pick });
+      const r = initial ? await api.put(`/claude-profiles/${initial.id}`, body) : await api.post('/claude-profiles', body);
       onSaved(r);
     });
   };
-  const option = (id, head, desc, extra) => (
-    <button key={id} type="button" role="radio" aria-checked={pick === id} className="launch model-option" onClick={() => setPick(id)}>
-      <span className="model-option-head">
-        {head}
-        {extra}
-      </span>
-      {desc && <span className="small muted">{desc}</span>}
-    </button>
-  );
   return (
-    <Modal open onClose={onClose} title={t(initial ? `${cfg.t}.edit_api` : `${cfg.t}.add_api`)} wide>
+    <Modal open onClose={onClose} title={t(initial ? 'cprof.edit_api' : 'cprof.add_api')} wide>
       <form onSubmit={save}>
         {accepted ? (
           <FoldNote kind="warn" summary={t('model.disclaimer.title')}>
@@ -349,45 +278,41 @@ function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
             </label>
           </Note>
         )}
-        <p className="small muted">{t(`${cfg.t}.api_intro`)}</p>
-        {(!data || !presetData) && <Skeleton height={64} />}
+        <p className="small muted">{t('cprof.api_intro')}</p>
+        {!data && <Skeleton height={64} />}
         {data?.error && <Note kind="warn">{t('model.list_failed')}</Note>}
-        {data && presetData && (
-          <div role="radiogroup" aria-label={t('model.provider')}>
-            {providers.length > 0 && (
-              <div className="model-grid">
-                {providers.map((p) =>
-                  option(
-                    p.id,
-                    <>
-                      <ProviderLogo p={p} />
-                      <b className="grow ellipsis">{p.name}</b>
-                    </>,
-                    p.tagline,
-                    <span className="badge">{t('promotion.label')}</span>,
-                  ),
-                )}
-              </div>
+        {data && (
+          <div className="model-grid" role="radiogroup" aria-label={t('model.provider')}>
+            {providers.map((p) => (
+              <button key={p.id} type="button" role="radio" aria-checked={pick === p.id} className="launch model-option" onClick={() => setPick(p.id)}>
+                <span className="model-option-head">
+                  <ProviderLogo p={p} />
+                  <b className="grow ellipsis">{p.name}</b>
+                  <span className="badge">{t('promotion.label')}</span>
+                </span>
+                {p.tagline && <span className="small muted">{p.tagline}</span>}
+              </button>
+            ))}
+            {local && (
+              <button type="button" role="radio" aria-checked={pick === OLLAMA} className="launch model-option" onClick={() => setPick(OLLAMA)}>
+                <span className="model-option-head">
+                  <span className="model-logo">
+                    <Cpu size={16} />
+                  </span>
+                  <b className="grow">{t('cprof.ollama')}</b>
+                </span>
+                <span className="small muted">{t('cprof.ollama_desc', { version: local.version, count: local.models.length })}</span>
+              </button>
             )}
-            {presets.length > 0 && <p className="small muted model-group">{t('cprof.preset_section')}</p>}
-            <div className="model-grid model-grid-compact">
-              {presets.map((p) => option(PRESET + p.id, <b className="grow ellipsis">{p.name}</b>))}
-              {local &&
-                option(
-                  OLLAMA,
-                  <>
-                    <Cpu size={15} aria-hidden="true" />
-                    <b className="grow">{t('cprof.ollama')}</b>
-                  </>,
-                )}
-              {option(
-                CUSTOM,
-                <>
-                  <Server size={15} aria-hidden="true" />
-                  <b className="grow">{t('model.custom')}</b>
-                </>,
-              )}
-            </div>
+            <button type="button" role="radio" aria-checked={pick === CUSTOM} className="launch model-option" onClick={() => setPick(CUSTOM)}>
+              <span className="model-option-head">
+                <span className="model-logo">
+                  <Server size={16} />
+                </span>
+                <b className="grow">{t('model.custom')}</b>
+              </span>
+              <span className="small muted">{t('model.custom_desc')}</span>
+            </button>
           </div>
         )}
         {chosen && (
@@ -401,17 +326,6 @@ function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
             </p>
           </div>
         )}
-        {preset && (
-          <div className="model-detail">
-            <p className="small muted" style={{ margin: 0 }}>
-              {t('model.endpoint')} <span className="mono">{preset.base_url}</span> ·{' '}
-              <a href={preset.key_url} target="_blank" rel="noopener noreferrer">
-                {t('cprof.preset_key')} <ExternalLink size={13} style={{ verticalAlign: '-2px' }} />
-              </a>
-            </p>
-          </div>
-        )}
-        {pick === CUSTOM && <p className="small muted">{t('model.custom_desc')}</p>}
         {ollama && (
           <div className="model-detail">
             <p className="small" style={{ margin: 0 }}>
@@ -432,54 +346,19 @@ function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
             </select>
           </Field>
         )}
-        {!ollama && (
-          <Field label="API Key" hint={keepKey ? t('model.key_keep') : t('model.key_hint')}>
-            <PasswordInput
-              value={key}
-              onChange={(e) => {
-                setKey(e.target.value);
-                if (e.target.value.trim().startsWith('sk-ant-api')) setXApiKey(true);
-              }}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder={keepKey ? '••••••••' : 'sk-…'}
-              autoFocus={Boolean(preset) && !initial}
-            />
-          </Field>
-        )}
-        {!ollama && (preset || agent === 'codex') && (
-          <div className="cprof-models">
-            <Field label={t(agent === 'codex' ? 'cprof.model_codex' : 'cprof.model_main')} hint={agent === 'codex' ? t('model.model_hint') : undefined}>
-              <ModelInput id="ll-model-main" value={main} onChange={setMain} available={preset?.available} placeholder={t('cprof.model_default')} />
-            </Field>
-            {agent === 'claude' && (
-              <Field label={t('cprof.model_fast')} hint={t('cprof.model_fast_hint')}>
-                <ModelInput id="ll-model-fast" value={fast} onChange={setFast} available={preset?.available} placeholder={t('cprof.model_default')} />
-              </Field>
-            )}
-          </div>
-        )}
-        {(pick === CUSTOM || chosen || (preset && !initial) || initial) && !ollama && (
-          <Field label={t('cprof.name')} hint={pick !== CUSTOM && !initial ? t('cprof.name_hint_provider') : undefined}>
-            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={preset?.name ?? chosen?.name ?? ''} required={pick === CUSTOM} />
-          </Field>
-        )}
+        <Field label={t('cprof.name')} hint={pick !== CUSTOM && !initial && !ollama ? t('cprof.name_hint_provider') : undefined}>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={ollama ? 'Ollama' : (chosen?.name ?? '')} required={pick === CUSTOM} />
+        </Field>
         {pick === CUSTOM && (
-          <Field label={t('model.custom_url')} hint={t(`model.custom_url_hint_${agent}`)}>
+          <Field label={t('model.custom_url')} hint={t('model.custom_url_hint_claude')}>
             <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com" inputMode="url" spellCheck={false} autoCapitalize="none" required />
           </Field>
         )}
-        {agent === 'claude' && !ollama && !preset && (
+        {!ollama && (
           <>
-            <label className="check-row">
-              <input type="checkbox" checked={xApiKey} onChange={(e) => setXApiKey(e.target.checked)} />
-              <span>
-                {t('cprof.auth_api_key')}
-                <span className="small muted" style={{ display: 'block' }}>
-                  {t('cprof.auth_api_key_hint')}
-                </span>
-              </span>
-            </label>
+            <Field label="API Key" hint={keepKey ? t('model.key_keep') : t('model.key_hint')}>
+              <PasswordInput value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} placeholder={keepKey ? '••••••••' : 'sk-…'} />
+            </Field>
             <FoldNote summary={t('cprof.models')}>
               <p className="small muted" style={{ marginTop: 0 }}>
                 {t('cprof.models_hint')}
@@ -509,29 +388,26 @@ function ApiForm({ agent, initial, accepted, onClose, onSaved }) {
 }
 
 /**
- * 一个配置。Claude Code 的官方账号：已登录时按钮是“查用量”（请 Claude Code 去取，顺便确认登录状态；登录失效就提示重新登录），
- * 没登录时是“登录”，“重新登录”在更多菜单里。Codex 的本机默认只是说明（Codex 自己的登录和配置）。
+ * 一个账号。官方账号：已登录时按钮是“查用量”（请 Claude Code 去取，顺便确认登录状态；登录失效就提示重新登录），
+ * 没登录时是“登录”，“重新登录”在更多菜单里。
  */
-function ProfileRow({ agent, p, isDefault, busy, nonce, onDefault, onLogin, onEdit, onRemove }) {
+function ProfileRow({ p, isDefault, busy, nonce, onDefault, onLogin, onEdit, onRemove }) {
   const { t } = useTranslation();
   const toast = useToast();
-  const cfg = AGENTS[agent];
   const official = p.kind === 'official';
-  const claudeLogin = official && agent === 'claude';
-  const [loaded, err] = useLoad(() => (claudeLogin ? api.get(`/claude-profiles/${p.id}/status`) : Promise.resolve(null)), [p.id, nonce]);
+  const [loaded, err] = useLoad(() => (official ? api.get(`/claude-profiles/${p.id}/status`) : Promise.resolve(null)), [p.id, nonce]);
   // 查用量时顺便拿到的登录状态比上面问到的新；重新问过之后以问到的为准
   const [fresh, setFresh] = useState(null);
   useEffect(() => setFresh(null), [loaded]);
   const s = fresh ?? loaded;
   const [usage, setUsage] = useState(null);
   const q = useAction();
-  const name = profileName(t, p, agent);
   const queryUsage = async () => {
-    const r = await q.run(() => api.post(`${cfg.base}/${p.id}/usage`, {}));
+    const r = await q.run(() => api.post(`/claude-profiles/${p.id}/usage`, {}));
     if (!r) return;
     if (r.status && !r.status.error) setFresh(r.status);
     setUsage(r.state === 'ok' ? r : r.state === 'logged_out' ? { state: 'logged_out' } : null);
-    if (r.state === 'logged_out') toast(t('cprof.expired_toast', { name }), 'error');
+    if (r.state === 'logged_out') toast(t('cprof.expired_toast', { name: profileName(t, p) }), 'error');
     else if (r.state === 'no_limits') toast(t(official ? 'cprof.usage_none' : 'cprof.usage_none_api'), 'error');
     else if (r.state === 'failed') toast(t('cprof.usage_failed'), 'error');
   };
@@ -539,7 +415,6 @@ function ProfileRow({ agent, p, isDefault, busy, nonce, onDefault, onLogin, onEd
     if (q.error) toast(errorText(t, q.error), 'error');
   }, [q.error]);
   const loggedIn = Boolean(s?.logged_in);
-  const model = agent === 'codex' ? p.model : p.models?.main;
   return (
     <li className={isDefault ? 'cprof-default' : ''}>
       <button
@@ -550,23 +425,21 @@ function ProfileRow({ agent, p, isDefault, busy, nonce, onDefault, onLogin, onEd
         disabled={busy}
         onClick={() => !isDefault && onDefault(p)}
         title={isDefault ? t('cprof.is_default') : t('cprof.make_default')}
-        aria-label={`${name} · ${isDefault ? t('cprof.is_default') : t('cprof.make_default')}`}
+        aria-label={`${profileName(t, p)} · ${isDefault ? t('cprof.is_default') : t('cprof.make_default')}`}
       />
       <span className="grow" style={{ minWidth: 0 }}>
         <b className="cprof-name">
           <KindIcon p={p} />
-          <span className="ellipsis">{name}</span>
+          <span className="ellipsis">{profileName(t, p)}</span>
           {isDefault && <span className="badge badge-ok">{t('cprof.default')}</span>}
         </b>
         <span className="small" style={{ display: 'block' }}>
-          {claudeLogin ? (
+          {official ? (
             <LoginStatus s={s} err={err} expired={usage?.state === 'logged_out'} />
-          ) : official ? (
-            <span className="muted">{t('xprof.builtin_desc')}</span>
           ) : (
             <>
               <span className="mono muted ellipsis">{p.base_url}</span>
-              {model && <span className="muted"> · {model}</span>}
+              {p.models?.main && <span className="muted"> · {p.models.main}</span>}
               {!p.key_set && (
                 <span className="cprof-warn">
                   {' '}
@@ -583,7 +456,7 @@ function ProfileRow({ agent, p, isDefault, busy, nonce, onDefault, onLogin, onEd
         )}
       </span>
       <span className="inline">
-        {claudeLogin &&
+        {official &&
           (loggedIn || !s ? (
             <Button variant="ghost" icon={Gauge} onClick={queryUsage} busy={q.busy} disabled={busy || !s} title={t('cprof.usage_hint')}>
               {t('cprof.usage')}
@@ -602,7 +475,7 @@ function ProfileRow({ agent, p, isDefault, busy, nonce, onDefault, onLogin, onEd
           <PopMenu
             label={t('action.more')}
             items={[
-              claudeLogin && loggedIn && { icon: LogIn, label: t('cprof.relogin'), onClick: () => onLogin(p) },
+              official && loggedIn && { icon: LogIn, label: t('cprof.relogin'), onClick: () => onLogin(p) },
               p.id !== 'official' && !isDefault && { icon: Check, label: t('cprof.make_default'), onClick: () => onDefault(p) },
               p.id !== 'official' && { label: t(p.kind === 'api' ? 'cprof.edit' : 'cprof.rename'), onClick: () => onEdit(p) },
               p.id !== 'official' && { label: t('action.delete'), danger: true, onClick: () => onRemove(p) },
@@ -614,22 +487,20 @@ function ProfileRow({ agent, p, isDefault, busy, nonce, onDefault, onLogin, onEd
   );
 }
 
-function ProfilesCard({ agent }) {
+export default function ClaudeProfilesCard() {
   const { t } = useTranslation();
   const confirm = useConfirm();
   const toast = useToast();
-  const cfg = AGENTS[agent];
-  const [data, error, reload] = useLoad(() => api.get(cfg.base), [agent]);
+  const [data, error, reload] = useLoad(() => api.get('/claude-profiles'), []);
   const [form, setForm] = useState(null);
   // 登录完回来时重新问一遍登录状态
   const [nonce, setNonce] = useState(0);
   const { busy, error: actErr, run } = useAction();
-  // 从开始页的“管理”过来时滚到这里
+  // 从开始页的“管理账号”过来时滚到这里
   useEffect(() => {
-    if (data && window.location.hash === `#${cfg.anchor}`) document.getElementById(cfg.anchor)?.scrollIntoView({ block: 'start' });
+    if (data && window.location.hash === '#claude-accounts') document.getElementById('claude-accounts')?.scrollIntoView({ block: 'start' });
   }, [Boolean(data)]);
   useEffect(() => {
-    if (agent !== 'claude') return undefined;
     const again = () => document.visibilityState === 'visible' && setNonce((n) => n + 1);
     document.addEventListener('visibilitychange', again);
     return () => document.removeEventListener('visibilitychange', again);
@@ -639,16 +510,16 @@ function ProfilesCard({ agent }) {
   const [loggingIn, setLoggingIn] = useState(null);
   const login = (p) => setLoggingIn(p);
   const setDefault = async (p) => {
-    const r = await run(() => api.put(`${cfg.base}/default`, { id: p.id }));
+    const r = await run(() => api.put('/claude-profiles/default', { id: p.id }));
     if (r) {
       apply(r);
-      toast(t('cprof.default_set', { name: profileName(t, p, agent) }));
+      toast(t('cprof.default_set', { name: profileName(t, p) }));
     }
   };
   const remove = async (p) => {
-    const ok = await confirm({ title: t('cprof.delete_title', { name: profileName(t, p, agent) }), body: t(p.kind === 'api' ? `${cfg.t}.delete_body_api` : 'cprof.delete_body_official'), confirm: t('action.delete'), danger: true });
+    const ok = await confirm({ title: t('cprof.delete_title', { name: profileName(t, p) }), body: t(p.kind === 'api' ? 'cprof.delete_body_api' : 'cprof.delete_body_official'), confirm: t('action.delete'), danger: true });
     if (!ok) return;
-    const r = await run(() => api.del(`${cfg.base}/${p.id}`));
+    const r = await run(() => api.del(`/claude-profiles/${p.id}`));
     if (r) apply(r);
   };
   // 添加官方账号：不用先填什么，直接去登录；登录框没登录成功就关掉时删掉这个空账号
@@ -673,27 +544,26 @@ function ProfilesCard({ agent }) {
     apply(r);
     toast(t('cprof.saved'));
   };
-  const add =
-    agent === 'claude' ? (
-      <PopMenu
-        className="btn btn-secondary"
-        icon={Plus}
-        text={t('cprof.add')}
-        label={t('cprof.add')}
-        items={[
-          { icon: UserRound, label: t('cprof.add_official'), hint: t('cprof.add_official_hint'), onClick: addOfficial },
-          { icon: Server, label: t('cprof.add_api'), hint: t('cprof.add_api_hint'), onClick: () => setForm({ kind: 'api' }) },
-        ]}
-      />
-    ) : (
-      <Button variant="secondary" icon={Plus} onClick={() => setForm({ kind: 'api' })}>
-        {t('xprof.add_api')}
-      </Button>
-    );
   return (
-    <div id={cfg.anchor} className="anchor">
-      <Card title={t(`${cfg.t}.title`)} actions={data && add}>
-        <p className="muted small">{t(`${cfg.t}.intro`)}</p>
+    <div id="claude-accounts" className="anchor">
+      <Card
+        title={t('cprof.title')}
+        actions={
+          data && (
+            <PopMenu
+              className="btn btn-secondary"
+              icon={Plus}
+              text={t('cprof.add')}
+              label={t('cprof.add')}
+              items={[
+                { icon: UserRound, label: t('cprof.add_official'), hint: t('cprof.add_official_hint'), onClick: addOfficial },
+                { icon: Server, label: t('cprof.add_api'), hint: t('cprof.add_api_hint'), onClick: () => setForm({ kind: 'api' }) },
+              ]}
+            />
+          )
+        }
+      >
+        <p className="muted small">{t('cprof.intro')}</p>
         <ErrorNote error={error ?? actErr} />
         {!data && !error && <Skeleton height={96} />}
         {data && (
@@ -701,7 +571,6 @@ function ProfilesCard({ agent }) {
             {data.profiles.map((p) => (
               <ProfileRow
                 key={p.id}
-                agent={agent}
                 p={p}
                 isDefault={p.id === data.default}
                 busy={busy}
@@ -715,33 +584,26 @@ function ProfilesCard({ agent }) {
           </ul>
         )}
         <p className="muted small" style={{ margin: '12px 0 0' }}>
-          {t(`${cfg.t}.note`)}
+          {t('cprof.note')}
         </p>
       </Card>
-      {loggingIn && <LoginModal profile={loggingIn} onClose={loginClosed} />}
+      {loggingIn && (
+        <LoginModal profile={loggingIn} onClose={loginClosed} />
+      )}
       {form?.kind === 'official' && <OfficialForm initial={form.initial} onClose={() => setForm(null)} onSaved={saved} />}
-      {form?.kind === 'api' && data && <ApiForm agent={agent} initial={form.initial} accepted={Boolean(data.accepted_at)} onClose={() => setForm(null)} onSaved={saved} />}
+      {form?.kind === 'api' && data && <ApiForm initial={form.initial} accepted={Boolean(data.accepted_at)} onClose={() => setForm(null)} onSaved={saved} />}
     </div>
   );
 }
 
-export default function ClaudeProfilesCard() {
-  return <ProfilesCard agent="claude" />;
-}
-
-export function CodexProfilesCard() {
-  return <ProfilesCard agent="codex" />;
-}
-
 /**
- * 新建会话时选用哪个配置（开始页、新建终端表单）。`value` 为 null 表示用默认。
- * 那台电脑的客户端太旧（没有这个接口）、或者只有本机默认时什么都不显示。
+ * 新建会话时选 Claude Code 用哪个账号 / 接口（开始页、新建终端表单）。`value` 为 null 表示用默认。
+ * 那台电脑的客户端太旧（没有这个接口）、或者只有本机默认账号时什么都不显示。
  */
-function ProfilePick({ agent, client, device, value, onChange, className = 'btn btn-plain start-adv' }) {
+export function ClaudeProfilePick({ client, device, value, onChange, className = 'btn btn-plain start-adv' }) {
   const { t } = useTranslation();
   const { navigate } = useRouter();
-  const cfg = AGENTS[agent];
-  const [data] = useLoad(() => client.get(cfg.base).catch(() => null), [device, agent]);
+  const [data] = useLoad(() => client.get('/claude-profiles').catch(() => null), [device]);
   // 换了电脑：另选的那个在新电脑上没有就回到默认
   useEffect(() => {
     if (data && value && !data.profiles.some((p) => p.id === value)) onChange(null);
@@ -753,27 +615,19 @@ function ProfilePick({ agent, client, device, value, onChange, className = 'btn 
     <PopMenu
       className={className}
       icon={(p) => <KindIcon p={cur} {...p} />}
-      text={profileName(t, cur, agent)}
-      label={t(`${cfg.t}.pick_label`)}
+      text={profileName(t, cur)}
+      label={t('cprof.pick_label')}
       items={[
         ...data.profiles.map((p) => ({
           icon: (x) => <KindIcon p={p} {...x} />,
-          label: profileName(t, p, agent),
+          label: profileName(t, p),
           hint: p.id === def.id ? t('cprof.default') : p.kind === 'api' ? p.base_url : undefined,
           checked: p.id === cur.id,
           onClick: () => onChange(p.id === def.id ? null : p.id),
         })),
         'sep',
-        { label: t(`${cfg.t}.manage`), onClick: () => navigate(`/settings#${cfg.anchor}`) },
+        { label: t('cprof.manage'), onClick: () => navigate('/settings#claude-accounts') },
       ]}
     />
   );
-}
-
-export function ClaudeProfilePick(props) {
-  return <ProfilePick agent="claude" {...props} />;
-}
-
-export function CodexProfilePick(props) {
-  return <ProfilePick agent="codex" {...props} />;
 }

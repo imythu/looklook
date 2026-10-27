@@ -668,7 +668,8 @@
     "banner_progress": "正在更新到 {{version}}",
     "on_device": "{{name}}：",
     "slow_restart": "重启比平时久。如果看看已经在运行，刷新页面就好；还是打不开时，请在电脑上重新打开看看。",
-    "reload_page": "刷新页面"
+    "reload_page": "刷新页面",
+    "this_device": "这台电脑"
   },
   "report": {
     "title": "报告问题",
@@ -870,8 +871,13 @@
   "dsh": {
     "output": "查看 DSH 的输出",
     "starting": "DSH 还在启动，请稍后再打开",
-    "form_note": "DSH 是网页界面，一台电脑一个。看看会选一个空闲端口并为它添加本机网页，打开 DSH（本机或远程）就是打开这个网页。",
-    "workdir_hint": "DSH 的默认项目文件夹，别的项目文件夹在 DSH 里添加。"
+    "form_note": "DSH 是网页界面，一台电脑一个。打开它就在会话标签里显示它的网页；也可以在浏览器中单独打开（本机或远程都是同一个地址）。",
+    "workdir_hint": "DSH 的默认项目文件夹，别的项目文件夹在 DSH 里添加。",
+    "connecting": "正在打开 DSH…",
+    "starting_slow": "DSH 正在启动，第一次运行要多等一会儿…",
+    "open_failed": "DSH 打不开",
+    "open_browser": "在浏览器中打开",
+    "retry": "重试"
   },
   "fb": {
     "tabs": "终端与文件",
@@ -925,17 +931,34 @@
     "office_no_pdf": "这个浏览器不能在页面里显示 PDF，下载后打开。"
   },
   "model": {
+    "title": "模型服务商",
+    "intro": "让 Codex 走第三方接口（中转站、聚合平台等），按服务商的价格用 API Key 付费。不设置时使用官方接口和你自己的登录。Claude Code 的第三方接口在上面的“Claude Code 账号”里添加。",
+    "official": "官方（默认）",
+    "choose": "选择服务商",
+    "change": "更换",
+    "reset": "恢复官方",
+    "reset_title": "{{agent}} 恢复使用官方接口？",
+    "reset_body": "会删除这台电脑上保存的 API Key。正在运行的终端不受影响，重启后生效。",
+    "reset_done": "已恢复官方接口，重启终端后生效",
+    "restart_note": "只对之后新建或重启的终端生效；正在运行的终端不会切换。",
+    "pick_title": "{{agent}} 使用的服务商",
     "provider": "服务商",
     "custom": "自定义",
     "custom_desc": "填写其他服务商提供的接口地址",
+    "custom_name": "名称",
     "custom_url": "接口地址",
     "custom_url_hint_claude": "服务商提供的 Anthropic 兼容地址（即 ANTHROPIC_BASE_URL），必须是 https。",
     "custom_url_hint_codex": "服务商提供的 OpenAI Responses 兼容地址，通常以 /v1 结尾，必须是 https。",
+    "none": "暂时没有推荐的服务商，可以选择“自定义”填写接口地址。",
     "list_failed": "暂时取不到推荐列表（连不上服务器），可以先用“自定义”。",
     "endpoint": "接口地址",
     "homepage": "访问主页",
     "key_hint": "在服务商网站上创建。只保存在这台电脑上，不会上传到看看。",
     "key_keep": "留空沿用已保存的 Key；换了服务商时请填新的 Key。",
+    "saved": "{{agent}} 的服务商已保存，新建或重启终端后生效",
+    "form_official": "使用官方接口",
+    "form_using": "使用 {{name}} 的接口",
+    "form_change": "更改",
     "disclaimer": {
       "title": "免责声明：第三方服务由服务商自行提供",
       "third_party": "列表中的服务商由第三方运营，标有“推广”的为合作推广。看看不提供、不运营这些服务，也不对其可用性、稳定性、安全性、模型真实性和合规性作任何担保。",
@@ -943,9 +966,7 @@
       "key": "API Key 只保存在这台电脑上，看看不会上传或查看。请妥善保管，发现泄露请立即到服务商处作废。",
       "cost": "费用、充值、退款与售后由你与服务商直接约定；因使用第三方服务产生的费用、数据泄露、账号处置或其他损失，看看不承担责任。请同时遵守模型提供方的使用条款及当地法律法规。",
       "agree": "我已阅读并同意以上说明，自行承担使用第三方服务的风险"
-    },
-    "model": "模型（可选）",
-    "model_hint": "服务商的模型名，例如 glm-4.6、kimi-k2。不填时用 Codex 的默认模型（OpenAI 的模型名），大多数第三方接口不认，建议填写。"
+    }
   },
   "cprof": {
     "title": "Claude Code 账号",
@@ -1029,17 +1050,7 @@
     "ollama_old": "Ollama {{version}} 还不支持 Claude Code 用的接口格式，请升级到 0.14 或更新的版本。",
     "ollama_no_models": "Ollama 里还没有模型。先在终端里运行 ollama pull 下载一个（例如 qwen3-coder）。",
     "ollama_model": "模型",
-    "ollama_model_hint": "Claude Code 的各个档位都用这个模型。本机模型比官方模型弱很多，复杂任务效果会差。",
-    "auth_api_key": "Key 放在 x-api-key 头里（ANTHROPIC_API_KEY）",
-    "auth_api_key_hint": "Anthropic Console 的 API Key（sk-ant-api…）和少数服务商要求这样。不勾时用 ANTHROPIC_AUTH_TOKEN（Authorization: Bearer），大多数服务商用这个。",
-    "preset_section": "常见服务商：选一家，贴上 API Key 就能用",
-    "preset_key": "去创建 API Key",
-    "price": "API 价格 输入 / 输出（每百万 token）：{{price}}，来自 models.dev",
-    "model_main": "模型",
-    "model_fast": "快速模型",
-    "model_fast_hint": "后台的小任务（起标题、总结等）用，选便宜、快的。",
-    "model_codex": "模型",
-    "model_default": "不填由服务商对应"
+    "ollama_model_hint": "Claude Code 的各个档位都用这个模型。本机模型比官方模型弱很多，复杂任务效果会差。"
   },
   "att": {
     "title": "粘贴的图片与附件",
@@ -1530,7 +1541,8 @@
       "usage": "查看用量和额度",
       "status": "查看状态和用量",
       "tasks": "子代理和后台命令",
-      "new": "开始新会话（原来的留在以前的对话里）"
+      "new": "开始新会话（原来的留在以前的对话里）",
+      "worktree": "在 Git 工作树里开对话、接着对话或切过去"
     },
     "detached_starting_title": "正在等待 {{agent}} 启动…",
     "detached_no_session_title": "终端没在运行",
@@ -1887,7 +1899,22 @@
     "codex_updating": "正在更新到 {{version}}…",
     "codex_updated": "Codex 已更新到 {{version}}。对话空闲时换成新版本，终端里的 Codex 要“重新连接终端”才是新版本。",
     "codex_update_failed": "没能更新。Windows 上终端里还开着 Codex 时会更新失败，先退出它再试。",
-    "usage_limits_note_provider": "用量数据来自 {{provider}}（不是正式公开的接口），仅供参考。"
+    "usage_limits_note_provider": "用量数据来自 {{provider}}（不是正式公开的接口），仅供参考。",
+    "cmd_action_worktree": "菜单",
+    "wt_title": "Git 工作树",
+    "wt_where": "新对话在哪运行？",
+    "wt_here": "用当前目录",
+    "wt_here_hint": "和现在一样，在这个项目目录里开新对话",
+    "wt_new": "新建 Git 工作树",
+    "wt_new_conv": "在新工作树里开新对话",
+    "wt_new_hint": "从当前提交复制一份独立的检出，改动不影响这里",
+    "wt_fork": "在新工作树里接着这段对话",
+    "wt_fork_hint": "带着现在的上下文，到独立的检出里继续",
+    "wt_existing": "已有的工作树",
+    "wt_no_owner": "不是看看或 Codex 开的",
+    "wt_no_repo": "这个项目不是 Git 仓库，用不了工作树",
+    "wt_created": "已在新工作树里开始：{{path}}",
+    "wt_chip": "工作树"
   },
   "board": {
     "title": "任务",
@@ -2084,7 +2111,7 @@
     "shell_hint": "点了就开一个 Shell",
     "custom": "自定义命令…",
     "custom_hint": "在输入框里写要运行的命令",
-    "dsh_hint": "在新窗口打开",
+    "dsh_hint": "在会话标签里打开它的网页",
     "dsh_open": "这台电脑上已经有了，点了打开它",
     "install_start": "安装并开始",
     "install_strip": "这台电脑还没装 {{tool}}。点开始会先装好，装好接着开始。",
@@ -2278,7 +2305,12 @@
     "state_open": "已在看看里打开",
     "state_live": "可能在别处运行",
     "state_ended": "已结束",
-    "search_here": "在这个项目里搜"
+    "search_here": "在这个项目里搜",
+    "open_hint": "双击或按回车直接继续",
+    "scope": "看哪些电脑的",
+    "scope_here": "这台电脑",
+    "scope_all": "全部电脑",
+    "loading_more_devices": "还在取其他电脑的"
   },
   "path": {
     "label": "路径",
@@ -2614,43 +2646,20 @@
     "ex5_name": "写一个每天定时运行的脚本",
     "ex5_text": "写一个每天早上 9 点自动运行的脚本，要做的事：（在这里写）。告诉我怎么设置定时运行、怎么看运行记录、出错时怎么通知我。"
   },
-  "xprof": {
-    "title": "Codex 配置",
-    "intro": "Codex 可以用本机自己的登录，也可以走第三方接口（按服务商的价格用 API Key 付费）。可以添加多个，选一个当默认；新建会话时可以另选。",
-    "builtin": "本机默认",
-    "builtin_desc": "Codex 自己的登录和 ~/.codex/config.toml",
-    "note": "切换默认只影响之后新建的会话，已有的会话一直用建的时候选的配置。",
-    "add_api": "添加第三方接口",
-    "edit_api": "编辑第三方接口",
-    "api_intro": "只支持兼容 OpenAI Responses 接口的服务商。Key 只保存在这台电脑上，不改你的 ~/.codex/config.toml。",
-    "delete_body_api": "会删除这台电脑上保存的 API Key。正在用它的会话重启后改用默认配置。",
-    "pick_label": "Codex 用哪个配置",
-    "manage": "管理 Codex 配置"
-  },
-  "usage": {
-    "title": "用量统计",
-    "intro": "统计这台电脑上 Claude Code 和 Codex 会话记录里的 token 用量，按 API 价格估算费用。后台每 10 分钟更新一次，只在本机统计，不上传。",
-    "rescan": "刷新",
-    "rescan_hint": "马上重新扫一遍会话记录",
-    "not_ready": "正在第一次统计，稍等一会儿再看。",
-    "range": "时间范围",
-    "days": "{{n}} 天",
-    "today": "今天",
-    "period": "最近 {{n}} 天",
-    "requests": "{{n}} 次请求",
-    "chart_label": "每天的估算费用",
-    "no_cost": "这段时间没有能算出费用的用量。",
-    "col_model": "模型",
-    "col_input": "输入",
-    "col_cache": "缓存",
-    "col_output": "输出",
-    "col_cost": "估算费用",
-    "cache_hint": "读缓存 {{read}} · 写缓存 {{write}}",
-    "price_from": "价格来自 models.dev 上的 {{provider}}",
-    "no_price": "没有价格",
-    "note": "费用按各家 API 的公开价格（美元）估算；用订阅（Claude Pro / Max、ChatGPT）或套餐时实际不按这个收费，可以当作“折合多少钱”看。",
-    "pricing_at": "价格更新于 {{at}}。",
-    "pricing_none": "还没取到价格（需要能访问 models.dev）。",
-    "scanned_at": "统计更新于 {{at}}。"
+  "macf": {
+    "title": "文件夹访问权限",
+    "intro": "macOS 会在 AI 工具第一次用到桌面、文稿、下载文件夹时逐个弹窗询问，命令会停在那里等你点。可以在这里一次问完；想一次给全，打开“完全磁盘访问权限”里的看看。",
+    "grant": "允许访问常用文件夹",
+    "recheck": "重新检查",
+    "full_disk": "打开完全磁盘访问权限",
+    "files_pane": "打开“文件和文件夹”设置",
+    "f_desktop": "桌面",
+    "f_documents": "文稿",
+    "f_downloads": "下载",
+    "allowed": "已允许",
+    "denied": "未允许",
+    "denied_hint": "点过“不允许”的，系统不会再弹窗：到系统设置里把看看的开关打开，再回来重新检查。",
+    "all_ok": "常用文件夹都可以访问了",
+    "open_failed": "没能打开系统设置，请手动打开：系统设置 → 隐私与安全性"
   }
 }

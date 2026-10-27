@@ -1273,21 +1273,6 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .cprof-url { display: grid; gap: 8px; }
 .cprof-url code { display: block; max-height: 6.5em; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); font-size: 12px; line-height: 1.5; word-break: break-all; user-select: all; }
 .cprof-form-pick { margin: -6px 0 14px; max-width: 100%; }
-.model-group { margin: 4px 0 8px; }
-.model-grid-compact { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
-.model-grid-compact .model-option { padding-top: 8px; padding-bottom: 8px; }
-
-/* 用量统计（UsageStats.jsx）：数字卡片、每天费用的柱子、按模型的表 */
-.usage-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
-.usage-tile { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--panel-2); }
-.usage-tile b { font-size: 22px; font-variant-numeric: tabular-nums; }
-.usage-chart { position: relative; margin: 8px 0 14px; }
-.usage-max { position: absolute; top: -2px; left: 0; }
-.usage-bars { display: flex; align-items: flex-end; gap: 2px; height: 120px; padding-top: 18px; border-bottom: 1px solid var(--line); }
-.usage-bar-hit { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; cursor: default; }
-.usage-bar { display: block; width: 100%; background: var(--brand); border-radius: 4px 4px 0 0; }
-.usage-bar-hit:hover .usage-bar { opacity: .75; }
-.usage-axis { display: flex; justify-content: space-between; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .start-adv .ellipsis { max-width: 12em; }
 
 /* ---------- SSH 主机 ---------- */
@@ -1977,7 +1962,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 /* 手机上换类型：从底部弹出 */
 .menu-pop-backdrop { position: fixed; inset: 0; z-index: 89; background: rgba(18, 20, 28, .36); }
 .menu-pop-list.menu-pop-sheet {
-  position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 90; min-width: 0; max-width: none; max-height: 80vh; overflow-y: auto; margin: 0;
+  position: fixed; left: 0; right: 0; bottom: 0; top: auto; z-index: 90; min-width: 0; max-width: none; max-height: 80vh; max-height: 85dvh; overflow-y: auto; overscroll-behavior: contain; margin: 0;
   padding: 10px 12px calc(16px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; animation: fade .12s;
 }
 .menu-pop-sheet button { min-height: 52px; }
@@ -2096,6 +2081,14 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 /* ---------- 右边打开的会话 ---------- */
 .console-session { padding: 0; }
 .sstage { position: relative; min-height: 320px; }
+/* 电脑上的会话页：整个控制台正好一屏高，横幅、标签栏下面剩多少会话就占多少（不靠 JS 量高度，横幅收起时不会留空白） */
+@media (min-width: 900px) {
+  .console-sess { height: 100vh; height: 100dvh; overflow: hidden; }
+  .console-sess .console-col { display: flex; flex-direction: column; min-height: 0; }
+  .console-sess .console-col > :not(.console-main), .console-sess .console-main > :not(.sstage) { flex: none; }
+  .console-sess .console-main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .console-sess .sstage { flex: 1; min-height: 0; }
+}
 .sstage[hidden] { display: none; }
 .sstage .ws-pane { border-left: 0; }
 .term-title .brand-icon, .term-title .lucide { flex: none; }
@@ -2956,3 +2949,9 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-update { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
 .chat-update .chat-more { padding: 0; }
 .chat-update .chat-pre, .chat-update pre { flex-basis: 100%; }
+
+/* macOS 文件夹访问权限（设置 → 通用） */
+.macf-list { list-style: none; margin: 4px 0 12px; padding: 0; display: grid; gap: 6px; }
+.macf-list li { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.macf-list .ok { color: var(--ok, #16a34a); }
+.macf-list .bad { color: var(--danger); }

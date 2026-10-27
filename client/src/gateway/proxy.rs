@@ -41,8 +41,8 @@ pub struct Opts {
     pub auth: Option<String>,
     /// 改写 Host（开发服务器通常只接受 localhost）
     pub host: Option<String>,
-    /// 在 ttyd 首页注入终端字体与辅助脚本
-    pub inject_fonts: bool,
+    /// 在首页 `</head>` 前注入的标签：ttyd 是终端字体与辅助脚本（[`TERM_TAGS`]），网页界面是 [`WEB_TAGS`]
+    pub inject: Option<&'static str>,
     /// Location 里的本机地址改回浏览器看到的地址：(本机前缀列表, 替换为)
     pub rewrite_location: Option<(Vec<String>, String)>,
     /// 这是终端连接：连着的时候不自动更新（见 updater::TerminalGuard）
@@ -97,8 +97,8 @@ pub async fn forward(client: &HttpClient, mut req: Request, port: u16, opts: Opt
             h.insert(header::HOST, v);
         }
     }
-    if opts.inject_fonts {
-        // 要改写页面内容，请 ttyd 返回未压缩的首页。
+    if opts.inject.is_some() {
+        // 要改写页面内容，请上游返回未压缩的首页。
         h.remove(header::ACCEPT_ENCODING);
     }
     let body = if ws { Body::empty() } else { body };
@@ -144,12 +144,12 @@ pub async fn forward(client: &HttpClient, mut req: Request, port: u16, opts: Opt
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(|v| v.starts_with("text/html"));
-    if opts.inject_fonts && parts.status == StatusCode::OK && is_html && parts.headers.get(header::CONTENT_ENCODING).is_none() {
+    if let Some(tags) = opts.inject.filter(|_| parts.status == StatusCode::OK && is_html && parts.headers.get(header::CONTENT_ENCODING).is_none()) {
         let bytes = match tokio::time::timeout(Duration::from_secs(30), body.collect()).await {
             Ok(Ok(b)) => b.to_bytes(),
             _ => return assets::message_page(StatusCode::BAD_GATEWAY, "upstream_down"),
         };
-        let html = inject(&String::from_utf8_lossy(&bytes));
+        let html = inject(&String::from_utf8_lossy(&bytes), tags);
         parts.headers.remove(header::CONTENT_LENGTH);
         parts.headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
         return Response::from_parts(parts, Body::from(html));
@@ -157,16 +157,22 @@ pub async fn forward(client: &HttpClient, mut req: Request, port: u16, opts: Opt
     Response::from_parts(parts, Body::new(body.map_err(axum::Error::new)))
 }
 
-/// 在 ttyd 首页的 `</head>` 前加入字体样式与辅助脚本。
-pub fn inject(html: &str) -> String {
-    const TAGS: &str = concat!(
-        r#"<link rel="preload" href="/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin>"#,
-        r#"<link rel="stylesheet" href="/fonts/fonts.css">"#,
-        r#"<script src="/static/term.js"></script>"#
-    );
+/// ttyd 首页：终端字体与辅助脚本。
+pub const TERM_TAGS: &str = concat!(
+    r#"<link rel="preload" href="/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin>"#,
+    r#"<link rel="stylesheet" href="/fonts/fonts.css">"#,
+    r#"<script src="/static/term.js"></script>"#
+);
+
+/// 会话标签里的网页界面（DSH）首页：远程走 WebRTC 时把 WebSocket 接到启动页上（src/web-inject.js）。
+/// 普通脚本在页面的模块脚本之前执行。
+pub const WEB_TAGS: &str = r#"<script src="/static/web.js"></script>"#;
+
+/// 在首页的 `</head>` 前加入 `tags`。
+pub fn inject(html: &str, tags: &str) -> String {
     match html.find("</head>") {
-        Some(i) => format!("{}{TAGS}{}", &html[..i], &html[i..]),
-        None => format!("{TAGS}{html}"),
+        Some(i) => format!("{}{tags}{}", &html[..i], &html[i..]),
+        None => format!("{tags}{html}"),
     }
 }
 
@@ -223,7 +229,7 @@ pub async fn tunnel(app: &App, mut req: Request, p: &Remote, proto: &str) -> Res
     let opts = Opts {
         auth: None,
         host: Some(local.clone()),
-        inject_fonts: false,
+        inject: None,
         rewrite_location: Some((vec![format!("http://{local}"), format!("http://127.0.0.1:{port}")], public)),
         terminal: false,
     };
@@ -240,7 +246,7 @@ mod tests {
 
     #[test]
     fn injects_before_head_end() {
-        let out = inject("<html><head><title>x</title></head><body></body></html>");
+        let out = inject("<html><head><title>x</title></head><body></body></html>", TERM_TAGS);
         assert!(out.contains(r#"<script src="/static/term.js"></script></head>"#));
         assert!(out.find("fonts.css").unwrap() < out.find("</head>").unwrap());
     }

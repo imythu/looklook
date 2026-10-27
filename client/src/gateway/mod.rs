@@ -13,6 +13,7 @@ mod api;
 mod assets;
 mod chat;
 mod chat_mux;
+mod dsh;
 mod notify;
 pub mod mcp;
 mod proxy;
@@ -130,11 +131,21 @@ pub fn router(app: App) -> Router {
         .route("/i/{id}", get(|axum::extract::Path(id): axum::extract::Path<String>| async move { Redirect::permanent(&format!("/i/{id}/")) }))
         .route("/i/{id}/", any(terminal))
         .route("/i/{id}/{*rest}", any(terminal))
+        // DSH 的网页界面（会话标签里打开），见 dsh.rs
+        .route(
+            "/w/{id}",
+            get(|axum::extract::Path(id): axum::extract::Path<String>, uri: axum::http::Uri| async move {
+                Redirect::permanent(&format!("/w/{id}/{}", uri.query().map(|q| format!("?{q}")).unwrap_or_default()))
+            }),
+        )
+        .route("/w/{id}/", any(dsh::web))
+        .route("/w/{id}/{*rest}", any(dsh::web))
         .route(looklook_protocol::rtc::OFFER_PATH, axum::routing::post(crate::rtc::offer))
         .route(mcp::PATH, axum::routing::post(mcp::handle).get(mcp::not_allowed).delete(mcp::not_allowed))
         .route(crate::chat::hooks::PATH, axum::routing::post(chat::hook))
         .route("/fonts/{*path}", get(assets::font))
         .route("/static/term.js", get(assets::term_js))
+        .route("/static/web.js", get(assets::web_js))
         .fallback(assets::ui)
         .layer(middleware::from_fn(security_headers))
         .with_state(app)
@@ -270,7 +281,7 @@ async fn terminal(State(app): State<App>, req: Request) -> Response {
         tokio::spawn(app.chat.clone().codex_terminal_attached(id.clone()));
     }
     let index = req.method() == Method::GET && req.uri().path() == format!("/i/{id}/");
-    let opts = proxy::Opts { auth: Some(auth), host: None, inject_fonts: index, rewrite_location: None, terminal: true };
+    let opts = proxy::Opts { auth: Some(auth), host: None, inject: index.then_some(proxy::TERM_TAGS), rewrite_location: None, terminal: true };
     proxy::forward(&app.http, req, port, opts).await
 }
 

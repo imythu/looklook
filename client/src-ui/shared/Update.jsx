@@ -71,9 +71,9 @@ function DeviceLabel() {
   const { t } = useTranslation();
   const { status } = useStatus();
   const devices = useDevices();
-  if (status.access === 'local' && !devices.multi) return null;
+  // 一直写明是哪台电脑：本机 App 里也可能管着好几台，单看提示分不清是哪台要更新
   const d = devices.multi ? devices.byId(devices.selected) : devices.items[0];
-  const name = d ? deviceName(t, d) : status.settings?.device_name;
+  const name = d ? deviceName(t, d) : status.settings?.device_name || t('update.this_device');
   return name ? <b>{t('update.on_device', { name })}</b> : null;
 }
 

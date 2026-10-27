@@ -20,7 +20,6 @@ import {
   QrCode as QrCodeIcon,
   RotateCcw,
   Square,
-  SquareTerminal,
   Trash2,
   Wifi,
 } from "lucide-react";
@@ -35,7 +34,8 @@ import { LaunchIcon } from "../shared/brands.jsx";
 import { errorText } from "../shared/i18n.js";
 import { Link } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
-import { ClaudeProfilePick, CodexProfilePick } from "./ClaudeProfiles.jsx";
+import { ClaudeProfilePick } from "./ClaudeProfiles.jsx";
+import { ModelChoiceLine } from "./ModelProviders.jsx";
 import RelayStatus from "../shared/RelayStatus.jsx";
 import {
   Button,
@@ -233,7 +233,7 @@ function stateOf(i) {
 // 新窗口打开管理台的终端页（带文件面板、粘贴、拖放），不再直接打开裸 /i/{id}/。
 const tabUrl = (inst) => `/t/${inst.id}`;
 
-// DSH 是网页界面：打开它就是打开它的本机网页映射（本机、外面都是同一个地址），带着这次启动的口令。
+// 在浏览器中单独打开 DSH（平时在会话标签里打开，见 WebPane.jsx）：打开它的本机网页映射（本机、外面都是同一个地址），带着这次启动的口令。
 // 桌面应用里交给看看用系统浏览器打开（应用窗口里登录不上 DSH）；
 // 浏览器里先在点击里同步开一个空白窗口（不会被当作弹窗拦截），后台确保 DSH 在运行、映射可用后再跳过去。
 export async function openDsh(inst, t, toast) {
@@ -385,7 +385,7 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
   };
   // “更多”菜单。full：列表行和侧栏没有单独的按钮，把打开方式、停止也放进来
   const menu = (full) => [
-    full && dsh && { icon: SquareTerminal, label: t("dsh.output"), onClick: openHere, disabled: busy || !allowed },
+    full && dsh && { icon: ExternalLink, label: t("dsh.open_browser"), onClick: openPage, disabled: busy || !allowed },
     full && !dsh && { icon: ExternalLink, label: t("instance.new_window"), onClick: openTab, disabled: busy || !allowed },
     { icon: Pencil, label: t("instance.edit"), onClick: () => onEdit(inst) },
     !dsh && { icon: CopyPlus, label: t("instance.duplicate"), onClick: duplicate, disabled: busy || !allowed },
@@ -399,8 +399,8 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
       danger: true,
     },
   ];
-  // 点名称 / 整行：DSH 打开它的网页，其他终端在本页打开
-  const primary = dsh ? openPage : openHere;
+  // 点名称 / 整行：在本页打开（DSH 在会话标签里显示它的网页，见 WebPane.jsx）
+  const primary = openHere;
   return { busy, state, live, dsh, allowed, openHere, openPage, openTab, stop, duplicate, menu, primary };
 }
 
@@ -894,7 +894,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const [command, setCommand] = useState("");
   const [shell, setShell] = useState("");
   const [claudeProfile, setClaudeProfile] = useState(null);
-  const [codexProfile, setCodexProfile] = useState(null);
   const [name, setName] = useState("");
   const [workdir, setWorkdir] = useState("");
   const [autoStart, setAutoStart] = useState(false);
@@ -952,7 +951,6 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
       full_access: canFull && fullAccess,
       chat_ui: canChat && chatUi,
       claude_profile: !editing && launch === "claude" && claudeProfile ? claudeProfile : undefined,
-      codex_profile: !editing && launch === "codex" && codexProfile ? codexProfile : undefined,
     };
     const r = await run(() =>
       editing
@@ -1105,15 +1103,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
           data={shells}
           inherit={status.settings?.default_shell || null}
         />
-        {!editing && launch === "codex" && (
-          <CodexProfilePick
-            client={client}
-            device={dev}
-            value={codexProfile}
-            onChange={setCodexProfile}
-            className="btn btn-secondary cprof-form-pick"
-          />
-        )}
+        <ModelChoiceLine client={client} device={dev} launch={launch} />
         {!editing && launch === "claude" && (
           <ClaudeProfilePick
             client={client}

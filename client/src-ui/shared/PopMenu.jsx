@@ -47,10 +47,19 @@ export default function PopMenu({ items, className = 'btn btn-ghost btn-icon', i
     const r = btn.current.getBoundingClientRect();
     const h = list.current.offsetHeight;
     const w = list.current.offsetWidth;
-    const below = window.innerHeight - r.bottom - 8 >= h || r.top < h + 8;
+    // 放得下就放下面，否则放上面；两边都放不下（菜单很长、按钮在屏幕底部的标签栏里）时放空间大的一边，限高滚动，
+    // 不要伸出窗口底部被挡住
+    const vh = window.visualViewport?.height ?? window.innerHeight;
+    const roomBelow = vh - r.bottom - 14;
+    const roomAbove = r.top - 14;
+    const below = roomBelow >= h || (roomAbove < h && roomBelow >= roomAbove);
+    const maxHeight = Math.max(120, below ? roomBelow : roomAbove);
+    const shownH = Math.min(h, maxHeight);
     setPos({
-      top: below ? Math.min(r.bottom + 6, window.innerHeight - h - 8) : Math.max(8, r.top - h - 6),
+      top: below ? Math.min(r.bottom + 6, vh - shownH - 8) : Math.max(8, r.top - shownH - 6),
       left: Math.max(8, Math.min(r.right - w, window.innerWidth - w - 8)),
+      maxHeight: h > maxHeight ? maxHeight : undefined,
+      overflowY: h > maxHeight ? 'auto' : undefined,
     });
   }, [open]);
   const shown = items.filter(Boolean);

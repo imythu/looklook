@@ -254,5 +254,10 @@
   "CHECKPOINT_MOVED": "The session's folder is no longer the repository this checkpoint was taken in, so it can't be restored.",
   "CHECKPOINT_GONE": "Git has cleaned up this checkpoint's contents, so it can't be compared or restored.",
   "INSTALL_KEY_INVALID": "The install key is wrong, expired, revoked or used up. Make a new one on the Devices page of the Looklook website.",
-  "INSTALL_KEY_UNSUPPORTED": "This Looklook server doesn't support install keys yet. Sign in through the browser instead."
+  "INSTALL_KEY_UNSUPPORTED": "This Looklook server doesn't support install keys yet. Sign in through the browser instead.",
+  "MAC_ONLY": "Only available in Looklook on this Mac",
+  "CODEX_WORKTREE_FAILED": "Couldn't create the Git worktree: {{detail}}",
+  "CODEX_WORKTREE_NO_REPO": "This project isn't a Git repository, so worktrees aren't available",
+  "CODEX_WORKTREE_NO_OWNER": "No conversation is recorded for this worktree",
+  "CODEX_WORKTREE_NO_THREAD": "There's no conversation yet. Send a message first, then continue it in a new worktree"
 }

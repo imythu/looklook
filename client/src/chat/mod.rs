@@ -19,6 +19,7 @@ pub mod codex_chat;
 pub mod codex_launch;
 pub mod codex_rollout;
 pub mod codex_screen;
+pub mod codex_worktree;
 pub mod commands;
 pub mod hooks;
 pub mod models;
@@ -420,6 +421,8 @@ impl Chat {
             "model_chosen": st.model_set_at.is_some(),
             "context": st.context,
             "title": st.title,
+            // Codex：这段对话实际在哪个目录（在托管工作树里时和终端的工作目录不同）
+            "cwd": st.codex.cwd,
             // Claude Code 队列里的（读 transcript）；Codex 是插话（`turn/steer`）发出去、还没进对话的
             "queued": st.queued.iter().chain(&st.codex.steered).collect::<Vec<_>>(),
             "limit": (st.limit_wait.is_some() || st.limit_auto_at.is_some()).then(|| json!({ "waiting": st.limit_wait, "auto_at": st.limit_auto_at })),
@@ -1862,13 +1865,11 @@ impl Chat {
         let mut provider = Value::Null;
         if let Some(base) = base.filter(|b| !b.contains("api.anthropic.com")) {
             let ours = ours.filter(|u| u.trim_end_matches('/') == base.trim_end_matches('/')).map(|_| &profile);
-            // 没用到的那个变量启动时设成了空的（model.rs 的 claude_api_env / claude_api_key_env）
-            let var = |k: &str| ctx.env.get(k).filter(|v| !v.is_empty()).cloned();
-            let token = var("ANTHROPIC_AUTH_TOKEN").or_else(|| var("ANTHROPIC_API_KEY")).or_else(|| {
+            let token = ctx.env.get("ANTHROPIC_AUTH_TOKEN").or_else(|| ctx.env.get("ANTHROPIC_API_KEY")).cloned().or_else(|| {
                 ours.and_then(|p| std::fs::read_to_string(crate::claude_profiles::key_path(&self.paths.home, &p.id)).ok()).map(|k| k.trim().to_string())
             });
             if let Some(token) = token.filter(|t| !t.is_empty()) {
-                let ids = models::provider_models(&format!("{}/v1/models?limit=1000", base.trim_end_matches('/')), &token).await;
+                let ids = models::provider_models(&base, &token).await;
                 options.extend(models::provider_options(&options, &ids));
             }
             provider = json!({ "name": ours.map(|p| p.name.clone()) });
@@ -1879,6 +1880,24 @@ impl Chat {
     }
 
     /// 用量：上下文、这个会话累计的 token、订阅的 5 小时 / 7 天用量
+    /// Codex 的托管工作树：能不能用、已有哪些（codex_worktree.rs）。其他工具没有。
+    pub async fn worktrees(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Ok(json!({ "available": false, "items": [] }));
+        }
+        self.codex_worktrees(id).await
+    }
+
+    /// Codex：对话换到托管工作树里（`new` / `fork` / `open`）
+    pub async fn worktree(&self, id: &str, mode: &str, root: Option<&str>) -> Result<Value, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Err(LocalError::new("CHAT_UNAVAILABLE"));
+        }
+        self.codex_worktree(id, mode, root).await
+    }
+
     pub async fn usage(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
         if self.is_codex(id) {

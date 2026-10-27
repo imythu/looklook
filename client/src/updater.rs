@@ -487,6 +487,21 @@ impl Updater {
             let _ = self.store.set(BAD_KEY, &bad);
         }
         match dir {
+            // macOS 应用包：整个换成安装包里签好的新应用包（见 replace_bundle）
+            Some(dir) if bundle_root(dir).is_some() && new_bundle(&staged).is_some() => {
+                let (app, root) = (new_bundle(&staged).unwrap_or_default(), bundle_root(dir).unwrap_or_default());
+                let (src2, dir2) = (src.clone(), dir.to_path_buf());
+                tokio::task::spawn_blocking(move || match replace_bundle(&app, &root) {
+                    Ok(()) => Ok(()),
+                    Err(e) => {
+                        // 应用包所在的文件夹写不进去等：退回到换包里的文件（能用，只是 macOS 会再问一次文件夹访问权限）
+                        tracing::warn!(error = %e, "整个替换应用包失败，改为替换包里的文件");
+                        apply(&src2, &dir2)
+                    }
+                })
+                .await
+                .map_err(|e| LocalError::from(anyhow::anyhow!(e)))??;
+            }
             Some(dir) => {
                 let (src2, dir2) = (src.clone(), dir.to_path_buf());
                 tokio::task::spawn_blocking(move || apply(&src2, &dir2)).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))??;
@@ -599,6 +614,48 @@ fn remove_any(p: &Path) -> std::io::Result<()> {
     } else {
         std::fs::remove_file(p)
     }
+}
+
+/// 程序在 macOS 应用包里时（`X.app/Contents/MacOS`），应用包的位置。
+fn bundle_root(exe_dir: &Path) -> Option<PathBuf> {
+    if !cfg!(target_os = "macos") || !exe_dir.ends_with("Contents/MacOS") {
+        return None;
+    }
+    let root = exe_dir.parent()?.parent()?;
+    root.extension().is_some_and(|e| e == "app").then(|| root.to_path_buf())
+}
+
+/// macOS 的安装包在 `looklook/` 旁边还带着签好的整个应用包（scripts/package.sh）。
+fn new_bundle(staged: &Path) -> Option<PathBuf> {
+    std::fs::read_dir(staged).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.is_dir() && p.extension().is_some_and(|e| e == "app"))
+}
+
+/// 整个替换 macOS 应用包。只换包里的文件会破坏应用包的签名（签名封着包里每个文件），
+/// macOS 认不出是同一个应用，升级后又问一遍“是否允许访问文稿 / 桌面 / 下载文件夹”；
+/// 整个换成同一张证书签好的新包，系统认得是同一个应用，之前给过的权限还在。
+/// 新包先放到旁边的临时名，旧包改名备份，新包改名到位；出错时放回旧包。正在运行的程序不受影响（文件还开着）。
+fn replace_bundle(app: &Path, root: &Path) -> std::io::Result<()> {
+    let name = root.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = root.with_file_name(format!(".{name}.new"));
+    let backup = root.with_file_name(format!(".{name}.old"));
+    let _ = remove_any(&tmp);
+    let _ = remove_any(&backup);
+    // 下载目录和应用程序文件夹一般在同一个卷上，直接挪；不在时复制
+    if std::fs::rename(app, &tmp).is_err() {
+        copy_tree(app, &tmp).inspect_err(|_| {
+            let _ = remove_any(&tmp);
+        })?;
+    }
+    std::fs::rename(root, &backup).inspect_err(|_| {
+        let _ = remove_any(&tmp);
+    })?;
+    if let Err(e) = std::fs::rename(&tmp, root) {
+        let _ = std::fs::rename(&backup, root);
+        let _ = remove_any(&tmp);
+        return Err(e);
+    }
+    let _ = remove_any(&backup);
+    Ok(())
 }
 
 fn copy_tree(from: &Path, to: &Path) -> std::io::Result<()> {

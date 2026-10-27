@@ -10,7 +10,8 @@
 # Windows / macOS 另外生成桌面应用安装程序（Tauri，见 src/desktop.rs 与 tauri.conf.json），给普通用户双击安装：
 #   looklook-{版本}-windows-x86_64-setup.exe   NSIS 安装程序（装到 %LOCALAPPDATA%\Looklook，开始菜单、登录自启）
 #   looklook-{版本}-darwin-aarch64.dmg         拖进“应用程序”的 Looklook.app（没有 Apple 公证，签名见下面的 LOOKLOOK_MACOS_SIGN_IDENTITY）
-# 压缩包里的 looklook 就是同一个桌面应用程序，仍然用于自动更新（src/updater.rs 只认 zip / tar.gz）。
+# 压缩包里的 looklook 就是同一个桌面应用程序，仍然用于自动更新（src/updater.rs 只认 zip / tar.gz）；
+# macOS 的压缩包里另外带着整个 Looklook.app，应用自动更新时整个替换（保持签名完整）。
 # 额外需要：Tauri CLI（npm ci 装的 @tauri-apps/cli，或 cargo-tauri）；在 Linux 上打 Windows 包还要
 # x86_64-w64-mingw32-windres（binutils-mingw-w64-x86-64，嵌入图标与清单；预处理用 zig，见 scripts/windres-zig.sh）和 makensis（nsis）；
 # Tauri CLI 在 Linux 上还会用 pkg-config 查 appindicator（libayatana-appindicator3-dev），即使目标是 Windows。
@@ -160,6 +161,10 @@ PY
   if [[ $t == windows-* ]]; then
     cp "$(ls "$out"/nsis/*-setup.exe | head -1)" "$DIST/looklook-$VERSION-$t-setup.exe"
   else
+    # 自动更新整个替换应用包（src/updater.rs 的 replace_bundle）：压缩包里 looklook/ 旁边带上签好的 .app。
+    # 只换包里的文件会破坏签名，macOS 升级后又会询问文件夹访问权限
+    rm -rf "$DIST/stage/$t"/*.app
+    cp -R "$out"/macos/*.app "$DIST/stage/$t/"
     # 打开 .dmg 看到 Looklook.app 和“应用程序”快捷方式，拖过去即可安装
     local dmgdir i
     dmgdir=$(mktemp -d)
@@ -221,7 +226,9 @@ with zipfile.ZipFile(sys.argv[1],"w",zipfile.ZIP_DEFLATED,compresslevel=9) as z:
     for root,_,files in os.walk("looklook"):
         for f in sorted(files): z.write(os.path.join(root,f))' "../../$name.zip")
   else
-    tar -C "$DIST/stage/$t" --owner=0 --group=0 -czf "$DIST/$name.tar.gz" looklook
+    apps=()
+    [[ $t == darwin-* ]] && apps=($(cd "$DIST/stage/$t" && ls -d -- *.app))
+    tar -C "$DIST/stage/$t" --owner=0 --group=0 -czf "$DIST/$name.tar.gz" looklook "${apps[@]}"
   fi
 done
 

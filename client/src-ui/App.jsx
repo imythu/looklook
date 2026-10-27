@@ -492,7 +492,7 @@ function ConsoleLayout({ path, stale, children }) {
           <ConnChip />
         </span>
       </header>
-      <div className={`console ${pane ? 'console-pane' : ''}`} style={{ '--pane-w': `${width}px` }}>
+      <div className={`console ${pane ? 'console-pane' : ''} ${sess ? 'console-sess' : ''}`} style={{ '--pane-w': `${width}px` }}>
         <NavRail path={path} paneOpen={paneOpen} onPane={setPane} />
         {pane && <SessionPane path={path} width={width} onWidth={onWidth} onCollapse={() => setPane(false)} />}
         <div className="console-col">
@@ -629,6 +629,8 @@ function Shell() {
   useAwayTracker();
   // 状态来自哪台电脑（多设备时随顶栏的选择）
   const [statusDevice, setStatusDevice] = useState(null);
+  const statusDevRef = useRef(null);
+  statusDevRef.current = statusDevice;
   const devRef = useRef(null);
   const relayState = status?.relay?.state;
   // 状态请求可能交错（定时、切回窗口、操作后各发一次）：只用最后发出的那次的结果，晚回来的旧结果不能盖掉新的
@@ -646,10 +648,13 @@ function Shell() {
       })
       .catch(() => {
         if (n !== reqSeq.current) return;
-        // 选中的电脑连不上（例如刚离线）：回到默认的电脑，不要整页显示“连不上”
         const d = devRef.current;
         if (d?.multi && device && device !== d.def && d.def) {
-          d.select(d.def);
+          // 已经有这台电脑的状态：只是一次没取到（网络抖动），留在这台，下一轮再取
+          if (statusDevRef.current === device) return;
+          // 刚切过去就连不上（例如它离线了）：这次先看默认的电脑，不要整页显示“连不上”；
+          // 不改记住的选择，下次打开还是用户选的那台
+          d.select(d.def, false);
           return;
         }
         setDown(true);

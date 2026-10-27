@@ -19,11 +19,11 @@ import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { baseName, isDraftProject, projectEntries, projectKey, projectPath, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
-import { ClaudeProfilePick, CodexProfilePick } from './ClaudeProfiles.jsx';
+import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
 import { DiscoverCard } from './AddProject.jsx';
 import PromptsMenu from './PromptTemplates.jsx';
 import { AI_TOOLS, FULL_ACCESS, fullAccessFor, opensInPage, shortAgo, useSessionUi } from './Sessions.jsx';
-import { BackendNote, FolderPicker, InstallProgress, openDsh, Promotions, RemoteCard, ShellPicker } from './Terminals.jsx';
+import { BackendNote, FolderPicker, InstallProgress, Promotions, RemoteCard, ShellPicker } from './Terminals.jsx';
 
 // 留在草稿里的类型（写好第一句再开始）；终端、DSH 点了马上开
 const DRAFT_LAUNCHES = ['claude', 'codex', 'opencode'];
@@ -233,7 +233,7 @@ function DraftForm() {
   const project = s.projects.find((p) => isDraftProject(p, at));
   const draftKey = projectKey(device, container ? `docker://${container.name}${container.dir}` : workdir);
   const initLaunch = (p) => (DRAFT_LAUNCHES.includes(p?.launch) || p?.launch === 'custom' ? p.launch : 'claude');
-  const [launch, setLaunchState] = useState(DRAFT_LAUNCHES.includes(want.launch) || want.launch === 'custom' ? want.launch : initLaunch(project));
+  const [launch, setLaunchState] = useState(DRAFT_LAUNCHES.includes(want.launch) || want.launch === 'custom' || want.launch === 'dsh' ? want.launch : initLaunch(project));
   // 用户自己选过类型、全部权限：换项目、那台电脑的设置到了都不再改它
   const chosen = useRef(Boolean(want.launch));
   const fullChosen = useRef(false);
@@ -244,9 +244,7 @@ function DraftForm() {
   const [text, setText] = useState(() => want.text || readDrafts()[draftKey] || '');
   const [files, setFiles] = useState(() => (want.files ?? []).map((file, k) => ({ key: k, file, url: URL.createObjectURL(file) })));
   // Claude Code 用哪个账号 / 接口：null 用那台电脑上的默认
-  // Claude Code 账号 / Codex 配置（null 用默认）；换了助手就回到默认
   const [profile, setProfile] = useState(null);
-  useEffect(() => setProfile(null), [launch]);
   const [picking, setPicking] = useState(false);
   const [dirPick, setDirPick] = useState(false);
   const [adv, setAdv] = useState(false);
@@ -372,7 +370,9 @@ function DraftForm() {
     if (blocked) return toast(blocked, 'error');
     if (l === 'dsh') {
       const row = s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device));
-      if (row) return openDsh(row, t, toast);
+      if (row) return ui.openSession(row.id);
+      // 还没装：留在草稿里选上 DSH，下面出现安装提示，点“安装并开始”装好后自动打开
+      if (missing('dsh')) return setLaunch('dsh');
     }
     await ui.quickCreate(target(), l);
   };
@@ -407,7 +407,6 @@ function DraftForm() {
         auto_start: autoStart,
         full_access: canFull && fullAccess,
         claude_profile: launch === 'claude' && !container && profile ? profile : undefined,
-        codex_profile: launch === 'codex' && !container && profile ? profile : undefined,
         start: true,
       });
       if (device && r.id) rememberTerminals(device, [r]);
@@ -619,7 +618,6 @@ function DraftForm() {
               items={typeItems}
             />
             {launch === 'claude' && !container && <ClaudeProfilePick client={client} device={device} value={profile} onChange={setProfile} className="draft-chip" />}
-            {launch === 'codex' && !container && <CodexProfilePick client={client} device={device} value={profile} onChange={setProfile} className="draft-chip" />}
             {canFull && (
               <button type="button" className="draft-chip draft-full" aria-pressed={fullAccess} onClick={() => setFullAccess(!fullAccess)} title={t(`form.full_access_hint_${launch}`)}>
                 <ShieldCheck size={14} aria-hidden="true" />

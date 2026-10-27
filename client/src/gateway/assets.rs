@@ -12,6 +12,7 @@ use super::App;
 struct Ui;
 
 const TERM_JS: &str = include_str!("../term-inject.js");
+const WEB_JS: &str = include_str!("../web-inject.js");
 
 pub async fn ui(uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
@@ -25,6 +26,10 @@ pub async fn ui(uri: Uri) -> Response {
         Some(f) => ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], f.data.into_owned()).into_response(),
         None => (StatusCode::NOT_FOUND, "管理台页面缺失：请先执行 npm run build").into_response(),
     }
+}
+
+pub async fn web_js() -> Response {
+    ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], WEB_JS).into_response()
 }
 
 pub async fn term_js() -> Response {

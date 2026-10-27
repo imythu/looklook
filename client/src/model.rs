@@ -1,14 +1,15 @@
-//! 第三方模型接口的公用部分：接口地址、模型名的校验，免责声明，启动环境（[`LaunchEnv`]）。
-//! 配置本身在 claude_profiles.rs（Claude Code）和 codex_profiles.rs（Codex）；常见服务商的快速配置在 model_presets.rs。
+//! 第三方模型服务商（中转站）：平台下发推荐列表（服务端详细设计 §4.11.1），用户给 Claude Code / Codex
+//! 各选一个服务商（或自填接口地址）、填 API Key；之后新建或重启的对应终端走这个接口启动。
 //!
-//! - API Key 只写在本机文件 `<数据目录>/model/*.key`（仅当前用户可读），不上传平台，
-//!   也不出现在任何进程的命令行参数里：启动命令让 shell 自己读这个文件。
-//! - **Claude Code**：`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`（或 `ANTHROPIC_API_KEY`），另一个清空
+//! - 选择存在 kv `model_provider.{agent}`；API Key 只写在本机文件 `<数据目录>/model/{agent}.key`
+//!   （仅当前用户可读），不上传平台，也不出现在任何进程的命令行参数里：启动命令让 shell 自己读这个文件。
+//! - **Claude Code**：`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`，并清空 `ANTHROPIC_API_KEY`
 //!   （否则官方 Key 会一起发给第三方）。
-//! - **Codex**：用 `-c` 临时定义服务商，不改用户的 `~/.codex/config.toml`。
+//! - **Codex**：用 `-c` 临时定义一个 `looklook` 服务商（`env_key` 指向我们设置的环境变量），
+//!   不改用户的 `~/.codex/config.toml`，也不会把 ChatGPT 登录凭据发给第三方。
 //! - 用户必须先同意免责声明（`model_provider.disclaimer`）。
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -17,32 +18,66 @@ use crate::shells::Family;
 use crate::store::Store;
 
 const DISCLAIMER_KEY: &str = "model_provider.disclaimer";
+/// Codex 读 Key 的环境变量（`model_providers.looklook.env_key`）
+const CODEX_KEY_ENV: &str = "LOOKLOOK_MODEL_API_KEY";
 
-/// 以前“模型服务商”里存的选择（kv `model_provider.{claude,codex}`），只用来升级（claude_profiles / codex_profiles 的 `migrate`）。
-/// `provider_id` 为 None 表示自填的接口地址。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelAgent {
+    Claude,
+    Codex,
+}
+
+impl ModelAgent {
+    pub const ALL: [ModelAgent; 2] = [ModelAgent::Claude, ModelAgent::Codex];
+
+    /// 终端启动类型（`instances.launch`）
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            _ => None,
+        }
+    }
+
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+        }
+    }
+
+    /// 平台上的客户端名（`model_provider::CLIENTS`）
+    pub fn platform_client(self) -> &'static str {
+        match self {
+            Self::Claude => "claude_code",
+            Self::Codex => "codex",
+        }
+    }
+
+    fn kv_key(self) -> String {
+        format!("model_provider.{}", self.id())
+    }
+}
+
+/// 用户的选择。`provider_id` 为 None 表示自填的接口地址。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Choice {
     pub provider_id: Option<String>,
     pub name: String,
     pub base_url: String,
-    /// 指定的模型（Codex 的 `model`）；不填用 Codex 的默认模型，由接口自行对应
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
     pub selected_at: String,
 }
 
-/// 模型名：去掉首尾空白，空的算没填。会原样拼进启动命令，只收模型名里常见的字符。
-pub fn clean_model(v: Option<&str>) -> Result<Option<String>, LocalError> {
-    match v.map(str::trim).filter(|s| !s.is_empty()) {
-        None => Ok(None),
-        Some(s) if s.len() <= 100 && s.chars().all(|c| c.is_ascii_alphanumeric() || "-._:/[]@".contains(c)) => Ok(Some(s.into())),
-        Some(_) => Err(LocalError::invalid("model", "invalid")),
-    }
+pub fn key_path(home: &Path, agent: ModelAgent) -> PathBuf {
+    home.join("model").join(format!("{}.key", agent.id()))
 }
 
-/// Codex 的 `-c model=…` 不加引号拼进命令（codex_profiles.rs）：不能有 shell 的通配符 `[]`，也要有字母（否则 `-c` 会按 TOML 读成数字）
-pub fn codex_model_ok(m: &str) -> bool {
-    !m.contains(['[', ']']) && m.chars().any(|c| c.is_ascii_alphabetic())
+pub fn choice(store: &Store, agent: ModelAgent) -> Option<Choice> {
+    store.get::<Choice>(&agent.kv_key()).ok().flatten()
+}
+
+pub fn key_set(home: &Path, agent: ModelAgent) -> bool {
+    std::fs::metadata(key_path(home, agent)).is_ok_and(|m| m.len() > 0)
 }
 
 pub fn disclaimer_accepted(store: &Store) -> Option<String> {
@@ -54,6 +89,36 @@ pub fn accept_disclaimer(store: &Store) -> Result<(), LocalError> {
         store.set(DISCLAIMER_KEY, &crate::util::now_rfc3339())?;
     }
     Ok(())
+}
+
+/// 保存选择；`api_key` 为 None 时沿用已保存的 Key（没有则报错）。
+pub fn save(store: &Store, home: &Path, agent: ModelAgent, choice: &Choice, api_key: Option<&str>) -> Result<(), LocalError> {
+    check_base_url(&choice.base_url)?;
+    match api_key.map(str::trim) {
+        Some(k) if !k.is_empty() => {
+            if k.len() > 4096 || k.chars().any(|c| c.is_whitespace() || c.is_control()) {
+                return Err(LocalError::invalid("api_key", "invalid"));
+            }
+            let path = key_path(home, agent);
+            if let Some(dir) = path.parent() {
+                std::fs::create_dir_all(dir)?;
+            }
+            crate::util::write_private(&path, k.as_bytes())?;
+        }
+        _ if key_set(home, agent) => {}
+        _ => return Err(LocalError::new("MODEL_KEY_REQUIRED")),
+    }
+    store.set(&agent.kv_key(), choice)?;
+    Ok(())
+}
+
+/// 恢复官方：删掉选择和本机保存的 Key。
+pub fn clear(store: &Store, home: &Path, agent: ModelAgent) -> Result<(), LocalError> {
+    store.remove(&agent.kv_key())?;
+    match std::fs::remove_file(key_path(home, agent)) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
 }
 
 /// 接口地址只接受 `https://主机[:端口][/路径]`，路径里只能有字母、数字和 `-._~/`：
@@ -98,9 +163,38 @@ enum Val {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LaunchEnv {
-    vars: Vec<(String, Val)>,
+    vars: Vec<(&'static str, Val)>,
     /// 追加在启动命令后面的参数（不含机密）
     args: String,
+}
+
+/// 该终端要走第三方接口时的启动环境；没有选择、或 Key 文件不在时为 None（按官方方式启动）。
+pub fn launch_env(store: &Store, home: &Path, launch: &str) -> Option<LaunchEnv> {
+    let agent = ModelAgent::parse(launch)?;
+    let c = choice(store, agent)?;
+    if !key_set(home, agent) || check_base_url(&c.base_url).is_err() {
+        return None;
+    }
+    Some(env_for(agent, &c.base_url, key_path(home, agent)))
+}
+
+fn env_for(agent: ModelAgent, base_url: &str, key: PathBuf) -> LaunchEnv {
+    match agent {
+        ModelAgent::Claude => claude_api_env(base_url, key),
+        ModelAgent::Codex => LaunchEnv {
+            vars: vec![(CODEX_KEY_ENV, Val::File(key))],
+            args: [
+                "model_provider=looklook".to_string(),
+                "model_providers.looklook.name=looklook".into(),
+                format!("model_providers.looklook.base_url={base_url}"),
+                format!("model_providers.looklook.env_key={CODEX_KEY_ENV}"),
+                "model_providers.looklook.wire_api=responses".into(),
+            ]
+            .iter()
+            .map(|a| format!(" -c {a}"))
+            .collect(),
+        },
+    }
 }
 
 /// Claude Code 走第三方接口（官方格式）：`ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`，并清空 `ANTHROPIC_API_KEY`
@@ -109,35 +203,29 @@ pub fn claude_api_env(base_url: &str, key: PathBuf) -> LaunchEnv {
     LaunchEnv::new().lit("ANTHROPIC_BASE_URL", base_url).file("ANTHROPIC_AUTH_TOKEN", key).unset("ANTHROPIC_API_KEY")
 }
 
-/// 要求 `x-api-key` 头的接口（Anthropic 自己的 API、部分服务商）：Key 放 `ANTHROPIC_API_KEY`，清空 `ANTHROPIC_AUTH_TOKEN`
-/// （`ANTHROPIC_AUTH_TOKEN` 发的是 `Authorization: Bearer`，Anthropic 的 API Key 不认）。
-pub fn claude_api_key_env(base_url: &str, key: PathBuf) -> LaunchEnv {
-    LaunchEnv::new().lit("ANTHROPIC_BASE_URL", base_url).file("ANTHROPIC_API_KEY", key).unset("ANTHROPIC_AUTH_TOKEN")
-}
-
 impl LaunchEnv {
     pub fn new() -> Self {
         LaunchEnv { vars: vec![], args: String::new() }
     }
 
-    pub fn lit(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.vars.push((key.into(), Val::Lit(value.into())));
+    pub fn lit(mut self, key: &'static str, value: impl Into<String>) -> Self {
+        self.vars.push((key, Val::Lit(value.into())));
         self
     }
 
-    pub fn file(mut self, key: impl Into<String>, path: PathBuf) -> Self {
-        self.vars.push((key.into(), Val::File(path)));
+    pub fn file(mut self, key: &'static str, path: PathBuf) -> Self {
+        self.vars.push((key, Val::File(path)));
         self
     }
 
-    pub fn unset(mut self, key: impl Into<String>) -> Self {
-        self.vars.push((key.into(), Val::Unset));
+    pub fn unset(mut self, key: &'static str) -> Self {
+        self.vars.push((key, Val::Unset));
         self
     }
 
     /// 只设一个环境变量，值由 shell 从文件里读（口令、Key 不出现在命令行里）
     pub fn file_var(key: &'static str, path: PathBuf) -> Self {
-        LaunchEnv { vars: vec![(key.into(), Val::File(path))], args: String::new() }
+        LaunchEnv { vars: vec![(key, Val::File(path))], args: String::new() }
     }
 
     /// 按终端所用 shell 的写法，把环境变量加在启动命令前面。认不出的 shell（命令是“打”进去的）按 POSIX 写。
@@ -193,20 +281,6 @@ impl LaunchEnv {
                 format!("{} {cmd}", set.join(" "))
             }
         }
-    }
-
-    /// 追加一个 Codex 的 `-c 键=值`（不含机密，原样拼进命令，[`Self::apply`] 也按 `-c` 拆开）
-    pub fn config(mut self, kv: impl AsRef<str>) -> Self {
-        self.args.push_str(" -c ");
-        self.args.push_str(kv.as_ref());
-        self
-    }
-
-    /// 合并另一份（变量、参数都接在后面）
-    pub fn merge(mut self, other: LaunchEnv) -> Self {
-        self.vars.extend(other.vars);
-        self.args.push_str(&other.args);
-        self
     }
 
     /// 直接起进程（Codex 的 app-server）时用：环境变量设在进程上，Key 文件由这里读；`-c` 参数逐个加上。
@@ -274,7 +348,7 @@ mod tests {
 
     #[test]
     fn claude_posix() {
-        let e = claude_api_env("https://r.example.com", PathBuf::from("/home/u/it's/claude.key"));
+        let e = env_for(ModelAgent::Claude, "https://r.example.com", PathBuf::from("/home/u/it's/claude.key"));
         assert_eq!(
             e.wrap("claude --dangerously-skip-permissions", Family::Posix),
             "ANTHROPIC_BASE_URL='https://r.example.com' ANTHROPIC_AUTH_TOKEN=\"$(cat '/home/u/it'\\''s/claude.key')\" ANTHROPIC_API_KEY= claude --dangerously-skip-permissions"
@@ -283,28 +357,33 @@ mod tests {
 
     #[test]
     fn codex_shells() {
-        let e = LaunchEnv::new().file("LOOKLOOK_MODEL_API_KEY", PathBuf::from(r"C:\Users\A B\looklook\model\codex.key")).config("model_provider=x").config("model=glm-5.3");
-        let args = " -c model_provider=x -c model=glm-5.3";
+        let e = env_for(ModelAgent::Codex, "https://r.example.com/v1", PathBuf::from(r"C:\Users\A B\looklook\model\codex.key"));
+        let args = " -c model_provider=looklook -c model_providers.looklook.name=looklook -c model_providers.looklook.base_url=https://r.example.com/v1 -c model_providers.looklook.env_key=LOOKLOOK_MODEL_API_KEY -c model_providers.looklook.wire_api=responses";
         assert_eq!(
             e.wrap("codex --yolo", Family::Pwsh),
             format!(r"$env:LOOKLOOK_MODEL_API_KEY=(Get-Content -Raw -ErrorAction Stop -LiteralPath 'C:\Users\A B\looklook\model\codex.key').Trim(); codex --yolo{args}")
         );
         assert_eq!(e.wrap("codex", Family::Cmd), format!(r#"set /p LOOKLOOK_MODEL_API_KEY=<"C:\Users\A B\looklook\model\codex.key" && codex{args}"#));
         assert!(e.wrap("codex", Family::Nu).starts_with("$env.LOOKLOOK_MODEL_API_KEY = (open --raw r#'C:\\Users\\A B"));
-        let mut cmd = tokio::process::Command::new("codex");
-        e.apply(&mut cmd);
-        let args: Vec<String> = cmd.as_std().get_args().map(|a| a.to_string_lossy().into_owned()).collect();
-        assert_eq!(args, ["-c", "model_provider=x", "-c", "model=glm-5.3"]);
     }
 
     #[test]
-    fn codex_model_rules() {
-        assert_eq!(clean_model(Some("  ")).unwrap(), None);
-        assert_eq!(clean_model(Some(" kimi-k2:0905 ")).unwrap().as_deref(), Some("kimi-k2:0905"));
-        assert!(clean_model(Some("a b")).is_err());
-        assert!(clean_model(Some("$(id)")).is_err());
-        for (m, ok) in [("glm-4.6", true), ("qwen/qwen3-coder", true), ("x[1m]", false), ("1.5", false)] {
-            assert_eq!(codex_model_ok(m), ok, "{m}");
-        }
+    fn no_choice_means_official() {
+        let dir = std::env::temp_dir().join(format!("ll-model-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = Store::open(&dir.join("t.db")).unwrap();
+        assert!(launch_env(&store, &dir, "claude").is_none());
+        let c = Choice { provider_id: None, name: "x".into(), base_url: "https://r.example.com".into(), selected_at: String::new() };
+        assert!(save(&store, &dir, ModelAgent::Claude, &c, None).is_err(), "第一次保存必须带 Key");
+        save(&store, &dir, ModelAgent::Claude, &c, Some(" sk-test ")).unwrap();
+        assert_eq!(std::fs::read_to_string(key_path(&dir, ModelAgent::Claude)).unwrap(), "sk-test");
+        assert!(launch_env(&store, &dir, "claude").is_some());
+        assert!(launch_env(&store, &dir, "codex").is_none());
+        assert!(launch_env(&store, &dir, "shell").is_none());
+        save(&store, &dir, ModelAgent::Claude, &c, None).unwrap();
+        clear(&store, &dir, ModelAgent::Claude).unwrap();
+        assert!(launch_env(&store, &dir, "claude").is_none());
+        assert!(!key_set(&dir, ModelAgent::Claude));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

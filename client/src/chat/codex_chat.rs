@@ -84,6 +84,13 @@ pub struct CodexSt {
     pub steered: Vec<String>,
     /// 正在重连模型服务（`error` 带 `willRetry`）：活动文字是 Codex 的提示，有新进展就去掉
     retrying: bool,
+    /// 这段对话的工作目录（app-server 的 `thread.cwd`；在托管工作树里时不是终端的工作目录）
+    pub cwd: Option<String>,
+}
+
+/// 在托管工作树里开的对话：记下它的目录，之后加载（`thread/resume`）时用它，不用终端的工作目录
+fn thread_cwd_key(thread: &str) -> String {
+    format!("codex_thread_cwd.{thread}")
 }
 
 fn resets_iso(secs: Option<i64>) -> Value {
@@ -134,16 +141,6 @@ fn model_options(list: &Value) -> Vec<Value> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-/// 第三方接口的模型 → 模型菜单的选项：指定的模型放最前面当默认，服务商的其他模型放“服务商的其他模型”
-fn provider_model_options(chosen: Option<&str>, ids: &[String]) -> Vec<Value> {
-    let opt = |id: &str, main: bool| json!({ "value": id, "label": id, "section": if main { "main" } else { "provider" }, "model": id, "efforts": [], "default": main });
-    chosen
-        .map(|m| opt(m, true))
-        .into_iter()
-        .chain(ids.iter().filter(|id| Some(id.as_str()) != chosen && id.chars().all(|c| c.is_ascii_alphanumeric() || "._-/:".contains(c))).map(|id| opt(id, false)))
-        .collect()
 }
 
 /// app-server 的提问 → 界面认的 AskUserQuestion 格式
@@ -244,18 +241,9 @@ impl Chat {
         }
     }
 
-    /// `thread/start`、`thread/resume`、`thread/fork` 的参数：权限，加上这个会话的 Codex 配置选的服务商和模型
-    fn codex_thread_opts(&self, id: &str) -> Value {
-        let mut v = self.codex_policy(id);
-        let profile = crate::codex_profiles::for_instance(&self.store, id);
-        merge(&mut v, crate::codex_profiles::thread_params(&self.paths.home, &profile));
-        v
-    }
-
-    /// 拿到能用的 app-server：没起过、退出了、第三方接口的配置变了（且没有在跑的对话）就起一个新的。
-    /// 所有 Codex 配置都定义在这一个 app-server 上，每个会话用哪个由 [`Self::codex_thread_opts`] 选。
+    /// 拿到能用的 app-server：没起过、退出了、第三方服务商的设置变了（且没有在跑的对话）就起一个新的。
     async fn codex_server(&self) -> Result<Arc<AppServer>, LocalError> {
-        let env = crate::codex_profiles::server_env(&self.store, &self.paths.home);
+        let env = crate::model::launch_env(&self.store, &self.paths.home, "codex");
         let program = codex_app::program(self.instances.shell()).await;
         let signature = format!("{}|{}", program.display(), env.as_ref().map(|e| e.signature()).unwrap_or_default());
         let mut slot = self.codex.server.lock().await;
@@ -337,8 +325,8 @@ impl Chat {
         }
         match thread {
             Some(t) => {
-                let mut params = json!({ "threadId": t, "cwd": row.workdir, "excludeTurns": true });
-                merge(&mut params, self.codex_thread_opts(id));
+                let mut params = json!({ "threadId": t, "cwd": self.codex_thread_cwd(&t, &row.workdir), "excludeTurns": true });
+                merge(&mut params, self.codex_policy(id));
                 let r = resume_thread(&server, &t, params).await.map_err(|e| match e.code.as_str() {
                     "CODEX_REQUEST_FAILED" => LocalError::new("CODEX_RESUME_FAILED").with("detail", e.params.get("detail").cloned().unwrap_or(Value::Null)),
                     _ => e,
@@ -377,6 +365,7 @@ impl Chat {
         st.actual_model = r["model"].as_str().map(String::from).or(st.actual_model.take());
         st.title = t["name"].as_str().filter(|s| !s.is_empty()).map(String::from).or(st.title.take());
         st.version = t["cliVersion"].as_str().map(String::from).or(st.version.take());
+        st.codex.cwd = t["cwd"].as_str().map(String::from).or(st.codex.cwd.take());
         st.error = None;
         let active = t["status"]["type"] == "active";
         Self::set_phase(inst, &mut st, if active { Phase::Running } else { Phase::Idle }, None);
@@ -393,12 +382,23 @@ impl Chat {
         }
     }
 
+    /// 这段对话的工作目录：在托管工作树里开的用记下的那个，其他的用终端的工作目录
+    fn codex_thread_cwd(&self, thread: &str, workdir: &str) -> String {
+        self.store.get::<String>(&thread_cwd_key(thread)).ok().flatten().filter(|p| Path::new(p).is_dir()).unwrap_or_else(|| workdir.to_string())
+    }
+
     /// 还没有会话：建一个
     async fn codex_new_thread(&self, server: &AppServer, inst: &Inst) -> Result<String, LocalError> {
         let row = self.store.instance(&inst.id)?.ok_or_else(LocalError::not_found)?;
-        self.codex_trust(server, &row.workdir).await;
-        let mut params = json!({ "cwd": row.workdir });
-        merge(&mut params, self.codex_thread_opts(&inst.id));
+        self.codex_new_thread_in(server, inst, &row.workdir).await
+    }
+
+    /// 在 `cwd` 里开一段新对话
+    async fn codex_new_thread_in(&self, server: &AppServer, inst: &Inst, cwd: &str) -> Result<String, LocalError> {
+        self.codex_trust(server, cwd).await;
+        lock(&inst.st).codex.cwd = None;
+        let mut params = json!({ "cwd": cwd });
+        merge(&mut params, self.codex_policy(&inst.id));
         let r = server.call("thread/start", params).await?;
         let tid = r["thread"]["id"].as_str().ok_or_else(|| LocalError::new("CODEX_REQUEST_FAILED"))?.to_string();
         self.codex_loaded(inst, &r, self.codex.generation.load(Ordering::SeqCst));
@@ -811,6 +811,124 @@ impl Chat {
         Ok(json!({ "delivered": true }))
     }
 
+    // ---------------- 托管工作树（见 codex_worktree.rs） ----------------
+
+    /// 现在这段对话所在的目录（还没有对话时是终端的工作目录）
+    fn codex_current_cwd(&self, id: &str) -> Result<String, LocalError> {
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let inst = self.inst(id);
+        let st = lock(&inst.st);
+        Ok(st.codex.cwd.clone().or_else(|| st.binding.as_ref().map(|b| self.codex_thread_cwd(&b.session_id, &row.workdir))).unwrap_or(row.workdir))
+    }
+
+    /// 这个对话能不能用托管工作树（目录在 Git 仓库里），以及这个仓库已有的托管工作树。
+    pub(super) async fn codex_worktrees(&self, id: &str) -> Result<Value, LocalError> {
+        let cwd = PathBuf::from(self.codex_current_cwd(id)?);
+        let root = super::codex_worktree::managed_root(&crate::agents::codex_home());
+        let current = lock(&self.inst(id).st).binding.as_ref().map(|b| b.session_id.clone());
+        tokio::task::spawn_blocking(move || {
+            let Some(repo) = super::codex_worktree::repo_root(&cwd) else {
+                return Ok(json!({ "available": false, "items": [] }));
+            };
+            let items = super::codex_worktree::list(&root, &cwd)?;
+            let items: Vec<Value> = items
+                .into_iter()
+                .map(|c| {
+                    let here = cwd.starts_with(&c.root) || current.is_some() && c.owner == current;
+                    json!({ "root": c.root, "cwd": c.cwd, "owner": c.owner, "head": c.head, "current": here })
+                })
+                .collect();
+            Ok(json!({ "available": true, "repo": repo, "root": root, "items": items }))
+        })
+        .await
+        .map_err(|e| LocalError::from(anyhow::anyhow!(e)))?
+    }
+
+    /// 对话换到托管工作树里：
+    /// - `new`：新建工作树，在里面开一段新对话（TUI 的 `/new` → “新建 Git 工作树”）；
+    /// - `fork`：新建工作树，把现在这段对话复制过去接着（`/fork` → “新建 Git 工作树”、`/worktree` → “接着现在的对话”）；
+    /// - `open`：接着已有工作树里的那段对话（`/worktree` → “浏览工作树”）。
+    pub(super) async fn codex_worktree(&self, id: &str, mode: &str, root: Option<&str>) -> Result<Value, LocalError> {
+        let inst = self.inst(id);
+        let (phase, thread) = {
+            let st = lock(&inst.st);
+            (st.phase, st.binding.as_ref().map(|b| b.session_id.clone()))
+        };
+        if matches!(phase, Phase::Running | Phase::Approval) {
+            return Err(LocalError::new("CHAT_RUNNING"));
+        }
+        let codex_home = crate::agents::codex_home();
+        let managed = super::codex_worktree::managed_root(&codex_home);
+        if mode == "open" {
+            let root = PathBuf::from(root.ok_or_else(|| LocalError::invalid("root", "required"))?);
+            let cwd = PathBuf::from(self.codex_current_cwd(id)?);
+            let found = tokio::task::spawn_blocking(move || super::codex_worktree::list(&managed, &cwd))
+                .await
+                .map_err(|e| LocalError::from(anyhow::anyhow!(e)))??
+                .into_iter()
+                .find(|c| c.root == root)
+                .ok_or_else(LocalError::not_found)?;
+            let owner = found.owner.clone().ok_or_else(|| LocalError::new("CODEX_WORKTREE_NO_OWNER"))?;
+            self.store.set(&thread_cwd_key(&owner), &found.cwd.to_string_lossy().to_string())?;
+            if thread.as_deref() != Some(owner.as_str()) {
+                self.codex_resume(id, thread, &owner).await?;
+            }
+            return Ok(json!({ "cwd": found.cwd, "thread": owner }));
+        }
+        if mode == "fork" && thread.is_none() {
+            return Err(LocalError::new("CODEX_WORKTREE_NO_THREAD"));
+        }
+        if mode != "new" && mode != "fork" {
+            return Err(LocalError::invalid("mode", "unknown"));
+        }
+        let server = self.codex_ready(id).await?;
+        let source = PathBuf::from(self.codex_current_cwd(id)?);
+        let checkout = tokio::task::spawn_blocking(move || super::codex_worktree::create(&managed, &source)).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))??;
+        let cwd = checkout.cwd.to_string_lossy().to_string();
+        let started: Result<String, LocalError> = async {
+            if mode == "new" {
+                self.codex_forget(thread).await;
+                self.codex_new_thread_in(&server, &inst, &cwd).await
+            } else {
+                self.codex_trust(&server, &cwd).await;
+                let mut params = json!({ "threadId": thread, "cwd": cwd });
+                merge(&mut params, self.codex_policy(id));
+                let r = server.call("thread/fork", params).await?;
+                let tid = r["thread"]["id"].as_str().ok_or_else(|| LocalError::new("CODEX_REQUEST_FAILED"))?.to_string();
+                self.codex_forget(thread).await;
+                self.codex_loaded(&inst, &r, self.codex.generation.load(Ordering::SeqCst));
+                let _ = inst.tx.send(super::Event::Reset);
+                Ok(tid)
+            }
+        }
+        .await;
+        let tid = match started {
+            Ok(t) => t,
+            Err(e) => {
+                // 和 TUI 一样留着建好的工作树，告诉用户在哪
+                return Err(e.with("worktree", checkout.root.to_string_lossy().to_string()));
+            }
+        };
+        self.store.set(&thread_cwd_key(&tid), &cwd)?;
+        let root = checkout.root.clone();
+        let t2 = tid.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || super::codex_worktree::bind(&root, &t2)).await {
+            tracing::warn!(error = ?e, "没能记下托管工作树属于哪段对话");
+        }
+        // 终端里开着同步的 TUI：跟到新对话上
+        if matches!(self.codex_terminal_kind(id).await, TermCodex::Remote) {
+            if let Some(me) = self.me.upgrade() {
+                let id = id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = me.codex_reconnect_terminal(&id).await {
+                        tracing::warn!(id, error = ?e, "换到工作树后没能让终端里的 Codex 跟过去");
+                    }
+                });
+            }
+        }
+        Ok(json!({ "cwd": cwd, "root": checkout.root, "thread": tid }))
+    }
+
     pub(super) async fn codex_interrupt(&self, id: &str) -> Result<(), LocalError> {
         let inst = self.inst(id);
         // 没有在跑的一轮：不用去加载会话（会话接不上时“停止”也不报错）
@@ -856,20 +974,8 @@ impl Chat {
     }
 
     pub(super) async fn codex_models(&self, id: &str) -> Result<Value, LocalError> {
-        use crate::codex_profiles as xp;
-        // 第三方接口：列服务商自己的模型（`model/list` 是 OpenAI 的目录，第三方一般不认这些名字）。
-        // 服务商列不出来时只列指定的模型；都没有时照常用目录（由接口自己对应 OpenAI 的模型名）
-        let profile = xp::for_instance(&self.store, id);
-        let third = profile.base_url.clone().filter(|_| xp::key_set(&self.paths.home, &profile.id));
-        let mut ours = vec![];
-        if let Some(base) = &third {
-            let key = std::fs::read_to_string(xp::key_path(&self.paths.home, &profile.id)).unwrap_or_default();
-            let ids = super::models::provider_models(&format!("{}/models", base.trim_end_matches('/')), key.trim()).await;
-            ours = provider_model_options(profile.model.as_deref(), &ids);
-        }
         let cached = lock(&self.codex.models).as_ref().filter(|(t, _)| t.elapsed() < MODELS_TTL).map(|(_, v)| v.clone());
         let options = match cached {
-            _ if !ours.is_empty() => json!(ours),
             Some(v) => v,
             None => {
                 let server = self.codex_server().await?;
@@ -881,7 +987,7 @@ impl Chat {
         };
         let inst = self.inst(id);
         let st = lock(&inst.st);
-        let provider = third.map(|_| json!({ "name": profile.name }));
+        let provider = crate::model::launch_env(&self.store, &self.paths.home, "codex").and_then(|_| crate::model::choice(&self.store, crate::model::ModelAgent::Codex)).map(|c| json!({ "name": c.name }));
         Ok(json!({ "options": options, "provider": provider, "model": st.model, "actual_model": st.actual_model, "effort": st.effort }))
     }
 
@@ -1015,7 +1121,7 @@ impl Chat {
                     let server = self.codex_server().await?;
                     let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
                     let mut params = json!({ "threadId": r.id, "cwd": row.workdir });
-                    merge(&mut params, self.codex_thread_opts(id));
+                    merge(&mut params, self.codex_policy(id));
                     let res = server.call("thread/fork", params).await?;
                     self.codex_loaded(&self.inst(id), &res, self.codex.generation.load(Ordering::SeqCst));
                 } else {
@@ -1463,8 +1569,8 @@ impl Chat {
                 continue;
             }
             // 直接用这个新进程加载（不经 codex_attach：那里可能又起 app-server，会绕回这里）
-            let mut params = json!({ "threadId": b.session_id, "cwd": row.workdir, "excludeTurns": true });
-            merge(&mut params, self.codex_thread_opts(&row.id));
+            let mut params = json!({ "threadId": b.session_id, "cwd": self.codex_thread_cwd(&b.session_id, &row.workdir), "excludeTurns": true });
+            merge(&mut params, self.codex_policy(&row.id));
             match resume_thread(&server, &b.session_id, params).await {
                 Ok(r) => self.codex_loaded(&self.inst(&row.id), &r, gen),
                 Err(e) => tracing::debug!(id = %row.id, error = ?e, "终端里的 Codex 会话没能重新加载"),
@@ -1687,16 +1793,6 @@ mod tests {
         assert_eq!(o[0]["value"], "gpt-6.1-sol");
         assert_eq!(o[0]["efforts"], json!(["low", "high"]));
         assert_eq!(o[1]["section"], "more");
-    }
-
-    #[test]
-    fn provider_models_to_options() {
-        let ids: Vec<String> = ["glm-4.6", "glm-4.5-air", "bad model"].map(String::from).into();
-        let o = provider_model_options(Some("glm-4.5-air"), &ids);
-        let v: Vec<(&str, &str)> = o.iter().map(|x| (x["value"].as_str().unwrap(), x["section"].as_str().unwrap())).collect();
-        assert_eq!(v, [("glm-4.5-air", "main"), ("glm-4.6", "provider")]);
-        assert_eq!(o[0]["default"], true);
-        assert!(provider_model_options(None, &[]).is_empty());
     }
 
     #[test]

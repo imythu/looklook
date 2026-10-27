@@ -243,6 +243,24 @@ pub async fn models(State(app): State<App>, Path(id): Path<String>) -> R<Json<Va
 }
 
 /// 上下文、token、订阅用量
+/// Codex 的托管工作树
+pub async fn worktrees(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.worktrees(&id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct WorktreeReq {
+    /// `new` / `fork` / `open`
+    mode: String,
+    /// `open`：哪个工作树
+    root: Option<String>,
+}
+
+pub async fn worktree(State(app): State<App>, Path(id): Path<String>, Json(req): Json<WorktreeReq>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    Ok(Json(app.chat.worktree(&id, &req.mode, req.root.as_deref()).await?))
+}
+
 pub async fn usage(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     Ok(Json(app.chat.usage(&id).await?))
 }

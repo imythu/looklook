@@ -267,13 +267,22 @@ function Facet({ title, items, selected, onToggle, render, search, limit = 8 }) 
   );
 }
 
-function HistRow({ conv, selected, mark, onSelect, onMark, showDevice, showProject }) {
+function HistRow({ conv, selected, mark, onSelect, onOpen, onMark, showDevice, showProject }) {
   const { t } = useTranslation();
   const devices = useDevices();
   const dev = showDevice && devices.multi ? devices.byId(conv.dev) : null;
   return (
     <div className={`hrow ${selected ? 'on' : ''} ${mark.hide ? 'hidden-conv' : ''}`}>
-      <button type="button" className="hrow-main" onClick={onSelect} aria-pressed={selected} title={conv.workdir}>
+      <button type="button" className="hrow-main" onClick={onSelect}
+        onDoubleClick={onOpen}
+        // 已经选中的一行再按回车：直接继续（第一次回车是选中、看预览）
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' && selected && onOpen) {
+            e.preventDefault();
+            onOpen();
+          }
+        }}
+        aria-pressed={selected} title={`${conv.workdir}\n${t('hist.open_hint')}`}>
         <LaunchIcon launch={conv.agent} size={18} className="conv-icon" />
         <span className="hrow-line">
           {mark.star && <Star size={13} className="hrow-star" aria-label={t('hist.starred')} />}
@@ -382,6 +391,36 @@ function HistDetail({ conv, onClose }) {
   );
 }
 
+const SCOPE_KEY = 'looklook.hist.scope';
+function readScope() {
+  try {
+    return localStorage.getItem(SCOPE_KEY) === 'all' ? 'all' : 'here';
+  } catch {
+    return 'here';
+  }
+}
+function writeScope(v) {
+  try {
+    localStorage.setItem(SCOPE_KEY, v);
+  } catch {
+    /* 无痕模式：不记住 */
+  }
+}
+
+/** 滚到列表底部附近时自动加载更多（按钮还在，键盘、读屏照样能点）。 */
+function AutoMore({ onMore, busy, children }) {
+  const ref = useRef(null);
+  const more = useRef(onMore);
+  more.current = onMore;
+  useEffect(() => {
+    if (busy || !ref.current || !window.IntersectionObserver) return undefined;
+    const io = new IntersectionObserver((es) => es.some((e) => e.isIntersecting) && more.current(), { rootMargin: '400px 0px' });
+    io.observe(ref.current);
+    return () => io.disconnect();
+  }, [busy]);
+  return <div ref={ref}>{children}</div>;
+}
+
 /** 窄屏：右边放不下完整预览，改在原地展开。 */
 function useNarrowHist() {
   const q = '(max-width: 1179px)';
@@ -408,8 +447,17 @@ export function HistoryPage() {
   const [sel, setSel] = useState(null);
   const [showFilters, setShowFilters] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const targets = devices.multi ? devices.items.filter((d) => d.online).map((d) => d.id) : [null];
+  const ui = useSessionUi();
+  // 先看当前这台电脑的（记住选择）；“全部电脑”时这台排在最前、先显示，别的电脑的到了再补上
+  const [scope, setScope] = useState(readScope);
+  const here = devices.selected ?? devices.def ?? null;
+  const online = devices.multi ? devices.items.filter((d) => d.online).map((d) => d.id) : [null];
+  const targets = !devices.multi ? [null] : scope === 'here' && here ? [here] : [here, ...online.filter((d) => d !== here)].filter((d) => d && online.includes(d));
   const sig = targets.join(',');
+  const pickScope = (v) => {
+    setScope(v);
+    writeScope(v);
+  };
   const update = (patch) =>
     setF((x) => {
       const next = { ...x, ...patch };
@@ -424,16 +472,26 @@ export function HistoryPage() {
         (r) => ({ dev, items: Array.isArray(r?.items) ? r.items : [], marks: r?.marks ?? {}, persistent: Boolean(r?.persistent) }),
         (e) => ({ dev, items: [], marks: {}, error: e }),
       );
+  // 每台电脑的结果到了就先显示，不等最慢的那台；换搜索词时旧结果留着，到了再换，列表不闪
   useEffect(() => {
     let alive = true;
-    setGroups(null);
     const extra = deepQ ? `&deep=true&q=${enc(deepQ)}` : '';
-    Promise.all(targets.map((dev) => load(dev, extra))).then((r) => alive && setGroups(r.map((g) => ({ ...g, more: g.items.length >= PAGE }))));
+    setGroups((prev) => targets.map((dev) => ({ ...(prev?.find((g) => g.dev === dev) ?? { dev, items: [], marks: {} }), loading: true })));
+    for (const dev of targets) {
+      load(dev, extra).then((g) => alive && setGroups((gs) => (gs ?? []).map((x) => (x.dev === dev ? { ...g, more: g.items.length >= PAGE, loading: false } : x))));
+    }
     return () => {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sig, deepQ]);
+  // 停下打字一会儿就在对话内容里搜（不用按回车）；清空时回到普通列表
+  const words = parseQuery(f.q).text;
+  useEffect(() => {
+    if (words === deepQ) return undefined;
+    const timer = setTimeout(() => setDeepQ(words.length >= 2 ? words : ''), 600);
+    return () => clearTimeout(timer);
+  }, [words]);
   useEffect(() => {
     const next = readFilters(search);
     if (next.q !== f.q) setF((x) => ({ ...x, q: next.q }));
@@ -467,6 +525,12 @@ export function HistoryPage() {
 
   const now = Date.now();
   const all = (groups ?? []).filter((g) => g.persistent).flatMap((g) => g.items.map((c) => ({ ...c, dev: g.dev })));
+  const loading = !groups || groups.some((g) => g.loading);
+  const firstLoad = !groups || groups.every((g) => g.loading && g.items.length === 0);
+  const open = (c) => {
+    if (c.instance_id) ui.openSession(c.instance_id);
+    else ui.continueConv(c.dev, c, Boolean(c.live && CAN_FORK.includes(c.agent))).catch((e) => toast(errorText(t, e), 'error'));
+  };
   const pq = parseQuery(f.q);
   const devName = (id) => (devices.multi ? deviceName(t, devices.byId(id)) : '').toLowerCase();
   const textOk = (c) => {
@@ -535,7 +599,11 @@ export function HistoryPage() {
   // ↑↓ 切换上一条、下一条（焦点不在输入框里时）
   useEffect(() => {
     const on = (e) => {
-      if (!['ArrowUp', 'ArrowDown'].includes(e.key) || e.target.closest?.('input, textarea, [contenteditable="true"]')) return;
+      if (!['ArrowUp', 'ArrowDown', 'Enter'].includes(e.key) || e.target.closest?.('input, textarea, button, a, [contenteditable="true"]')) return;
+      if (e.key === 'Enter') {
+        if (selected) open(selected);
+        return;
+      }
       const at = list.findIndex((c) => convKey(c) === sel);
       const next = list[e.key === 'ArrowDown' ? at + 1 : Math.max(0, at - 1)];
       if (next) {
@@ -548,7 +616,7 @@ export function HistoryPage() {
     return () => window.removeEventListener('keydown', on);
   });
   const failed = (groups ?? []).filter((g) => g.error);
-  const noPersist = groups && groups.length > 0 && groups.every((g) => !g.error && !g.persistent);
+  const noPersist = groups && !loading && groups.length > 0 && groups.every((g) => !g.error && !g.persistent);
   const anyMore = (groups ?? []).some((g) => g.more);
   const narrow = useNarrowHist();
 
@@ -648,6 +716,15 @@ export function HistoryPage() {
             {t('hist.filters')}
             {active > 0 && <span className="hfacet-n">{active}</span>}
           </button>
+          {devices.multi && (
+            <span className="seg seg-xs" role="group" aria-label={t('hist.scope')}>
+              {['here', 'all'].map((v) => (
+                <button key={v} type="button" aria-pressed={scope === v} onClick={() => pickScope(v)} title={v === 'here' && here ? deviceName(t, devices.byId(here)) : undefined}>
+                  {t(`hist.scope_${v}`)}
+                </button>
+              ))}
+            </span>
+          )}
           <span className="seg seg-xs" role="group" aria-label={t('hist.group_by')}>
             {GROUPS.filter((g) => g !== 'device' || devices.multi).map((g) => (
               <button key={g} type="button" aria-pressed={f.group === g} onClick={() => update({ group: g })}>
@@ -657,12 +734,18 @@ export function HistoryPage() {
           </span>
         </div>
         <p className="small muted hist-hint">
-          {deepQ ? t('hist.deep_on', { q: deepQ }) : pq.text ? t('hist.deep_hint') : t('hist.lead2', { count: list.length })}
+          {deepQ ? t('hist.deep_on', { q: deepQ }) : t('hist.lead2', { count: list.length })}
+          {loading && !firstLoad && (
+            <>
+              {' · '}
+              <Spinner size={12} /> {t('hist.loading_more_devices')}
+            </>
+          )}
         </p>
         {failed.map((g) => (
           <ErrorNote key={g.dev ?? ''} error={g.error} />
         ))}
-        {!groups ? (
+        {firstLoad ? (
           <div className="hist-loading">
             <Spinner size={18} />
           </div>
@@ -697,6 +780,7 @@ export function HistoryPage() {
                         selected={on}
                         mark={markOf(c)}
                         onSelect={() => setSel(on ? null : k)}
+                        onOpen={() => open(c)}
                         onMark={(patch) => setMark(c, patch)}
                         showDevice={f.group !== 'device'}
                         showProject={f.group !== 'project'}
@@ -710,10 +794,12 @@ export function HistoryPage() {
           ))
         )}
         {groups && anyMore && (
-          <button type="button" className="btn btn-ghost btn-sm hist-more" onClick={loadMore} disabled={loadingMore}>
-            {loadingMore ? <Spinner size={14} /> : <ChevronDown size={14} aria-hidden="true" />}
-            {t('hist.load_more')}
-          </button>
+          <AutoMore onMore={loadMore} busy={loadingMore}>
+            <button type="button" className="btn btn-ghost btn-sm hist-more" onClick={loadMore} disabled={loadingMore}>
+              {loadingMore ? <Spinner size={14} /> : <ChevronDown size={14} aria-hidden="true" />}
+              {t('hist.load_more')}
+            </button>
+          </AutoMore>
         )}
       </div>
       {selected && !narrow && <HistDetail key={sel} conv={selected} onClose={() => setSel(null)} />}

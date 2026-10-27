@@ -55,6 +55,8 @@ test('todos, slash commands, answers', () => {
   assert.equal(slashAction('/model sonnet'), null, '带参数的照常送进去');
   assert.equal(slashAction('/compact'), null);
   assert.equal(slashAction('model'), null);
+  assert.equal(slashAction('/worktree', 'codex'), 'worktree');
+  assert.equal(slashAction('/worktree', 'claude'), null, '只有 Codex 有');
   const qs = [{ question: '颜色？' }, { question: '水果？' }, { question: '空的' }];
   assert.deepEqual(questionAnswers(qs, { 0: { labels: ['红'] }, 1: { labels: ['苹果'], other: '梨' } }), { '颜色？': '红', '水果？': '苹果, 梨' });
 });

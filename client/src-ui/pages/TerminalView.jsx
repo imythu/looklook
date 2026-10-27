@@ -25,6 +25,7 @@ import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
 import ChatView from './ChatView.jsx';
 import FileBrowser from './FileBrowser.jsx';
 import GitPanel from './GitPanel.jsx';
+import { WebPage } from './WebPane.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 import { APP_CHROME, termTheme, termVars } from '../shared/termTheme.js';
 import { useSeenPing } from '../shared/board.js';
@@ -515,7 +516,18 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   );
 }
 
+/** 手机上整页打开的会话。网页类型（DSH，地址带 ?web）打开它的网页（WebPane.jsx）。 */
 export default function TerminalView({ id }) {
+  if (new URLSearchParams(window.location.search).has('web')) return <WebPageLoader id={id} />;
+  return <TermPage id={id} />;
+}
+
+function WebPageLoader({ id }) {
+  const [inst] = useLoad(() => api.get(`/instances/${id}`), [id]);
+  return <WebPage id={id} inst={inst} />;
+}
+
+function TermPage({ id }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const { navigate } = useRouter();
