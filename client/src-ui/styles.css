@@ -2885,3 +2885,26 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-view[data-agent="codex"] .chat-next > svg:first-child { color: var(--muted); animation: none; }
 .chat-view[data-agent="codex"] .chat-next:hover > svg:last-child { color: var(--text); }
 @media (prefers-reduced-motion: reduce) { .chat-working-mark.codex, .chat-view[data-agent="codex"] .chat-working > .ellipsis { animation: none; } }
+
+/* 设置页“通知”（pages/Notify.jsx） */
+.nt-steps { list-style: none; margin: 4px 0 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+.nt-step { display: flex; gap: 12px; align-items: flex-start; }
+.nt-step-n { flex: none; width: 26px; height: 26px; border-radius: 50%; background: var(--brand-soft); color: var(--brand-ink); font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center; }
+.nt-step.done .nt-step-n { background: var(--ok-soft); color: var(--ok); }
+.nt-step-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.nt-step-body p { margin: 0; }
+.nt-step-body form { align-self: stretch; }
+.nt-code { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; background: var(--panel-2); border-radius: var(--radius-sm); padding: 2px 4px 2px 10px; }
+.nt-code code { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+.nt-pair { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nt-pair-code { font-size: 28px; font-weight: 700; letter-spacing: 6px; color: var(--brand-ink); }
+.nt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: middle; background: var(--muted); }
+.nt-dot.ok { background: var(--ok); }
+.nt-dot.bad { background: var(--danger); }
+.nt-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.nt-mute-add { flex-wrap: nowrap; }
+.nt-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.nt-chip { display: inline-flex; align-items: center; gap: 2px; padding: 2px 4px 2px 10px; border-radius: 999px; background: var(--panel-2); font-size: 13px; }
+.nt-chip button { border: 0; background: none; color: var(--muted); font-size: 16px; line-height: 1; width: 24px; height: 24px; border-radius: 50%; cursor: pointer; }
+.nt-chip button:hover { background: var(--line); color: var(--text); }
+.bd-notify { margin: 0 0 12px; }

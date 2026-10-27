@@ -1049,7 +1049,14 @@ impl Chat {
             "turn": turn,
             "limit": (st.limit_wait.is_some() || st.limit_auto_at.is_some()).then(|| json!({ "waiting": st.limit_wait, "auto_at": st.limit_auto_at })),
             "seen_at": st.board.seen_at,
+            // 有人正开着这个会话（会话页可见且有焦点）：不发通知
+            "watched": st.active_until > crate::util::system_ms(),
         }))
+    }
+
+    /// 带对话界面的会话（通知按它们逐个检查）
+    pub fn ids(&self) -> Vec<String> {
+        lock(&self.insts).keys().cloned().collect()
     }
 
     /// 看过这个会话了。`active`：会话页可见且有焦点（每 20 秒报一次），这段时间里结束的一轮直接算看过

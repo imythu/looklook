@@ -13,13 +13,34 @@ import { errorText } from '../shared/i18n.js';
 import { baseName, useSessions } from '../shared/sessions.jsx';
 import { spinnerText } from '../shared/spinner.js';
 import { spanText } from '../shared/time.js';
-import { Button, Empty, Skeleton, useConfirm, useToast } from '../shared/ui.jsx';
+import { Link } from '../shared/router.jsx';
+import { Button, Empty, Note, Skeleton, useConfirm, useToast } from '../shared/ui.jsx';
 import { useSessionUi } from './Sessions.jsx';
 import { useNarrow } from './TerminalView.jsx';
 
 const AGENT_NAMES = { claude: 'Claude', codex: 'Codex' };
 // 额度菜单里“等重置后自动继续”（Claude Code 的原文，同客户端 screen.rs 的 LIMIT_AUTO）
 const LIMIT_AUTO = 'Wait here, then continue automatically';
+
+/** 飞书通知配好了但这台电脑没连上（docs/TASK_BOARD.md §6.6）：看板顶部提示一行。旧版客户端没有这个接口时不提示。 */
+function useFeishuDown() {
+  const [down, setDown] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const load = () =>
+      api.get('/notify').then(
+        (d) => alive && setDown(Boolean(d.feishu?.bound && !d.status?.connected && d.status?.error)),
+        () => alive && setDown(false),
+      );
+    load();
+    const id = setInterval(load, 60000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
+  }, []);
+  return down;
+}
 
 /** 每 30 秒重画一次（“等了 3 分钟”） */
 function useNow() {
@@ -264,6 +285,7 @@ export default function Board() {
   const act = useActivityText();
   const [pick, setPick] = useState(null);
   const [showRest, setShowRest] = useState(false);
+  const feishuDown = useFeishuDown();
 
   const groups = useMemo(() => {
     const g = { attn: [], working: [], ended: [], idle: [], stopped: [] };
@@ -294,6 +316,13 @@ export default function Board() {
         <h1>{t('board.title')}</h1>
         {!empty && <span className="muted small">{counts}</span>}
       </header>
+      {feishuDown && (
+        <div className="bd-notify">
+          <Note kind="warn">
+            {t('board.feishu_down')} <Link to="/settings#notify">{t('board.feishu_down_fix')}</Link>
+          </Note>
+        </div>
+      )}
       <div className={`bd-body ${!narrow && selected ? 'with-side' : ''}`}>
         <div className="bd-list">
           {empty && (

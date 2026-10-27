@@ -240,5 +240,10 @@
   "SYNC_SIGNATURE": "The other computer's identity check failed, so nothing was synced.",
   "SYNC_UNSUPPORTED": "The Looklook server is too old to sync settings yet.",
   "SYNC_DISABLED": "That computer has settings sync turned off.",
-  "SYNC_PROTOCOL": "The two computers run incompatible versions of Looklook. Update both to the latest version."
+  "SYNC_PROTOCOL": "The two computers run incompatible versions of Looklook. Update both to the latest version.",
+  "NOTIFY_FEISHU": "Feishu error {{code}}: {{msg}}",
+  "NOTIFY_NOT_CONFIGURED": "Feishu notifications aren't set up yet.",
+  "NOTIFY_NOT_BOUND": "No Feishu account is bound yet.",
+  "NOTIFY_SIGNATURE": "The forwarded Feishu action has a bad signature.",
+  "NOTIFY_PROTOCOL": "Couldn't forward the Feishu action between computers. They may be running different LookLook versions."
 }

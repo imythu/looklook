@@ -138,6 +138,12 @@ pub fn routes(app: App) -> Router<App> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/sync", get(get_sync).put(put_sync))
         .route("/sync/exchange", post(sync_exchange))
+        .route("/notify", get(super::notify::get))
+        .route("/notify/feishu", put(super::notify::put_feishu).delete(super::notify::delete_feishu))
+        .route("/notify/unbind", post(super::notify::unbind))
+        .route("/notify/rules", put(super::notify::put_rules))
+        .route("/notify/test", post(super::notify::test))
+        .route("/notify/action", post(super::notify::action))
         .route("/projects", get(get_projects).put(put_projects))
         .route("/git/remotes", post(git_remotes))
         .route("/history", get(list_history))
@@ -196,7 +202,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "notify" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
