@@ -45,6 +45,7 @@ mod metrics;
 mod model;
 mod model_presets;
 mod notify;
+mod feishu_agent;
 mod paths;
 mod platform;
 mod ports;

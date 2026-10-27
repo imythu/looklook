@@ -33,8 +33,8 @@ pub struct Frame {
     pub log_id_new: Option<String>,
 }
 
-const METHOD_CONTROL: i32 = 0;
-const METHOD_DATA: i32 = 1;
+pub(crate) const METHOD_CONTROL: i32 = 0;
+pub(crate) const METHOD_DATA: i32 = 1;
 
 fn put_varint(out: &mut Vec<u8>, mut v: u64) {
     while v >= 0x80 {

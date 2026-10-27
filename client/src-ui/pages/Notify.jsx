@@ -12,8 +12,10 @@ import { useSessions } from '../shared/sessions.jsx';
 import { Button, Card, CopyButton, ErrorNote, Field, Note, PasswordInput, Switch, useAction, useLoad } from '../shared/ui.jsx';
 
 const CONSOLE = { feishu: 'https://open.feishu.cn/app', lark: 'https://open.larksuite.com/app' };
-const SCOPES = ['im:message:send_as_bot', 'im:message.p2p_msg:readonly'];
-const EVENT = 'im.message.receive_v1';
+const SCOPES = ['im:message:send_as_bot', 'im:message.p2p_msg:readonly', 'cardkit:card:write', 'im:resource', 'im:message.group_at_msg:readonly'];
+const EVENTS = ['im.message.receive_v1', 'application.bot.menu_v6'];
+// 机器人菜单（推送事件）的 key：新会话、正在跑的会话、任务页（src/feishu_agent.rs on_menu）
+const MENU_KEYS = ['new', 'sessions', 'tasks'];
 const CALLBACK = 'card.action.trigger';
 // 常见错误码 → 怎么办（notify.feishu_hint_*）
 const HINTS = [10003, 10014, 230013, 99991672, 1000040346, 1000040350];
@@ -179,7 +181,9 @@ export function FeishuCard({ data, reload }) {
       <Step n={4} done={Boolean(f?.callback_ok)} title={t('notify.step_events')}>
         <p className="small muted">{t('notify.step_events_body')}</p>
         <span className="small">{t('notify.step_events_event')}</span>
-        <Code text={EVENT} />
+        {EVENTS.map((e) => (
+          <Code key={e} text={e} />
+        ))}
         <span className="small">{t('notify.step_events_callback')}</span>
         <Code text={CALLBACK} />
         <Note kind="warn">{t('notify.step_events_warn')}</Note>
@@ -462,6 +466,22 @@ export function RulesCard({ data, reload }) {
         {toggle('failed', t('notify.rule_failed'))}
         {data.feishu && toggle('actions', t('notify.rule_actions'), t('notify.rule_actions_hint'))}
         {toggle('content', t('notify.rule_content'), t('notify.rule_content_hint'))}
+        {r.actions && toggle('agent', t('notify.rule_agent'), t('notify.rule_agent_hint'))}
+        {r.actions && r.agent && (
+          <>
+            <Note>{t('notify.rule_agent_note')}</Note>
+            {toggle('agent_direct', t('notify.rule_agent_direct'), t('notify.rule_agent_direct_hint'))}
+            {toggle('agent_groups', t('notify.rule_agent_groups'), t('notify.rule_agent_groups_hint'))}
+            <div className="stack" style={{ gap: 6 }}>
+              <span className="small muted">{t('notify.agent_menu')}</span>
+              {MENU_KEYS.map((k) => (
+                <span key={k} className="small">
+                  {t(`notify.agent_menu_${k}`)} <Code text={k} />
+                </span>
+              ))}
+            </div>
+          </>
+        )}
         <div className="stack nt-calm" style={{ gap: 14 }}>
           <b className="nt-calm-title">{t('notify.calm_title')}</b>
           <div className="stack" style={{ gap: 8 }}>

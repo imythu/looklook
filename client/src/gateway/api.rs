@@ -162,6 +162,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/notify/hooks/{id}", delete(super::notify::delete_hook))
         .route("/notify/hooks/{id}/test", post(super::notify::test_hook))
         .route("/notify/action", post(super::notify::action))
+        .route("/notify/agent", post(super::notify::agent))
         .route("/projects", get(get_projects).put(put_projects))
         .route("/git/remotes", post(git_remotes))
         .route("/history", get(list_history))
@@ -459,18 +460,23 @@ struct CreateReq {
 
 async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
-    let (prompt, resume) = (req.input.prompt.clone().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()), req.input.resume.clone());
-    let v = if req.input.launch.as_deref() == Some("dsh") { create_dsh(&app, req.input).await? } else { app.instances.create(req.input).await? };
+    let v = create_session(&app, req.input, req.start).await?;
+    Ok((StatusCode::CREATED, Json(v)))
+}
+
+/// 新建一个会话（会话页“新建”，也给飞书里开会话用，docs/FEISHU_AGENT.md §2.1）
+pub async fn create_session(app: &App, input: Input, start: bool) -> R<crate::instances::View> {
+    let (prompt, resume) = (input.prompt.clone().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()), input.resume.clone());
+    let v = if input.launch.as_deref() == Some("dsh") { create_dsh(app, input).await? } else { app.instances.create(input).await? };
     // 对话模式的 Codex：第一句话、接着以前的对话都交给 app-server（终端里只是 shell）
     if app.instances.codex_app_mode(&v.row) && (prompt.is_some() || resume.is_some()) {
         let (chat, id) = (app.chat.clone(), v.row.id.clone());
         tokio::spawn(async move { chat.codex_first(&id, prompt, resume).await });
     }
-    if req.start && app.instances.codex_app_mode(&v.row) {
+    if start && app.instances.codex_app_mode(&v.row) {
         app.chat.codex_warm(&v.row.workdir).await;
     }
-    let v = if req.start { app.instances.start(&v.row.id).await? } else { v };
-    Ok((StatusCode::CREATED, Json(v)))
+    Ok(if start { app.instances.start(&v.row.id).await? } else { v })
 }
 
 // ---------------- DSH（网页界面） ----------------

@@ -10,6 +10,8 @@
 
 pub mod access;
 mod api;
+
+pub use api::create_session;
 mod assets;
 mod chat;
 mod chat_mux;

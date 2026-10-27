@@ -26,6 +26,15 @@ pub struct Act {
     /// 选第几项
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub i: Option<usize>,
+    /// 开会话卡片：私聊里的原话（docs/FEISHU_AGENT.md §2.1）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub t: Option<String>,
+    /// 开会话卡片：原话那条消息的 id
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub m: Option<String>,
+    /// 开会话卡片：原话那条消息里的图片和文件
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub f: Vec<crate::feishu::Resource>,
 }
 
 /// 卡片上共有的信息
@@ -346,6 +355,169 @@ pub fn digest(en: bool, n: usize, url: &str) -> Value {
     )
 }
 
+// ---------------- 在飞书里和 AI 对话（docs/FEISHU_AGENT.md） ----------------
+
+/// 流式卡片里正文、状态行的组件 id
+pub const STREAM_BODY: &str = "body";
+pub const STREAM_STATUS: &str = "status";
+
+fn select(name: &str, placeholder: &str, options: &[(String, String)], initial: &str) -> Value {
+    let opts: Vec<Value> = options.iter().map(|(label, value)| json!({ "text": plain(label), "value": value })).collect();
+    let mut s = json!({ "tag": "select_static", "name": name, "placeholder": plain(placeholder), "options": opts, "width": "fill" });
+    if options.iter().any(|(_, v)| v == initial) {
+        s["initial_option"] = json!(initial);
+    }
+    s
+}
+
+fn first_input(en: bool) -> Value {
+    json!({ "tag": "input", "name": "text", "required": true, "placeholder": plain(&tr(en, "第一句话，发给 AI…", "First message to the AI…")), "max_length": 4000, "width": "fill" })
+}
+
+/// 开会话：选在哪个项目、用哪个助手。`places` 是 (「项目 · 电脑」, `电脑|文件夹`)。
+/// `text` 为 None（菜单、只发了 /new）时卡片上多一个写第一句话的输入框
+pub fn start(en: bool, text: Option<&str>, places: &[(String, String)], place: &str, agent: &str, act: &Act) -> Value {
+    let title = tr(en, "开一个新会话", "Start a new session");
+    let agents = [("Claude Code".to_string(), "claude".to_string()), ("Codex".to_string(), "codex".to_string())];
+    let mut fields = vec![select("place", &tr(en, "项目 · 电脑", "Project · computer"), places, place), select("agent", &tr(en, "助手", "Assistant"), &agents, agent)];
+    if text.is_none() {
+        fields.push(first_input(en));
+    }
+    fields.push(json!({ "tag": "button", "name": "go", "text": plain(&tr(en, "开始", "Start")), "type": "primary", "form_action_type": "submit", "behaviors": [{ "type": "callback", "value": act }] }));
+    let form = json!({ "tag": "form", "name": "start", "elements": fields });
+    let mut els = vec![];
+    if let Some(t) = text {
+        els.push(note(&t.chars().take(200).collect::<String>()));
+    }
+    els.push(form);
+    card(header(&title, "", "blue", None), &title, els)
+}
+
+/// 开会话卡片点了以后：灰色，写明在哪开始
+pub fn starting(en: bool, text: &str, place: &str) -> Value {
+    let title = tr(en, &format!("正在 {place} 上开始…"), &format!("Starting on {place}…"));
+    let preview: String = text.chars().take(200).collect();
+    card(header(&title, "", "grey", None), &title, vec![note(&preview)])
+}
+
+/// AI 的正文：markdown（代码块、列表要能看），只去掉 `<at`，不让 AI 输出 @ 人
+pub fn body_markdown(text: &str) -> String {
+    text.replace("<at", "‹at")
+}
+
+/// 一轮的流式卡片：正文边写边出，状态行写正在做什么
+pub fn stream(i: &Info, stop: &Act) -> Value {
+    let title = format!("{} · {}", i.agent, if i.title.is_empty() { i.project } else { i.title });
+    let mut buttons = vec![];
+    if i.actions {
+        buttons.push(button(&tr(i.en, "停止", "Stop"), "danger", stop, None));
+    }
+    buttons.push(open(i));
+    let mut c = card(
+        header(&title, &subtitle(i), "blue", None),
+        &title,
+        vec![
+            json!({ "tag": "markdown", "element_id": STREAM_BODY, "content": "…" }),
+            // 状态行也要能流式更新：流式接口只认 markdown 和 plain_text 组件
+            json!({ "tag": "markdown", "element_id": STREAM_STATUS, "content": tr(i.en, "正在思考…", "Thinking…"), "text_size": "notation" }),
+            row(buttons),
+        ],
+    );
+    c["config"]["streaming_mode"] = json!(true);
+    c
+}
+
+/// 一轮结束：整卡换成结果。`outcome`：done / failed / stopped。
+/// `new`：卡片底下“新会话”（同一台电脑、同一个项目、同一个助手）的按钮
+pub fn stream_done(i: &Info, outcome: &str, text: &str, took_ms: i64, new: &Act) -> Value {
+    let (title, template) = match outcome {
+        "done" => (tr(i.en, "做完了", "Done"), "green"),
+        "failed" => (tr(i.en, "出错了", "Something went wrong"), "red"),
+        _ => (tr(i.en, "已停止", "Stopped"), "grey"),
+    };
+    let mut els = vec![json!({ "tag": "markdown", "element_id": STREAM_BODY, "content": if text.is_empty() { "…" } else { text } })];
+    let mut foot = tr(i.en, "在这条消息的话题里回复，接着跟 AI 说", "Reply in this thread to keep talking to the AI");
+    if took_ms > 0 {
+        foot = format!("{} · {foot}", tr(i.en, &format!("用时 {}", duration(took_ms, false)), &format!("Took {}", duration(took_ms, true))));
+    }
+    els.push(note(&foot));
+    els.push(row(vec![open(i)]));
+    if i.actions {
+        els.push(json!({
+            "tag": "form",
+            "name": "new",
+            "elements": [
+                { "tag": "input", "name": "text", "placeholder": plain(&tr(i.en, &format!("在 {} 里开新会话，第一句话…", i.project), &format!("New session in {}: first message…", i.project))), "max_length": 4000, "width": "fill" },
+                { "tag": "button", "name": "new", "text": plain(&tr(i.en, "新会话", "New session")), "type": "default", "form_action_type": "submit", "behaviors": [{ "type": "callback", "value": new }] },
+            ],
+        }));
+    }
+    let head = format!("{title} · {}", if i.title.is_empty() { i.project } else { i.title });
+    card(header(&head, &subtitle(i), template, None), &head, els)
+}
+
+/// 一个话题的第一条：新会话（`text` 是第一句话），或者“在飞书里接着”一个已有的会话（`text` 为空）
+pub fn root(i: &Info, text: &str) -> Value {
+    let title = if text.is_empty() {
+        tr(i.en, &format!("接着 {} 的会话", i.agent), &format!("Continue the {} session", i.agent))
+    } else {
+        tr(i.en, &format!("新会话 · {}", i.agent), &format!("New session · {}", i.agent))
+    };
+    let mut els = vec![];
+    if !text.is_empty() {
+        els.push(div(&text.chars().take(500).collect::<String>()));
+    }
+    els.push(note(&tr(i.en, "在这条消息的话题里回复，就是跟这个会话说。", "Reply in this message’s thread to talk to this session.")));
+    els.push(row(vec![open(i)]));
+    card(header(&title, &subtitle(i), "blue", None), &title, els)
+}
+
+/// 会话列表里的一行
+pub struct SessionRow {
+    pub agent: String,
+    pub title: String,
+    pub project: String,
+    pub device: String,
+    /// working / attn / ended / idle
+    pub board: String,
+    pub pick: Act,
+}
+
+/// 正在跑的会话（菜单「会话」）：每个会话一行，「在飞书里接着」开一个对应它的话题
+pub fn sessions(en: bool, rows: &[SessionRow], url: &str) -> Value {
+    let title = tr(en, &format!("{} 个会话", rows.len()), &format!("{} sessions", rows.len()));
+    let mut els = Vec::new();
+    if rows.is_empty() {
+        els.push(div(&tr(en, "现在没有在运行的会话。", "No sessions are running right now.")));
+    }
+    for r in rows {
+        let state = match r.board.as_str() {
+            "attn" => tr(en, "等你处理", "Needs you"),
+            "working" => tr(en, "正在干活", "Working"),
+            "ended" => tr(en, "刚结束", "Just finished"),
+            _ => tr(en, "空闲", "Idle"),
+        };
+        let name = if r.title.is_empty() { &r.project } else { &r.title };
+        els.push(json!({
+            "tag": "column_set",
+            "flex_mode": "none",
+            "horizontal_spacing": "8px",
+            "columns": [
+                { "tag": "column", "width": "weighted", "weight": 1, "vertical_align": "center", "elements": [div(&format!("{} · {name}", r.agent)), note(&format!("{state} · {} · {}", r.project, r.device))] },
+                { "tag": "column", "width": "auto", "vertical_align": "center", "elements": [button(&tr(en, "在飞书里接着", "Continue here"), "default", &r.pick, None)] },
+            ],
+        }));
+    }
+    els.push(row(vec![link(&tr(en, "打开任务", "Open Tasks"), url)]));
+    card(header(&title, "", "blue", None), &title, els)
+}
+
+/// 菜单「任务」：一个打开任务页的链接
+pub fn tasks_link(en: bool, url: &str) -> Value {
+    let title = tr(en, "看看的任务页", "LookLook Tasks");
+    card(header(&title, "", "blue", None), &title, vec![row(vec![link(&tr(en, "打开任务", "Open Tasks"), url)])])
+}
+
 /// 用时：12 秒、3 分、1 小时 5 分
 pub fn duration(ms: i64, en: bool) -> String {
     let s = ms / 1000;
@@ -437,5 +609,50 @@ mod tests {
         assert_eq!(buttons(&c), ["打开", "停止"]);
         assert!(c.to_string().contains("已经 21 分没有新的进展"));
         assert_eq!(buttons(&stalled(&info(false), "", 60_000, &Act::default())), ["打开"]);
+    }
+
+    #[test]
+    fn agent_cards() {
+        let places = [("looklook · 工作站".to_string(), "dev1|/w/looklook".to_string()), ("api · 笔记本".to_string(), "dev2|/w/api".to_string())];
+        let act = Act { a: "ag_start".into(), n: "x".into(), t: Some("修一下登录页".into()), m: Some("om_1".into()), ..Default::default() };
+        let c = start(false, Some("修一下登录页"), &places, "dev2|/w/api", "codex", &act);
+        let form = &c["body"]["elements"][1];
+        assert_eq!(form["elements"][0]["initial_option"], "dev2|/w/api");
+        assert_eq!(form["elements"][1]["initial_option"], "codex");
+        // 原话和消息 id 跟着按钮回来
+        assert_eq!(form["elements"][2]["behaviors"][0]["value"]["t"], "修一下登录页");
+        assert_eq!(form["elements"][2]["behaviors"][0]["value"]["m"], "om_1");
+        // 上次选的不在列表里：不设默认
+        assert!(start(false, Some("x"), &places, "dev9|/gone", "claude", &act)["body"]["elements"][1]["elements"][0].get("initial_option").is_none());
+        // 没有原话：多一个输入框
+        let c = start(false, None, &places, "", "claude", &act);
+        assert_eq!(c["body"]["elements"][0]["elements"][2]["name"], "text");
+        assert_eq!(c["body"]["elements"][0]["elements"][2]["required"], true);
+
+        let c = stream(&info(true), &Act { a: "ag_stop".into(), n: "n".into(), ..Default::default() });
+        assert_eq!(c["config"]["streaming_mode"], true);
+        assert_eq!(c["config"]["update_multi"], true);
+        assert_eq!(c["body"]["elements"][0]["element_id"], STREAM_BODY);
+        assert_eq!(c["body"]["elements"][1]["element_id"], STREAM_STATUS);
+        assert_eq!(buttons(&c), ["停止", "打开"]);
+        assert_eq!(buttons(&stream(&info(false), &Act::default())), ["打开"]);
+
+        let new = Act { a: "ag_new".into(), n: "n".into(), ..Default::default() };
+        let c = stream_done(&info(true), "done", "改好了", 65_000, &new);
+        assert_eq!(c["header"]["template"], "green");
+        assert!(c["config"].get("streaming_mode").is_none());
+        assert!(c.to_string().contains("用时 1 分"));
+        assert_eq!(buttons(&c), ["打开", "新会话"]);
+        assert_eq!(buttons(&stream_done(&info(false), "done", "", 0, &new)), ["打开"]);
+        assert_eq!(stream_done(&info(true), "stopped", "", 0, &new)["header"]["template"], "grey");
+
+        assert!(root(&info(true), "修登录页").to_string().contains("新会话 · Claude"));
+        assert!(root(&info(true), "").to_string().contains("接着 Claude 的会话"));
+        let row = SessionRow { agent: "Codex".into(), title: "".into(), project: "api".into(), device: "笔记本".into(), board: "attn".into(), pick: Act::default() };
+        let c = sessions(false, &[row], "u");
+        assert!(c.to_string().contains("等你处理 · api · 笔记本"));
+        assert_eq!(buttons(&c), ["在飞书里接着", "打开任务"]);
+        assert!(sessions(true, &[], "u").to_string().contains("No sessions"));
+        assert_eq!(body_markdown("<at id=all></at>"), "‹at id=all></at>");
     }
 }

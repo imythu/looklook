@@ -80,11 +80,17 @@ pub struct Rules {
     pub done_batch: u32,
     /// 正在干活、但这么多分钟没有新进展时提醒一次（0 = 不提醒）
     pub stall_min: u32,
+    /// 在飞书里和 AI 对话：私聊发一句开会话、在话题里回复接着说（docs/FEISHU_AGENT.md）。默认关
+    pub agent: bool,
+    /// 私聊直接发一句时不问，直接在上次选的项目里开（`/new` 不带话照样问）
+    pub agent_direct: bool,
+    /// 群里 @ 机器人也能用（只认绑定的人；回复群里的人都看得到）
+    pub agent_groups: bool,
 }
 
 impl Default for Rules {
     fn default() -> Self {
-        Self { done: true, failed: true, actions: true, content: true, muted: vec![], lang: "zh-CN".into(), quiet: None, done_batch: 0, stall_min: 20 }
+        Self { done: true, failed: true, actions: true, content: true, muted: vec![], lang: "zh-CN".into(), quiet: None, done_batch: 0, stall_min: 20, agent: false, agent_direct: false, agent_groups: false }
     }
 }
 
@@ -135,7 +141,7 @@ pub fn load_rules(store: &crate::store::Store) -> Rules {
     settings_sync::values(store, COLLECTION).ok().and_then(|mut m| m.remove("rules")).and_then(|v| serde_json::from_value(v).ok()).unwrap_or_default()
 }
 
-fn save(app: &App, id: &str, v: Option<Value>) -> Result<(), LocalError> {
+pub(crate) fn save(app: &App, id: &str, v: Option<Value>) -> Result<(), LocalError> {
     if settings_sync::write_local(&app.store, app.account.clock.now_ms(), COLLECTION, &[(id, v)])? {
         app.sync.poke();
     }
@@ -195,10 +201,11 @@ pub fn attn_key(brief: &Value) -> Option<String> {
     })
 }
 
-/// “等你处理”的卡片该发了：进入 10 秒还没处理、没人正开着、没静音
-fn attn_due(brief: &Value, now: i64, muted: bool) -> bool {
+/// “等你处理”的卡片该发了：进入 10 秒还没处理、没人正开着、没静音。
+/// `chatting`：正在飞书里对话的会话，人就在飞书上等着，2 秒就发
+fn attn_due(brief: &Value, now: i64, muted: bool, chatting: bool) -> bool {
     let since = brief["since"].as_i64().unwrap_or(now);
-    now - since >= ATTN_DELAY_MS && brief["watched"] != true && !muted
+    now - since >= if chatting { 2_000 } else { ATTN_DELAY_MS } && brief["watched"] != true && !muted
 }
 
 /// 卡住了没有：最后一次进展之后超过 `min` 分钟
@@ -273,7 +280,7 @@ struct Sent {
 
 /// [`Info`] 的自有版本
 #[derive(Debug, Clone, Default)]
-struct Owned {
+pub(crate) struct Owned {
     en: bool,
     agent: String,
     title: String,
@@ -285,7 +292,7 @@ struct Owned {
 }
 
 impl Owned {
-    fn info(&self) -> Info<'_> {
+    pub(crate) fn info(&self) -> Info<'_> {
         Info { en: self.en, agent: &self.agent, title: &self.title, project: &self.project, device: &self.device, url: &self.url, content: self.content, actions: self.actions }
     }
 }
@@ -347,28 +354,30 @@ pub struct Notifier {
     auth_failed: AtomicBool,
     http: std::sync::OnceLock<reqwest::Client>,
     hooks: Arc<Mutex<HashMap<String, HookStatus>>>,
+    /// 在飞书里和 AI 对话（src/feishu_agent.rs）
+    pub agent: crate::feishu_agent::Agent,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn nonce() -> String {
+pub(crate) fn nonce() -> String {
     use rand::RngCore;
     let mut b = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut b);
     b64(&b)
 }
 
-fn tr(en: bool, zh: &str, e: &str) -> String {
+pub(crate) fn tr(en: bool, zh: &str, e: &str) -> String {
     if en { e.into() } else { zh.into() }
 }
 
-fn toast(kind: &str, text: &str) -> Value {
+pub(crate) fn toast(kind: &str, text: &str) -> Value {
     json!({ "toast": { "type": kind, "content": text } })
 }
 
-fn with_card(mut v: Value, card: Value) -> Value {
+pub(crate) fn with_card(mut v: Value, card: Value) -> Value {
     v["card"] = json!({ "type": "raw", "data": card });
     v
 }
@@ -390,7 +399,7 @@ impl Notifier {
         lock(&self.status).error = Some(json!({ "code": code, "msg": msg, "at": crate::util::system_ms() }));
     }
 
-    fn record_err(&self, e: &anyhow::Error) {
+    pub(crate) fn record_err(&self, e: &anyhow::Error) {
         let code = feishu::code_of(e).unwrap_or(-1);
         tracing::warn!(error = %e, "飞书通知");
         self.set_error(code, &e.to_string());
@@ -500,7 +509,7 @@ impl Notifier {
     }
 
     /// 一个会话的卡片信息
-    fn info(&self, app: &App, id: &str, brief: &Value, rules: &Rules) -> Option<Owned> {
+    pub(crate) fn info(&self, app: &App, id: &str, brief: &Value, rules: &Rules) -> Option<Owned> {
         let row = app.store.instance(id).ok().flatten()?;
         let en = rules.lang.starts_with("en");
         let agent = if brief["agent"] == "codex" { "Codex" } else { "Claude" };
@@ -529,11 +538,13 @@ impl Notifier {
                     self.close(out, s, &close_text(&brief, s.info.en)).await;
                 }
             }
+            // 在飞书里对话过的会话：卡片回复到那个话题里
+            let anchor = self.agent.anchor(app, id);
             if let Some(k) = key.as_ref().filter(|_| !busy) {
                 let fresh = live.as_ref().is_none_or(|s| s.key.as_ref() != Some(k));
-                if fresh && !quiet && attn_due(&brief, now, muted) {
+                if fresh && !quiet && attn_due(&brief, now, muted, self.agent.following(id)) {
                     if let Some(info) = self.info(app, id, &brief, &rules) {
-                        self.send_attn(out, &own, id, k, &brief, info).await;
+                        self.send_attn(out, &own, id, k, &brief, info, anchor.as_deref()).await;
                     }
                 }
             }
@@ -541,7 +552,11 @@ impl Notifier {
             let turn = &brief["turn"];
             let first = !lock(&self.seen).contains_key(id);
             let last = lock(&self.seen).entry(id.clone()).or_default().last_end;
-            let notice = end_notice(&brief, last, first, &rules, muted, now);
+            let mut notice = end_notice(&brief, last, first, &rules, muted, now);
+            // 这一轮已经用流式卡片推过结果了
+            if matches!(notice, EndNotice::Send { .. } | EndNotice::Wait) && turn["ended_at"].as_i64().is_some_and(|e| self.agent.covers(id, e)) {
+                notice = EndNotice::Record;
+            }
             if let (EndNotice::Record | EndNotice::Send { .. }, Some(end)) = (&notice, turn["ended_at"].as_i64()) {
                 lock(&self.seen).entry(id.clone()).or_default().last_end = end;
             }
@@ -558,13 +573,14 @@ impl Notifier {
                 let base = Act { dev: own.clone(), inst: id.clone(), n: n.clone(), ..Default::default() };
                 let c = card::ended(&info.info(), failed, text, end - started, &base);
                 let m = push::ended(&info.info(), failed, text, end - started);
-                let msg = self.send(out, &c, &m).await;
+                let msg = self.send(out, &c, &m, anchor.as_deref()).await;
                 self.remember(Sent { msg, inst: id.clone(), key: None, nonce: n, busy: false, info });
             }
         }
         if !quiet && rules.stall_min > 0 {
             for id in &ids {
-                self.check_stall(app, out, &own, id, &rules, now).await;
+                let anchor = self.agent.anchor(app, id);
+                self.check_stall(app, out, &own, id, &rules, now, anchor.as_deref()).await;
             }
         }
         // 会话没了：清掉记录
@@ -575,12 +591,13 @@ impl Notifier {
         if dropped > 0 && self.budget() {
             self.dropped.store(0, Ordering::SeqCst);
             let (en, url) = (rules.lang.starts_with("en"), page_url(app, "tasks"));
-            self.send(out, &card::digest(en, dropped, &url), &push::digest(en, dropped, &url)).await;
+            self.send(out, &card::digest(en, dropped, &url), &push::digest(en, dropped, &url), None).await;
         }
     }
 
     /// 卡住提醒：正在干活、但 `stall_min` 分钟没有新进展（额度用完在等重置的不算）。同一次停顿只提醒一次
-    async fn check_stall(&self, app: &App, out: &Out, own: &str, id: &str, rules: &Rules, now: i64) {
+    #[allow(clippy::too_many_arguments)]
+    async fn check_stall(&self, app: &App, out: &Out, own: &str, id: &str, rules: &Rules, now: i64, anchor: Option<&str>) {
         let Some(brief) = app.chat.brief(id) else { return };
         if brief["board"] != "working" || !brief["limit"].is_null() || brief["watched"] == true {
             return;
@@ -605,7 +622,7 @@ impl Notifier {
         // `p` 带上这次停顿的开始时间：点“停止”时还是这次停顿才停
         let base = Act { dev: own.into(), inst: id.into(), p: active.to_string(), n: n.clone(), ..Default::default() };
         let c = card::stalled(&info.info(), &doing, now - active, &base);
-        let msg = self.send(out, &c, &push::stalled(&info.info(), &doing, now - active)).await;
+        let msg = self.send(out, &c, &push::stalled(&info.info(), &doing, now - active), anchor).await;
         self.remember(Sent { msg, inst: id.into(), key: None, nonce: n, busy: false, info });
     }
 
@@ -622,10 +639,11 @@ impl Notifier {
         };
         let (en, url) = (rules.lang.starts_with("en"), page_url(app, "tasks"));
         let c = card::summary(en, lines.1, &lines.0, rules.content, &url);
-        self.send(out, &c, &push::summary(en, lines.1, &lines.0, rules.content, &url)).await;
+        self.send(out, &c, &push::summary(en, lines.1, &lines.0, rules.content, &url), None).await;
     }
 
-    async fn send_attn(&self, out: &Out, own: &str, id: &str, key: &str, brief: &Value, info: Owned) {
+    #[allow(clippy::too_many_arguments)]
+    async fn send_attn(&self, out: &Out, own: &str, id: &str, key: &str, brief: &Value, info: Owned, anchor: Option<&str>) {
         let a = &brief["attn"];
         let options: Vec<String> = a["options"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         let limit_wait = options.iter().position(|o| o.starts_with(crate::chat::screen::LIMIT_AUTO));
@@ -634,7 +652,7 @@ impl Notifier {
         let n = nonce();
         let base = Act { dev: own.into(), inst: id.into(), p: key.into(), n: n.clone(), ..Default::default() };
         let c = card::attn(&info.info(), &at, &base);
-        let msg = self.send(out, &c, &push::attn(&info.info(), &at)).await;
+        let msg = self.send(out, &c, &push::attn(&info.info(), &at), anchor).await;
         self.remember(Sent { msg, inst: id.into(), key: Some(key.into()), nonce: n, busy: false, info });
     }
 
@@ -655,8 +673,9 @@ impl Notifier {
         g.len() < PER_MINUTE
     }
 
-    /// 发一条：飞书发卡片，只通知的渠道各发一条消息（后台发，不等）。超出每分钟上限时不发、记一笔（之后合并成一条）。返回飞书的消息 id
-    async fn send(&self, out: &Out, c: &Value, m: &Msg) -> Option<String> {
+    /// 发一条：飞书发卡片，只通知的渠道各发一条消息（后台发，不等）。超出每分钟上限时不发、记一笔（之后合并成一条）。返回飞书的消息 id。
+    /// `anchor`：飞书卡片回复到这条消息的话题里（在飞书里对话过的会话）
+    async fn send(&self, out: &Out, c: &Value, m: &Msg, anchor: Option<&str>) -> Option<String> {
         if !self.budget() {
             self.dropped.fetch_add(1, Ordering::SeqCst);
             return None;
@@ -668,7 +687,11 @@ impl Notifier {
         let (api, open_id) = out.feishu.as_ref()?;
         // 发给同一个人每秒最多 5 条
         tokio::time::sleep(Duration::from_millis(220)).await;
-        match api.send_card(open_id, c).await {
+        let r = match anchor {
+            Some(m) => api.reply(m, "interactive", c, true).await,
+            None => api.send_card(open_id, c).await,
+        };
+        match r {
             Ok(id) => {
                 let mut s = lock(&self.status);
                 s.sent_at = Some(crate::util::system_ms());
@@ -714,6 +737,11 @@ impl Notifier {
         }
     }
 
+    /// 这条消息是发给哪个会话的通知卡片（在它下面回复 = 接着那个会话说）
+    pub(crate) fn inst_of_card(&self, msg: &str) -> Option<String> {
+        lock(&self.cards).iter().find(|s| s.msg.as_deref() == Some(msg)).map(|s| s.inst.clone())
+    }
+
     fn card_by_nonce(&self, n: &str) -> Option<Sent> {
         lock(&self.cards).iter().find(|s| s.nonce == n).cloned()
     }
@@ -727,6 +755,9 @@ impl Notifier {
     /// 在本机处理卡片上的操作。返回 (toast, 换上的卡片)
     pub async fn act(&self, app: &App, act: &Act, text: Option<&str>) -> Result<(String, Option<Value>), LocalError> {
         let en = load_rules(&app.store).lang.starts_with("en");
+        if act.a == crate::feishu_agent::STOP {
+            return self.agent.stop(app, act, en).await;
+        }
         let Some(sent) = self.card_by_nonce(&act.n).filter(|s| s.inst == act.inst) else {
             return Ok((tr(en, "这张卡片已经过期了，打开看看处理", "This card has expired. Open LookLook instead."), None));
         };
@@ -823,6 +854,9 @@ impl Notifier {
         if !load_rules(&app.store).actions {
             return Some(toast("info", &tr(en, "已设置为只通知，打开看看处理", "Notify-only mode. Open LookLook to respond.")));
         }
+        if crate::feishu_agent::handles(&act.a) {
+            return Some(crate::feishu_agent::on_card(app, &act, ev, operator).await);
+        }
         let own = app.account.session().map(|s| s.device_id).unwrap_or_default();
         if act.dev == own {
             // 放到单独的任务里：超过 3 秒也不会被取消，做完后自己更新卡片
@@ -867,10 +901,25 @@ impl Notifier {
     async fn on_message(&self, app: &App, ev: &Value) {
         let Some(f) = load_feishu(&app.store) else { return };
         let msg = &ev["message"];
-        if msg["chat_type"] != "p2p" || msg["message_type"] != "text" {
+        let Some(open_id) = ev["sender"]["sender_id"]["open_id"].as_str() else { return };
+        // 群里：只有绑定的人 @ 机器人才算（docs/FEISHU_AGENT.md §2.5），别人的一律不理
+        if msg["chat_type"] == "group" {
+            if f.open_id.as_deref() == Some(open_id) && load_rules(&app.store).agent_groups {
+                crate::feishu_agent::on_message(app, &f, ev).await;
+            }
             return;
         }
-        let Some(open_id) = ev["sender"]["sender_id"]["open_id"].as_str() else { return };
+        if msg["chat_type"] != "p2p" {
+            return;
+        }
+        // 绑定的人发来的（不是绑定码）：交给“在飞书里和 AI 对话”
+        if f.open_id.as_deref() == Some(open_id) && !pair_ok(&f, &crate::feishu_agent::message_text(msg), crate::util::system_ms()) {
+            crate::feishu_agent::on_message(app, &f, ev).await;
+            return;
+        }
+        if msg["message_type"] != "text" {
+            return;
+        }
         let text = msg["content"].as_str().and_then(|c| serde_json::from_str::<Value>(c).ok()).and_then(|c| c["text"].as_str().map(|t| t.trim().to_string())).unwrap_or_default();
         let en = load_rules(&app.store).lang.starts_with("en");
         let api = self.api(&f);
@@ -885,8 +934,6 @@ impl Notifier {
             tr(en, "已绑定。看看的通知会发到这里。", "Bound. LookLook notifications will arrive here.")
         } else if text.len() == 6 && text.chars().all(|c| c.is_ascii_digit()) {
             tr(en, "绑定码不对或已过期，请在看看的设置页里看最新的码。", "Wrong or expired code. Check the latest code in LookLook settings.")
-        } else if f.open_id.as_deref() == Some(open_id) {
-            tr(en, "要回复 AI，请在通知卡片的输入框里写。", "To reply to the AI, use the input box on a notification card.")
         } else {
             tr(en, "请发送看看设置页里显示的 6 位绑定码。", "Send the 6-digit code shown in LookLook settings.")
         };
@@ -907,6 +954,12 @@ impl Notifier {
         }
         match header["event_type"].as_str() {
             Some("card.action.trigger") => self.on_card(app, &v["event"]).await,
+            Some("application.bot.menu_v6") => {
+                let app = app.clone();
+                let ev = v["event"].clone();
+                tokio::spawn(async move { crate::feishu_agent::on_menu(&app, &ev).await });
+                None
+            }
             Some("im.message.receive_v1") => {
                 // 回复要发消息，不挡着这条事件的应答
                 let me = app.notify.clone();
@@ -956,7 +1009,7 @@ pub fn feishu_error(e: &anyhow::Error) -> LocalError {
 }
 
 /// 稳定地址下的页面（手机上点“打开”）
-fn page_url(app: &App, path: &str) -> String {
+pub(crate) fn page_url(app: &App, path: &str) -> String {
     match app.account.session().map(|s| s.user_host_url).filter(|u| !u.is_empty()) {
         Some(u) => format!("{}/{path}", u.trim_end_matches('/')),
         None => format!("http://{}/{path}", app.ui_addr),
@@ -995,36 +1048,51 @@ struct ActionPayload {
     operator: String,
 }
 
-fn message(from: &str, to: &str, ts: i64, payload: &str) -> String {
-    format!("looklook-notify-v1\n{from}\n{to}\n{ts}\n{}", b64(&Sha256::digest(payload.as_bytes())))
+/// 签名签的串。`kind`：卡片操作是 `looklook-notify-v1`，飞书对话是 `looklook-notify-agent-v1`，不能互相冒用
+fn message(kind: &str, from: &str, to: &str, ts: i64, payload: &str) -> String {
+    format!("{kind}\n{from}\n{to}\n{ts}\n{}", b64(&Sha256::digest(payload.as_bytes())))
+}
+
+const ACTION_KIND: &str = "looklook-notify-v1";
+
+/// 带设备签名发给同一账户的另一台电脑（经 WebRTC）
+pub(crate) async fn signed_post(app: &App, dev: &str, path: &str, kind: &str, payload: String) -> Result<Option<Value>, LocalError> {
+    let own = app.account.session().ok_or_else(|| LocalError::new("NOT_LOGGED_IN"))?.device_id;
+    let link = app.outbound.link(&app.account, dev).await.map_err(|e| e.local())?;
+    let ts = app.account.clock.now_ms();
+    let (key, sig) = app.account.sign_device(&message(kind, &own, dev, ts, &payload)).ok_or_else(|| LocalError::new("NOT_LOGGED_IN"))?;
+    let req = ActionReq { v: 1, from: own, to: dev.into(), ts, key, sig, payload };
+    crate::rtc::outbound::post_json::<Value>(&link, path, &req, 256 * 1024, "NOTIFY_PROTOCOL").await
+}
+
+/// 核对另一台电脑转来的请求：发给本机的、时间没偏太多、签名是同一账户那台电脑的
+pub(crate) async fn verify_signed(app: &App, req: &ActionReq, kind: &str) -> Result<(), LocalError> {
+    let own = app.account.session().ok_or_else(|| LocalError::new("NOT_LOGGED_IN"))?.device_id;
+    if req.v != 1 || req.to != own || (req.ts - app.account.clock.now_ms()).abs() > MAX_SKEW_MS {
+        return Err(LocalError::new("NOTIFY_SIGNATURE"));
+    }
+    let msg = message(kind, &req.from, &req.to, req.ts, &req.payload);
+    let mut check = app.outbound.verify_peer(&app.account, &req.from, &req.key, &msg, &req.sig, false).await?;
+    if matches!(check, PeerCheck::Bad) {
+        check = app.outbound.verify_peer(&app.account, &req.from, &req.key, &msg, &req.sig, true).await?;
+    }
+    if !matches!(check, PeerCheck::Ok(_)) {
+        tracing::warn!(dev = %req.from, "飞书：转来的请求签名不对");
+        return Err(LocalError::new("NOTIFY_SIGNATURE"));
+    }
+    Ok(())
 }
 
 async fn forward(app: &App, act: &Act, text: Option<&str>, operator: &str) -> Result<(), LocalError> {
-    let own = app.account.session().ok_or_else(|| LocalError::new("NOT_LOGGED_IN"))?.device_id;
-    let link = app.outbound.link(&app.account, &act.dev).await.map_err(|e| e.local())?;
     let payload = serde_json::to_string(&ActionPayload { act: act.clone(), text: text.map(String::from), operator: operator.into() }).map_err(anyhow::Error::from)?;
-    let ts = app.account.clock.now_ms();
-    let (key, sig) = app.account.sign_device(&message(&own, &act.dev, ts, &payload)).ok_or_else(|| LocalError::new("NOT_LOGGED_IN"))?;
-    let req = ActionReq { v: 1, from: own, to: act.dev.clone(), ts, key, sig, payload };
-    crate::rtc::outbound::post_json::<Value>(&link, ACTION_PATH, &req, 64 * 1024, "NOTIFY_PROTOCOL").await?;
+    signed_post(app, &act.dev, ACTION_PATH, ACTION_KIND, payload).await?;
     Ok(())
 }
 
 /// 另一台电脑转来的卡片操作（`POST /api/notify/action`，只接受 `Access::Rtc`）：校验签名和操作人，处理后自己更新卡片。
 pub async fn receive(app: &App, req: ActionReq) -> Result<Value, LocalError> {
     let own = app.account.session().ok_or_else(|| LocalError::new("NOT_LOGGED_IN"))?.device_id;
-    if req.v != 1 || req.to != own || (req.ts - app.account.clock.now_ms()).abs() > MAX_SKEW_MS {
-        return Err(LocalError::new("NOTIFY_SIGNATURE"));
-    }
-    let msg = message(&req.from, &req.to, req.ts, &req.payload);
-    let mut check = app.outbound.verify_peer(&app.account, &req.from, &req.key, &msg, &req.sig, false).await?;
-    if matches!(check, PeerCheck::Bad) {
-        check = app.outbound.verify_peer(&app.account, &req.from, &req.key, &msg, &req.sig, true).await?;
-    }
-    if !matches!(check, PeerCheck::Ok(_)) {
-        tracing::warn!(dev = %req.from, "飞书：转来的操作签名不对");
-        return Err(LocalError::new("NOTIFY_SIGNATURE"));
-    }
+    verify_signed(app, &req, ACTION_KIND).await?;
     let p: ActionPayload = serde_json::from_str(&req.payload).map_err(|_| LocalError::new("NOTIFY_PROTOCOL"))?;
     let f = load_feishu(&app.store).ok_or_else(|| LocalError::new("NOTIFY_NOT_CONFIGURED"))?;
     if f.open_id.as_deref() != Some(p.operator.as_str()) || p.act.dev != own || !load_rules(&app.store).actions {
@@ -1111,10 +1179,13 @@ mod tests {
     fn attn_rules() {
         let now = 1_000_000;
         let b = |since: i64, watched: bool| json!({ "board": "attn", "since": since, "watched": watched, "attn": { "kind": "permission", "pending_id": 1 } });
-        assert!(!attn_due(&b(now - 5_000, false), now, false));
-        assert!(attn_due(&b(now - 10_000, false), now, false));
-        assert!(!attn_due(&b(now - 60_000, true), now, false));
-        assert!(!attn_due(&b(now - 60_000, false), now, true));
+        assert!(!attn_due(&b(now - 5_000, false), now, false, false));
+        assert!(attn_due(&b(now - 10_000, false), now, false, false));
+        assert!(!attn_due(&b(now - 60_000, true), now, false, false));
+        assert!(!attn_due(&b(now - 60_000, false), now, true, false));
+        // 正在飞书里对话：2 秒就发
+        assert!(attn_due(&b(now - 2_000, false), now, false, true));
+        assert!(!attn_due(&b(now - 1_000, false), now, false, true));
         assert_eq!(close_text(&b(now, false), false), "已被新的请求替换");
         assert_eq!(close_text(&json!({ "board": "stopped" }), false), "会话已结束");
         assert_eq!(close_text(&json!({ "board": "idle", "phase": "tui" }), true), "Moved to the terminal");
@@ -1168,7 +1239,9 @@ mod tests {
 
     #[test]
     fn signed_message_binds_payload() {
-        assert_ne!(message("a", "b", 1, "{}"), message("a", "b", 1, "{ }"));
-        assert!(message("a", "b", 1, "{}").starts_with("looklook-notify-v1\na\nb\n1\n"));
+        assert_ne!(message(ACTION_KIND, "a", "b", 1, "{}"), message(ACTION_KIND, "a", "b", 1, "{ }"));
+        assert!(message(ACTION_KIND, "a", "b", 1, "{}").starts_with("looklook-notify-v1\na\nb\n1\n"));
+        // 飞书对话的请求签名不能拿来冒充卡片操作
+        assert_ne!(message(ACTION_KIND, "a", "b", 1, "{}"), message(crate::feishu_agent::RPC_KIND, "a", "b", 1, "{}"));
     }
 }

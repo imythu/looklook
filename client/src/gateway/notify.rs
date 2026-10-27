@@ -189,3 +189,12 @@ pub async fn action(State(app): State<App>, Extension(access): Extension<Access>
     require_allowed(&app)?;
     Ok(Json(notify::receive(&app, req).await?))
 }
+
+/// 另一台电脑转来的“在飞书里和 AI 对话”请求（docs/FEISHU_AGENT.md）：同样只接受经 WebRTC、带设备签名的
+pub async fn agent(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<notify::ActionReq>) -> R<Json<Value>> {
+    if !matches!(access, Access::Rtc { .. }) {
+        return Err(LocalError::new("SYNC_NEED_RTC"));
+    }
+    require_allowed(&app)?;
+    Ok(Json(crate::feishu_agent::receive(&app, req).await?))
+}
