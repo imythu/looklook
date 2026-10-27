@@ -1,4 +1,5 @@
-# 看看客户端发布（手动触发；维护者在私有仓库里用 scripts/release.sh publish 导出代码、推送并触发）：
+# 看看客户端发布（正式版手动触发；维护者在私有仓库里用 scripts/release.sh publish 导出代码、推送并触发。
+# Beta 版推送到 beta 分支就自动发，通道固定是 beta，只用 SSH 推送、不用登录 gh）：
 # 检查版本与更新说明 → 三个平台并行构建安装包（Linux、Windows、macOS 各用一台 runner）
 # → 汇总生成 release.json 与 SHA256SUMS → 打标签 client-v{版本} 并创建 GitHub Release（附全部安装包）。
 # 看看服务端定期同步这里最新的 10 个 Release 到自己的下载目录（官网下载用这些文件），也可以直接从 Release 下载。
@@ -13,9 +14,12 @@
 #   LOOKLOOK_SERVER_URL     客户端默认服务端地址，编译时写入（https://…）
 #   LOOKLOOK_PLATFORM_KEYS  可选：内置平台公钥 p1=<base64url>（见服务端 /.well-known/looklook.json）
 name: client-release
-run-name: client-release (${{ inputs.channel }})
+run-name: client-release (${{ inputs.channel || 'beta' }})
 
 on:
+  # beta 分支只放 Beta 版（scripts/release.sh publish --channel beta 导出到这里），推上来就发
+  push:
+    branches: [beta]
   workflow_dispatch:
     inputs:
       channel:
@@ -57,6 +61,10 @@ jobs:
           set -euo pipefail
           v=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
           echo "version=$v" >> "$GITHUB_OUTPUT"
+          if [[ "${{ github.event_name }}" == push && "$v" != *-* ]]; then
+            echo "::error::beta 分支上的版本号 $v 不是 Beta 版（要像 1.45.0-beta.1）：正式版请手动触发"
+            exit 1
+          fi
           if git ls-remote --exit-code --tags origin "refs/tags/client-v$v" >/dev/null; then
             echo "::error::client-v$v 已发布：先提高 client/Cargo.toml 的版本号"
             exit 1
@@ -72,7 +80,7 @@ jobs:
               exit 1
             fi
           done
-          echo "发布 ${v}（${{ inputs.channel }}）" >> "$GITHUB_STEP_SUMMARY"
+          echo "发布 ${v}（${{ inputs.channel || 'beta' }}）" >> "$GITHUB_STEP_SUMMARY"
       - name: 暂存安装包的草稿 Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -290,7 +298,7 @@ jobs:
       - name: 版本目录
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: ${{ inputs.channel || 'beta' }}
           MIN_SUPPORTED: ${{ inputs.min_supported_version }}
         run: |
           set -euo pipefail
@@ -309,7 +317,7 @@ jobs:
       - name: 标签与 GitHub Release
         env:
           VERSION: ${{ needs.prepare.outputs.version }}
-          CHANNEL: ${{ inputs.channel }}
+          CHANNEL: ${{ inputs.channel || 'beta' }}
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
