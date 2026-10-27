@@ -1,18 +1,20 @@
 // 文件浏览：终端页的“文件”标签（传 id：从终端的当前目录开始）和管理台的“文件”页（不传 id：从主目录开始）。
-// 浏览这台电脑上的文件，预览文本、图片和 Markdown，下载、把路径填进终端；新建文件夹、重命名、删除、上传（拖进列表也行）。
+// 浏览这台电脑上的文件，预览文本、图片、Markdown 和办公文件（PDF、Word、Excel、CSV，OfficePreview.jsx），下载、把路径填进终端；新建文件夹、重命名、删除、上传（拖进列表也行）。
 // 终端标签的浏览、预览、下载挂在 /api/instances/{id}/… 下面，多台电脑时按终端路由到它所在的电脑（服务端 edge/route.rs）；
 // “文件”页与文件管理用 /api/fs/…，多台电脑时发给选中的那台（X-LL-Device）。
-import { ArrowUp, BookOpen, ChevronRight, Code2, Copy, Download, Eye, EyeOff, File, FileText, Folder, FolderPlus, Home, Image as ImageIcon, Link2, LocateFixed, PenLine, RefreshCw, TextCursorInput, Trash2, Upload, WrapText, X } from 'lucide-react';
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { ArrowUp, BookOpen, ChevronRight, Code2, Copy, Download, Eye, EyeOff, File, FileSpreadsheet, FileText, Folder, FolderPlus, Home, Image as ImageIcon, Link2, LocateFixed, PenLine, RefreshCw, TextCursorInput, Trash2, Upload, WrapText, X } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { deviceApi, fetchRaw, plainLinksWork, selectedDevice, terminalDevice } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import Markdown, { isMarkdown } from '../shared/Markdown.jsx';
+import { OFFICE_MAX, officeKind, parseCsv, WHOLE } from '../shared/office.js';
 import { relativeTime } from '../shared/time.js';
 import { Button, ErrorNote, Field, Modal, useConfirm, useToast } from '../shared/ui.jsx';
 import { dirUploadStore } from '../shared/uploader.js';
 import { formatBytes, quotePath } from '../shared/xfer.js';
+import { renderOffice, SheetView } from './OfficePreview.jsx';
 
 const IMAGE = /\.(png|jpe?g|gif|webp|bmp|ico|avif)$/i;
 const PREVIEW_MAX = 1024 * 1024; // 与 transfer::PREVIEW_MAX 一致
@@ -96,18 +98,34 @@ function Preview({ ep, entry, onClose, onInsert, sep }) {
   const [state, setState] = useState({ loading: true });
   const [wrap, setWrap] = useState(true);
   const md = isMarkdown(entry.name);
+  const office = officeKind(entry.name);
+  const csv = office === 'csv';
+  // Markdown 看排版效果 / 源码，CSV 看表格 / 源码
   const [rendered, setRendered] = useState(true);
   const image = IMAGE.test(entry.name);
+  const whole = WHOLE.includes(office);
   useEffect(() => {
     let alive = true;
     let url = null;
+    // 浏览器不能在页面里显示 PDF（安卓上的 Chrome 等）时不取回来，提示下载
+    const noPdf = office === 'pdf' && navigator.pdfViewerEnabled === false;
+    if (office === 'other' || noPdf || (whole && entry.size > OFFICE_MAX)) {
+      setState({ office: office === 'other' ? 'other' : noPdf ? 'no_pdf' : 'too_big' });
+      return undefined;
+    }
     setState({ loading: true });
-    // 图片取整个文件（预览接口只给前 1 MiB）
-    fetchRaw(image ? ep.download(entry.path) : ep.preview(entry.path))
+    // 图片、PDF、Word、Excel 取整个文件（预览接口只给前 1 MiB）
+    fetchRaw(image || whole ? ep.download(entry.path) : ep.preview(entry.path))
       .then(async (res) => {
         if (image) {
           url = URL.createObjectURL(await res.blob());
           if (alive) setState({ url });
+          return;
+        }
+        if (whole) {
+          const view = await renderOffice(office, await res.blob()).catch(() => null);
+          url = view?.url ?? null;
+          if (alive) setState(view ? { view } : { office: 'failed' });
           return;
         }
         const size = Number(res.headers.get('x-looklook-size') ?? entry.size ?? 0);
@@ -122,18 +140,27 @@ function Preview({ ep, entry, onClose, onInsert, sep }) {
   }, [entry.path]);
   const dir = entry.path.slice(0, Math.max(0, entry.path.lastIndexOf(sep))) || sep;
   const showMd = md && rendered && state.text != null;
+  const showSheet = csv && rendered && state.text != null;
+  const csvSheets = useMemo(() => (showSheet ? parseCsv(state.text, entry.name) : null), [showSheet, state.text, entry.name]);
   return (
     <div className="fb-preview" role="region" aria-label={entry.name}>
       <div className="fb-preview-head">
-        {image ? <ImageIcon size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
+        {image ? <ImageIcon size={16} aria-hidden="true" /> : office === 'xlsx' || csv ? <FileSpreadsheet size={16} aria-hidden="true" /> : <FileText size={16} aria-hidden="true" />}
         <b className="ellipsis grow" title={entry.path}>{entry.name}</b>
         {entry.size != null && <span className="muted small">{formatBytes(entry.size)}</span>}
-        {md && state.text != null && (
-          <button type="button" className="btn btn-plain btn-icon" onClick={() => setRendered(!rendered)} aria-pressed={!rendered} aria-label={t(rendered ? 'fb.md_source' : 'fb.md_rendered')} title={t(rendered ? 'fb.md_source' : 'fb.md_rendered')}>
-            {rendered ? <Code2 size={16} /> : <BookOpen size={16} />}
+        {(md || csv) && state.text != null && (
+          <button
+            type="button"
+            className="btn btn-plain btn-icon"
+            onClick={() => setRendered(!rendered)}
+            aria-pressed={!rendered}
+            aria-label={t(rendered ? 'fb.md_source' : csv ? 'fb.csv_table' : 'fb.md_rendered')}
+            title={t(rendered ? 'fb.md_source' : csv ? 'fb.csv_table' : 'fb.md_rendered')}
+          >
+            {rendered ? <Code2 size={16} /> : csv ? <FileSpreadsheet size={16} /> : <BookOpen size={16} />}
           </button>
         )}
-        {!image && !showMd && state.text != null && (
+        {!image && !showMd && !showSheet && state.text != null && (
           <button type="button" className={`btn btn-plain btn-icon ${wrap ? 'on' : ''}`} onClick={() => setWrap(!wrap)} aria-pressed={wrap} aria-label={t('fb.wrap')} title={t('fb.wrap')}>
             <WrapText size={16} />
           </button>
@@ -155,12 +182,25 @@ function Preview({ ep, entry, onClose, onInsert, sep }) {
           <p className="fb-pad small" style={{ color: 'var(--danger)' }}>{t(`files.err.${state.error.code}`, { defaultValue: errorText(t, state.error) })}</p>
         ) : image ? (
           <img src={state.url} alt={entry.name} />
+        ) : state.office ? (
+          <p className="muted small fb-pad">{t(`fb.office_${state.office}`, { size: formatBytes(OFFICE_MAX) })}</p>
+        ) : state.view?.url ? (
+          <iframe className="fb-pdf" src={state.view.url} title={entry.name} />
+        ) : state.view?.html === '' ? (
+          <p className="muted small fb-pad">{t('fb.empty_file')}</p>
+        ) : state.view?.html != null ? (
+          // eslint-disable-next-line react/no-danger -- 已用 DOMPurify 清洗（OfficePreview.jsx）
+          <div className="md" dangerouslySetInnerHTML={{ __html: state.view.html }} />
+        ) : state.view?.sheets ? (
+          <SheetView sheets={state.view.sheets} />
         ) : state.text == null ? (
           <p className="muted small fb-pad">{t('fb.binary')}</p>
         ) : (
           <>
             {state.truncated && <p className="muted small fb-pad fb-note">{t('fb.truncated', { size: formatBytes(PREVIEW_MAX) })}</p>}
-            {showMd ? (
+            {showSheet ? (
+              <SheetView sheets={csvSheets} />
+            ) : showMd ? (
               <Markdown text={state.text} imageUrl={ep.plain ? (src) => `/api${ep.preview(resolve(dir, src, sep))}` : null} />
             ) : (
               <pre className={`fb-text ${wrap ? 'fb-wrap' : ''}`}>{state.text || t('fb.empty_file')}</pre>

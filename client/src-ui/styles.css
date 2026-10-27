@@ -1188,6 +1188,16 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .fb-text { margin: 0; padding: 10px 14px; font: 13px/1.5 var(--mono); tab-size: 4; white-space: pre; }
 .fb-text.fb-wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
 .fb-note { border-bottom: 1px dashed var(--line); }
+/* 办公文件预览（OfficePreview.jsx）：PDF 用浏览器的查看器；表格像电子表格那样带列名、行号，表头和行号固定 */
+.fb-pdf { display: block; width: 100%; height: 100%; border: 0; background: var(--panel-2); }
+.fb-sheets { position: sticky; left: 0; display: flex; gap: 4px; padding: 6px 10px; overflow-x: auto; border-bottom: 1px solid var(--line); }
+.fb-sheets button { flex: none; border: 1px solid var(--line); background: var(--panel); color: var(--muted); border-radius: 8px; padding: 3px 10px; font: inherit; font-size: 13px; cursor: pointer; }
+.fb-sheets button.on { color: var(--brand); border-color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, var(--panel)); }
+.fb-sheet { border-collapse: separate; border-spacing: 0; font-size: 13px; }
+.fb-sheet th, .fb-sheet td { padding: 4px 8px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); white-space: pre; max-width: 320px; overflow: hidden; text-overflow: ellipsis; text-align: left; vertical-align: top; }
+.fb-sheet thead th { position: sticky; top: 0; z-index: 1; background: var(--panel-2); color: var(--muted); font-weight: 500; text-align: center; }
+.fb-sheet tbody th { position: sticky; left: 0; background: var(--panel-2); color: var(--muted); font-weight: 400; text-align: right; font-variant-numeric: tabular-nums; }
+.fb-sheet thead th:first-child { left: 0; z-index: 2; }
 .fb { position: relative; }
 .fb-bar-sep { flex: none; width: 1px; height: 22px; margin: 0 4px; background: var(--line); }
 .fb-acts .fb-more { opacity: 0; transition: opacity .12s; }

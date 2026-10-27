@@ -1,6 +1,6 @@
 // 草稿新会话：点“新会话”（侧栏、Ctrl+Shift+O、项目上的 +、标签栏的 +、手机右下角）马上出现，在当前项目里；
 // 写下第一句、回车才新建并启动，不发出去不会启动任何东西。上面换项目（按电脑分组、可以搜），输入框上换类型、账号、全部权限，
-// ⋯ 里是名字、Shell、开机自动启动、Docker。终端、DSH 点了马上开，不用草稿。
+// ⋯ 里是名字、Shell、开机自动启动、Docker；AI 工具旁边有常用任务模板（PromptTemplates.jsx）。终端、DSH 点了马上开，不用草稿。
 // 发出去后会话马上打开：Claude Code、Codex 的第一句（连同图片）等对话起来了再发（shared/firstSend.js），
 // 其他的交给电脑在启动时带上（prompt）。没写完的字按项目存在浏览器里。
 import { ArrowLeft, ArrowUp, Container, FolderOpen, Folder, FolderPlus, ImagePlus, MoreHorizontal, Search, ShieldCheck, X } from 'lucide-react';
@@ -21,6 +21,7 @@ import { baseName, isDraftProject, projectEntries, projectKey, useSessions } fro
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
 import { DiscoverCard } from './AddProject.jsx';
+import PromptsMenu from './PromptTemplates.jsx';
 import { AI_TOOLS, FULL_ACCESS, fullAccessFor, opensInPage, shortAgo, useSessionUi } from './Sessions.jsx';
 import { BackendNote, FolderPicker, InstallProgress, openDsh, Promotions, RemoteCard, ShellPicker } from './Terminals.jsx';
 
@@ -593,6 +594,18 @@ function DraftForm() {
                   }}
                 />
               </label>
+            )}
+            {DRAFT_LAUNCHES.includes(launch) && (
+              <PromptsMenu
+                client={client}
+                text={text}
+                className="btn btn-plain btn-icon draft-attach"
+                onPick={(p) => {
+                  // 填进输入框，不发送；已经写了字就接在后面
+                  setText((cur) => (cur.trim() ? `${cur.trimEnd()}\n\n${p}` : p));
+                  input.current?.focus();
+                }}
+              />
             )}
             <PopMenu
               sheet

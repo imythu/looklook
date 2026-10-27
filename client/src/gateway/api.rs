@@ -139,6 +139,9 @@ pub fn routes(app: App) -> Router<App> {
         .route("/relays/preference", put(set_relay))
         .route("/ports", get(list_ports))
         .route("/guard", get(get_guard).put(put_guard))
+        .route("/prompts", get(get_prompts).post(create_prompt))
+        .route("/prompts/seed", post(seed_prompts))
+        .route("/prompts/{id}", put(update_prompt).delete(delete_prompt))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
         .route("/tunnels/{id}/shares", get(list_page_shares).post(create_page_share))
@@ -1391,6 +1394,37 @@ async fn list_ports(State(app): State<App>) -> R<Json<Value>> {
 /// 命令规则（docs/PLAN_2026-10-27.md §3.2）：所有电脑一份，跟着设置同步
 async fn get_guard(State(app): State<App>) -> Json<Value> {
     Json(json!({ "guard": crate::guard::load(&app.store), "sync_enabled": crate::settings_sync::enabled(&app.store) }))
+}
+
+// ---------------- 常用任务模板（prompts.rs） ----------------
+
+async fn get_prompts(State(app): State<App>) -> R<Json<Value>> {
+    Ok(Json(crate::prompts::list(&app.store)?))
+}
+
+async fn create_prompt(State(app): State<App>, Json(i): Json<crate::prompts::Input>) -> R<Json<Value>> {
+    crate::prompts::create(&app, i)?;
+    get_prompts(State(app)).await
+}
+
+async fn update_prompt(State(app): State<App>, Path(id): Path<String>, Json(i): Json<crate::prompts::Input>) -> R<Json<Value>> {
+    crate::prompts::update(&app, &id, i)?;
+    get_prompts(State(app)).await
+}
+
+async fn delete_prompt(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    crate::prompts::delete(&app, &id)?;
+    get_prompts(State(app)).await
+}
+
+#[derive(Deserialize)]
+struct SeedReq {
+    items: Vec<crate::prompts::Input>,
+}
+
+async fn seed_prompts(State(app): State<App>, Json(r): Json<SeedReq>) -> R<Json<Value>> {
+    crate::prompts::seed(&app, r.items)?;
+    get_prompts(State(app)).await
 }
 
 async fn put_guard(State(app): State<App>, Json(g): Json<crate::guard::Guard>) -> R<Json<Value>> {

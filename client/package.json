@@ -8,17 +8,19 @@
     "dev": "vite",
     "build": "vite build",
     "check:locales": "node scripts/check-locales.mjs",
-    "test": "node --test src-ui/shared/xfer.test.mjs src-ui/shared/chat.test.mjs src-ui/shared/inputHistory.test.mjs src-ui/shared/chatCopy.test.mjs"
+    "test": "node --test src-ui/shared/xfer.test.mjs src-ui/shared/chat.test.mjs src-ui/shared/inputHistory.test.mjs src-ui/shared/chatCopy.test.mjs src-ui/shared/office.test.mjs"
   },
   "dependencies": {
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "i18next": "^25.0.0",
     "lucide-react": "^0.500.0",
+    "mammoth": "^1.13.0",
     "marked": "^16.4.2",
     "qrcode-generator": "^2.0.4",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
-    "react-i18next": "^15.0.0"
+    "react-i18next": "^15.0.0",
+    "read-excel-file": "^9.3.12"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.12.1",

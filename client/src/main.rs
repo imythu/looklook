@@ -47,6 +47,7 @@ mod paths;
 mod platform;
 mod ports;
 mod proctree;
+mod prompts;
 mod provider_quota;
 mod relay;
 mod relay_watch;
