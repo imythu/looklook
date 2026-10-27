@@ -233,7 +233,7 @@
   "CODEX_APP_SERVER": "Codex 的后台服务没能启动：{{detail}}",
   "CODEX_NOT_FOUND": "没找到 Codex，请确认这台电脑装了 Codex（{{detail}}）",
   "CODEX_REQUEST_FAILED": "Codex 没能完成这个操作：{{detail}}",
-  "CHAT_TERMINAL_ONLY": "Codex 还在直接运行这段对话，等它空闲会自动接回来",
+  "CHAT_TERMINAL_ONLY": "对话页暂时连不上 Codex，可以先在终端里用",
   "CODEX_TERMINAL_BUSY": "终端里的程序没有退出，请在终端里手动退出后再重新连接",
   "CODEX_TERMINAL_STOPPED": "终端没在运行，请先启动",
   "SYNC_NEED_RTC": "设置同步只能在电脑之间经端到端通道进行。",
