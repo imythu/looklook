@@ -1,12 +1,34 @@
+<div align="center">
+
+<img src="assets/readme/logo.svg" alt="Looklook" width="88" height="88">
+
 # Looklook
 
-**Your dev machine, in any browser.** Run Claude Code, Codex or any CLI on your laptop, Linux server or homelab, then open those terminals from your phone. Close the tab and the work keeps going. No VPN, no port forwarding, no phone app.
+**Run Claude Code, Codex or any CLI agent on your own machine. Check on it from your phone.**
 
-**电脑上的 AI 助手，手机上看看就行。** Claude Code、Codex、Kimi、Qwen Code 或任何命令行，跑在你自己的电脑、服务器或 NAS 上，用手机浏览器随时打开；关掉网页，任务照样运行。[中文说明 ↓](#中文)
+Close the tab and the work keeps going. No VPN, no port forwarding, no phone app.
+
+[![GitHub stars](https://img.shields.io/github/stars/imythu/looklook?style=flat&logo=github&color=6366f1)](https://github.com/imythu/looklook/stargazers)
+[![Release](https://img.shields.io/github/v/release/imythu/looklook?label=release&color=0ea5e9)](https://github.com/imythu/looklook/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/imythu/looklook/total?color=10b981)](https://github.com/imythu/looklook/releases)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue)](LICENSE)
+[![Platforms](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey)](#platforms)
 
 [Website](https://looklook.dev) · [Download](https://looklook.dev/download) · [Docs](https://looklook.dev/docs) · [Roadmap](https://looklook.dev/roadmap) · [Releases](https://github.com/imythu/looklook/releases)
 
-[![Looklook in 36 seconds](https://looklook.dev/media/looklook-promo-en.jpg)](https://looklook.dev/media/looklook-promo-en.webm)
+**English** · [简体中文](README.zh-CN.md)
+
+[![Watch Looklook in 36 seconds](assets/readme/hero.png)](https://looklook.dev/media/looklook-promo-en.webm)
+
+<sub>▶ Click to watch the 36-second demo</sub>
+
+</div>
+
+## Why Looklook
+
+You start a long Claude Code or Codex task, then you have to leave the desk. The agent stops to ask a question, and nobody answers until you're back.
+
+Looklook puts every terminal on your laptop, Linux server or homelab behind one personal address. Open it in any phone browser, read what the agent did, type a reply or paste a screenshot, and walk away again. The session keeps running on your machine.
 
 ## Quick start
 
@@ -26,6 +48,17 @@ Then open your personal address (shown after you sign in) on your phone. On Wind
 - **Images and files for your agent.** Paste or upload screenshots and they reach Codex and Claude Code as images. Upload into the terminal's folder; `rz`/`sz` and `trzsz` work too.
 - **Built for headless boxes.** It runs as a systemd user service or launchd agent, updates itself when idle, and has a System page for CPU, memory, disk and network.
 - **Phone-friendly terminal.** A key bar for Esc, Tab, arrows and Ctrl combos, plus OSC 52 copy to the browser clipboard.
+
+## How it compares
+
+|  | Looklook | SSH + VPN + tmux | Claude Code Remote Control | Self-hosted web UI |
+| --- | --- | --- | --- | --- |
+| Install on the phone | Nothing, any browser | SSH app + VPN app | Claude app | Nothing |
+| Agents | Any CLI: Claude Code, Codex, Gemini CLI, OpenCode, Kimi… | Any CLI | Claude Code only | Usually a fixed list |
+| Network setup | None, outbound tunnel | VPN on every device | None | Expose a port or run a tunnel yourself |
+| Sessions survive a closed tab | Yes, tmux bundled | If you set up tmux | Yes | Depends |
+| Several machines on one page | Up to 7 | One at a time | — | One per install |
+| Phone keyboard for Esc / Ctrl / arrows | Yes | Depends on the app | Not a terminal | Depends |
 
 ## How it works
 
@@ -61,9 +94,25 @@ This repository is the **desktop app / client** (`client/`) and the **client ↔
 | macOS (Apple silicon) | `.dmg` desktop app, or `.tar.gz` + `install.sh` | Not notarized yet |
 | Windows x86_64 | `-setup.exe` desktop app, or `.zip` | **Beta**; not code-signed yet |
 
+## FAQ
+
+**Does it work with my Claude / ChatGPT subscription?** Yes. Looklook doesn't touch your agent's login. Whatever works in your terminal (subscription, API key, Bedrock, Vertex, a custom gateway) works through Looklook.
+
+**Do I need a public IP or to open a port?** No. The app connects out to a relay, so it works behind NAT, CGNAT and home routers.
+
+**What happens if my phone's connection drops?** Nothing on your machine. The session lives in tmux; reopen the page and you're back where you were.
+
+**Can I use it without the hosted service?** The local console on port 1234 works on your machine and, if you allow it, on your LAN. Access from outside goes through the hosted relays.
+
 ## Roadmap
 
-Next up: end-to-end encryption, signed updates, an agent board across all your machines (running / waiting / done), notifications (Web Push, Slack, Telegram, ntfy…), start tasks and review diffs from your phone, shareable previews, and more relay regions. See the [full roadmap](https://looklook.dev/roadmap). Feature requests and upvotes in [Issues](https://github.com/imythu/looklook/issues) shape the order.
+Next up: end-to-end encryption, signed updates, an agent board across all your machines (running / waiting / done), notifications (Web Push, Slack, Telegram, ntfy…), start tasks and review diffs from your phone, shareable previews, and more relay regions. See the [full roadmap](https://looklook.dev/roadmap). Feature requests and 👍 votes in [Issues](https://github.com/imythu/looklook/issues) shape the order.
+
+## Support the project
+
+If Looklook saves you a trip back to your desk, **[give it a ⭐ star](https://github.com/imythu/looklook/stargazers)**. It's the main way other developers find it. Telling a friend who runs agents all day helps too.
+
+[![Star History Chart](https://api.star-history.com/svg?repos=imythu/looklook&type=Date)](https://star-history.com/#imythu/looklook&Date)
 
 ## Build
 
@@ -76,23 +125,12 @@ scripts/fetch-vendor.sh fonts linux-x86_64     # ttyd + fonts → vendor/ (SHA-2
 cargo build --release                          # → target/release/looklook
 ```
 
-Checks: `cargo test`, `cargo clippy --all-targets`, `npm run check:locales`.
+Checks: `cargo test`, `cargo clippy --all-targets`, `npm run check:locales`. See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
 | Directory | Contents |
 | --- | --- |
 | `client/` | The client: Rust service + React console (`src-ui/`), packaging scripts |
 | `protocol/` | Client ↔ server protocol: request signing, gateway tokens, DTOs, error codes |
-
-## 中文
-
-看看（Looklook）让你在手机或任何浏览器里打开自己电脑上的终端：看 AI 助手干到哪了、回一句话、发张截图，关掉网页任务照样跑。
-
-- **任何 AI 助手都能跑**：工作在终端这一层，Claude Code、Codex 一键启动，Kimi、Qwen Code、OpenCode 或任何命令行照常运行，用官方订阅、API Key 还是国产 Coding Plan 都可以。
-- **不用公网 IP、不改路由器**：客户端主动连出，手机不用装 App。
-- **会话保持、多台电脑、本机网页、传文件和图片**，服务器和 NAS 一行命令安装。
-- **安全**：每一段都加密（浏览器→中转 HTTPS，中转→电脑 Noise）；中转要解开加密才能转发，但不保存、不记录终端内容；端到端加密在[路线图](https://looklook.dev/roadmap)上。
-
-开始使用：`curl -fsSL https://looklook.dev/install.sh | sh`，然后 `looklook login` 用手机批准。Windows / macOS 请到[下载页](https://looklook.dev/download)。反馈：QQ 群 1029871265，或在 [Issues](https://github.com/imythu/looklook/issues) 提建议。
 
 ## License
 

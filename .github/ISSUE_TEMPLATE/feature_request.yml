@@ -1,0 +1,16 @@
+name: Feature request / 功能建议
+description: Suggest an idea / 提一个想法
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: Check the [roadmap](https://looklook.dev/roadmap) and existing issues first. If it's already there, a 👍 counts as a vote. / 先看看路线图和已有 Issue，已有的点 👍 就算投票。
+  - type: textarea
+    attributes:
+      label: What are you trying to do? / 你想做什么？
+      description: The situation and the problem, not just the solution. / 说说场景和遇到的问题，而不只是解决方案。
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: How would you like it to work? / 你希望怎么实现？

@@ -1,0 +1,31 @@
+name: Bug report / 问题反馈
+description: Something doesn't work as expected / 有地方不正常
+labels: [bug]
+body:
+  - type: textarea
+    attributes:
+      label: What happened / 发生了什么
+      description: What you did, what you expected, and what you saw instead. Screenshots help. / 做了什么、预期是什么、实际看到了什么，附截图更好。
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Looklook version / 版本
+      description: Settings page, or `looklook --version`
+      placeholder: "1.45.0"
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: OS of the computer running Looklook / 运行看看的电脑系统
+      options: [Linux, macOS, Windows, Docker / other]
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Browser and device you opened it from / 用来打开的浏览器和设备
+      placeholder: "iPhone Safari, Android Chrome, desktop Firefox…"
+  - type: input
+    attributes:
+      label: Agent or command / 运行的 AI 助手或命令
+      placeholder: "Claude Code, Codex, Gemini CLI, vim…"
