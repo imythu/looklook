@@ -1125,6 +1125,7 @@ pub(crate) mod e2e {
             outbound: Default::default(),
             ssh_transfer: Default::default(),
             sync: Default::default(),
+            notify: Default::default(),
         })
     }
 

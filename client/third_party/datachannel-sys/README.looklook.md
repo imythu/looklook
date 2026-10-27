@@ -18,7 +18,13 @@
    同一局域网的两台设备只能绕公网或中转。改成跳过虚拟网卡（docker、br-、veth、utun/tun/tap、Meta、clash 等）和
    Clash 的 fake-ip / TUN 地址（198.18.0.0/15），并按“私有 IPv4 → 公网 IPv4 → 公网 IPv6 → CGNAT 等其他 IPv4 → ULA 等其他 IPv6”排序，
    公网 IPv6 不会被 CGNAT、ULA 地址挤掉（服务端 docs/07 §5）。
-3. **构建**（`build.rs`，`patches/datachannel-sys-build.patch`）：
+3. **socket、pipe 不让子进程继承**（libjuice 的 `socket.h`、`udp.c`、`conn_poll.c`，libdatachannel 的 `impl/socket.hpp`、
+   `tcptransport.cpp`、`tcpserver.cpp`、`pollinterrupter.cpp`，`patches/no-inherit-sockets.patch`，在前两个补丁之后打）。
+   上游建描述符时不带 `CLOEXEC`（Windows 上句柄默认可继承），看看起的终端（looklook-term）、tmux 服务器和从终端里启动的程序
+   都继承了 WebRTC 的 UDP socket：看看自己关掉连接后它们还一直占着端口，2026-10-26 在一台机器上看到 50000-50031 被占了 31 个，
+   端口范围占满后只能退到随机端口，配了端口转发 / 公网地址的直连就连不上。加了 `sock_no_inherit`（POSIX `FD_CLOEXEC`、
+   Windows `SetHandleInformation`），每个 `socket()` / `accept()` / `pipe()` 之后调用。测试：`rtc::peer::tests::sockets_are_not_inherited`。
+4. **构建**（`build.rs`，`patches/datachannel-sys-build.patch`）：
    - 交叉编译时关掉 CMake 的 pkg-config 查找，否则会用宿主机的 `openssl.pc`，链接时多出 `-lz`；
    - 目标是 Windows 时补链接静态 OpenSSL 和 libjuice 需要的系统库（按 `CARGO_CFG_TARGET_OS` 判断，不能用 `cfg!`）；
    - 打开 `NO_TESTS`，因为下面删掉了测试目录。

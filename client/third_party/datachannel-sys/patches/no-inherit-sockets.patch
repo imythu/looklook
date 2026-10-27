@@ -1,0 +1,120 @@
+diff --git a/libdatachannel/deps/libjuice/src/conn_poll.c b/libdatachannel/deps/libjuice/src/conn_poll.c
+index a8462c0..d15fd0d 100644
+--- a/libdatachannel/deps/libjuice/src/conn_poll.c
++++ b/libdatachannel/deps/libjuice/src/conn_poll.c
+@@ -84,6 +84,8 @@ int conn_poll_registry_init(conn_registry_t *registry, udp_socket_config_t *conf
+ 
+ 	fcntl(pipefds[0], F_SETFL, O_NONBLOCK);
+ 	fcntl(pipefds[1], F_SETFL, O_NONBLOCK);
++	sock_no_inherit(pipefds[0]); // looklook
++	sock_no_inherit(pipefds[1]); // looklook
+ 	registry_impl->interrupt_pipe_out = pipefds[1]; // read
+ 	registry_impl->interrupt_pipe_in = pipefds[0];  // write
+ #endif
+diff --git a/libdatachannel/deps/libjuice/src/socket.h b/libdatachannel/deps/libjuice/src/socket.h
+index 93899f5..7b5cba4 100644
+--- a/libdatachannel/deps/libjuice/src/socket.h
++++ b/libdatachannel/deps/libjuice/src/socket.h
+@@ -131,4 +131,12 @@ typedef int sockopt_t;
+ 	 (((const uint32_t *)(a))[2] == htonl(0xFFFF)))
+ #endif
+ 
++// looklook: 子进程不继承这个 socket / pipe。看看起的终端、tmux 会继承没带 CLOEXEC 的描述符，
++// 看看自己关掉连接后它们还一直占着 UDP 端口，端口范围（50000-50031）被占满后只能退到随机端口，配了端口转发也连不上
++#ifdef _WIN32
++#define sock_no_inherit(fd) SetHandleInformation((HANDLE)(fd), HANDLE_FLAG_INHERIT, 0)
++#else
++#define sock_no_inherit(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
++#endif
++
+ #endif // JUICE_SOCKET_H
+diff --git a/libdatachannel/deps/libjuice/src/udp.c b/libdatachannel/deps/libjuice/src/udp.c
+index b169d7a..81376de 100644
+--- a/libdatachannel/deps/libjuice/src/udp.c
++++ b/libdatachannel/deps/libjuice/src/udp.c
+@@ -52,6 +52,7 @@ static socket_t create_socket_for_addrinfo(const udp_socket_config_t *config,
+ 		JLOG_WARN("UDP socket creation failed, errno=%d", sockerrno);
+ 		return INVALID_SOCKET;
+ 	}
++	sock_no_inherit(sock); // looklook
+ 
+ 	// Listen on both IPv6 and IPv4
+ 	const sockopt_t disabled = 0;
+@@ -462,6 +463,7 @@ static int get_local_default_inet6(uint16_t port, struct sockaddr_in6 *result) {
+ 	socket_t sock = socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+ 	if (sock == INVALID_SOCKET)
+ 		return -1;
++	sock_no_inherit(sock); // looklook
+ 
+ 	if (connect(sock, (const struct sockaddr *)&sin6, sizeof(sin6)))
+ 		goto error;
+diff --git a/libdatachannel/src/impl/pollinterrupter.cpp b/libdatachannel/src/impl/pollinterrupter.cpp
+index 0d7fb82..2c786e4 100644
+--- a/libdatachannel/src/impl/pollinterrupter.cpp
++++ b/libdatachannel/src/impl/pollinterrupter.cpp
+@@ -33,6 +33,7 @@ PollInterrupter::PollInterrupter() {
+ 		mSock = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
+ 		if (mSock == INVALID_SOCKET)
+ 			throw std::runtime_error("UDP socket creation failed");
++		sock_no_inherit(mSock); // looklook
+ 
+ 		// Set non-blocking
+ 		ctl_t nbio = 1;
+@@ -68,6 +69,8 @@ PollInterrupter::PollInterrupter() {
+ 
+ 	::fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
+ 	::fcntl(pipefd[1], F_SETFL, O_NONBLOCK);
++	sock_no_inherit(pipefd[0]); // looklook
++	sock_no_inherit(pipefd[1]); // looklook
+ 	mPipeOut = pipefd[1]; // read
+ 	mPipeIn = pipefd[0];  // write
+ #endif
+diff --git a/libdatachannel/src/impl/socket.hpp b/libdatachannel/src/impl/socket.hpp
+index 7ad9b50..e47edf3 100644
+--- a/libdatachannel/src/impl/socket.hpp
++++ b/libdatachannel/src/impl/socket.hpp
+@@ -129,4 +129,12 @@ typedef int sockopt_t;
+ 	 (((const uint32_t *)(a))[2] == htonl(0xFFFF)))
+ #endif
+ 
++// looklook: 子进程不继承这个 socket / pipe。看看起的终端、tmux 会继承没带 CLOEXEC 的描述符，
++// 看看自己关掉连接后它们还一直占着 UDP 端口，端口范围（50000-50031）被占满后只能退到随机端口，配了端口转发也连不上
++#ifdef _WIN32
++#define sock_no_inherit(fd) SetHandleInformation((HANDLE)(fd), HANDLE_FLAG_INHERIT, 0)
++#else
++#define sock_no_inherit(fd) fcntl((fd), F_SETFD, FD_CLOEXEC)
++#endif
++
+ #endif // JUICE_SOCKET_H
+diff --git a/libdatachannel/src/impl/tcpserver.cpp b/libdatachannel/src/impl/tcpserver.cpp
+index 7e57778..7cc5c63 100644
+--- a/libdatachannel/src/impl/tcpserver.cpp
++++ b/libdatachannel/src/impl/tcpserver.cpp
+@@ -66,6 +66,7 @@ shared_ptr<TcpTransport> TcpServer::accept() {
+ 			socket_t incomingSock = ::accept(mSock, (struct sockaddr *)&addr, &addrlen);
+ 
+ 			if (incomingSock != INVALID_SOCKET) {
++				sock_no_inherit(incomingSock); // looklook
+ 				try {
+ 					return std::make_shared<TcpTransport>(incomingSock, nullptr); // no state callback
+ 				} catch(const std::exception &e) {
+@@ -126,6 +127,7 @@ void TcpServer::listen(uint16_t port, const char *bindAddress) {
+ 		mSock = ::socket(ai->ai_family, SOCK_STREAM, IPPROTO_TCP);
+ 		if (mSock == INVALID_SOCKET)
+ 			throw std::runtime_error("TCP server socket creation failed");
++		sock_no_inherit(mSock); // looklook
+ 
+ 		const sockopt_t enabled = 1;
+ 		const sockopt_t disabled = 0;
+diff --git a/libdatachannel/src/impl/tcptransport.cpp b/libdatachannel/src/impl/tcptransport.cpp
+index c88a71d..679fb00 100644
+--- a/libdatachannel/src/impl/tcptransport.cpp
++++ b/libdatachannel/src/impl/tcptransport.cpp
+@@ -248,6 +248,7 @@ void TcpTransport::createSocket(const struct sockaddr *addr, socklen_t addrlen)
+ 		mSock = ::socket(addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
+ 		if (mSock == INVALID_SOCKET)
+ 			throw std::runtime_error("TCP socket creation failed");
++		sock_no_inherit(mSock); // looklook
+ 
+ 		// Configure socket
+ 		configureSocket();

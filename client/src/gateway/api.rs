@@ -72,11 +72,13 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/image", get(super::chat::image))
         .route("/instances/{id}/chat/agent", get(super::chat::agent))
         .route("/instances/{id}/chat/commands", get(super::chat::commands))
+        .route("/instances/{id}/chat/prompts", get(super::chat::prompts))
         .route("/instances/{id}/chat/input", post(super::chat::input))
         .route("/instances/{id}/chat/interrupt", post(super::chat::interrupt))
         .route("/instances/{id}/chat/permission", post(super::chat::permission))
         .route("/instances/{id}/chat/plan", post(super::chat::plan))
         .route("/instances/{id}/chat/relaunch", post(super::chat::relaunch))
+        .route("/instances/{id}/chat/switch-profile", post(super::chat::switch_profile))
         .route("/instances/{id}/chat/codex-terminal", post(super::chat::codex_terminal))
         .route("/instances/{id}/chat/adopt", post(super::chat::adopt))
         .route("/usage/accounts", get(super::chat::accounts_usage))
@@ -93,6 +95,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/task/output", get(super::chat::task_output))
         .route("/instances/{id}/chat/task/stop", post(super::chat::task_stop))
         .route("/instances/{id}/chat/dialog", post(super::chat::dialog))
+        .route("/instances/{id}/chat/seen", post(super::chat::seen))
         .route("/ssh/hosts", get(ssh_list).post(ssh_create))
         .route("/ssh/keys", get(ssh_keys))
         .route("/ssh/keys/info", post(ssh_key_info))
@@ -137,9 +140,17 @@ pub fn routes(app: App) -> Router<App> {
         .route("/settings", get(get_settings).put(put_settings))
         .route("/sync", get(get_sync).put(put_sync))
         .route("/sync/exchange", post(sync_exchange))
+        .route("/notify", get(super::notify::get))
+        .route("/notify/feishu", put(super::notify::put_feishu).delete(super::notify::delete_feishu))
+        .route("/notify/unbind", post(super::notify::unbind))
+        .route("/notify/rules", put(super::notify::put_rules))
+        .route("/notify/test", post(super::notify::test))
+        .route("/notify/action", post(super::notify::action))
         .route("/projects", get(get_projects).put(put_projects))
+        .route("/git/remotes", post(git_remotes))
         .route("/history", get(list_history))
         .route("/history/marks", put(put_history_mark))
+        .route("/history/folders", get(history_folders))
         .route("/docker/containers", get(docker_containers))
         .route("/docker/containers/{name}", get(docker_probe))
         .route("/docker/containers/{name}/fs", get(docker_fs))
@@ -193,7 +204,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "notify" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -421,6 +432,9 @@ async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> 
         let (chat, id) = (app.chat.clone(), v.row.id.clone());
         tokio::spawn(async move { chat.codex_first(&id, prompt, resume).await });
     }
+    if req.start && app.instances.codex_app_mode(&v.row) {
+        app.chat.codex_warm().await;
+    }
     let v = if req.start { app.instances.start(&v.row.id).await? } else { v };
     Ok((StatusCode::CREATED, Json(v)))
 }
@@ -595,6 +609,7 @@ async fn delete_instance(State(app): State<App>, Path(id): Path<String>) -> R<St
 
 async fn start_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
+    warm_codex(&app, &id).await;
     Ok(Json(app.instances.start(&id).await?))
 }
 
@@ -603,8 +618,16 @@ async fn stop_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl
     Ok(Json(app.instances.get(&id).await?))
 }
 
+/// 对话模式的 Codex 终端启动前先起好 app-server（见 [`crate::chat::Chat::codex_warm`]）
+async fn warm_codex(app: &App, id: &str) {
+    if app.store.instance(id).ok().flatten().is_some_and(|r| app.instances.codex_app_mode(&r)) {
+        app.chat.codex_warm().await;
+    }
+}
+
 async fn restart_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
     require_allowed(&app)?;
+    warm_codex(&app, &id).await;
     Ok(Json(app.instances.restart(&id).await?))
 }
 
@@ -1409,6 +1432,9 @@ struct Project {
     /// 上次在这里新建会话的时间（RFC 3339，界面用来排“最近用过的”）
     #[serde(default)]
     used_at: String,
+    /// 侧栏里置顶
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pinned: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -1446,14 +1472,48 @@ async fn put_projects(State(app): State<App>, Json(req): Json<Projects>) -> R<Js
     Ok(Json(Projects { items }))
 }
 
+#[derive(Deserialize)]
+struct RemotesReq {
+    dirs: Vec<String>,
+}
+
+/// 一批文件夹各自所在仓库的远程地址（规范后的 `host/path`）：多台电脑上的同一个仓库在侧栏里合成一个项目。
+/// 只读 `.git/config`；不是仓库、没有远程的不出现在结果里。
+async fn git_remotes(Json(req): Json<RemotesReq>) -> R<Json<Value>> {
+    if req.dirs.len() > PROJECTS_MAX * 2 {
+        return Err(LocalError::invalid("dirs", "too_long"));
+    }
+    let map = blocking(move || {
+        Ok(req
+            .dirs
+            .into_iter()
+            .filter(|d| !d.trim().is_empty() && std::path::Path::new(d).is_absolute())
+            .filter_map(|d| crate::git::remote(std::path::Path::new(&d)).map(|r| (d, r)))
+            .collect::<std::collections::HashMap<String, String>>())
+    })
+    .await?;
+    Ok(Json(json!({ "remotes": map })))
+}
+
 // ---------------- 以前的对话（history.rs） ----------------
 
 /// 以前的对话。正开在某个看看会话里的标上 `instance_id`（界面上直接打开它，不再开第二个）：
 /// 按这个会话接着的对话号，Claude Code 对话界面还按 hooks 记下的当前会话号。
 async fn list_history(State(app): State<App>, Query(q): Query<crate::history::Query>) -> R<Json<Value>> {
     let mut items = crate::history::list(q).await;
-    let mut open: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for v in app.instances.list().await? {
+    let open = open_convs(&app, &app.instances.list().await?);
+    for c in &mut items {
+        c.instance_id = open.get(&c.id).cloned();
+    }
+    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY).ok().flatten().unwrap_or_default();
+    Ok(Json(json!({ "items": items, "marks": marks, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
+}
+
+/// 正开在看看会话里的对话：对话号 → 会话 ID。按这个会话接着的对话号、Claude Code 对话界面 hooks 记下的当前会话号，
+/// 还有从记录里认出来的（[`crate::instances::View::conv_id`]）。
+fn open_convs(app: &App, views: &[crate::instances::View]) -> std::collections::HashMap<String, String> {
+    let mut open = std::collections::HashMap::new();
+    for v in views {
         if !v.running || v.task_alive == Some(false) {
             continue;
         }
@@ -1464,12 +1524,36 @@ async fn list_history(State(app): State<App>, Query(q): Query<crate::history::Qu
         if let Some(b) = crate::chat::binding(&app.store, id) {
             open.insert(b.session_id, id.clone());
         }
+        if let Some(c) = &v.conv_id {
+            open.insert(c.clone(), id.clone());
+        }
     }
-    for c in &mut items {
+    open
+}
+
+#[derive(Deserialize)]
+struct FoldersQuery {
+    /// 每个文件夹带最近几个对话（最多 20）
+    per: Option<usize>,
+    /// `projects`：只要记着的项目和会话所在的文件夹（侧栏）；不给时是所有有过对话的文件夹（添加项目时挑）
+    scope: Option<String>,
+}
+
+/// 以前的对话按文件夹分组：各工具的数量和最近几个。隐藏了的不算。
+async fn history_folders(State(app): State<App>, Query(q): Query<FoldersQuery>) -> R<Json<Value>> {
+    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY)?.unwrap_or_default();
+    let mut items = crate::history::folders(q.per.unwrap_or(5).min(20), move |c| !marks.get(&format!("{}:{}", c.agent, c.id)).is_some_and(|m| m.hide)).await;
+    let views = app.instances.list().await?;
+    if q.scope.as_deref() == Some("projects") {
+        let stored = app.store.get::<Vec<Project>>(PROJECTS_KEY)?.unwrap_or_default();
+        let dirs: std::collections::HashSet<String> = stored.iter().map(|p| p.workdir.as_str()).chain(views.iter().map(|v| v.row.workdir.as_str())).map(crate::history::dir_key).collect();
+        items.retain(|f| dirs.contains(&crate::history::dir_key(&f.workdir)));
+    }
+    let open = open_convs(&app, &views);
+    for c in items.iter_mut().flat_map(|f| f.items.iter_mut()) {
         c.instance_id = open.get(&c.id).cloned();
     }
-    let marks = app.store.get::<HistoryMarks>(HISTORY_MARKS_KEY).ok().flatten().unwrap_or_default();
-    Ok(Json(json!({ "items": items, "marks": marks, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
+    Ok(Json(json!({ "items": items, "persistent": matches!(app.instances.backend, Backend::Tmux(_)) })))
 }
 
 /// 以前的对话上的标记（收藏、隐藏），存在这台电脑上：`工具:会话号` → 标记。
@@ -2175,7 +2259,7 @@ async fn set_default_claude_profile(State(app): State<App>, Json(req): Json<Defa
 /// 返回授权页地址；界面上用户去登录，再把授权码贴回来。
 async fn login_claude_profile(State(app): State<App>, Path(id): Path<String>) -> R<Json<crate::claude_profiles::LoginView>> {
     let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
-    Ok(Json(crate::claude_profiles::login_start(app.instances.shell(), &app.paths.home, &p).await?))
+    Ok(Json(crate::claude_profiles::login_start(app.instances.shell(), &app.paths.home, app.store.clone(), &p).await?))
 }
 
 async fn claude_login_state(Path(id): Path<String>) -> R<Json<crate::claude_profiles::LoginView>> {

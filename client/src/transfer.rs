@@ -1111,23 +1111,23 @@ mod tests {
         use crate::instances::Input;
         use crate::store::Store;
         let home = tempfile::tempdir().unwrap();
-        // 独立的 tmux socket 目录，不碰这台机器上真在用的 looklook 会话
-        std::env::set_var("TMUX_TMPDIR", home.path());
         let work = home.path().join("work");
         std::fs::create_dir_all(&work).unwrap();
         let paths = Paths::discover(Some(home.path().join("data"))).unwrap();
         let mux = paths.mux.clone().expect("vendor/ 里没有 mux");
         let conf = paths.tmux_conf();
         let inst = Instances::new(Arc::new(Store::memory().unwrap()), paths.clone());
+        // 测试里 tmux 用自己数据目录下的 socket（见 Instances::tmux_socket_args），不碰正在用的看看
+        let sock = inst.tmux_socket_args();
         let id = inst.create(Input { name: Some("xfer".into()), workdir: Some(work.display().to_string()), ..Default::default() }).await.unwrap().row.id;
         inst.start(&id).await.unwrap();
         let target = format!("={}:", Instances::session_name(&id));
         let keys = |cmd: &str| {
-            let st = std::process::Command::new(&mux).args(["-L", "looklook", "-f"]).arg(&conf).args(["send-keys", "-t", &target, "-l", cmd]).status().unwrap();
+            let st = std::process::Command::new(&mux).args(&sock).arg("-f").arg(&conf).args(["send-keys", "-t", &target, "-l", cmd]).status().unwrap();
             assert!(st.success());
-            std::process::Command::new(&mux).args(["-L", "looklook", "-f"]).arg(&conf).args(["send-keys", "-t", &target, "Enter"]).status().unwrap();
+            std::process::Command::new(&mux).args(&sock).arg("-f").arg(&conf).args(["send-keys", "-t", &target, "Enter"]).status().unwrap();
         };
-        let capture = || String::from_utf8_lossy(&std::process::Command::new(&mux).args(["-L", "looklook", "-f"]).arg(&conf).args(["capture-pane", "-p", "-t", &target]).output().unwrap().stdout).into_owned();
+        let capture = || String::from_utf8_lossy(&std::process::Command::new(&mux).args(&sock).arg("-f").arg(&conf).args(["capture-pane", "-p", "-t", &target]).output().unwrap().stdout).into_owned();
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
         // 随包 trz / tsz 在会话的 PATH 里
@@ -1197,7 +1197,7 @@ mod tests {
         inst.stop(&id).await.unwrap();
         inst.delete(&id).await.unwrap();
         assert!(!paths.attach_dir(&id).exists());
-        let _ = std::process::Command::new(&mux).args(["-L", "looklook", "kill-server"]).status();
+        let _ = std::process::Command::new(&mux).args(&sock).arg("kill-server").status();
         // 会话的 shell 启动时 PATH 最前面是随包 trzsz 的目录（Debian 的 /etc/profile 会给登录 shell 重设 PATH，
         // 那种系统上 shell 里最后看不到，见 which.txt）
         let path = pane_env.split(|c| *c == 0).find_map(|kv| kv.strip_prefix(b"PATH=")).map(|v| String::from_utf8_lossy(v).into_owned()).unwrap();

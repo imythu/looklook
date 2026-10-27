@@ -128,6 +128,10 @@ pub async fn commands(State(app): State<App>, Path(id): Path<String>) -> R<Json<
     Ok(Json(app.chat.commands(&id)?))
 }
 
+pub async fn prompts(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.prompts(&id)?))
+}
+
 #[derive(Deserialize)]
 pub struct InputReq {
     #[serde(default)]
@@ -197,6 +201,18 @@ pub struct PlanReq {
 pub async fn plan(State(app): State<App>, Path(id): Path<String>, Json(req): Json<PlanReq>) -> R<StatusCode> {
     require_allowed(&app)?;
     app.chat.plan(&id, req.choice, req.feedback.as_deref()).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+pub struct SwitchProfileReq {
+    profile: String,
+}
+
+/// 额度用完时换个 Claude Code 账号接着同一段对话继续
+pub async fn switch_profile(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SwitchProfileReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.switch_profile(&id, &req.profile).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -320,6 +336,19 @@ pub struct DialogReq {
     /// 选的那一项的文字（标题对不上时按它核对）
     #[serde(default)]
     label: String,
+}
+
+#[derive(Deserialize)]
+pub struct SeenReq {
+    #[serde(default)]
+    active: bool,
+}
+
+/// 看过了（看板上点“知道了”），或者会话页正开着（`active`，每 20 秒一次）
+pub async fn seen(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SeenReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.chat.seen(&id, req.active)?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// TUI 上的选择框：选一项或取消

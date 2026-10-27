@@ -104,6 +104,88 @@ fn repo(dir: &Path) -> R<PathBuf> {
     toplevel(dir)?.ok_or_else(|| LocalError::new("GIT_NOT_REPO").with("path", dir.display().to_string()))
 }
 
+// ---------------- 远程地址（多台电脑上的同一个仓库合成一个项目） ----------------
+
+/// `dir` 所在仓库的远程地址（优先 origin，没有就用第一个），规范成 `host/path` 便于比较；不是仓库、没有远程时为 None。
+/// 直接读 `.git/config`，不起 git 进程（侧栏一次要问几十个文件夹）；worktree、子模块的 `.git` 文件跟着 `gitdir:` 找。
+pub fn remote(dir: &Path) -> Option<String> {
+    let config = std::fs::read_to_string(git_common_dir(dir)?.join("config")).ok()?;
+    normalize_remote(&config_remote(&config)?)
+}
+
+/// 从 `dir` 往上找 `.git`，返回放 config 的目录（worktree 的是主仓库的，见 `commondir`）。
+fn git_common_dir(dir: &Path) -> Option<PathBuf> {
+    for d in dir.ancestors() {
+        let dot = d.join(".git");
+        if dot.is_dir() {
+            return Some(dot);
+        }
+        if dot.is_file() {
+            let text = std::fs::read_to_string(&dot).ok()?;
+            let git = text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim();
+            let git = if Path::new(git).is_absolute() { PathBuf::from(git) } else { d.join(git) };
+            return Some(match std::fs::read_to_string(git.join("commondir")) {
+                Ok(c) => {
+                    let c = c.trim();
+                    if Path::new(c).is_absolute() { PathBuf::from(c) } else { git.join(c) }
+                }
+                Err(_) => git,
+            });
+        }
+    }
+    None
+}
+
+/// config 里 origin 的 url，没有 origin 时第一个远程的。
+fn config_remote(config: &str) -> Option<String> {
+    let mut section: Option<String> = None;
+    let mut first: Option<String> = None;
+    for line in config.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            section = line.strip_prefix("[remote \"").and_then(|r| r.strip_suffix("\"]")).map(str::to_string);
+            continue;
+        }
+        let Some(name) = &section else { continue };
+        let Some((k, v)) = line.split_once('=') else { continue };
+        if !k.trim().eq_ignore_ascii_case("url") {
+            continue;
+        }
+        let v = v.trim().trim_matches('"').to_string();
+        if name == "origin" {
+            return Some(v);
+        }
+        first.get_or_insert(v);
+    }
+    first
+}
+
+/// `git@github.com:me/x.git`、`https://user@GitHub.com/me/x`、`ssh://git@github.com:22/me/x.git` 都变成 `github.com/me/x`。
+/// 本地路径（`/srv/x.git`、`file://`）不算：不同电脑上同一个路径不是同一个仓库。
+fn normalize_remote(url: &str) -> Option<String> {
+    let url = url.trim();
+    let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        if scheme.eq_ignore_ascii_case("file") {
+            return None;
+        }
+        let (auth, path) = rest.split_once('/')?;
+        (auth.rsplit('@').next()?.split(':').next()?.to_string(), path.to_string())
+    } else {
+        // scp 写法：[user@]host:path（Windows 盘符 `C:\…` 不算）
+        let (auth, path) = url.split_once(':')?;
+        if auth.len() < 2 || auth.contains('/') || auth.contains('\\') {
+            return None;
+        }
+        (auth.rsplit('@').next()?.to_string(), path.to_string())
+    };
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("{}/{}", host.to_ascii_lowercase(), path))
+}
+
 // ---------------- 状态 ----------------
 
 #[derive(Debug, Default, Serialize, PartialEq, Eq)]
@@ -371,6 +453,41 @@ pub fn show(dir: &Path, hash: &str) -> R<Diff> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalizes_remotes() {
+        for u in ["git@github.com:me/x.git", "https://github.com/me/x", "https://tok@GitHub.com/me/x.git/", "ssh://git@github.com:22/me/x.git"] {
+            assert_eq!(normalize_remote(u).as_deref(), Some("github.com/me/x"), "{u}");
+        }
+        assert_eq!(normalize_remote("/srv/x.git"), None);
+        assert_eq!(normalize_remote("file:///srv/x.git"), None);
+        assert_eq!(normalize_remote(r"C:\repos\x"), None);
+    }
+
+    #[test]
+    fn reads_origin_then_first_remote() {
+        let cfg = "[core]\n\turl = nope\n[remote \"up\"]\n\turl = git@a.com:u/x.git\n[remote \"origin\"]\n\turl = https://b.com/me/x\n";
+        assert_eq!(config_remote(cfg).as_deref(), Some("https://b.com/me/x"));
+        assert_eq!(config_remote("[remote \"up\"]\n url=git@a.com:u/x.git\n").as_deref(), Some("git@a.com:u/x.git"));
+        assert_eq!(config_remote("[core]\n bare = false\n"), None);
+    }
+
+    #[test]
+    fn finds_remote_from_subdir_and_worktree() {
+        let tmp = std::env::temp_dir().join(format!("ll-remote-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp);
+        let main = tmp.join("main");
+        std::fs::create_dir_all(main.join(".git/worktrees/wt")).unwrap();
+        std::fs::create_dir_all(main.join("src/deep")).unwrap();
+        std::fs::write(main.join(".git/config"), "[remote \"origin\"]\n\turl = git@github.com:me/x.git\n").unwrap();
+        std::fs::write(main.join(".git/worktrees/wt/commondir"), "../..\n").unwrap();
+        let wt = tmp.join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", main.join(".git/worktrees/wt").display())).unwrap();
+        assert_eq!(remote(&main.join("src/deep")).as_deref(), Some("github.com/me/x"));
+        assert_eq!(remote(&wt).as_deref(), Some("github.com/me/x"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
 
     #[test]
     fn parses_porcelain_v2() {

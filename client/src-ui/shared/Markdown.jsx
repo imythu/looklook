@@ -4,6 +4,8 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { copyText } from './chatCopy.js';
+
 export const isMarkdown = (name) => /\.(md|markdown|mdx|mdown|mkd)$/i.test(name ?? '');
 
 let libs = null;
@@ -13,6 +15,52 @@ const load = () => {
 };
 
 const EXTERNAL = /^(https?:|mailto:)/i;
+
+// 代码块右上角的复制按钮（清洗之后才加上，按钮本身不来自文件）。图标是 lucide 的 copy / check
+const COPY_SVG = '<svg class="md-copy-i" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg><svg class="md-copy-ok" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
+
+function addCopyButtons(root, label) {
+  for (const pre of root.querySelectorAll('pre')) {
+    const box = document.createElement('div');
+    box.className = 'md-code';
+    const lang = /language-([\w+#.-]+)/.exec(pre.querySelector('code')?.className ?? '')?.[1];
+    pre.replaceWith(box);
+    box.append(pre);
+    const bar = document.createElement('div');
+    bar.className = 'md-code-bar';
+    if (lang) {
+      const tag = document.createElement('span');
+      tag.className = 'md-code-lang';
+      tag.textContent = lang;
+      bar.append(tag);
+    }
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'md-copy';
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('title', label);
+    btn.innerHTML = COPY_SVG;
+    bar.append(btn);
+    box.prepend(bar);
+  }
+}
+
+/** 点了代码块的复制：复制这个代码块的文字，按钮变成对勾 1.5 秒 */
+async function onCopyClick(e) {
+  const btn = e.target.closest?.('.md-copy');
+  if (!btn) return;
+  e.preventDefault();
+  const pre = btn.closest('.md-code')?.querySelector('pre');
+  if (!pre) return;
+  const text = pre.textContent.replace(/\n$/, '');
+  if (await copyText(text)) {
+    btn.dataset.done = '';
+    setTimeout(() => delete btn.dataset.done, 1500);
+  } else {
+    window.prompt('', text);
+  }
+}
+
 const SAFE_IMAGE = /^(https?:|data:image\/(png|jpe?g|gif|webp);)/i;
 
 /** 文字里出现 links 里的写法（本机文件路径）就换成链接，在新标签页打开；已经在链接里的不动 */
@@ -120,6 +168,7 @@ export default function Markdown({ text, imageUrl, links }) {
           else el.remove();
         }
         if (links) linkify(doc, links);
+        addCopyButtons(doc, t('action.copy'));
         const box = document.createElement('div');
         box.appendChild(doc);
         if (alive) setHtml(box.innerHTML);
@@ -128,9 +177,10 @@ export default function Markdown({ text, imageUrl, links }) {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- t 只用于按钮的文字
   }, [text, links]);
   if (failed) return <pre className="fb-text fb-wrap">{text}</pre>;
   if (html == null) return <p className="muted small fb-pad">{t('fb.loading')}</p>;
   // eslint-disable-next-line react/no-danger -- 已用 DOMPurify 清洗
-  return <article className="md" dangerouslySetInnerHTML={{ __html: html }} />;
+  return <article className="md" onClick={onCopyClick} dangerouslySetInnerHTML={{ __html: html }} />;
 }

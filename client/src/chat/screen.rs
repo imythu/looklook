@@ -423,16 +423,18 @@ impl Dialog {
     }
 }
 
-/// 已经在等额度重置、到点自动继续：屏幕上的 `Usage limit reached · continuing automatically at 3pm · esc to cancel`
-/// （再次用完时是 `Usage limit reached again · …`，等待中是 `Continuing automatically …`），返回中间的 `at 3pm`
+/// 已经在等额度重置、到点自动继续：状态栏里的 `Continuing automatically at 3pm · esc to cancel`（快到点时是
+/// `Continuing shortly · esc to cancel`），返回中间的 `at 3pm` / `shortly`。等待取消、到点继续之后这一行就没了。
+/// 开始等时 Claude Code 还会往对话里追加一条 `Usage limit reached · continuing automatically at 3pm · esc to cancel`
+/// （再次用完是 `… reached again · …`）：它会一直留在屏幕上，不算（小写的 continuing）
 pub fn limit_wait(capture: &str) -> Option<String> {
-    const KEY: &str = "ontinuing automatically ";
+    const KEYS: [&str; 2] = ["Continuing automatically ", "Continuing shortly"];
     capture.lines().rev().map(|l| strip(l).0).find_map(|t| {
-        let i = t.find(KEY)?;
+        let (i, key) = KEYS.iter().find_map(|k| t.find(k).map(|i| (i, *k)))?;
         if !t.contains("esc to cancel") {
             return None;
         }
-        let when = t[i + KEY.len()..].split('·').next()?.trim();
+        let when = if key.ends_with(' ') { t[i + key.len()..].split('·').next()?.trim() } else { "shortly" };
         (!when.is_empty()).then(|| when.to_string())
     })
 }
@@ -497,13 +499,34 @@ pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
             on || l.chars().take_while(|c| *c == ' ').count() == text_col
         }
     };
+    // 编号选项之间可以隔着空行、选项的说明（AskUserQuestion 每个选项下面缩进得更深的一行）：最多隔 3 行，后面还有选项才算连着
+    let is_desc = |l: &str| !l.trim().is_empty() && !is_opt(l) && l.chars().take_while(|c| *c == ' ').count() > text_col;
+    let gap = |l: &str| is_num && (l.trim().is_empty() || is_desc(l));
     let mut first = sel;
-    while first > 0 && (is_opt(&lines[first - 1]) || (is_num && lines[first - 1].trim().is_empty() && first >= 2 && is_opt(&lines[first - 2]))) {
-        first -= 1;
+    'up: while first > 0 {
+        for k in 1..=4.min(first) {
+            if is_opt(&lines[first - k]) {
+                first -= k;
+                continue 'up;
+            }
+            if !gap(&lines[first - k]) {
+                break;
+            }
+        }
+        break;
     }
     let mut last = sel;
-    while last + 1 < lines.len() && (is_opt(&lines[last + 1]) || (is_num && lines[last + 1].trim().is_empty() && last + 2 < lines.len() && is_opt(&lines[last + 2]))) {
-        last += 1;
+    'down: while last + 1 < lines.len() {
+        for k in 1..=4.min(lines.len() - 1 - last) {
+            if is_opt(&lines[last + k]) {
+                last += k;
+                continue 'down;
+            }
+            if !gap(&lines[last + k]) {
+                break;
+            }
+        }
+        break;
     }
     let mut out = Dialog::default();
     for (i, l) in lines.iter().enumerate().take(last + 1).skip(first) {
@@ -515,10 +538,14 @@ pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
         }
         let (_, t) = unmark(l, cursor);
         let t = if is_num { numbered(t).unwrap_or(t) } else { t };
-        let (mut label, hint) = split_hint(t);
+        let (mut label, mut hint) = split_hint(t);
         let current = label.ends_with('✔');
         if current {
             label = label.trim_end_matches('✔').trim_end().to_string();
+        }
+        // 选项下面的说明行当作提示
+        if hint.is_empty() && is_num {
+            hint = lines[i + 1..].iter().take_while(|l| is_desc(l)).map(|l| l.trim()).collect::<Vec<_>>().join(" ");
         }
         out.options.push(DialogOption { label, hint, current });
     }
@@ -529,7 +556,8 @@ pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
     // 选项上面到最近的横线（最多 16 行）：第一行是标题，其余是说明
     let top = lines[..first].iter().rposition(|l| is_frame(l)).map_or(first.saturating_sub(16), |t| t + 1).max(first.saturating_sub(16));
     let mut text: Vec<String> = lines[top..first].iter().map(|l| l.trim().to_string()).collect();
-    while text.first().is_some_and(String::is_empty) {
+    // AskUserQuestion 一次问几个问题时最上面是切换问题的标签栏（`←  ☐ 颜色  ☐ 水果  ✔ Submit  →`），不是标题
+    while text.first().is_some_and(|t| t.is_empty() || (t.starts_with('←') && t.ends_with('→'))) {
         text.remove(0);
     }
     while text.last().is_some_and(String::is_empty) {
@@ -736,9 +764,12 @@ mod tests {
 
     #[test]
     fn limit_wait_line() {
-        let cap = format!("● 我先跑一下测试\n\n  Usage limit reached · continuing automatically at 3pm (Asia/Shanghai) · esc to cancel\n{RULE}\n❯ \n{RULE}\n");
-        assert_eq!(limit_wait(&cap).as_deref(), Some("at 3pm (Asia/Shanghai)"));
-        assert_eq!(limit_wait("  Continuing automatically when your usage limit resets · esc to cancel\n").as_deref(), Some("when your usage limit resets"));
+        // 对话里追加的那条：取消、到点继续、又跑起来之后都还在屏幕上，不算
+        let note = "● 我先跑一下测试\n\n  ⎿  Usage limit reached · continuing automatically at 12am · esc to cancel\n";
+        assert_eq!(limit_wait(&format!("{note}{RULE}\n❯ \n{RULE}\n")), None);
+        assert_eq!(limit_wait(&format!("{note}{RULE}\n❯ \n{RULE}\n  Usage limit reached · limit resets 12am  Continuing automatically at 12am (Asia/Shanghai) · esc to cancel\n")).as_deref(), Some("at 12am (Asia/Shanghai)"));
+        assert_eq!(limit_wait("  Continuing automatically when it resets · esc to cancel\n").as_deref(), Some("when it resets"));
+        assert_eq!(limit_wait("  Continuing shortly · esc to cancel\n").as_deref(), Some("shortly"));
         // 对话内容里提到这句话不算（没有 esc to cancel）
         assert_eq!(limit_wait("● Claude Code shows continuing automatically at 3pm in the footer\n"), None);
     }
@@ -795,6 +826,25 @@ mod tests {
 
 
     /// 以 Bypass Permissions 启动、还没接受过时的警告（2.1.310，60 列）：要用户自己确认；说明里的链接（OSC 8）不能带着转义显示出来
+    #[test]
+    fn ask_user_question() {
+        // 2.1.310，49 列（手机），auto mode：每个选项下面一行说明；一次问两个问题时上面有标签栏
+        // 只问一个问题：标题是问题的标签（`☐ 颜色偏好`），问题在说明里
+        let f = include_str!("testdata/ask-question.txt");
+        assert_eq!(classify(f), Screen::Modal);
+        let d = dialog(f).expect("读得出来");
+        assert_eq!(d.title, "颜色偏好");
+        assert!(d.body.iter().any(|l| l == "你喜欢红色还是蓝色？"), "{:?}", d.body);
+        let opts: Vec<(&str, &str)> = d.options.iter().map(|o| (o.label.as_str(), o.hint.as_str())).collect();
+        assert_eq!(opts, [("红色", "喜欢红色"), ("蓝色", "喜欢蓝色"), ("Type something.", "")]);
+        assert_eq!(d.selected, 0);
+        // 一次问两个：标签栏不算标题，标题是当前这个问题
+        let d = dialog(include_str!("testdata/ask-questions.txt")).expect("读得出来");
+        assert_eq!(d.title, "你喜欢红色还是蓝色？");
+        let opts: Vec<(&str, &str)> = d.options.iter().map(|o| (o.label.as_str(), o.hint.as_str())).collect();
+        assert_eq!(opts, [("红色", "热烈、醒目，给人充满活力的感觉"), ("蓝色", "沉静、清爽，给人冷静可靠的感觉"), ("Type something.", "")]);
+    }
+
     #[test]
     fn bypass_warning() {
         let d = dialog(include_str!("testdata/bypass.txt")).unwrap();

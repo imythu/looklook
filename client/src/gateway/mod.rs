@@ -12,6 +12,7 @@ pub mod access;
 mod api;
 mod assets;
 mod chat;
+mod notify;
 pub mod mcp;
 mod proxy;
 pub mod remote;
@@ -85,6 +86,8 @@ pub struct Inner {
     pub ssh_transfer: crate::ssh_transfer::SshTransfer,
     /// 设置在电脑之间同步（src/settings_sync.rs）
     pub sync: Arc<crate::settings_sync::Syncer>,
+    /// 飞书通知（src/notify.rs）
+    pub notify: Arc<crate::notify::Notifier>,
 }
 
 impl Inner {

@@ -1,6 +1,6 @@
 [package]
 name = "looklook-client"
-version = "1.41.0-beta.1"
+version = "1.45.0-beta.1"
 edition = "2021"
 license = "AGPL-3.0-or-later"
 description = "看看客户端：在自己的电脑上运行终端与 AI 助手，并通过看看服务端随时随地访问"
@@ -34,7 +34,8 @@ tower = { version = "0.5", features = ["util"] }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio", "service"] }
 # WebRTC 通道上的 WebSocket（src/rtc/bridge.rs）：在内存连接上做客户端握手，接到本机路由
-tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
+# 飞书长连接（src/feishu/ws.rs）：connect + rustls 连 wss
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake", "connect", "rustls-tls-webpki-roots"] }
 http-body-util = "0.1"
 bytes = "1"
 flate2 = "1"
@@ -49,6 +50,8 @@ chacha20poly1305 = "0.10"
 # 从另一台电脑导入 SSH 主机（src/ssh_transfer.rs）：临时 X25519 密钥协商、HKDF 派生、用完清零
 x25519-dalek = { version = "2", features = ["static_secrets", "zeroize"] }
 hkdf = "0.12"
+# 飞书绑定码（src/notify.rs）
+hmac = "0.12"
 zeroize = "1"
 data-encoding = "2"
 rust-embed = "8"

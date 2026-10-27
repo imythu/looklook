@@ -248,6 +248,7 @@ void TcpTransport::createSocket(const struct sockaddr *addr, socklen_t addrlen) 
 		mSock = ::socket(addr->sa_family, SOCK_STREAM, IPPROTO_TCP);
 		if (mSock == INVALID_SOCKET)
 			throw std::runtime_error("TCP socket creation failed");
+		sock_no_inherit(mSock); // looklook
 
 		// Configure socket
 		configureSocket();

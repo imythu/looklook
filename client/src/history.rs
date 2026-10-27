@@ -112,9 +112,56 @@ fn opencode_dir() -> PathBuf {
 
 /// 列出对话：最近有消息的排前面。
 pub async fn list(q: Query) -> Vec<Conv> {
-    tokio::task::spawn_blocking(move || list_blocking(&q)).await.unwrap_or_default()
+    tokio::task::spawn_blocking(move || {
+        let mut out = list_blocking(&q);
+        out.truncate(q.limit.unwrap_or(50).clamp(1, 500));
+        out
+    })
+    .await
+    .unwrap_or_default()
 }
 
+/// 一个文件夹里的对话：各工具多少个、最近的几个。
+#[derive(Debug, Clone, Serialize)]
+pub struct Folder {
+    pub workdir: String,
+    /// 工具 → 对话数
+    pub counts: HashMap<&'static str, usize>,
+    pub total: usize,
+    pub updated_at: String,
+    /// 最近的 `per` 个（从新到旧）
+    pub items: Vec<Conv>,
+}
+
+/// 所有对话按文件夹分组（新到旧），`keep` 决定哪些对话算进来（比如去掉隐藏的），每组留最近 `per` 个。
+pub async fn folders(per: usize, keep: impl Fn(&Conv) -> bool + Send + 'static) -> Vec<Folder> {
+    tokio::task::spawn_blocking(move || group_folders(list_blocking(&Query::default()).into_iter().filter(keep), per)).await.unwrap_or_default()
+}
+
+/// 已经按时间从新到旧排好的对话按文件夹分组；组的顺序是各组最新那个的先后。
+fn group_folders(convs: impl Iterator<Item = Conv>, per: usize) -> Vec<Folder> {
+    let mut out: Vec<Folder> = vec![];
+    let mut at: HashMap<String, usize> = HashMap::new();
+    for c in convs {
+        let key = dir_key(&c.workdir);
+        if key.is_empty() {
+            continue;
+        }
+        let i = *at.entry(key).or_insert_with(|| {
+            out.push(Folder { workdir: c.workdir.clone(), counts: HashMap::new(), total: 0, updated_at: c.updated_at.clone(), items: vec![] });
+            out.len() - 1
+        });
+        let f = &mut out[i];
+        *f.counts.entry(c.agent).or_default() += 1;
+        f.total += 1;
+        if f.items.len() < per {
+            f.items.push(c);
+        }
+    }
+    out
+}
+
+/// 全部符合条件的对话，从新到旧（不截断）。
 fn list_blocking(q: &Query) -> Vec<Conv> {
     let want = |a: &str| q.agent.as_deref().is_none_or(|w| w == a);
     let workdir = q.workdir.as_deref().map(str::trim).filter(|w| !w.is_empty());
@@ -182,7 +229,6 @@ fn list_blocking(q: &Query) -> Vec<Conv> {
         out.retain(|c| c.updated_ms < b);
     }
     out.sort_by_key(|c| std::cmp::Reverse(c.updated_ms));
-    out.truncate(q.limit.unwrap_or(50).clamp(1, 500));
     out
 }
 
@@ -215,12 +261,14 @@ fn find_in_file(path: &Path, text: &str) -> Option<String> {
 
 /// 两个目录是不是同一个：去掉末尾的分隔符；Windows 上不分大小写、`/` 和 `\` 一样。
 pub fn same_dir(a: &str, b: &str) -> bool {
-    let norm = |s: &str| {
-        let s = if cfg!(windows) { s.replace('/', "\\").to_lowercase() } else { s.to_string() };
-        s.trim_end_matches(['/', '\\']).to_string()
-    };
-    let (a, b) = (norm(a), norm(b));
+    let (a, b) = (dir_key(a), dir_key(b));
     !a.is_empty() && a == b
+}
+
+/// 比较目录用的形式（见 [`same_dir`]）。
+pub fn dir_key(s: &str) -> String {
+    let s = if cfg!(windows) { s.replace('/', "\\").to_lowercase() } else { s.to_string() };
+    s.trim_end_matches(['/', '\\']).to_string()
 }
 
 /// Claude Code 存对话的文件夹名：工作目录里不是字母数字的都换成 `-`。
@@ -602,6 +650,31 @@ mod tests {
         let p = dir.join(name);
         std::fs::write(&p, lines.iter().map(|v| v.to_string() + "\n").collect::<String>()).unwrap();
         p
+    }
+
+    #[test]
+    fn folders_grouped_newest_first() {
+        let conv = |agent: &'static str, id: &str, workdir: &str, ms: i64| Conv {
+            agent,
+            id: id.into(),
+            title: id.into(),
+            workdir: workdir.into(),
+            branch: None,
+            last: None,
+            updated_at: ms.to_string(),
+            updated_ms: ms,
+            live: false,
+            instance_id: None,
+            started_at: None,
+            snippet: None,
+        };
+        let all = vec![conv("claude", "a", "/w/app", 5), conv("codex", "b", "/w/lib/", 4), conv("codex", "c", "/w/app/", 3), conv("claude", "d", "/w/app", 2), conv("claude", "e", "", 1)];
+        let f = group_folders(all.into_iter(), 2);
+        assert_eq!(f.len(), 2, "没有目录的不算");
+        assert_eq!((f[0].workdir.as_str(), f[0].total, f[0].updated_at.as_str()), ("/w/app", 3, "5"));
+        assert_eq!((f[0].counts["claude"], f[0].counts["codex"]), (2, 1));
+        assert_eq!(f[0].items.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["a", "c"], "末尾斜杠不同也是同一个文件夹，只留最近两个");
+        assert_eq!(f[1].workdir, "/w/lib/");
     }
 
     #[test]

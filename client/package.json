@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "check:locales": "node scripts/check-locales.mjs",
-    "test": "node --test src-ui/shared/xfer.test.mjs src-ui/shared/chat.test.mjs"
+    "test": "node --test src-ui/shared/xfer.test.mjs src-ui/shared/chat.test.mjs src-ui/shared/inputHistory.test.mjs src-ui/shared/chatCopy.test.mjs"
   },
   "dependencies": {
     "dompurify": "^3.4.16",

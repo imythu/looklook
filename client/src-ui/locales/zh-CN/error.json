@@ -230,8 +230,8 @@
   "DOCKER_FAILED": "Docker 出错了：{{detail}}",
   "TOOL_NOT_IN_CONTAINER": "容器 {{container}} 里没有安装 {{tool}}",
   "CHAT_FOREIGN": "终端里的 {{agent}} 不是看看打开的，对话界面不能用",
-  "CODEX_APP_SERVER": "连不上 Codex 的后台服务，请重试",
-  "CODEX_NOT_FOUND": "没找到 Codex，请确认这台电脑装了 Codex",
+  "CODEX_APP_SERVER": "Codex 的后台服务没能启动：{{detail}}",
+  "CODEX_NOT_FOUND": "没找到 Codex，请确认这台电脑装了 Codex（{{detail}}）",
   "CODEX_REQUEST_FAILED": "Codex 没能完成这个操作：{{detail}}",
   "CHAT_TERMINAL_ONLY": "Codex 还在直接运行这段对话，等它空闲会自动接回来",
   "CODEX_TERMINAL_BUSY": "终端里的程序没有退出，请在终端里手动退出后再重新连接",
@@ -240,5 +240,10 @@
   "SYNC_SIGNATURE": "对方电脑的身份核对没通过，没有同步。",
   "SYNC_UNSUPPORTED": "看看服务器的版本太旧，暂时不能同步设置。",
   "SYNC_DISABLED": "那台电脑关掉了设置同步。",
-  "SYNC_PROTOCOL": "两台电脑的看看版本不兼容，先都更新到最新版。"
+  "SYNC_PROTOCOL": "两台电脑的看看版本不兼容，先都更新到最新版。",
+  "NOTIFY_FEISHU": "飞书返回错误 {{code}}：{{msg}}",
+  "NOTIFY_NOT_CONFIGURED": "还没有设置飞书通知。",
+  "NOTIFY_NOT_BOUND": "还没有绑定飞书账号。",
+  "NOTIFY_SIGNATURE": "转来的飞书操作签名不对。",
+  "NOTIFY_PROTOCOL": "电脑之间转发飞书操作的格式不对，两台电脑的看看版本可能不一样。"
 }

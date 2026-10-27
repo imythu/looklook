@@ -132,6 +132,7 @@ pub fn run(rt: tokio::runtime::Runtime, home: Option<PathBuf>, listen: Option<So
                 rt.block_on(supervisor(home, listen, server, cmd_rx, rt_running, rt_url));
             })?;
             tauri::async_runtime::spawn(refresh_menu(items, running.clone()));
+            tauri::async_runtime::spawn(exit_on_sigterm(handle.clone()));
             if no_browser {
                 dock(&handle, false);
             } else {
@@ -149,6 +150,9 @@ pub fn run(rt: tokio::runtime::Runtime, home: Option<PathBuf>, listen: Option<So
             if app.state::<Shell>().cmd.send(Cmd::Exit(tx)).is_ok() {
                 let _ = rx.recv_timeout(Duration::from_secs(10));
             }
+            // 不再回到 Tauri / AppKit 去调 exit()：后台线程还在时析构全局对象会崩溃（见 util::exit_now）
+            tracing::info!("看看已退出");
+            crate::util::exit_now(0);
         }
         #[cfg(target_os = "macos")]
         RunEvent::Reopen { .. } => show_main(app),
@@ -335,6 +339,22 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
         "exit" | "quit" => app.exit(0),
         _ => {}
     }
+}
+
+/// 注销、关机时 launchd 先给登录项发 SIGTERM：整个应用退出（和菜单“退出”一样），
+/// 而不是只停掉服务、托盘还留着，等系统超时后强行结束。
+async fn exit_on_sigterm(app: AppHandle) {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let Ok(mut term) = signal(SignalKind::terminate()) else { return };
+        if term.recv().await.is_some() {
+            tracing::info!("收到 SIGTERM，退出");
+            app.exit(0);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = app;
 }
 
 /// 菜单项按服务状态置灰：运行中只能“停止服务”，已停止只能“启动服务”。

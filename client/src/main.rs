@@ -30,6 +30,7 @@ mod clock;
 mod diag;
 mod docker;
 mod error;
+mod feishu;
 mod fsops;
 mod gateway;
 mod git;
@@ -39,6 +40,7 @@ mod instances;
 mod listen;
 mod metrics;
 mod model;
+mod notify;
 mod paths;
 mod platform;
 mod proctree;
@@ -557,6 +559,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         outbound: Default::default(),
         ssh_transfer: Default::default(),
         sync: Default::default(),
+        notify: Default::default(),
     });
     std::fs::write(paths.home.join("run").join("endpoint"), ui_addr.to_string())?;
     if let Err(e) = chat.publish(ui_addr) {
@@ -582,6 +585,8 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(app.outbound.clone().watch(account.clone())),
         tokio::spawn(rtc::signal::run(app.clone(), shutdown.clone())),
         tokio::spawn(app.sync.clone().run(app.clone(), shutdown.clone())),
+        tokio::spawn(chat.clone().background()),
+        tokio::spawn(app.notify.clone().run(app.clone(), shutdown.clone())),
         // libdatachannel 默认第一条连接时才初始化（usrsctp、OpenSSL、线程池），提前做掉，第一次建连少等一会儿
         tokio::task::spawn_blocking(datachannel::preload),
         {

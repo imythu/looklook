@@ -151,7 +151,7 @@ pub struct Transcript {
     /// 运行中发的、还在 Claude Code 队列里的消息（`queue-operation`）。这一步做完会并进对话（`queued_command` 附件），
     /// 或者这一轮结束后当成下一条消息发出去
     pub queued: Vec<String>,
-    /// Claude Code 的整个队列（含不显示的后台任务通知）：`dequeue` 不带内容，取的是最前面那条，要照着它的顺序记
+    /// Claude Code 的整个队列（含不显示的后台任务通知、系统带进来的上下文）：`dequeue` 不带内容，要照着它的规则记（见 `queue_op`）
     queue: std::collections::VecDeque<String>,
 }
 
@@ -532,24 +532,44 @@ impl Transcript {
 }
 
 impl Transcript {
-    /// 照着 Claude Code 的队列记：`enqueue` 放到最后；`dequeue`（立即发送、这一轮结束后发出）不带内容，取最前面那条；
-    /// `remove`（并进这一轮）按内容删；`popAll` / `clear`（按上键拿回去编辑等）清空。界面只显示用户发的。
+    /// 照着 Claude Code 的队列记：`enqueue` 放到最后；`popAll` / `clear`（按上键拿回去编辑等）清空。界面只显示用户发的。
+    /// - `dequeue`（立即发送、这一轮结束后发出）不带内容。人发的排在后台通知、系统上下文前面出队，不是先进先出：
+    ///   通知在前面排着时用户发了一句，紧接着的 `dequeue` 取走的是这句。按先进先出记，这句就一直挂在“排队中”。
+    /// - `remove`（并进这一轮）按内容删。系统带进来的上下文（`<artifact-view-context …>`、`<cross-session-message …>`）
+    ///   出队时内容会被改写，对不上原文时按开头的标签对。
     fn queue_op(&mut self, v: &Value) {
         let text = v["content"].as_str();
         match v["operation"].as_str() {
             Some("enqueue") => self.queue.push_back(text.unwrap_or("").to_string()),
             Some("dequeue") => {
-                self.queue.pop_front();
+                let n = self.queue.iter().position(|q| !is_system_item(q)).unwrap_or(0);
+                self.queue.remove(n);
             }
             Some("popAll" | "clear") => self.queue.clear(),
             _ => {
-                if let Some(n) = text.and_then(|t| self.queue.iter().position(|q| q == t)) {
+                let n = text.and_then(|t| {
+                    self.queue.iter().position(|q| q == t).or_else(|| {
+                        let tag = system_tag(t)?;
+                        self.queue.iter().position(|q| system_tag(q) == Some(tag))
+                    })
+                });
+                if let Some(n) = n {
                     self.queue.remove(n);
                 }
             }
         }
-        self.queued = self.queue.iter().filter(|s| !s.contains("<task-notification>") && !s.trim().is_empty()).cloned().collect();
+        self.queued = self.queue.iter().filter(|s| !is_system_item(s) && !s.trim().is_empty()).cloned().collect();
     }
+}
+
+/// 队列里不是人发的：开头是带连字符的标签（`<task-notification>`、`<artifact-view-context …>`、`<cross-session-message …>`）
+fn system_tag(s: &str) -> Option<&str> {
+    let tag = s.trim_start().strip_prefix('<')?.split([' ', '>', '\n']).next()?;
+    tag.contains('-').then_some(tag)
+}
+
+fn is_system_item(s: &str) -> bool {
+    system_tag(s).is_some()
 }
 
 /// 运行中发的消息并进对话时的附件（`attachment.type = queued_command`）：显示成用户消息。
@@ -603,6 +623,10 @@ fn user_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) -> V
         return vec![Item { key: key(0), ts, body: Body::Interrupt }];
     }
     if let Some(cmd) = command_text(trimmed) {
+        // /clear（/new、/reset）是新会话记录里的第一条：对话界面上新会话应该是空的首页，不显示它
+        if cmd.is_empty() || cmd == "/clear" || cmd.starts_with("/clear\n") {
+            return vec![];
+        }
         return vec![Item { key: key(0), ts, body: Body::Command { text: cmd } }];
     }
     if trimmed.contains("<task-notification>") {
@@ -640,7 +664,8 @@ fn system_items(v: &Value, key: &dyn Fn(usize) -> String, ts: Option<String>) ->
     let body = match v["subtype"].as_str()? {
         "compact_boundary" => Body::Divider { kind: "compact".into() },
         "turn_duration" => Body::Turn { ms: v["durationMs"].as_u64()? },
-        "local_command" => Body::Command { text: command_text(v["content"].as_str()?)? },
+        // 没有输出的命令（/clear 的 `<local-command-stdout></local-command-stdout>`）不显示
+        "local_command" => Body::Command { text: command_text(v["content"].as_str()?).filter(|t| !t.is_empty())? },
         "informational" => Body::Info { text: truncate(v["content"].as_str()?, TEXT_LIMIT).0 },
         _ => return None,
     };
@@ -862,14 +887,22 @@ mod tests {
         let Body::User { text, mid, .. } = &t.items(3, 4)[0].body else { panic!() };
         assert_eq!(text, "顺便算一下 2+3");
         assert!(mid);
-        // 立即发送：dequeue 不带内容，取最前面的（后台任务通知也在队列里，只是不显示）
+        // 立即发送：dequeue 不带内容。人发的排在后台通知前面出队（真实记录里通知先排着、用户再发一句，
+        // 紧接着的 dequeue 进对话的都是用户这句）；只剩通知时取最前面的
         t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"<task-notification>t</task-notification>"})).as_bytes());
         t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"马上看这个"})).as_bytes());
         assert_eq!(t.queued, ["马上看这个"]);
         t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
-        assert_eq!(t.queued, ["马上看这个"], "先取走的是通知");
+        assert!(t.queued.is_empty(), "先取走的是用户这句");
         t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
-        assert!(t.queued.is_empty());
+        assert!(t.queue.is_empty(), "再取走通知");
+        // 系统带进来的上下文出队时内容被改写过（画布换了选中的画板）：按标签对上，不留在队列里把后面的错开
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"<artifact-view-context artifact=\"a\">{\"selected\":[1]}</artifact-view-context>"})).as_bytes());
+        t.feed(line(json!({"type":"queue-operation","operation":"remove","content":"<artifact-view-context artifact=\"a\">{\"selected\":[2]}</artifact-view-context>"})).as_bytes());
+        assert!(t.queue.is_empty());
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"下一句"})).as_bytes());
+        t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
+        assert!(t.queued.is_empty(), "前面没有残留，dequeue 取走的就是这句");
         // 按上键拿回去编辑：队列清空
         t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"x"})).as_bytes());
         t.feed(line(json!({"type":"queue-operation","operation":"popAll"})).as_bytes());
@@ -1063,6 +1096,17 @@ mod tests {
         assert_eq!(kinds(&t), ["user", "interrupt", "command", "command", "turn"]);
         assert_eq!(items[2].body, Body::Command { text: "/model".into() });
         assert_eq!(items[3].body, Body::Command { text: "Kept model as `Haiku 5.5`".into() });
+    }
+
+    #[test]
+    fn clear_starts_an_empty_conversation() {
+        // 2.1.310 的 /new（/clear 的别名）之后，新会话的记录开头是这几条
+        let mut t = Transcript::new("/nonexistent".into());
+        let mut s = line(json!({"type":"user","uuid":"m1","parentUuid":null,"isMeta":true,"message":{"content":"<local-command-caveat>The command below was run directly in Claude Code</local-command-caveat>"}}));
+        s += &line(json!({"type":"user","uuid":"c1","parentUuid":"m1","message":{"content":"<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>"}}));
+        s += &line(json!({"type":"system","subtype":"local_command","uuid":"c2","parentUuid":"c1","content":"<local-command-stdout></local-command-stdout>"}));
+        t.feed(s.as_bytes());
+        assert!(kinds(&t).is_empty(), "{:?}", kinds(&t));
     }
 
     #[test]

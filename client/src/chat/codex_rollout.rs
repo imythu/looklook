@@ -20,6 +20,8 @@ use super::transcript::{truncate, Block, Body, Change, Item, Stats, TEXT_LIMIT};
 const SKIPPED: &[&str] = &["response_item", "turn_context", "token_usage_record", "world_state", "compacted", "inter_agent_communication_metadata"];
 const SKIPPED_EVENTS: &[&str] = &["token_count", "task_started", "thread_settings_applied", "user_message", "agent_message", "patch_apply_end", "web_search_end", "exec_command_end"];
 const SKIPPED_ITEMS: &[&str] = &["SubAgentActivity", "CollabAgentToolCall", "Extension"];
+/// 子代理交回给主线的消息（`response_item` 的 `agent_message`）里，最终答复是这样开头的；`MESSAGE` 类的内容是加密的
+const FINAL_ANSWER: &str = "Message Type: FINAL_ANSWER";
 
 pub struct Rollout {
     path: PathBuf,
@@ -32,11 +34,15 @@ pub struct Rollout {
     inputs: HashMap<String, Value>,
     version: Option<String>,
     stats: Stats,
+    /// 上一条用户消息所在的那一轮：同一轮里再来一条，就是运行中插话（`turn/steer`）进来的
+    user_turn: Option<String>,
+    /// 子代理（`agent_path`，例如 `/root/helper`）→ 它的卡片（工具调用 id、子会话 id、交回过答复没有）
+    agents: HashMap<String, (String, String, bool)>,
 }
 
 impl Rollout {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, pos: 0, partial: vec![], line: 0, items: vec![], inputs: HashMap::new(), version: None, stats: Stats::default() }
+        Self { path, pos: 0, partial: vec![], line: 0, items: vec![], inputs: HashMap::new(), version: None, stats: Stats::default(), user_turn: None, agents: HashMap::new() }
     }
 
     /// 喂入新读到的字节（测试直接用）。
@@ -75,7 +81,7 @@ impl Rollout {
                 }
             }
             "event_msg" => match p["type"].as_str().unwrap_or("") {
-                "item_completed" => self.item(line, &p["item"], ts),
+                "item_completed" => self.item(line, &p["item"], p["turn_id"].as_str(), ts),
                 "task_complete" => {
                     if let Some(ms) = p["duration_ms"].as_u64() {
                         self.push(line, 0, ts, Body::Turn { ms });
@@ -85,6 +91,7 @@ impl Rollout {
                 t if SKIPPED_EVENTS.contains(&t) => {}
                 _ => self.stats.unknown += 1,
             },
+            "response_item" if p["type"] == "agent_message" => self.agent_message(line, p, ts),
             t if SKIPPED.contains(&t) => {}
             _ => self.stats.unknown += 1,
         }
@@ -114,7 +121,7 @@ impl Rollout {
         }
     }
 
-    fn item(&mut self, line: usize, it: &Value, ts: Option<String>) {
+    fn item(&mut self, line: usize, it: &Value, turn: Option<&str>, ts: Option<String>) {
         let id = it["id"].as_str().unwrap_or("").to_string();
         match it["type"].as_str().unwrap_or("") {
             "UserMessage" => {
@@ -122,7 +129,9 @@ impl Rollout {
                 let text: Vec<&str> = parts.iter().filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect();
                 let images = parts.iter().filter(|c| c["type"].as_str().is_some_and(|t| t.contains("image"))).count() as u32;
                 let (text, truncated) = truncate(&text.join("\n"), TEXT_LIMIT);
-                self.push(line, 0, ts, Body::User { text, images, truncated, mid: false });
+                let mid = turn.is_some() && self.user_turn.as_deref() == turn;
+                self.user_turn = turn.map(String::from);
+                self.push(line, 0, ts, Body::User { text, images, truncated, mid });
             }
             "AgentMessage" => {
                 let text: Vec<&str> = it["content"].as_array().map(|a| a.iter().filter_map(|c| c["text"].as_str()).collect()).unwrap_or_default();
@@ -191,6 +200,30 @@ impl Rollout {
                 let input = json!({ "prompt": truncate(prompt, 2000).0, "file": file });
                 self.tools(line, ts, vec![(id, "ImageGen".into(), input, Outcome { content: String::new(), is_error: !ok, extra: None })]);
             }
+            // 0.163 起联网搜索、打开网页是 `Extension`（`web.search`），`action` 说明是哪一种
+            "Extension" if it["kind"] == "web.search" => {
+                let lines: Vec<String> = it["results"].as_array().map(|a| a.iter().filter_map(|r| Some(format!("{} {}", r["title"].as_str()?, r["url"].as_str().unwrap_or("")))).collect()).unwrap_or_default();
+                let a = &it["action"];
+                let (name, input) = match (a["type"].as_str(), a["url"].as_str()) {
+                    (Some("openPage"), Some(url)) => ("WebFetch", json!({ "url": url })),
+                    _ => {
+                        let qs: Vec<&str> = a["queries"].as_array().map(|q| q.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                        let q = if qs.is_empty() { a["query"].as_str().or_else(|| it["query"].as_str()).unwrap_or("").to_string() } else { qs.join(" · ") };
+                        ("WebSearch", json!({ "query": q }))
+                    }
+                };
+                let is_error = it["status"].as_str().is_some_and(|s| matches!(s, "failed" | "error"));
+                self.tools(line, ts, vec![(id, name.into(), input, Outcome { content: lines.join("\n"), is_error, extra: None })]);
+            }
+            // 派出子代理：显示成子代理卡片（任务说明是加密的，看不到）；结果是它交回的最终答复（agent_message），
+            // 点开看到的步骤在它自己的 rollout 里（`agent_thread_id`，见 Chat::agent）
+            "SubAgentActivity" if it["kind"] == "started" => {
+                let (Some(path), Some(thread)) = (it["agent_path"].as_str(), it["agent_thread_id"].as_str()) else { return };
+                let input = json!({ "description": agent_name(path), "model": it["model"], "agent_thread_id": thread });
+                self.inputs.insert(id.clone(), input.clone());
+                self.push(line, 0, ts, Body::Assistant { model: None, blocks: vec![Block::ToolUse { id: id.clone(), name: "Agent".into(), input, truncated: false }] });
+                self.agents.insert(path.to_string(), (id, thread.to_string(), false));
+            }
             t if SKIPPED_ITEMS.contains(&t) => {}
             "" => self.stats.unknown += 1,
             // 新版本 Codex 加的、还不认识的条目：不丢掉，按它的类型名显示成一张普通的工具卡片（参数折叠着），
@@ -203,6 +236,36 @@ impl Rollout {
             }
         }
     }
+}
+
+impl Rollout {
+    /// 子代理交回的最终答复：第一次是它那张卡片的结果；之后再交回（主线又给它派了活）另起一张卡片
+    fn agent_message(&mut self, line: usize, p: &Value, ts: Option<String>) {
+        let Some(author) = p["author"].as_str() else { return };
+        let Some(text) = p["content"].as_array().and_then(|a| a.first()).and_then(|c| c["text"].as_str()) else { return };
+        if !text.starts_with(FINAL_ANSWER) {
+            return;
+        }
+        let Some((tool, thread, answered)) = self.agents.get(author).cloned() else { return };
+        let answer = text.split_once("Payload:\n").map_or("", |(_, a)| a).to_string();
+        let extra = Some(json!({ "agentId": thread }));
+        if answered {
+            let input = json!({ "description": agent_name(author), "agent_thread_id": thread });
+            let id = format!("{tool}#{line}");
+            self.tools(line, ts, vec![(id, "Agent".into(), input, Outcome { content: answer, is_error: false, extra })]);
+            return;
+        }
+        let (content, truncated) = truncate(&answer, TEXT_LIMIT);
+        self.push(line, 0, ts, Body::ToolResult { tool_use_id: tool, is_error: false, content, images: 0, truncated, extra });
+        if let Some(a) = self.agents.get_mut(author) {
+            a.2 = true;
+        }
+    }
+}
+
+/// `/root/helper` → `helper`
+fn agent_name(path: &str) -> String {
+    path.rsplit('/').find(|s| !s.is_empty()).unwrap_or(path).to_string()
 }
 
 struct Outcome {
@@ -360,6 +423,76 @@ impl TranscriptReader for Rollout {
     }
 }
 
+/// 子代理（子会话 `thread`）的 rollout：先在主线 rollout 同一个目录里找（一般是同一天），再找整个 `sessions` 目录
+pub fn find_rollout(main: &Path, thread: &str) -> Option<PathBuf> {
+    if thread.is_empty() || !thread.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let tail = format!("-{thread}.jsonl");
+    let matches = |p: &Path| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("rollout-") && n.ends_with(&tail));
+    let in_dir = |d: &Path| std::fs::read_dir(d).ok()?.flatten().map(|e| e.path()).find(|p| matches(p));
+    if let Some(p) = main.parent().and_then(in_dir) {
+        return Some(p);
+    }
+    // sessions/YYYY/MM/DD/rollout-*.jsonl
+    let root = main.ancestors().nth(4)?;
+    let mut dirs = vec![(root.to_path_buf(), 0)];
+    while let Some((d, depth)) = dirs.pop() {
+        for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+            let p = e.path();
+            if depth < 3 && p.is_dir() {
+                dirs.push((p, depth + 1));
+            } else if depth == 3 && matches(&p) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// 用户消息 `key`（`r:<行号>:0`）里的第 `n` 张图片：类型和内容（对话界面上的小图、大图）。
+/// `UserMessage` 里只有附件的路径（`local_image`），图片本身在它前面那条用户的 `response_item`（`input_image` 是 data URL）里，
+/// 从那里取，不去读路径指向的文件：附件可能已经清掉了，能读哪个文件也不该由记录里的路径决定。
+pub fn user_image(path: &Path, key: &str, n: usize) -> Option<(&'static str, Vec<u8>)> {
+    let line: usize = key.strip_prefix("r:")?.split(':').next()?.parse().ok()?;
+    let text = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(line + 1).collect();
+    let rec: Value = serde_json::from_str(lines.get(line)?).ok()?;
+    let item = &rec["payload"]["item"];
+    if item["type"] != "UserMessage" {
+        return None;
+    }
+    let count = item["content"].as_array()?.iter().filter(|c| c["type"].as_str().is_some_and(|t| t.contains("image"))).count();
+    if n >= count {
+        return None;
+    }
+    // 往前找最近的一条用户消息（一般就是上一行），张数对得上才用
+    for raw in lines[line.saturating_sub(50)..line].iter().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(raw) else { continue };
+        let p = &v["payload"];
+        if v["type"] != "response_item" || p["type"] != "message" || p["role"] != "user" {
+            continue;
+        }
+        let imgs: Vec<&str> = p["content"].as_array()?.iter().filter(|c| c["type"] == "input_image").filter_map(|c| c["image_url"].as_str()).collect();
+        return if imgs.len() == count { data_url(imgs[n]) } else { None };
+    }
+    None
+}
+
+/// `data:image/png;base64,…` → 类型和内容；只认常见的图片类型
+fn data_url(url: &str) -> Option<(&'static str, Vec<u8>)> {
+    use base64::Engine;
+    let (head, data) = url.strip_prefix("data:")?.split_once(',')?;
+    let mime = match head.strip_suffix(";base64")? {
+        "image/png" => "image/png",
+        "image/jpeg" | "image/jpg" => "image/jpeg",
+        "image/gif" => "image/gif",
+        "image/webp" => "image/webp",
+        _ => return None,
+    };
+    Some((mime, base64::engine::general_purpose::STANDARD.decode(data.trim()).ok()?))
+}
+
 /// 记录里最后一条 `token_count`，换成 app-server `thread/tokenUsage/updated` 的 `tokenUsage` 的样子。
 /// 刚接上（看看重启、重新加载会话）时 app-server 要等下一轮才发用量，先用它把上下文用量填上。只读文件末尾一段。
 pub fn last_token_usage(path: &Path) -> Option<Value> {
@@ -490,6 +623,105 @@ mod tests {
     }
 
     #[test]
+    fn web_search_extension() {
+        let mut r = Rollout::new(PathBuf::from("x.jsonl"));
+        let text = [
+            done(json!({ "type": "Extension", "kind": "web.search", "id": "s", "query": "q…", "action": { "type": "search", "query": null, "queries": ["gitea webhook", "github webhook"] },
+                "results": [{ "type": "text_result", "title": "Webhooks | Gitea", "url": "https://docs.gitea.com/webhooks" }] })),
+            done(json!({ "type": "Extension", "kind": "web.search", "id": "o", "query": "https://a.com/x", "action": { "type": "openPage", "url": "https://a.com/x" }, "results": [] })),
+            done(json!({ "type": "Extension", "kind": "clock.sleep", "id": "z", "durationMs": 15000 })),
+        ]
+        .concat();
+        r.feed(text.as_bytes());
+        let items = r.items(0, r.len());
+        assert_eq!(items.len(), 4, "sleep 不显示");
+        let Body::Assistant { blocks, .. } = &items[0].body else { panic!() };
+        assert!(matches!(&blocks[0], Block::ToolUse { name, input, .. } if name == "WebSearch" && input["query"] == "gitea webhook · github webhook"));
+        assert!(matches!(&items[1].body, Body::ToolResult { content, .. } if content == "Webhooks | Gitea https://docs.gitea.com/webhooks"));
+        let Body::Assistant { blocks, .. } = &items[2].body else { panic!() };
+        assert!(matches!(&blocks[0], Block::ToolUse { name, input, .. } if name == "WebFetch" && input["url"] == "https://a.com/x"));
+    }
+
+    #[test]
+    fn steered_message_is_mid_turn() {
+        let user = |turn: &str, text: &str| {
+            line(json!({ "type": "event_msg", "payload": { "type": "item_completed", "turn_id": turn, "item": { "type": "UserMessage", "id": text, "content": [{ "type": "text", "text": text }] } } }))
+        };
+        let mut r = Rollout::new(PathBuf::from("x.jsonl"));
+        let text = [user("t1", "跑一下"), done(json!({ "type": "CommandExecution", "id": "c", "command": "ls", "status": "completed" })), user("t1", "顺便"), user("t2", "下一轮")].concat();
+        r.feed(text.as_bytes());
+        let mids: Vec<bool> = r.items(0, r.len()).iter().filter_map(|i| if let Body::User { mid, .. } = i.body { Some(mid) } else { None }).collect();
+        assert_eq!(mids, [false, true, false]);
+    }
+
+    #[test]
+    fn user_image_from_response_item() {
+        let dir = std::env::temp_dir().join(format!("ll-codex-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout-x.jsonl");
+        let png = "iVBORw0KGgo=";
+        let text = [
+            line(json!({ "type": "session_meta", "payload": {} })),
+            line(json!({ "type": "response_item", "payload": { "type": "message", "role": "user", "content": [
+                { "type": "input_text", "text": "看图" }, { "type": "input_image", "image_url": format!("data:image/png;base64,{png}") }, { "type": "input_text", "text": "</image>" }] } })),
+            done(json!({ "type": "UserMessage", "id": "u", "content": [{ "type": "text", "text": "看图" }, { "type": "local_image", "path": "/gone/a.png" }] })),
+            done(json!({ "type": "AgentMessage", "id": "m", "content": [{ "type": "Text", "text": "红色" }] })),
+        ]
+        .concat();
+        std::fs::write(&path, text).unwrap();
+        let (mime, bytes) = user_image(&path, "r:2:0", 0).unwrap();
+        assert_eq!(mime, "image/png");
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\n");
+        assert!(user_image(&path, "r:2:0", 1).is_none(), "只有一张");
+        assert!(user_image(&path, "r:3:0", 0).is_none(), "不是用户消息");
+        assert!(user_image(&path, "r:9:0", 0).is_none());
+        assert!(data_url("data:text/html;base64,PGI+").is_none(), "只认图片");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn subagent_card_and_answers() {
+        let sub = |kind: &str, id: &str| done(json!({ "type": "SubAgentActivity", "id": id, "kind": kind, "model": "gpt-6-luna", "agent_thread_id": "01a1-c31d", "agent_path": "/root/helper" }));
+        let answer = |text: &str| line(json!({ "type": "response_item", "payload": { "type": "agent_message", "author": "/root/helper", "recipient": "/root",
+            "content": [{ "type": "input_text", "text": format!("Message Type: FINAL_ANSWER\nTask name: /root\nSender: /root/helper\nPayload:\n{text}") }] } }));
+        let other = line(json!({ "type": "response_item", "payload": { "type": "agent_message", "author": "/root/helper", "recipient": "/root",
+            "content": [{ "type": "input_text", "text": "Message Type: MESSAGE\nPayload:\n" }, { "type": "encrypted_content", "encrypted_content": "x" }] } }));
+        let mut r = Rollout::new(PathBuf::from("x.jsonl"));
+        let text = [sub("started", "call_1"), sub("interacted", "call_2"), other, sub("completed", "c"), answer("4"), answer("又做完了")].concat();
+        r.feed(text.as_bytes());
+        let items = r.items(0, r.len());
+        assert_eq!(items.len(), 4, "{items:?}");
+        let Body::Assistant { blocks, .. } = &items[0].body else { panic!() };
+        assert!(matches!(&blocks[0], Block::ToolUse { id, name, input, .. } if id == "call_1" && name == "Agent" && input["description"] == "helper" && input["agent_thread_id"] == "01a1-c31d"));
+        assert!(matches!(&items[1].body, Body::ToolResult { tool_use_id, content, extra: Some(e), .. } if tool_use_id == "call_1" && content == "4" && e["agentId"] == "01a1-c31d"));
+        // 第二次交回：另起一张卡片
+        assert!(matches!(&items[2].body, Body::Assistant { blocks, .. } if matches!(&blocks[0], Block::ToolUse { name, .. } if name == "Agent")));
+        assert!(matches!(&items[3].body, Body::ToolResult { content, .. } if content == "又做完了"));
+        // 不认识的子代理交回的不显示
+        let mut r2 = Rollout::new(PathBuf::from("y.jsonl"));
+        r2.feed(answer("?").as_bytes());
+        assert_eq!(r2.len(), 0);
+    }
+
+    #[test]
+    fn finds_subagent_rollout() {
+        let root = std::env::temp_dir().join(format!("ll-codex-sub-{}", std::process::id()));
+        let day = root.join("sessions/2026/10/26");
+        let next = root.join("sessions/2026/10/27");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::create_dir_all(&next).unwrap();
+        let main = day.join("rollout-2026-10-26T05-06-06-01a1-83e3.jsonl");
+        std::fs::write(&main, "").unwrap();
+        std::fs::write(day.join("rollout-2026-10-26T05-06-22-01a1-c31d.jsonl"), "").unwrap();
+        std::fs::write(next.join("rollout-2026-10-27T00-00-01-0bad-cafe.jsonl"), "").unwrap();
+        assert!(find_rollout(&main, "01a1-c31d").unwrap().ends_with("rollout-2026-10-26T05-06-22-01a1-c31d.jsonl"));
+        assert!(find_rollout(&main, "0bad-cafe").unwrap().ends_with("rollout-2026-10-27T00-00-01-0bad-cafe.jsonl"), "跨天");
+        assert!(find_rollout(&main, "../x").is_none());
+        assert!(find_rollout(&main, "ffff").is_none());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn incremental() {
         let mut r = Rollout::new(PathBuf::from("x.jsonl"));
         let a = done(json!({ "type": "UserMessage", "id": "u", "content": [{ "type": "text", "text": "hi" }] }));
@@ -522,6 +754,14 @@ mod tests {
             let mut r = Rollout::new(f.clone());
             r.poll().unwrap();
             assert_eq!(r.stats().failed, 0, "{}", f.display());
+            // 用户发的图片都能取出来
+            for it in r.items(0, r.len()) {
+                if let Body::User { images, .. } = it.body {
+                    for n in 0..images as usize {
+                        assert!(user_image(f, &it.key, n).is_some(), "{} {} #{n}", f.display(), it.key);
+                    }
+                }
+            }
         }
     }
 }

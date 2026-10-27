@@ -230,8 +230,8 @@
   "DOCKER_FAILED": "Docker failed: {{detail}}",
   "TOOL_NOT_IN_CONTAINER": "{{tool}} is not installed in container {{container}}",
   "CHAT_FOREIGN": "The {{agent}} in the terminal wasn't opened by Looklook, so the chat view can't be used",
-  "CODEX_APP_SERVER": "Couldn't reach the Codex background service. Please try again",
-  "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer",
+  "CODEX_APP_SERVER": "The Codex background service didn't start: {{detail}}",
+  "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer ({{detail}})",
   "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}",
   "CHAT_TERMINAL_ONLY": "Codex is still running this conversation directly; it reconnects automatically once it's idle",
   "CODEX_TERMINAL_BUSY": "The program in the terminal didn't exit. Quit it in the terminal, then reconnect",
@@ -240,5 +240,10 @@
   "SYNC_SIGNATURE": "The other computer's identity check failed, so nothing was synced.",
   "SYNC_UNSUPPORTED": "The Looklook server is too old to sync settings yet.",
   "SYNC_DISABLED": "That computer has settings sync turned off.",
-  "SYNC_PROTOCOL": "The two computers run incompatible versions of Looklook. Update both to the latest version."
+  "SYNC_PROTOCOL": "The two computers run incompatible versions of Looklook. Update both to the latest version.",
+  "NOTIFY_FEISHU": "Feishu error {{code}}: {{msg}}",
+  "NOTIFY_NOT_CONFIGURED": "Feishu notifications aren't set up yet.",
+  "NOTIFY_NOT_BOUND": "No Feishu account is bound yet.",
+  "NOTIFY_SIGNATURE": "The forwarded Feishu action has a bad signature.",
+  "NOTIFY_PROTOCOL": "Couldn't forward the Feishu action between computers. They may be running different LookLook versions."
 }

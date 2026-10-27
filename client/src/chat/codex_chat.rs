@@ -42,7 +42,7 @@ pub const EFFORTS: [&str; 8] = ["none", "minimal", "low", "medium", "high", "xhi
 
 #[derive(Default)]
 pub struct Hub {
-    server: tokio::sync::Mutex<Option<Arc<AppServer>>>,
+    pub(super) server: tokio::sync::Mutex<Option<Arc<AppServer>>>,
     /// 第几个 app-server 进程（0 表示还没起过）；thread 只在加载它的那个进程里有效
     generation: AtomicU64,
     /// thread id → 终端 id
@@ -72,6 +72,10 @@ pub struct CodexSt {
     /// 这个会话累计的 token（app-server 的 `tokenUsage.total`）
     pub totals: Option<Value>,
     preview_at: Option<Instant>,
+    /// 运行中插话发出去、Codex 还没读到的（做完正在跑的这一步才会进对话），界面上显示成“排队中”
+    pub steered: Vec<String>,
+    /// 正在重连模型服务（`error` 带 `willRetry`）：活动文字是 Codex 的提示，有新进展就去掉
+    retrying: bool,
 }
 
 fn resets_iso(secs: Option<i64>) -> Value {
@@ -79,6 +83,19 @@ fn resets_iso(secs: Option<i64>) -> Value {
         .and_then(|t| t.format(&time::format_description::well_known::Rfc3339).ok())
         .map(Value::String)
         .unwrap_or(Value::Null)
+}
+
+/// 上次读到的限额里还没到重置时间的窗口（过了重置时间的数字已经不对，去掉）；一个都不剩时 None
+fn still_valid(v: &Value) -> Option<Value> {
+    let now = time::OffsetDateTime::now_utc();
+    let mut v = v.clone();
+    for key in ["five_hour", "seven_day"] {
+        let at = v[key]["resets_at"].as_str().and_then(|s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok());
+        if at.map_or(true, |at| at <= now) {
+            v[key] = Value::Null;
+        }
+    }
+    (!v["five_hour"].is_null() || !v["seven_day"].is_null()).then_some(v)
 }
 
 /// app-server 的限额窗口 → 界面用的 `{ used, resets_at }`；按窗口长度认 5 小时 / 7 天
@@ -181,6 +198,22 @@ pub fn decision(tool: &str, kind: &str, input: &Value, req: &PermissionAnswer) -
     Ok(json!({ "decision": d }))
 }
 
+/// 用户消息条目（`userMessage`）里的文字，和发出去时的一样拼起来
+fn user_text(item: &Value) -> String {
+    let parts: Vec<&str> = item["content"].as_array().map(|a| a.iter().filter(|c| c["type"] == "text").filter_map(|c| c["text"].as_str()).collect()).unwrap_or_default();
+    parts.join("\n")
+}
+
+/// 运行中的命令显示成什么：Codex 拆出来的命令（`commandActions`），没有就是整条（带着 `bash -lc` 之类的外壳）
+fn command_shown(item: &Value) -> Option<String> {
+    let parts: Vec<&str> = item["commandActions"].as_array().map(|a| a.iter().filter_map(|c| c["command"].as_str()).collect()).unwrap_or_default();
+    if parts.is_empty() {
+        item["command"].as_str().map(String::from)
+    } else {
+        Some(parts.join(" && "))
+    }
+}
+
 fn text_input(text: &str, images: &[String]) -> Value {
     let mut v = vec![];
     if !text.is_empty() {
@@ -209,7 +242,7 @@ impl Chat {
     /// 拿到能用的 app-server：没起过、退出了、第三方服务商的设置变了（且没有在跑的对话）就起一个新的。
     async fn codex_server(&self) -> Result<Arc<AppServer>, LocalError> {
         let env = crate::model::launch_env(&self.store, &self.paths.home, "codex");
-        let program = codex_app::program();
+        let program = codex_app::program(self.instances.shell()).await;
         let signature = format!("{}|{}", program.display(), env.as_ref().map(|e| e.signature()).unwrap_or_default());
         let mut slot = self.codex.server.lock().await;
         if let Some(s) = slot.as_ref().filter(|s| s.alive()) {
@@ -220,7 +253,7 @@ impl Chat {
             s.kill();
         }
         let (tx, rx) = mpsc::unbounded_channel();
-        let server = AppServer::start(&self.paths.home.join("run"), program, env.as_ref(), signature, tx).await?;
+        let server = AppServer::start(&self.paths.home.join("run"), program, self.instances.shell(), env.as_ref(), signature, tx).await?;
         let gen = self.codex.generation.fetch_add(1, Ordering::SeqCst) + 1;
         lock(&self.codex.threads).clear();
         *slot = Some(server.clone());
@@ -346,6 +379,32 @@ impl Chat {
         Ok(tid)
     }
 
+    /// 换成接着以前的另一段对话：加载它、界面重新取；终端里开着同步的 TUI 时也换过去。
+    async fn codex_resume(&self, id: &str, old: Option<String>, to: &str) -> Result<(), LocalError> {
+        self.codex_forget(old).await;
+        self.codex_bind(id, to);
+        let inst = self.inst(id);
+        {
+            let mut st = lock(&inst.st);
+            st.title = None;
+            st.context = None;
+        }
+        self.codex_attach(id).await?;
+        *inst.tr.lock().await = None;
+        let _ = inst.tx.send(super::Event::Reset);
+        if matches!(self.codex_terminal_kind(id).await, TermCodex::Remote) {
+            if let Some(me) = self.me.upgrade() {
+                let id = id.to_string();
+                tokio::spawn(async move {
+                    if let Err(e) = me.codex_reconnect_terminal(&id).await {
+                        tracing::warn!(id, error = ?e, "换了对话后没能让终端里的 Codex 跟过去");
+                    }
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// 记录文件路径还没有时（新建的会话第一轮开始后才写文件）问一下 app-server
     async fn codex_fill_path(&self, inst: &Inst) {
         let tid = {
@@ -436,15 +495,21 @@ impl Chat {
             match method {
                 "turn/started" => {
                     st.codex.turn = p["turn"]["id"].as_str().map(String::from);
+                    st.codex.retrying = false;
                     st.error = None;
                     inst.prompts.send_modify(|n| *n += 1);
                     Self::set_phase(&inst, &mut st, Phase::Running, None);
                 }
                 "turn/completed" => {
                     st.codex.turn = None;
+                    st.codex.steered.clear();
+                    st.codex.retrying = false;
                     Self::drop_pending(&mut st);
                     if p["turn"]["status"] == "failed" {
                         st.error = p["turn"]["error"]["message"].as_str().map(|s| s.chars().take(500).collect());
+                    }
+                    if p["turn"]["status"] == "interrupted" {
+                        st.end_hint = Some(super::board::Outcome::Interrupted);
                     }
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                     Self::emit_status(&inst, &st);
@@ -453,17 +518,34 @@ impl Chat {
                 "item/started" => {
                     let item = &p["item"];
                     let (tool, activity) = match item["type"].as_str() {
-                        Some("commandExecution") => (Some("Bash"), item["command"].as_str().map(String::from)),
+                        Some("commandExecution") => (Some("Bash"), command_shown(item)),
                         Some("fileChange") => (Some("Edit"), None),
                         Some("mcpToolCall") => (Some("mcp"), item["tool"].as_str().map(String::from)),
                         Some("webSearch") => (Some("WebSearch"), None),
                         Some("reasoning") => (None, Some("thinking".to_string())),
+                        // 压缩（手动 /compact 和一轮当中自动压缩都是这个条目）
+                        Some("contextCompaction") => (None, Some("compacting".to_string())),
+                        // 等子代理交回结果
+                        Some("collabAgentToolCall") if item["tool"] == "wait" => (Some("Agent"), Some("waiting_agents".to_string())),
                         _ => (None, None),
                     };
+                    st.codex.retrying = false;
+                    // 新的一段回复：正在输出的从头来。运行中插话时 Codex 会丢掉写了一半的那段（没有 item/completed）重新写
+                    if item["type"] == "agentMessage" {
+                        st.live.text = None;
+                    }
                     if st.phase != Phase::Approval {
                         st.tool = tool.map(String::from);
+                        if let Some(t) = tool {
+                            let detail = match t {
+                                "Edit" => super::board::changed_files(&item["changes"]),
+                                _ => activity.clone(),
+                            };
+                            st.doing = Some(json!({ "tool": t, "detail": detail }));
+                        }
                         st.live.activity = activity;
                         if st.phase != Phase::Running {
+                            Self::enter(&mut st, Phase::Running);
                             st.phase = Phase::Running;
                             st.reason = None;
                         }
@@ -471,6 +553,9 @@ impl Chat {
                     }
                 }
                 "item/agentMessage/delta" => {
+                    if std::mem::take(&mut st.codex.retrying) {
+                        st.live.activity = None;
+                    }
                     let text = st.live.text.get_or_insert_with(String::new);
                     text.push_str(p["delta"].as_str().unwrap_or(""));
                     if text.chars().count() > PREVIEW_LIMIT {
@@ -485,7 +570,19 @@ impl Chat {
                 "item/completed" => {
                     if p["item"]["type"] == "agentMessage" {
                         st.live.text = None;
+                        if let Some(r) = p["item"]["text"].as_str().and_then(super::board::first_para) {
+                            st.last_reply = Some(r);
+                        }
                     }
+                    // 插话进了对话：从“排队中”里拿掉。只按文字对：跟读记录时可能已经拿掉了（Chat::poll），
+                    // 对不上就拿最早的那条会误删另一条还在排队的
+                    if p["item"]["type"] == "userMessage" {
+                        let text = user_text(&p["item"]);
+                        if let Some(at) = st.codex.steered.iter().position(|q| *q == text) {
+                            st.codex.steered.remove(at);
+                        }
+                    }
+                    st.codex.retrying = false;
                     if let Some(item) = p["item"]["id"].as_str() {
                         lock(&self.codex.patches).remove(item);
                     }
@@ -512,6 +609,14 @@ impl Chat {
                 "model/rerouted" => {
                     st.actual_model = p["toModel"].as_str().or_else(|| p["model"].as_str()).map(String::from).or(st.actual_model.take());
                     Self::emit_status(&inst, &st);
+                }
+                // 连不上模型服务、正在重试（“Reconnecting... 2/5”）：不算出错，运行中的活动文字换成它
+                "error" if p["willRetry"] == true => {
+                    if st.phase == Phase::Running {
+                        st.codex.retrying = true;
+                        st.live.activity = p["error"]["message"].as_str().map(|s| s.chars().take(120).collect());
+                        Self::emit_status(&inst, &st);
+                    }
                 }
                 "error" if p["willRetry"] != true => {
                     st.error = p["error"]["message"].as_str().map(|s| s.chars().take(500).collect());
@@ -557,6 +662,7 @@ impl Chat {
             let mut st = lock(&inst.st);
             Self::drop_pending(&mut st);
             st.pending = Some(Pending { id: pid, at: Instant::now(), tool: tool.to_string(), kind, input, suggestions: Value::Null, tx: Some(tx) });
+            Self::enter(&mut st, Phase::Approval);
             st.phase = Phase::Approval;
             st.reason = None;
             Self::emit_status(&inst, &st);
@@ -579,6 +685,19 @@ impl Chat {
         };
         if phase == Phase::Approval {
             return Err(LocalError::new("CHAT_BUSY"));
+        }
+        // /resume <会话>：界面上选的以前的对话，在这个终端里接着（原来的留在“以前的对话”里）
+        if let Some(to) = text.trim().strip_prefix("/resume ").map(str::trim).filter(|s| !s.is_empty() && images.is_empty()) {
+            if phase == Phase::Running {
+                return Err(LocalError::new("CHAT_RUNNING"));
+            }
+            if !to.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                return Err(LocalError::invalid("resume", "invalid"));
+            }
+            if thread.as_deref() != Some(to) {
+                self.codex_resume(id, thread, to).await?;
+            }
+            return Ok(json!({ "delivered": true }));
         }
         let thread = match thread {
             Some(t) => t,
@@ -603,7 +722,18 @@ impl Chat {
         let input = text_input(text, images);
         // 这一轮还在跑：插话（Codex 会在下一步之前看到）
         if let (Phase::Running, Some(turn)) = (phase, turn) {
-            server.call("turn/steer", json!({ "threadId": thread, "input": input, "expectedTurnId": turn })).await?;
+            // 先记下再发：Codex 读到它的通知可能比这次请求的答复先到
+            lock(&inst.st).codex.steered.push(text.to_string());
+            let r = server.call("turn/steer", json!({ "threadId": thread, "input": input, "expectedTurnId": turn })).await;
+            let mut st = lock(&inst.st);
+            if r.is_err() {
+                if let Some(at) = st.codex.steered.iter().rposition(|q| q == text) {
+                    st.codex.steered.remove(at);
+                }
+            }
+            Self::emit_status(&inst, &st);
+            drop(st);
+            r?;
             return Ok(json!({ "delivered": true }));
         }
         let mut params = json!({ "threadId": thread, "input": input });
@@ -679,25 +809,37 @@ impl Chat {
         Ok(json!({ "options": options, "provider": provider, "model": st.model, "actual_model": st.actual_model, "effort": st.effort }))
     }
 
-    /// 账号的限额（5 小时、每周）：用第三方接口、没登录 ChatGPT 时是 null
+    /// 账号的限额（5 小时、每周）：用第三方接口、没登录 ChatGPT 时是 null。`fetched_at` 是读到的时间（毫秒）
     pub(super) async fn codex_limits(&self) -> Result<Value, LocalError> {
         if let Some(v) = lock(&self.codex.limits).as_ref().filter(|(t, _)| t.elapsed() < LIMITS_TTL).map(|(_, v)| v.clone()) {
             return Ok(v);
         }
-        let server = self.codex_server().await?;
-        let mut v = match server.call("account/rateLimits/read", Value::Null).await {
-            Ok(r) => limits_view(&r),
-            Err(_) => Value::Null,
-        };
-        let account = server.call("account/read", json!({})).await.ok();
-        if let (Some(a), Some(o)) = (account, v.as_object_mut()) {
-            o.insert("account".into(), json!({ "type": a["account"]["type"], "plan": a["account"]["planType"], "email": a["account"]["email"] }));
+        let fresh: Result<Value, LocalError> = async {
+            let server = self.codex_server().await?;
+            let mut v = match server.call("account/rateLimits/read", Value::Null).await {
+                Ok(r) => limits_view(&r),
+                Err(_) => Value::Null,
+            };
+            let account = server.call("account/read", json!({})).await.ok();
+            if let (Some(a), Some(o)) = (account, v.as_object_mut()) {
+                o.insert("account".into(), json!({ "type": a["account"]["type"], "plan": a["account"]["planType"], "email": a["account"]["email"] }));
+            }
+            Ok(v)
         }
-        // 没读到（app-server 刚断开等）不缓存：下次马上重查，不让空结果挂 30 秒
-        if !v["five_hour"].is_null() || !v["seven_day"].is_null() {
-            *lock(&self.codex.limits) = Some((Instant::now(), v.clone()));
+        .await;
+        match fresh {
+            Ok(mut v) if !v["five_hour"].is_null() || !v["seven_day"].is_null() => {
+                v["fetched_at"] = json!(crate::util::system_ms());
+                *lock(&self.codex.limits) = Some((Instant::now(), v.clone()));
+                Ok(v)
+            }
+            // 没读到（连 OpenAI 超时、app-server 刚断开）：用上次读到的，还没到重置时间的窗口照样显示，
+            // 不然网络一抖用量就整个消失；新结果不缓存，下次马上重查
+            other => match lock(&self.codex.limits).as_ref().and_then(|(_, v)| still_valid(v)) {
+                Some(old) => Ok(old),
+                None => other,
+            },
         }
-        Ok(v)
     }
 
     /// 账号用量（5 小时、每周的限额）和这个会话的上下文、token
@@ -844,6 +986,15 @@ impl Chat {
 
     // ---------------- 终端里的 TUI（和对话界面同步） ----------------
 
+    /// 对话模式的 Codex 终端启动之前：先起好 app-server，终端里一开始就是接在它上面的 TUI。
+    /// 不等的话 app-server 还没起来（Windows 上要好几秒），终端会先改成本机直接运行，对话页先显示“暂时连不上”再自己转过来。
+    /// 起不来时照旧走本机直接运行，原因记在日志里。
+    pub async fn codex_warm(&self) {
+        if let Err(e) = self.codex_server().await {
+            tracing::warn!(error = ?e, "Codex 的后台服务起不来，终端改成直接运行");
+        }
+    }
+
     /// 终端标签连上之前：起好 app-server、加载好会话（还没有就建一个），这样终端里的 TUI 接的是同一个会话。
     pub async fn codex_prepare_terminal(&self, id: &str) {
         let r: Result<(), LocalError> = async {
@@ -903,7 +1054,7 @@ impl Chat {
         // 起好 app-server、加载好会话；--remote 要有地址
         self.codex_attach(id).await?;
         if codex_app::endpoint().is_none() {
-            return Err(LocalError::new("CODEX_APP_SERVER"));
+            return Err(LocalError::new("CODEX_APP_SERVER").with("detail", "app-server connection closed"));
         }
         let line = self.instances.codex_tui_line(id).ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
         self.codex_expect_tui(id);
@@ -1102,6 +1253,19 @@ fn set_usage(st: &mut super::State, u: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stale_limits_keep_windows_not_reset_yet() {
+        let later = resets_iso(Some(time::OffsetDateTime::now_utc().unix_timestamp() + 3600));
+        let past = resets_iso(Some(time::OffsetDateTime::now_utc().unix_timestamp() - 60));
+        let v = json!({ "five_hour": { "used": 30, "resets_at": past }, "seven_day": { "used": 50, "resets_at": later }, "fetched_at": 1 });
+        let kept = still_valid(&v).expect("每周的还没到重置时间");
+        assert!(kept["five_hour"].is_null(), "5 小时的已经过了重置时间，不能再显示 30%");
+        assert_eq!(kept["seven_day"]["used"], 50);
+        assert_eq!(kept["fetched_at"], 1, "读到的时间要带着，界面能标出是多久前的");
+        let gone = json!({ "five_hour": { "used": 30, "resets_at": past }, "seven_day": null });
+        assert!(still_valid(&gone).is_none());
+    }
 
     #[test]
     fn limits_map_windows() {

@@ -1,8 +1,8 @@
 // 设置：按分区显示，一次只看一个分区（地址里的 #分区 决定）。
 //   通用：电脑名称、语言、附件；终端：字体与配色、新终端的默认文件夹和 shell、新 AI 会话默认的权限；AI 模型：模型服务商；
-//   网络与访问：远程线路、直连（端口与公网地址）、访问控制；关于：版本、检查更新、问题记录。
+//   通知：飞书通知（Notify.jsx）；网络与访问：远程线路、直连（端口与公网地址）、访问控制；关于：版本、检查更新、问题记录。
 // 终端和通用里的选项改了就自动保存，不需要点保存按钮。
-import { Bot, Check, Globe, Info, SlidersHorizontal, SquareTerminal } from 'lucide-react';
+import { Bell, Bot, Check, Globe, Info, SlidersHorizontal, SquareTerminal } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -15,6 +15,7 @@ import DirectCard from './DirectConnect.jsx';
 import { AttachmentsCard } from '../shared/Attachments.jsx';
 import ClaudeProfilesCard from './ClaudeProfiles.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
+import NotifySection from './Notify.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
 import { termTheme } from '../shared/termTheme.js';
@@ -63,6 +64,7 @@ const SECTIONS = [
   ['general', SlidersHorizontal],
   ['terminal', SquareTerminal],
   ['ai', Bot],
+  ['notify', Bell],
   ['network', Globe],
   ['about', Info],
 ];
@@ -229,6 +231,7 @@ export default function Settings() {
         <ModelProvidersCard />
       </>
     ),
+    notify: <NotifySection />,
     network: (
       <>
         {(devices.localOnly || (devices.canLocalOnly && (!devices.multi || devices.selected === devices.def))) && (

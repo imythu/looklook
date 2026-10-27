@@ -1,12 +1,14 @@
-// 会话（首页）：左侧栏里的项目和会话列表、开始页（新会话）、右边打开的会话。
-// 像 ChatGPT：点“新会话”进开始页，选好类型和项目、写一句话（可以不写），回车就启动并打开；项目上的 + 一下就新建。
+// 会话（首页）：左侧栏里的项目和会话列表、右边打开的会话。新会话是草稿页（Draft.jsx）：点“新会话”、项目上的 +
+// 马上出现在当前项目里，写下第一句、回车才启动；草稿在侧栏这个项目最上面、标签栏最后各有一行。
+// 项目下面是这个文件夹里的全部会话：在运行的，加上 Claude Code、Codex、OpenCode 存着的以前的对话（点一下接着聊），
+// 侧栏每个项目只列最近几个，其余在项目页（Project.jsx）。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, ArrowLeft, ArrowUp, ChevronDown, Container, X, ChevronsDownUp, ChevronsUpDown, ExternalLink, Folder, FolderOpen, FolderPlus, History, Plus, Search, ShieldCheck, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, Laptop, ListTree, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { SafetyNote, useStatus } from '../App.jsx';
+import { useStatus } from '../App.jsx';
 import { deviceApi, rememberTerminals, terminalDevice } from '../shared/api.js';
 import { DeviceAvatar, deviceColor, DeviceTag, LaunchIcon } from '../shared/brands.jsx';
 import { deviceName, osLabel, RenameDeviceDialog, useDevices } from '../shared/devices.jsx';
@@ -14,28 +16,19 @@ import { errorText } from '../shared/i18n.js';
 import { linkFailure, linkLabel, linkState, useLinks } from '../shared/paths.jsx';
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
-import { useRouter } from '../shared/router.jsx';
-import { remainingOf, useAccountsUsage, usageAgent, Bar as UsageBar } from '../shared/StatusBar.jsx';
-import { baseName, customName, lastUsed, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
-import { spanText } from '../shared/time.js';
-import { Button, ErrorNote, Modal, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
-import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
-import { PrevConversations } from './History.jsx';
-import { BackendNote, FolderPicker, InstallProgress, InstanceDialog, LogsDialog, openDsh, Promotions, RemoteCard, ShellPicker, useInstanceActions } from './Terminals.jsx';
+import { Link, useRouter } from '../shared/router.jsx';
+import { baseName, customName, groupProjects, isActive as isLive, isDraftProject, lastUsed, projectEntries, projectPath, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
+import { keyLabel } from '../shared/hotkeys.js';
+import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
+import { AddProjectDialog } from './AddProject.jsx';
+import { CAN_FORK } from './History.jsx';
+import { BackendNote, InstanceDialog, LogsDialog, openDsh, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
 
-// 开始页能选的类型（DSH 一台电脑只有一个，已经有了就是打开它）
-const START_LAUNCHES = ['claude', 'codex', 'codex_term', 'opencode', 'shell', 'dsh', 'custom'];
-// 开始页里 Codex 分成两种：“Codex 对话”（看看的对话页）和“Codex 终端”（只有终端，和自己电脑上一样），开始后不能互换。
-// codex_term 只是开始页的叫法，建的还是 launch=codex、chat_ui=false 的会话
-const CODEX_TERM = 'codex_term';
-const baseLaunch = (l) => (l === CODEX_TERM ? 'codex' : l);
-/** 项目记住的类型（Codex 另记是不是对话） */
-const projectLaunch = (p) => (p?.launch === 'codex' && p.codex_chat === false ? CODEX_TERM : p?.launch);
 // 项目“⋯”里换个类型新建
-const QUICK_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
-const AI_TOOLS = ['codex', 'claude', 'opencode', 'dsh'];
-const FULL_ACCESS = ['codex', 'claude', 'opencode'];
+export const QUICK_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
+export const AI_TOOLS = ['codex', 'claude', 'opencode', 'dsh'];
+export const FULL_ACCESS = ['codex', 'claude', 'opencode'];
 
 /**
  * 新会话默认带不带全部权限（各人习惯不同）：这个项目里最近一个 AI 会话怎么开的就怎么开；项目里没有 AI 会话时，
@@ -47,33 +40,17 @@ export function fullAccessFor(p, settings) {
   if (typeof p?.full_access === 'boolean') return p.full_access;
   return Boolean(settings?.default_full_access);
 }
-// 第一句话能用在哪些类型上（AI 工具作为第一条消息，普通终端当作启动后运行的命令）
-const PROMPT_LAUNCHES = ['claude', 'codex', CODEX_TERM, 'opencode', 'shell'];
-// 开始页直接摆出来的类型个数，其余收进“更多”；没用过时先摆这几个
-const SHOWN_TYPES = 4;
-const DEFAULT_TYPES = ['claude', 'codex', CODEX_TERM, 'shell'];
-
-/**
- * 开始页摆出来的类型：当前选中的 + 用得最多的（按各台电脑上的会话数），不够的用默认的补上，其余收进“更多”。
- * 顺序按 START_LAUNCHES 固定，不随选中的变来变去。
- */
-export function shownTypes(launches, items, current) {
-  const count = new Map();
-  for (const i of items) {
-    const l = i.launch === 'codex' && i.chat_ui === false ? CODEX_TERM : i.launch;
-    count.set(l, (count.get(l) ?? 0) + 1);
-  }
-  const ranked = [...launches].sort((a, b) => (count.get(b) ?? 0) - (count.get(a) ?? 0) || DEFAULT_TYPES.indexOf(a) - DEFAULT_TYPES.indexOf(b));
-  const pick = new Set(launches.includes(current) ? [current] : []);
-  for (const l of ranked) if (pick.size < SHOWN_TYPES && ((count.get(l) ?? 0) > 0 || DEFAULT_TYPES.includes(l))) pick.add(l);
-  for (const l of DEFAULT_TYPES) if (pick.size < SHOWN_TYPES && launches.includes(l)) pick.add(l);
-  return { shown: launches.filter((l) => pick.has(l)), more: launches.filter((l) => !pick.has(l)) };
-}
-
 const FOLD_KEY = 'looklook.fold';
 const GROUP_KEY = 'looklook.groupby';
 const DEVF_KEY = 'looklook.devfilter';
 const QUERY_KEY = 'looklook.query';
+const ONLINE_KEY = 'looklook.devonline';
+const STATUS_KEY = 'looklook.sstatus';
+// 侧栏每个项目里，在运行的之外再列几个（停了的终端和以前的对话）
+const SIDE_SHOW = 5;
+// 项目多于这么多时，一个月没用过的收进一组
+const OLD_MIN = 8;
+const MONTH = 30 * 86400e3;
 
 function readStore(storage, key, fallback) {
   try {
@@ -110,8 +87,12 @@ export function SessionUiProvider({ children }) {
   const toast = useToast();
   const [dialog, setDialog] = useState(null);
   const [logs, setLogs] = useState(null);
-  // 开始页要预先填好的（在某个项目里点“更多选项”时）；nonce 让开始页重新初始化
+  // 添加项目的弹窗（{ device }：先选中哪台电脑）
+  const [adding, setAdding] = useState(null);
+  // 草稿页要预先填好的（项目、类型）；nonce 让草稿页重新初始化
   const [start, setStart] = useState({ nonce: 0 });
+  // 草稿页开着时它在哪个项目（{ device, workdir, container }）：侧栏、标签栏显示“新会话 · 草稿”
+  const [draftAt, setDraftAt] = useState(null);
   const openSession = (id) => {
     if (!opensInPage()) return navigate(`/t/${id}`);
     s.openTab(id);
@@ -119,10 +100,21 @@ export function SessionUiProvider({ children }) {
     s.requestFocus(id);
     if (path !== `/s/${id}`) navigate(`/s/${id}`);
   };
+  /** 打开草稿页。没说在哪个项目时：在当前会话的项目里，已经在草稿页就留在那个项目。 */
   const newSession = (want = {}) => {
-    setStart((x) => ({ ...want, nonce: x.nonce + 1 }));
+    let at = {};
+    if (want.device === undefined && want.workdir === undefined && !want.container) {
+      const inst = s.byId(path.match(/^\/s\/([^/]+)/)?.[1]);
+      if (inst) {
+        const device = devices.multi ? terminalDevice(inst.id) : null;
+        at = inst.container ? { device, workdir: '', container: { ...inst.container, dir: inst.container.dir || '/' } } : { device, workdir: inst.workdir || sessionDir(inst) };
+      } else if (draftAt) at = draftAt;
+    }
+    setStart((x) => ({ ...at, ...want, nonce: x.nonce + 1 }));
     navigate(opensInPage() ? '/' : '/new');
   };
+  /** 在某个项目里开草稿。 */
+  const draftIn = (p) => newSession(p.container ? { device: p.device, workdir: '', container: p.container } : { device: p.device, workdir: p.workdir });
   /** 那台电脑的设置：顶栏选中的那台用已有的状态，别的电脑现取。 */
   const settingsOf = async (device) =>
     devices.multi && device && device !== devices.selected ? ((await deviceApi(device).get('/status').catch(() => null))?.settings ?? null) : status.settings;
@@ -151,6 +143,7 @@ export function SessionUiProvider({ children }) {
       if (p.device && r.id) rememberTerminals(p.device, [r]);
       if (!p.container) s.touchProject(p.device, p.workdir, { launch });
       s.reload();
+      s.reloadFolders();
       if (launch === 'dsh') openDsh(r, t, toast);
       else openSession(r.id);
       toast(t('sess.quick_done', { name: r.name }), 'ok', {
@@ -190,18 +183,24 @@ export function SessionUiProvider({ children }) {
     if (device && r.id) rememberTerminals(device, [r]);
     s.touchProject(device, c.workdir, { launch: c.agent });
     s.reload();
+    s.reloadFolders();
     openSession(r.id);
     toast(t(fork ? 'hist.forked' : 'hist.continued', { name: r.name }), 'ok');
   };
   const value = {
     openSession,
     newSession,
+    draftIn,
+    draftAt,
+    setDraftAt,
     continueConv,
     quickCreate,
     start,
     edit: (inst) => setDialog({ initial: inst }),
     install: (preset, device, workdir) => setDialog({ preset, device, workdir }),
     logs: setLogs,
+    addProject: (want = {}) => setAdding(want),
+    openProject: (p) => navigate(projectPath(p)),
   };
   return (
     <UiCtx.Provider value={value}>
@@ -219,6 +218,7 @@ export function SessionUiProvider({ children }) {
         }}
       />
       <LogsDialog inst={logs} onClose={() => setLogs(null)} />
+      {adding && <AddProjectDialog want={adding} onClose={() => setAdding(null)} />}
     </UiCtx.Provider>
   );
 }
@@ -245,7 +245,7 @@ export function usePressActivate(fn, disabled) {
 }
 
 /** 一个会话行 / 会话顶栏的操作（打开、更多菜单）。 */
-function useActions(inst) {
+export function useActions(inst) {
   const s = useSessions();
   const ui = useSessionUi();
   return useInstanceActions(inst, { onChanged: s.reload, onEdit: ui.edit, onLogs: ui.logs, onOpenHere: ui.openSession });
@@ -254,7 +254,7 @@ function useActions(inst) {
 // ---------------- 侧栏：项目和会话 ----------------
 
 /** 侧栏里的时间写短一点：刚刚、5 分钟、2 小时、3 天。 */
-function shortAgo(t, ms) {
+export function shortAgo(t, ms) {
   const m = Math.max(0, Math.round((Date.now() - ms) / 60000));
   if (m < 1) return t('sess.ago.now');
   if (m < 60) return t('sess.ago.m', { n: m });
@@ -268,7 +268,7 @@ function StateDot({ state, title }) {
   return <span className={`sdot sdot-${state}`} title={label} aria-label={label} role="img" />;
 }
 
-function SessionRow({ inst, current, attn }) {
+function SessionRow({ inst, current, attn, devTag = false }) {
   const { t } = useTranslation();
   const devices = useDevices();
   const s = useSessions();
@@ -277,7 +277,7 @@ function SessionRow({ inst, current, attn }) {
   const state = inst.error && !inst.running ? 'error' : sessionState(inst);
   const errorTitle = state === 'error' ? t(`instance.error.${inst.error}`, { defaultValue: t('instance.error.other') }) : undefined;
   const p = attn ? s.projectOf(inst) : null;
-  const dev = attn && devices.multi ? devices.byId(terminalDevice(inst.id)) : null;
+  const dev = (attn || devTag) && devices.multi ? devices.byId(terminalDevice(inst.id)) : null;
   const when = lastUsed(inst);
   const press = usePressActivate(a.primary, a.busy || !a.allowed);
   const title = sessionTitle(inst);
@@ -301,6 +301,7 @@ function SessionRow({ inst, current, attn }) {
             </span>
           )}
         </span>
+        {devTag && dev && <RowDevice device={dev} />}
         {a.busy ? (
           <Spinner size={13} />
         ) : attn ? (
@@ -317,35 +318,151 @@ function SessionRow({ inst, current, attn }) {
   );
 }
 
-function ProjectRow({ p, open, onToggle, showDevice }) {
+/** 合并的项目里，一行是哪台电脑上的：电脑颜色的短名字（离线的灰着）。 */
+function RowDevice({ device }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const name = deviceName(t, device);
+  return (
+    <span className={`srow-dev ${device.online ? '' : 'off'}`} style={{ '--dc': deviceColor(devices, device.id) }} title={name}>
+      {name}
+    </span>
+  );
+}
+
+/**
+ * 侧栏里的一个以前的对话：点一下接着聊（新建一个会话接着它）。两分钟内还在写的可能正开在别处，先去项目页看提示再选。
+ * 离线电脑上的（上次看到的）只显示。
+ */
+function ConvSideRow({ p, conv, devTag = false }) {
+  const { t } = useTranslation();
+  const { status } = useStatus();
+  const { navigate } = useRouter();
+  const s = useSessions();
+  const ui = useSessionUi();
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const off = Boolean(p.offline);
+  const peek = () => navigate(`${projectPath(p)}&c=${encodeURIComponent(`${conv.agent}:${conv.id}`)}`);
+  const go = async (fork = false) => {
+    if (busy) return;
+    if (conv.live && !fork) return peek();
+    setBusy(true);
+    try {
+      await ui.continueConv(p.device, conv, fork);
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  const hide = () =>
+    deviceApi(p.device)
+      .put('/history/marks', { agent: conv.agent, id: conv.id, hide: true })
+      .then(
+        () => {
+          s.reloadFolders();
+          toast(t('hist.hidden_done'));
+        },
+        (e) => toast(errorText(t, e), 'error'),
+      );
+  const disabled = busy || off || !status.account.allowed;
+  const press = usePressActivate(() => go(), disabled);
+  const when = Date.parse(conv.updated_at) || 0;
+  const menu = [
+    { icon: Play, label: t('hist.continue'), onClick: () => go(), disabled },
+    CAN_FORK.includes(conv.agent) && { icon: Copy, label: t('hist.fork'), onClick: () => go(true), disabled },
+    { icon: ListTree, label: t('sess.peek'), onClick: peek },
+    'sep',
+    { icon: EyeOff, label: t('hist.hide'), onClick: hide },
+  ];
+  const devices = useDevices();
+  const dev = devTag ? devices.byId(p.device) : null;
+  return (
+    <div className={`srow srow-conv ${off ? 'srow-off' : ''}`}>
+      <button type="button" className="srow-main" {...press} disabled={disabled} title={[conv.title, conv.last].filter(Boolean).join('\n')}>
+        <LaunchIcon launch={conv.agent} size={16} className="srow-icon" />
+        <span className="srow-text">
+          <span className="ellipsis">{conv.title}</span>
+        </span>
+        {dev && <RowDevice device={dev} />}
+        {busy ? <Spinner size={13} /> : when > 0 && <span className="srow-when">{shortAgo(t, when)}</span>}
+      </button>
+      {!off && <PopMenu items={menu} className="btn btn-plain btn-icon srow-more" />}
+    </div>
+  );
+}
+
+/** 侧栏里草稿所在的项目最上面：“新会话 · 草稿”，点一下回到草稿的输入框。 */
+function DraftSideRow() {
+  const { t } = useTranslation();
+  return (
+    <div className="srow current srow-draft">
+      <button type="button" className="srow-main" onClick={() => window.dispatchEvent(new Event('ll-draft-focus'))} aria-current="page">
+        <span className="draft-tile" aria-hidden="true" />
+        <span className="srow-text">
+          <span className="ellipsis">{t('sess.new')}</span>
+        </span>
+        <span className="srow-when">{t('draft.tag')}</span>
+      </button>
+    </div>
+  );
+}
+
+/** 合并的项目在哪几台电脑上：每台一个颜色点（离线的是空心），后面写“2 台”，有离线的写“1 台在线”。 */
+function DeviceDots({ members }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const on = members.filter((m) => !m.offline).length;
+  const names = members.map((m) => `${deviceName(t, devices.byId(m.device))}${m.offline ? ` · ${t('devices.offline')}` : ''}`).join('\n');
+  return (
+    <span className="dev-dots" title={names}>
+      {members.map((m) => (
+        <span key={m.key} className={`dev-dot ${m.offline ? 'off' : ''}`} style={{ '--dc': deviceColor(devices, m.device) }} aria-hidden="true" />
+      ))}
+      <span>{on === members.length ? t('sess.n_devices', { count: members.length }) : t('sess.n_online', { count: on })}</span>
+    </span>
+  );
+}
+
+/**
+ * 侧栏里的项目。`x` 是合成后的（见 SessionList）：多台电脑上的同一个仓库时 `x.merged`，
+ * 标出是哪几台；+ 和菜单用 `p`（在线的里面最近用过的那台），新会话的草稿里能再换。
+ */
+function ProjectRow({ p, x, open, onToggle, showDevice }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const devices = useDevices();
   const s = useSessions();
   const ui = useSessionUi();
-  const dev = devices.multi ? devices.byId(p.device) : null;
-  const attn = !open && p.items.some((i) => sessionState(i) === 'attn');
+  const merged = Boolean(x?.merged);
+  const dev = devices.multi && !merged ? devices.byId(p.device) : null;
+  const attn = !open && (x?.items ?? p.items).some((i) => sessionState(i) === 'attn');
+  const members = x?.members ?? [p];
+  const pinned = members.some((m) => m.pinned);
   const allowed = status.account.allowed && !p.offline;
-  const launchName = t(`launch.${p.launch}.title`);
   const menu = [
     ...QUICK_LAUNCHES.map((l) => ({ icon: () => <LaunchIcon launch={l} size={16} />, label: t('sess.new_type', { type: t(`launch.${l}.title`) }), onClick: () => ui.quickCreate(p, l), disabled: !allowed })),
-    { icon: History, label: t('hist.menu'), onClick: () => ui.newSession({ device: p.device, workdir: p.workdir, launch: AI_TOOLS.includes(p.launch) && p.launch !== 'dsh' ? p.launch : 'claude', prev: true }), disabled: !allowed },
-    { icon: SlidersHorizontal, label: t('sess.more_options'), onClick: () => ui.newSession({ device: p.device, workdir: p.workdir }), disabled: !allowed },
-    p.items.length === 0 && { icon: Trash2, label: t('sess.remove_project'), onClick: () => s.removeProject(p.device, p.workdir), danger: true },
+    'sep',
+    !p.container && { icon: ListTree, label: t('sess.open_project'), onClick: () => ui.openProject(p) },
+    !p.container && { icon: pinned ? PinOff : Pin, label: t(pinned ? 'sess.unpin' : 'sess.pin'), onClick: () => members.filter((m) => !m.offline).forEach((m) => s.pinProject(m.device, m.workdir, !pinned)) },
+    !merged && p.items.length === 0 && { icon: Trash2, label: t('sess.remove_project'), onClick: () => s.removeProject(p.device, p.workdir), danger: true },
   ];
   return (
     <div className={`prow ${p.offline ? 'offline' : ''}`} style={dev ? { '--dc': deviceColor(devices, dev.id) } : undefined}>
-      <button type="button" className="prow-main" onClick={onToggle} aria-expanded={open} title={`${p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}${dev ? ` · ${deviceName(t, dev)}` : ''}`}>
+      <button type="button" className="prow-main" onClick={onToggle} aria-expanded={open} title={merged ? [x.members[0].remote, ...members.map((m) => `${deviceName(t, devices.byId(m.device))}: ${m.workdir}`)].join('\n') : `${p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}${dev ? ` · ${deviceName(t, dev)}` : ''}`}>
         <ChevronDown size={14} className="prow-chev" aria-hidden="true" />
         {p.container ? <Container size={15} className="prow-folder" aria-label={t('sess.in_container', { name: p.container.name })} /> : <Folder size={15} className="prow-folder" aria-hidden="true" />}
         <span className="ellipsis grow">{p.name}</span>
+        {pinned && <Pin size={12} className="prow-pin" aria-label={t('sess.pinned')} />}
         {attn && <span className="sdot sdot-attn" aria-label={t('sess.state.attn')} role="img" />}
         {showDevice && dev && <DeviceTag device={dev} />}
+        {merged && <DeviceDots members={members} />}
         {p.offline && <span className="badge">{t('devices.offline')}</span>}
       </button>
       {!p.offline && (
         <span className="prow-acts">
-          <button type="button" className="btn btn-plain btn-icon" onClick={() => ui.quickCreate(p)} disabled={!allowed} aria-label={t('sess.new_type_in', { type: launchName, name: p.name })} title={t('sess.new_type', { type: launchName })}>
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => ui.draftIn(p)} disabled={!allowed} aria-label={t('draft.new_in', { name: p.name })} title={t('sess.new')}>
             <Plus size={15} />
           </button>
           <PopMenu items={menu} className="btn btn-plain btn-icon" label={t('sess.project_menu')} />
@@ -399,6 +516,15 @@ function DeviceHead({ device, count, open, onToggle }) {
   );
 }
 
+/** 搜以前的对话：标题、你说的最后一句、分支、工具。 */
+function convMatcher(q, t) {
+  const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  return (c) => {
+    const hay = [c.title, c.last, c.branch, c.agent, t(`launch.${c.agent}.title`)].filter(Boolean).join(' ').toLowerCase();
+    return words.every((w) => hay.includes(w));
+  };
+}
+
 /** 搜索：名称、文件夹、类型、命令都算。 */
 function matcher(q, t) {
   const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -409,28 +535,181 @@ function matcher(q, t) {
   };
 }
 
-/** 项目和会话列表（左侧栏、手机首页共用）。 */
+/** 看哪几台电脑：空数组是全部。旧版存的是一个 id 字符串（'all' 或某台电脑）。 */
+function readDevFilter() {
+  const v = readStore(localStorage, DEVF_KEY, []);
+  if (Array.isArray(v)) return v.filter((x) => typeof x === 'string');
+  return typeof v === 'string' && v !== 'all' ? [v] : [];
+}
+const STATUS = ['all', 'attn', 'running', 'rest'];
+const GROUPS = ['project', 'device', 'recent'];
+
+/** 点到外面、按 Esc 时关掉弹出的筛选。 */
+function usePopover() {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return undefined;
+    const down = (e) => !ref.current?.contains(e.target) && setOpen(false);
+    const key = (e) => e.key === 'Escape' && setOpen(false);
+    document.addEventListener('pointerdown', down);
+    document.addEventListener('keydown', key);
+    return () => {
+      document.removeEventListener('pointerdown', down);
+      document.removeEventListener('keydown', key);
+    };
+  }, [open]);
+  return { open, setOpen, ref };
+}
+
+/**
+ * 电脑筛选（docs/UI_REDESIGN_2026-10.md §2.3）：一个下拉，可以多选、搜、只看在线的；每行有颜色、系统、连接状态和会话个数。
+ * `value` 是选中的电脑（空 = 全部），`counts` 是每台的会话个数。
+ */
+function DeviceFilter({ value, onChange, online, onOnline, counts }) {
+  const { t } = useTranslation();
+  const devices = useDevices();
+  const links = useLinks();
+  const { open, setOpen, ref } = usePopover();
+  const [q, setQ] = useState('');
+  const all = value.length === 0;
+  const picked = devices.items.filter((d) => value.includes(d.id));
+  const label = all ? t('sess.all_devices') : picked.length === 1 ? deviceName(t, picked[0]) : t('sess.n_devices_picked', { count: picked.length });
+  const words = q.trim().toLowerCase();
+  const shown = devices.items.filter((d) => !words || [deviceName(t, d), d.os, osLabel(d.os)].filter(Boolean).join(' ').toLowerCase().includes(words));
+  const toggle = (id) => {
+    const next = all ? [id] : value.includes(id) ? value.filter((x) => x !== id) : [...value, id];
+    onChange(next.length === devices.items.length ? [] : next);
+  };
+  const active = !all || online;
+  return (
+    <div className="sfilter" ref={ref}>
+      <button type="button" className={`sfilter-chip ${active ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="dialog">
+        {picked.length === 1 ? <DeviceAvatar device={picked[0]} size={16} /> : <Laptop size={14} aria-hidden="true" />}
+        <span className="ellipsis">{label}</span>
+        {online && <span className="sfilter-note">{t('sess.online_only_short')}</span>}
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      {active && (
+        <button type="button" className="sfilter-clear" onClick={() => { onChange([]); onOnline(false); }} aria-label={t('sess.filter_clear')} title={t('sess.filter_clear')}>
+          <X size={12} />
+        </button>
+      )}
+      {open && (
+        <div className="sfilter-pop" role="dialog" aria-label={t('sess.dev_filter')}>
+          {devices.items.length > 6 && (
+            <label className="slist-search sfilter-search">
+              <Search size={14} aria-hidden="true" />
+              <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('sess.dev_search')} aria-label={t('sess.dev_search')} spellCheck={false} autoFocus />
+            </label>
+          )}
+          <button type="button" className="sfilter-row" role="menuitemcheckbox" aria-checked={all} onClick={() => onChange([])}>
+            <span className={`sfilter-box ${all ? 'on' : ''}`} aria-hidden="true">{all && <Check size={12} />}</span>
+            <span className="grow">{t('sess.all_devices')}</span>
+            <span className="sfilter-count">{Object.values(counts).reduce((a, b) => a + b, 0)}</span>
+          </button>
+          <div className="sfilter-list">
+            {shown.map((d) => {
+              const on = !all && value.includes(d.id);
+              const state = linkState(d, links);
+              return (
+                <div key={d.id} className="sfilter-line">
+                  <button type="button" className="sfilter-row" role="menuitemcheckbox" aria-checked={on} onClick={() => toggle(d.id)}>
+                    <span className={`sfilter-box ${on ? 'on' : ''}`} aria-hidden="true">{on && <Check size={12} />}</span>
+                    <DeviceAvatar device={d} size={20} dot />
+                    <span className="grow sfilter-name">
+                      <span className="ellipsis">{deviceName(t, d)}</span>
+                      <span className="sfilter-sub ellipsis">{[osLabel(d.os), state === 'online' ? t('devices.online') : linkLabel(t, d, links)].filter(Boolean).join(' · ')}</span>
+                    </span>
+                    <span className="sfilter-count">{counts[d.id] ?? 0}</span>
+                  </button>
+                  <button type="button" className="sfilter-only" onClick={() => { onChange([d.id]); setOpen(false); }} title={t('sess.only_this')}>
+                    {t('sess.only')}
+                  </button>
+                </div>
+              );
+            })}
+            {shown.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
+          </div>
+          <label className="sfilter-toggle">
+            <input type="checkbox" checked={online} onChange={(e) => onOnline(e.target.checked)} />
+            {t('sess.online_only')}
+          </label>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 状态筛选：全部 / 等你处理 / 正在运行 / 停了的和以前的对话。 */
+function StatusFilter({ value, onChange }) {
+  const { t } = useTranslation();
+  const { open, setOpen, ref } = usePopover();
+  const on = value !== 'all';
+  return (
+    <div className="sfilter" ref={ref}>
+      <button type="button" className={`sfilter-chip ${on ? 'on' : ''}`} onClick={() => setOpen(!open)} aria-expanded={open} aria-haspopup="menu">
+        <span className={`sdot sdot-${value === 'attn' ? 'attn' : value === 'running' ? 'working' : value === 'rest' ? 'stopped' : 'idle'}`} aria-hidden="true" />
+        <span className="ellipsis">{t(`sess.status.${value}`)}</span>
+        <ChevronDown size={13} aria-hidden="true" />
+      </button>
+      {on && (
+        <button type="button" className="sfilter-clear" onClick={() => onChange('all')} aria-label={t('sess.filter_clear')} title={t('sess.filter_clear')}>
+          <X size={12} />
+        </button>
+      )}
+      {open && (
+        <div className="sfilter-pop sfilter-pop-sm" role="menu">
+          {STATUS.map((k) => (
+            <button key={k} type="button" className="sfilter-row" role="menuitemradio" aria-checked={value === k} onClick={() => { onChange(k); setOpen(false); }}>
+              <Check size={14} aria-hidden="true" style={{ visibility: value === k ? 'visible' : 'hidden' }} />
+              <span className="grow">{t(`sess.status.${k}`)}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 项目和会话列表（电脑上的会话栏、手机首页共用）：标题、搜索、电脑和状态筛选，下面是等你处理、项目。 */
 export function SessionList({ currentId }) {
   const links = useLinks();
   const { t } = useTranslation();
   const { navigate } = useRouter();
   const devices = useDevices();
   const s = useSessions();
-  // 找会话改在命令面板里（侧栏上面的“跳转、命令…”）；以前存下的搜索词不再生效，免得列表被看不见的条件筛掉
-  const [query, setQueryState] = useState('');
+  const ui = useSessionUi();
+  const [query, setQueryState] = useState(() => readStore(sessionStorage, QUERY_KEY, ''));
   const setQuery = (q) => {
     setQueryState(q);
     writeStore(sessionStorage, QUERY_KEY, q);
   };
-  const [groupBy, setGroupByState] = useState(() => (readStore(localStorage, GROUP_KEY, 'project') === 'device' ? 'device' : 'project'));
+  const [groupBy, setGroupByState] = useState(() => {
+    const v = readStore(localStorage, GROUP_KEY, 'project');
+    return GROUPS.includes(v) ? v : 'project';
+  });
   const setGroupBy = (v) => {
     setGroupByState(v);
     writeStore(localStorage, GROUP_KEY, v);
   };
-  const [devFilter, setDevFilterState] = useState(() => readStore(localStorage, DEVF_KEY, 'all'));
+  const [devFilter, setDevFilterState] = useState(readDevFilter);
   const setDevFilter = (v) => {
     setDevFilterState(v);
     writeStore(localStorage, DEVF_KEY, v);
+  };
+  const [onlineOnly, setOnlineState] = useState(() => readStore(localStorage, ONLINE_KEY, false) === true);
+  const setOnline = (v) => {
+    setOnlineState(v);
+    writeStore(localStorage, ONLINE_KEY, v);
+  };
+  const [status, setStatusState] = useState(() => {
+    const v = readStore(sessionStorage, STATUS_KEY, 'all');
+    return STATUS.includes(v) ? v : 'all';
+  });
+  const setStatus = (v) => {
+    setStatusState(v);
+    writeStore(sessionStorage, STATUS_KEY, v);
   };
   // 折叠：用户点过的记住；没点过的，最近一周用过的项目展开，其他收起
   const [fold, setFoldState] = useState(() => readStore(localStorage, FOLD_KEY, {}));
@@ -441,114 +720,209 @@ export function SessionList({ currentId }) {
       return next;
     });
   const weekAgo = Date.now() - 7 * 86400e3;
-  const isOpen = (p) => fold[p.key] ?? (p.used > weekAgo || p.items.some((i) => i.id === currentId));
+  const isOpen = (x) => fold[x.key] ?? (Math.max(x.used, x.convAt) > weekAgo || x.items.some((i) => i.id === currentId));
   const match = matcher(query, t);
+  const convMatch = convMatcher(query, t);
   const multi = devices.multi;
-  const filter = multi && devices.items.some((d) => d.id === devFilter) ? devFilter : 'all';
-  const devOk = (dev) => filter === 'all' || dev === filter;
-  const projects = s.projects
-    .filter((p) => devOk(p.device))
-    .map((p) => (match ? { ...p, items: p.items.filter(match) } : p))
-    .filter((p) => !match || p.items.length > 0 || p.name.toLowerCase().includes(query.trim().toLowerCase()));
-  const attn = s.items.filter((i) => sessionState(i) === 'attn' && devOk(multi ? terminalDevice(i.id) : null) && (!match || match(i)));
-  const allOpen = projects.some(isOpen);
+  // 选中的电脑里已经不在列表里的（换了账户、删掉了）不算
+  const picked = multi ? devFilter.filter((id) => devices.items.some((d) => d.id === id)) : [];
+  const devOk = (dev) => !multi || ((picked.length === 0 || picked.includes(dev)) && (!onlineOnly || devices.byId(dev)?.online));
+  // 状态筛选：等你处理、正在运行只看在运行的会话；“停了的和以前的对话”只看其余的
+  const instOk = (i) => (status === 'attn' ? sessionState(i) === 'attn' : status === 'running' ? isLive(i) : status === 'rest' ? !isLive(i) : true) && (!match || match(i));
+  const restOk = status !== 'attn' && status !== 'running';
+  const filtering = Boolean(match) || status !== 'all';
+  // 按项目看时，多台电脑上的同一个仓库合成一个项目（只在选中的电脑里合，见 groupProjects）
+  const mine = s.projects.filter((p) => devOk(p.device));
+  const groups = multi && groupBy === 'project' ? groupProjects(mine, true) : mine.map((p) => ({ key: p.key, name: p.name, members: [p], primary: p }));
+  // 每个项目合成的会话列表（见 projectEntries），每一行记着是哪台电脑上的（r.m）；离线那台的排在后面。
+  // 搜索、按状态筛选时只留符合的，项目名符合搜索的整个留着
+  const byAt = (a, b) => b.at - a.at;
+  const projects = groups
+    .map((g) => {
+      const parts = g.members.map((m) => {
+        const e = projectEntries(m);
+        const tag = (r) => ({ ...r, m });
+        const live = e.live.map(tag).filter((r) => instOk(r.inst));
+        const rest = restOk ? e.rest.map(tag).filter((r) => (r.kind === 'inst' ? instOk(r.inst) : !match || convMatch(r.conv))) : [];
+        return { m, live, rest, count: e.count };
+      });
+      const ms = g.members;
+      return {
+        key: g.key,
+        p: g.primary,
+        members: ms,
+        merged: ms.length > 1,
+        live: parts.flatMap((x) => x.live),
+        rest: [...parts.filter((x) => !x.m.offline).flatMap((x) => x.rest).sort(byAt), ...parts.filter((x) => x.m.offline).flatMap((x) => x.rest).sort(byAt)],
+        count: parts.reduce((n, x) => n + x.count, 0),
+        pinned: ms.some((m) => m.pinned),
+        active: ms.some((m) => m.active),
+        used: Math.max(...ms.map((m) => m.used)),
+        convAt: Math.max(...ms.map((m) => m.convAt)),
+        items: ms.flatMap((m) => m.items),
+      };
+    })
+    .filter((x) => (!filtering ? true : x.live.length + x.rest.length > 0 || (match && status === 'all' && x.p.name.toLowerCase().includes(query.trim().toLowerCase()))));
+  const attn = status === 'rest' ? [] : s.items.filter((i) => sessionState(i) === 'attn' && devOk(multi ? terminalDevice(i.id) : null) && (!match || match(i)));
+  // 每台电脑的会话个数（电脑筛选里显示）
+  const counts = {};
+  for (const p of s.projects) counts[p.device] = (counts[p.device] ?? 0) + p.items.length;
+  const allOpen = projects.some((x) => isOpen(x));
   const foldAll = () =>
     setFoldState(() => {
-      const next = Object.fromEntries(s.projects.map((p) => [p.key, !allOpen]));
+      const next = Object.fromEntries(groups.map((g) => [g.key, !allOpen]));
       writeStore(localStorage, FOLD_KEY, next);
       return next;
     });
-  const renderProject = (p, showDevice) => {
-    const open = match ? true : isOpen(p);
+  // 一个项目：在运行的全列，其余（停了的终端、以前的对话）列最近几个，再多的去项目页
+  const renderProject = (x, showDevice) => {
+    const { p } = x;
+    const drafting = x.members.some((m) => isDraftProject(m, ui.draftAt));
+    const open = filtering || drafting ? true : isOpen(x);
+    const shown = filtering ? x.rest : x.rest.slice(0, SIDE_SHOW);
+    const more = filtering ? 0 : x.count - x.live.length - shown.length;
+    // 合并的项目：每行标上是哪台电脑的
+    const row = (r) =>
+      r.kind === 'inst' ? <SessionRow key={r.key} inst={r.inst} current={r.inst.id === currentId} devTag={x.merged} /> : <ConvSideRow key={r.key} p={r.m} conv={r.conv} devTag={x.merged} />;
     return (
-      <section key={p.key} className="sproject" aria-label={p.name}>
-        <ProjectRow p={p} open={open} onToggle={() => setFold(p.key, !open)} showDevice={showDevice} />
-        {open &&
-          (p.offline ? (
-            <p className="slist-note">{t('sess.offline_note', { count: p.count ?? 0 })}</p>
-          ) : p.items.length === 0 ? null : (
-            p.items.map((i) => <SessionRow key={i.id} inst={i} current={i.id === currentId} />)
-          ))}
+      <section key={x.key} className="sproject" aria-label={p.name}>
+        <ProjectRow p={p} x={x} open={open} onToggle={() => setFold(x.key, !open)} showDevice={showDevice} />
+        {open && p.offline && (
+          <p className="slist-note">
+            {Date.now() - (p.seenAt ?? 0) > 60000 && p.seenAt ? t('sess.offline_note_at', { count: p.count ?? 0, when: shortAgo(t, p.seenAt) }) : t('sess.offline_note', { count: p.count ?? 0 })}
+          </p>
+        )}
+        {drafting && <DraftSideRow />}
+        {open && [...x.live, ...shown].filter((r) => !r.m.offline || r.kind === 'conv').map(row)}
+        {open && more > 0 && !p.offline && (
+          <Link to={projectPath(p)} className="slist-more">
+            {t('sess.all_in_project', { count: x.count })}
+          </Link>
+        )}
       </section>
     );
   };
   let body;
   if (s.loading) {
     body = <div className="slist-loading"><Spinner size={16} /></div>;
+  } else if (groupBy === 'recent') {
+    // 按时间：不分项目，在运行的和停了的、以前的对话放在一起按最近用过排
+    const rows = projects.flatMap((x) => [...x.live, ...x.rest].map((r) => ({ ...r, x }))).filter((r) => !r.m.offline || r.kind === 'conv');
+    rows.sort((a, b) => (a.kind === 'inst' && isLive(a.inst) ? 0 : 1) - (b.kind === 'inst' && isLive(b.inst) ? 0 : 1) || b.at - a.at);
+    const max = filtering ? rows.length : 60;
+    body = (
+      <section className="sproject srecent">
+        {rows.slice(0, max).map((r) =>
+          r.kind === 'inst' ? <SessionRow key={r.key} inst={r.inst} current={r.inst.id === currentId} attn devTag={multi} /> : <ConvSideRow key={r.key} p={r.m} conv={r.conv} devTag={multi} />,
+        )}
+        {rows.length > max && (
+          <button type="button" className="slist-more" onClick={() => navigate('/history')}>
+            {t('sess.recent_more', { count: rows.length - max })}
+          </button>
+        )}
+      </section>
+    );
   } else if (groupBy === 'device' && multi) {
     body = devices.items
       .filter((d) => devOk(d.id))
       .map((d) => {
-        const ps = projects.filter((p) => p.device === d.id);
+        const ps = projects.filter((x) => x.p.device === d.id);
         const key = `dev:${d.id}`;
         const open = fold[key] ?? true;
         const group = s.groups?.[d.id];
+        if (filtering && ps.length === 0) return null;
         return (
           <section key={d.id} className="sdevice">
-            <DeviceHead device={d} count={ps.reduce((n, p) => n + p.items.length, 0)} open={open} onToggle={() => setFold(key, !open)} />
+            <DeviceHead device={d} count={ps.reduce((n, x) => n + x.items.length, 0)} open={open} onToggle={() => setFold(key, !open)} />
             {open && group?.error && <ErrorNote error={group.error} />}
-            {open && ps.map((p) => renderProject(p, false))}
-            {open && d.online && ps.length === 0 && !match && <p className="slist-note">{t('devices.no_terminals')}</p>}
+            {open && ps.map((x) => renderProject(x, false))}
+            {open && d.online && ps.length === 0 && <p className="slist-note">{t('devices.no_terminals')}</p>}
           </section>
         );
       });
   } else {
-    body = projects.map((p) => renderProject(p, multi && filter === 'all'));
+    // 项目多了：一个月没用过的（没置顶、没在运行、没有要处理的）收进最后一组
+    const monthAgo = Date.now() - MONTH;
+    const isOld = (x) => !x.pinned && !x.active && Math.max(x.used, x.convAt) < monthAgo && !x.items.some((i) => i.id === currentId || sessionState(i) === 'attn');
+    const old = !filtering && projects.length > OLD_MIN ? projects.filter(isOld) : [];
+    const oldOpen = fold.old ?? false;
+    const showDevice = multi && picked.length !== 1;
+    body = (
+      <>
+        {projects.filter((x) => !old.includes(x)).map((x) => renderProject(x, showDevice))}
+        {old.length > 0 && (
+          <button type="button" className="slist-old" onClick={() => setFold('old', !oldOpen)} aria-expanded={oldOpen}>
+            <ChevronDown size={14} className="prow-chev" aria-hidden="true" />
+            {t('sess.old_projects', { count: old.length })}
+          </button>
+        )}
+        {oldOpen && old.map((x) => renderProject(x, showDevice))}
+      </>
+    );
   }
+  const viewMenu = [
+    { head: t('sess.group_label') },
+    ...GROUPS.filter((g) => g !== 'device' || multi).map((g) => ({ label: t(`sess.group.${g}`), checked: groupBy === g, onClick: () => setGroupBy(g) })),
+    'sep',
+    groupBy !== 'recent' && projects.length > 0 && { icon: allOpen ? ChevronsDownUp : ChevronsUpDown, label: t(allOpen ? 'sess.fold_all' : 'sess.unfold_all'), onClick: foldAll },
+    { icon: FolderPlus, label: t('sess.add_project'), onClick: () => ui.addProject() },
+    { icon: History, label: t('hist.title'), onClick: () => navigate('/history') },
+  ];
+  const searchable = s.items.length > 0 || s.projects.length > 3 || s.projects.some((p) => p.total > 0);
   return (
     <div className="slist">
-      {multi && (
-        <div className="devbar" role="group" aria-label={t('sess.dev_filter')}>
-          <button type="button" aria-pressed={filter === 'all'} onClick={() => setDevFilter('all')}>
-            {t('sess.all_devices')}
-          </button>
-          {devices.items.map((d) => (
-            <button key={d.id} type="button" aria-pressed={filter === d.id} onClick={() => setDevFilter(filter === d.id ? 'all' : d.id)} style={{ '--dc': deviceColor(devices, d.id) }}>
-              <DeviceAvatar device={d} size={18} />
-              <span className="ellipsis">{deviceName(t, d)}</span>
-              {linkState(d, links) !== 'online' && <span className="muted">{linkLabel(t, d, links)}</span>}
-            </button>
-          ))}
+      <div className="slist-top">
+        <div className="slist-titlebar">
+          <h2 className="slist-title grow">{t('sess.title')}</h2>
+          <NewProjectButton />
+          <PopMenu items={viewMenu} className="btn btn-plain btn-icon" icon={SlidersHorizontal} label={t('sess.view_menu')} sheet />
         </div>
-      )}
-      {s.error && <ErrorNote error={s.error} />}
-      {attn.length > 0 && (
-        <section className="sattn" aria-label={t('sess.attention')}>
-          <h3 className="slist-label slist-label-warn">
-            <AlertCircle size={13} aria-hidden="true" />
-            {t('sess.attention')} · {attn.length}
-          </h3>
-          {attn.map((i) => <SessionRow key={i.id} inst={i} attn current={i.id === currentId} />)}
-        </section>
-      )}
-      <div className="slist-head">
-        <h3 className="slist-label grow">{t('sess.projects')}</h3>
-        {multi && (
-          <span className="seg seg-xs" role="group" aria-label={t('sess.group_label')}>
-            <button type="button" aria-pressed={groupBy === 'project'} onClick={() => setGroupBy('project')}>
-              {t('sess.by_project')}
+        {searchable && (
+          <label className="slist-search">
+            <Search size={15} aria-hidden="true" />
+            <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => e.key === 'Escape' && setQuery('')} placeholder={t('sess.search')} aria-label={t('sess.search')} spellCheck={false} />
+            <button type="button" className="slist-kbd" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new Event('ll-quick-switch')); }} title={t('qs.title')}>
+              {keyLabel('mod+K')}
             </button>
-            <button type="button" aria-pressed={groupBy === 'device'} onClick={() => setGroupBy('device')}>
-              {t('sess.by_device')}
-            </button>
-          </span>
+          </label>
         )}
-        {projects.length > 0 && (
-          <button type="button" className="btn btn-plain btn-icon" onClick={foldAll} aria-label={t(allOpen ? 'sess.fold_all' : 'sess.unfold_all')} title={t(allOpen ? 'sess.fold_all' : 'sess.unfold_all')}>
-            {allOpen ? <ChevronsDownUp size={15} /> : <ChevronsUpDown size={15} />}
+        {(multi || searchable) && (
+          <div className="sfilters" role="group" aria-label={t('sess.filters')}>
+            {multi && <DeviceFilter value={picked} onChange={setDevFilter} online={onlineOnly} onOnline={setOnline} counts={counts} />}
+            <StatusFilter value={status} onChange={setStatus} />
+          </div>
+        )}
+      </div>
+      <div className="slist-body">
+        {s.error && <ErrorNote error={s.error} />}
+        {attn.length > 0 && groupBy !== 'recent' && (
+          <section className="sattn" aria-label={t('sess.attention')}>
+            <h3 className="slist-label slist-label-warn">
+              <AlertCircle size={13} aria-hidden="true" />
+              {t('sess.attention')} · {attn.length}
+            </h3>
+            {attn.map((i) => <SessionRow key={i.id} inst={i} attn current={i.id === currentId} />)}
+          </section>
+        )}
+        {groupBy !== 'recent' && projects.length > 0 && <h3 className="slist-label slist-label-head">{t(groupBy === 'device' && multi ? 'sess.by_device' : 'sess.projects')}</h3>}
+        {body}
+        {!s.loading && filtering && projects.length === 0 && attn.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
+        {match && (
+          <button type="button" className="btn btn-plain slist-hist" onClick={() => navigate(`/history?q=${encodeURIComponent(query.trim())}`)}>
+            <History size={14} aria-hidden="true" />
+            <span className="ellipsis">{t('hist.search_in', { q: query.trim() })}</span>
           </button>
         )}
-        <NewProjectButton />
+        {!s.loading && !filtering && s.projects.length === 0 && (
+          <div className="slist-empty">
+            <p className="slist-note">{t('sess.empty_projects')}</p>
+            <button type="button" className="btn btn-sm slist-add" onClick={() => ui.addProject()}>
+              <FolderPlus size={15} aria-hidden="true" />
+              {t('sess.add_project')}
+            </button>
+          </div>
+        )}
       </div>
-      {body}
-      {!s.loading && match && projects.length === 0 && <p className="slist-note">{t('sess.no_match')}</p>}
-      {match && (
-        <button type="button" className="btn btn-plain slist-hist" onClick={() => navigate(`/history?q=${encodeURIComponent(query.trim())}`)}>
-          <History size={14} aria-hidden="true" />
-          <span className="ellipsis">{t('hist.search_in', { q: query.trim() })}</span>
-        </button>
-      )}
-      {!s.loading && !match && s.projects.length === 0 && <p className="slist-note">{t('sess.empty')}</p>}
     </div>
   );
 }
@@ -557,641 +931,18 @@ function NewProjectButton() {
   const { t } = useTranslation();
   const ui = useSessionUi();
   return (
-    <button type="button" className="btn btn-plain btn-icon" onClick={() => ui.newSession({ pick: true })} aria-label={t('sess.new_project')} title={t('sess.new_project_hint')}>
-      <FolderPlus size={15} />
+    <button type="button" className="btn btn-plain btn-icon" onClick={() => ui.addProject()} aria-label={t('sess.add_project')} title={t('sess.add_project_hint')}>
+      <FolderPlus size={16} />
     </button>
   );
 }
 
-/** 手机首页：会话列表 + 右下角“新会话”。 */
+/** 手机首页：会话列表（新会话在底部标签栏中间）。 */
 export function SessionHome() {
-  const { t } = useTranslation();
-  const { status } = useStatus();
-  const ui = useSessionUi();
   return (
     <div className="shome">
       <BackendNote />
       <SessionList />
-      <button type="button" className="fab" onClick={() => ui.newSession()} disabled={!status.account.allowed}>
-        <Plus size={20} aria-hidden="true" />
-        {t('sess.new')}
-      </button>
-    </div>
-  );
-}
-
-// ---------------- 开始页（新会话） ----------------
-
-/**
- * Docker 容器：点开后列出这台电脑上运行中的容器（docker ps），可以搜；选中后探测容器里的用户、默认目录和装了的工具。
- * 容器里的会话只有终端，没有对话界面。
- */
-function DockerPick({ device, onPick, startOpen = false }) {
-  const { t } = useTranslation();
-  const [open, setOpen] = useState(startOpen);
-  const [q, setQ] = useState('');
-  const [busy, setBusy] = useState(null);
-  const [error, setError] = useState(null);
-  const [list] = useLoad(() => (open ? deviceApi(device).get('/docker/containers').catch(() => ({ items: [], error: 'DOCKER_FAILED' })) : Promise.resolve(null)), [open, device]);
-  const pick = async (c) => {
-    setBusy(c.name);
-    setError(null);
-    try {
-      const p = await deviceApi(device).get(`/docker/containers/${encodeURIComponent(c.name)}`);
-      onPick({ name: c.name, image: c.image, dir: p.workdir || '/', root: Boolean(p.root), user: p.user, tools: p.tools ?? [] });
-    } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(null);
-    }
-  };
-  if (!open) {
-    return (
-      <button type="button" className="ppick-item ppick-other" onClick={() => setOpen(true)}>
-        <Container size={15} aria-hidden="true" />
-        <span className="grow">{t('sess.docker_pick')}</span>
-        <ChevronDown size={14} aria-hidden="true" />
-      </button>
-    );
-  }
-  const words = q.trim().toLowerCase();
-  const items = (list?.items ?? []).filter((c) => !words || `${c.name} ${c.image} ${c.id}`.toLowerCase().includes(words));
-  return (
-    <div className="ppick-docker">
-      <label className="slist-search ppick-search">
-        <Search size={14} aria-hidden="true" />
-        <input type="search" value={q} onChange={(e) => setQ(e.target.value)} placeholder={t('sess.docker_search')} aria-label={t('sess.docker_search')} spellCheck={false} autoFocus={!isTouch()} />
-      </label>
-      {!list ? (
-        <div className="ppick-note"><Spinner size={14} /></div>
-      ) : list.error ? (
-        <p className="ppick-note">{t(`sess.docker_err.${list.error}`, { defaultValue: t('sess.docker_err.DOCKER_FAILED') })}</p>
-      ) : items.length === 0 ? (
-        <p className="ppick-note">{words ? t('sess.no_match') : t('sess.docker_none')}</p>
-      ) : (
-        items.map((c) => (
-          <button key={c.id || c.name} type="button" className="ppick-item" onClick={() => pick(c)} disabled={Boolean(busy)} title={c.status}>
-            {busy === c.name ? <Spinner size={15} /> : <Container size={15} aria-hidden="true" />}
-            <span className="ellipsis grow">{c.name}</span>
-            <span className="ppick-path mono ellipsis">{c.image}</span>
-          </button>
-        ))
-      )}
-      {error && <p className="ppick-note warn-text">{errorText(t, error)}</p>}
-    </div>
-  );
-}
-
-/** 文件夹选择弹窗用的“客户端”：把 `/fs/list` 换成容器里的文件夹列表（字段一样）。 */
-function containerFs(device, name) {
-  return { get: (url) => deviceApi(device).get(url.replace(/^\/fs\/list\?/, `/docker/containers/${encodeURIComponent(name)}/fs?`)) };
-}
-
-/** 开始页输入框下面的“Docker”按钮：直接列出当前电脑上运行中的容器。 */
-function DockerChip({ device, active, onPick }) {
-  const { t } = useTranslation();
-  const devices = useDevices();
-  const ref = useRef(null);
-  const [open, setOpen] = useState(false);
-  useEffect(() => {
-    if (!open) return;
-    const close = (e) => !ref.current?.contains(e.target) && setOpen(false);
-    const esc = (e) => e.key === 'Escape' && setOpen(false);
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', esc);
-    return () => {
-      document.removeEventListener('pointerdown', close);
-      document.removeEventListener('keydown', esc);
-    };
-  }, [open]);
-  const d = devices.multi ? devices.byId(device) : null;
-  return (
-    <span className="start-loc-wrap start-docker" ref={ref}>
-      <button type="button" className="btn btn-plain start-adv" aria-pressed={active} aria-expanded={open} onClick={() => setOpen(!open)} title={t('sess.docker_hint')}>
-        <Container size={15} aria-hidden="true" />
-        Docker
-      </button>
-      {open && (
-        <div className="ppick" role="dialog" aria-label={t('sess.docker_pick')}>
-          {d && (
-            <div className="ppick-dev">
-              <DeviceAvatar device={d} size={18} />
-              <b className="ellipsis">{deviceName(t, d)}</b>
-              <span className="muted">{osLabel(d.os)}</span>
-            </div>
-          )}
-          <DockerPick
-            device={device}
-            startOpen
-            onPick={(c) => {
-              setOpen(false);
-              onPick(c);
-            }}
-          />
-        </div>
-      )}
-    </span>
-  );
-}
-
-/** 选项目：按电脑列出最近的项目，再下面“选择其他文件夹”“Docker 容器”。 */
-function ProjectPicker({ projects, device, workdir, container, onPick, onClose }) {
-  const { t } = useTranslation();
-  const devices = useDevices();
-  const ref = useRef(null);
-  const [browse, setBrowse] = useState(null);
-  useEffect(() => {
-    const close = (e) => !ref.current?.contains(e.target) && !browse && onClose();
-    const esc = (e) => e.key === 'Escape' && !browse && onClose();
-    document.addEventListener('pointerdown', close);
-    document.addEventListener('keydown', esc);
-    return () => {
-      document.removeEventListener('pointerdown', close);
-      document.removeEventListener('keydown', esc);
-    };
-  }, [browse]);
-  const devs = devices.multi ? devices.items.filter((d) => d.online) : [null];
-  return (
-    <div className="ppick" ref={ref} role="dialog" aria-label={t('sess.pick_project')}>
-      {devs.map((d) => {
-        const ps = projects.filter((p) => p.device === (d?.id ?? null) && !p.offline).slice(0, 12);
-        return (
-          <div key={d?.id ?? 'one'} className="ppick-group">
-            {d && (
-              <div className="ppick-dev">
-                <DeviceAvatar device={d} size={18} />
-                <b className="ellipsis">{deviceName(t, d)}</b>
-                <span className="muted">{osLabel(d.os)}</span>
-              </div>
-            )}
-            {ps.map((p) => (
-              <button
-                key={p.key}
-                type="button"
-                className="ppick-item"
-                aria-pressed={p.device === device && (p.container ? container?.name === p.container.name && container?.dir === p.container.dir : !container && p.workdir === workdir)}
-                onClick={() => onPick(p.device, p.container ? '' : p.workdir, p.container ?? null)}
-              >
-                {p.container ? <Container size={15} aria-hidden="true" /> : <Folder size={15} aria-hidden="true" />}
-                <span className="ellipsis grow">{p.name}</span>
-                <span className="ppick-path mono ellipsis">{p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}</span>
-              </button>
-            ))}
-            <button type="button" className="ppick-item ppick-other" onClick={() => setBrowse(d?.id ?? null)}>
-              <FolderPlus size={15} aria-hidden="true" />
-              <span className="grow">{t('sess.pick_other')}</span>
-            </button>
-            <DockerPick device={d?.id ?? null} onPick={(c) => onPick(d?.id ?? null, '', c)} />
-          </div>
-        );
-      })}
-      <FolderPicker
-        open={browse !== null}
-        initial={browse === device ? workdir : ''}
-        client={deviceApi(browse)}
-        onClose={() => setBrowse(null)}
-        onPick={(path) => onPick(browse, path, null)}
-      />
-    </div>
-  );
-}
-
-/** 开始页：类型、第一句话、项目（电脑 + 文件夹）、高级选项。回车就新建、启动并打开。 */
-export function StartPane() {
-  const s = useSessions();
-  const ui = useSessionUi();
-  // 等项目列表到了再初始化（默认选最近用过的项目）
-  if (s.loading) return <div className="start"><Spinner size={20} /></div>;
-  return <StartForm key={ui.start.nonce} />;
-}
-
-/**
- * 开始页的表单。`want` 不给时用 ui.start（开始页）；标签栏的“+”弹窗里给出当前会话的电脑和项目，
- * `onDone` 在新建成功后关掉弹窗，`inModal` 时只留输入框（不显示以前的对话、最近项目、提示卡片）。
- */
-function StartForm({ want: wantProp, onDone, inModal = false }) {
-  const { t } = useTranslation();
-  const { navigate } = useRouter();
-  const { status: selectedStatus } = useStatus();
-  const devices = useDevices();
-  const s = useSessions();
-  const ui = useSessionUi();
-  const toast = useToast();
-  const want = wantProp ?? ui.start;
-  // 默认：要求的 > 最近用过的在线项目 > 默认文件夹
-  const firstProject = s.projects.find((p) => !p.offline);
-  const initDevice = want.device !== undefined ? want.device : firstProject ? firstProject.device : devices.multi ? devices.selected : null;
-  const [device, setDevice] = useState(initDevice);
-  const [workdir, setWorkdir] = useState(want.workdir ?? (want.device === undefined && firstProject ? firstProject.workdir : ''));
-  const project = s.projects.find((p) => p.device === device && p.workdir === workdir);
-  // Docker 容器（{ name, dir, root, tools }）：选了时会话在容器里运行，只有终端
-  const [container, setContainer] = useState(want.container ?? null);
-  const [launch, setLaunchState] = useState(want.launch ?? projectLaunch(project) ?? 'claude');
-  // 用户自己点过类型：换项目、换电脑都不再改它
-  const chosen = useRef(Boolean(want.launch));
-  const setLaunch = (l) => {
-    chosen.current = true;
-    setLaunchState(l);
-  };
-  const [text, setText] = useState('');
-  // Claude Code 用哪个账号 / 接口：null 用那台电脑上的默认
-  const [profile, setProfile] = useState(null);
-  const [picking, setPicking] = useState(Boolean(want.pick));
-  const [dirPick, setDirPick] = useState(false);
-  const [adv, setAdv] = useState(false);
-  const [moreKinds, setMoreKinds] = useState(false);
-  const [name, setName] = useState('');
-  const [shell, setShell] = useState(project?.shell ?? '');
-  const [fullAccess, setFullAccessState] = useState(() => fullAccessFor(project, selectedStatus.settings));
-  // 用户自己勾过：换项目、那台电脑的设置到了都不再改它
-  const fullChosen = useRef(false);
-  const setFullAccess = (v) => {
-    fullChosen.current = true;
-    setFullAccessState(v);
-  };
-  const [autoStart, setAutoStart] = useState(Boolean(project?.auto_start));
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(null);
-  const input = useRef(null);
-  const client = deviceApi(device);
-  // 不是顶栏选中的那台电脑时，用那台电脑自己的状态（默认文件夹、能力）
-  const [devStatus] = useLoad(() => (devices.multi && device && device !== devices.selected ? client.get('/status').catch(() => null) : Promise.resolve(null)), [device]);
-  const status = devStatus?.settings && devStatus?.capabilities ? devStatus : selectedStatus;
-  const [tools, , reloadTools] = useLoad(() => client.get('/tools').catch(() => null), [device]);
-  const [shells] = useLoad(() => (adv ? client.get('/shells').catch(() => null) : Promise.resolve(null)), [device, adv]);
-  useEffect(() => {
-    if (!workdir && status?.settings?.default_workdir) setWorkdir(status.settings.default_workdir);
-  }, [status?.settings?.default_workdir]);
-  // 手机上不主动聚焦（会弹出输入法）
-  useEffect(() => {
-    if (!picking && !isTouch()) input.current?.focus();
-  }, [want.nonce, picking]);
-  // 换了项目：类型和高级选项跟着这个项目上次的
-  const pickProject = (dev, dir, c = null) => {
-    setDevice(dev);
-    setPicking(false);
-    setContainer(c);
-    if (c) {
-      if (launch === 'dsh') setLaunchState('claude');
-      setTimeout(() => !isTouch() && input.current?.focus(), 0);
-      return;
-    }
-    setWorkdir(dir);
-    const p = s.projects.find((x) => x.device === dev && x.workdir === dir);
-    if (p) {
-      if (!chosen.current && p.launch) setLaunchState(projectLaunch(p));
-      setShell(p.shell ?? '');
-      setFullAccessState(fullAccessFor(p, status?.settings));
-      setAutoStart(Boolean(p.auto_start));
-    }
-    setTimeout(() => !isTouch() && input.current?.focus(), 0);
-  };
-  // 别的电脑的设置（默认全部权限）晚一点才到：还没勾过时跟着它
-  useEffect(() => {
-    if (!fullChosen.current) setFullAccessState(fullAccessFor(project, status?.settings));
-  }, [device, status?.settings?.default_full_access]);
-  const missing = (b) => {
-    const l = baseLaunch(b);
-    return container ? AI_TOOLS.includes(l) && Array.isArray(container.tools) && !container.tools.includes(l) : AI_TOOLS.includes(l) && tools && !tools.tools?.[l];
-  };
-  const dshRow = launch === 'dsh' ? s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device)) : null;
-  const canFull = FULL_ACCESS.includes(baseLaunch(launch));
-  const allowed = selectedStatus.account.allowed;
-  const devObj = devices.multi ? devices.byId(device) : null;
-  const offline = devices.multi && !devObj?.online;
-  const takesText = PROMPT_LAUNCHES.includes(launch) || launch === 'custom';
-  // 没装的工具：点开始就先在后台装（npm），装好后自动接着开始，不用另开窗口
-  const [job, setJob] = useState(null);
-  const [mirror, setMirror] = useState('npmmirror');
-  const [afterInstall, setAfterInstall] = useState(false);
-  useEffect(() => {
-    setJob(null);
-    setAfterInstall(false);
-  }, [launch, device]);
-  useEffect(() => {
-    if (job?.state !== 'running') return undefined;
-    const timer = setTimeout(async () => {
-      const j = await client.get(`/tools/install/${launch}`).catch(() => null);
-      // 一次没取到（网络抖了）：接着问
-      setJob(j ?? { ...job });
-      if (j?.state === 'ok') reloadTools();
-    }, 1000);
-    return () => clearTimeout(timer);
-  }, [job]);
-  const canInstall = !container && AI_TOOLS.includes(launch) && Boolean(tools?.tools?.npm);
-  const install = async () => {
-    setError(null);
-    try {
-      setJob(await client.post('/tools/install', { tool: launch, mirror }));
-      setAfterInstall(true);
-    } catch (e) {
-      setError(e);
-    }
-  };
-  // 装好了、工具列表也刷新了：接着开始
-  const installed = afterInstall && job?.state === 'ok' && !missing(launch);
-  useEffect(() => {
-    if (!installed) return;
-    setAfterInstall(false);
-    go();
-  }, [installed]);
-  // 开始按钮点不了的原因：写在按钮旁边，不让人对着灰按钮猜
-  const where = container ? container.dir.trim() : workdir.trim();
-  const blocked = !allowed ? t('sess.why_locked') : offline ? t('sess.device_offline') : !where ? t('sess.why_no_folder') : null;
-  const go = async () => {
-    if (busy || !allowed || offline) return;
-    setError(null);
-    if (missing(launch)) {
-      // 能直接装的就装，装好后自动开始；没有 npm（要先装 Node.js）时打开说明怎么装的窗口
-      if (canInstall) {
-        if (job?.state !== 'running') install();
-      } else if (!container) ui.install(launch, device, workdir);
-      return;
-    }
-    if (dshRow) {
-      openDsh(dshRow, t, toast);
-      return;
-    }
-    if (launch === 'custom' && !text.trim()) {
-      input.current?.focus();
-      return;
-    }
-    const prompt = PROMPT_LAUNCHES.includes(launch) ? text.trim() : '';
-    setBusy(true);
-    try {
-      const r = await client.post('/instances', {
-        // 没填名称时用第一句话的开头（AI 工具），否则交给电脑取（文件夹 · 工具）
-        name: (name.trim() || (prompt && launch !== 'shell' ? prompt.replace(/\s+/g, ' ').slice(0, 20) : '')).slice(0, 40),
-        name_custom: Boolean(name.trim()),
-        workdir: container ? '' : workdir,
-        container: container ? { name: container.name, dir: container.dir.trim() || '/' } : undefined,
-        launch: baseLaunch(launch),
-        // Codex 对话 / Codex 终端（其余类型按电脑的默认）
-        chat_ui: launch === CODEX_TERM ? false : launch === 'codex' ? true : undefined,
-        command: launch === 'custom' ? text.trim() : '',
-        prompt: prompt || undefined,
-        shell: shell.trim(),
-        auto_start: autoStart,
-        full_access: canFull && fullAccess,
-        claude_profile: launch === 'claude' && !container && profile ? profile : undefined,
-        start: true,
-      });
-      if (device && r.id) rememberTerminals(device, [r]);
-      // 全部权限只在能选的类型（AI 会话）上记：开个终端不该把这个项目记成“不要全部权限”
-      if (!container)
-        s.touchProject(device, r.workdir ?? workdir, {
-          launch: baseLaunch(launch),
-          ...(baseLaunch(launch) === 'codex' ? { codex_chat: launch !== CODEX_TERM } : {}),
-          shell: shell.trim(),
-          auto_start: autoStart,
-          ...(canFull ? { full_access: fullAccess } : {}),
-        });
-      s.reload();
-      setText('');
-      setName('');
-      if (launch === 'dsh') openDsh(r, t, toast);
-      else ui.openSession(r.id);
-      onDone?.();
-    } catch (e) {
-      setError(e);
-    } finally {
-      setBusy(false);
-    }
-  };
-  const placeholder = dshRow ? t('sess.ph_dsh_open') : t(`sess.ph_${launch}`, { tool: t(`launch.${launch}.title`) });
-  const projName = container ? container.name : baseName(workdir) || workdir || '…';
-  // 没有会话保持（对话页靠它）或者在容器里时 Codex 只有终端，不分两种
-  const chatOk = Boolean(status?.capabilities?.persistent) && !container;
-  const launches = START_LAUNCHES.filter((l) => !(container && l === 'dsh') && !(!chatOk && l === CODEX_TERM));
-  const typeTitle = (l) => (l === 'codex' && chatOk ? t('launch.codex_chat.title') : t(`launch.${l}.title`));
-  const typeDesc = (l) => (l === 'codex' && chatOk ? t('launch.codex_chat.desc') : t(`launch.${l}.desc`));
-  const types = shownTypes(launches, s.items, launch);
-  // 每种后面写上那个账号 5 小时额度还剩多少，选之前就知道该用哪个。用量只有当前这台电脑的、默认账号的：
-  // 给别的电脑开、在容器里、另选了 Claude 账号时不显示，免得数字对不上
-  const accUsage = useAccountsUsage();
-  const kindUsage = (l) => {
-    const a = usageAgent(l);
-    if (!a || container || (device && device !== devices.selected) || (a === 'claude' && profile)) return null;
-    const r = remainingOf(accUsage?.[a]?.five_hour);
-    return r && { ...r, name: a === 'claude' ? 'Claude' : 'Codex', resets: Date.parse(accUsage[a].five_hour.resets_at) - Date.now() };
-  };
-  const pickedUsage = kindUsage(launch);
-  // 列表里每种类型后面的小标签：有没有对话页（Claude Code 两边都有）
-  const kindTag = (l) => {
-    if (l === 'claude') return chatOk ? 'both' : 'term';
-    if (l === 'codex') return chatOk ? 'chat' : 'term';
-    return l === 'dsh' ? null : 'term';
-  };
-  return (
-    <div className="start">
-      {!opensInPage() && !inModal && (
-        <button type="button" className="btn btn-plain start-back" onClick={() => navigate('/')}>
-          <ArrowLeft size={18} aria-hidden="true" />
-          {t('sess.back')}
-        </button>
-      )}
-      <h1 className={`start-title ${inModal ? 'start-title-sm' : ''}`}>{workdir ? t('sess.start_in', { name: projName }) : t('sess.start_title')}</h1>
-      <form
-        className="composer"
-        onSubmit={(e) => {
-          e.preventDefault();
-          go();
-        }}
-      >
-        {takesText && !dshRow ? (
-          <textarea
-            ref={input}
-            className="start-input"
-            rows={3}
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-            // 手机上没有 Shift+回车：回车换行，点“开始”发出去（同对话页的输入框）
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isTouch()) {
-                e.preventDefault();
-                go();
-              }
-            }}
-            enterKeyHint={isTouch() ? 'enter' : 'send'}
-            placeholder={placeholder}
-            aria-label={placeholder}
-            spellCheck={false}
-            maxLength={4000}
-          />
-        ) : (
-          <p className="start-input start-note">{placeholder}</p>
-        )}
-        <div className="start-bar">
-          <span className="start-loc-wrap">
-            <button type="button" className="start-loc" onClick={() => setPicking(!picking)} aria-expanded={picking} title={container ? `${container.name}:${container.dir}` : workdir}>
-              {devObj ? <DeviceAvatar device={devObj} size={18} /> : container ? <Container size={15} aria-hidden="true" /> : <Folder size={15} aria-hidden="true" />}
-              {devObj && container && <Container size={14} aria-hidden="true" className="muted" />}
-              <span className="ellipsis">{projName}</span>
-              {devObj && <span className="muted ellipsis start-loc-dev">{deviceName(t, devObj)}</span>}
-              <ChevronDown size={14} aria-hidden="true" />
-            </button>
-            {picking && <ProjectPicker projects={s.projects} device={device} workdir={workdir} container={container} onPick={pickProject} onClose={() => setPicking(false)} />}
-          </span>
-          <DockerChip device={device} active={Boolean(container)} onPick={(c) => pickProject(device, '', c)} />
-          {/* 全部权限一眼就能看到、点一下就切换（以前藏在“高级”里） */}
-          {canFull && (
-            <button type="button" className="btn btn-plain start-adv" aria-pressed={fullAccess} onClick={() => setFullAccess(!fullAccess)} title={t(`form.full_access_hint_${launch}`)}>
-              <ShieldCheck size={15} aria-hidden="true" />
-              {t('sess.full_access_chip')}
-            </button>
-          )}
-          {launch === 'claude' && !container && <ClaudeProfilePick client={client} device={device} value={profile} onChange={setProfile} />}
-          {launch !== 'dsh' && (
-            <button type="button" className="btn btn-plain start-adv" onClick={() => setAdv(!adv)} aria-expanded={adv}>
-              <SlidersHorizontal size={15} aria-hidden="true" />
-              {t('sess.advanced')}
-            </button>
-          )}
-          <span className="grow" />
-          {blocked ? (
-            <span className="small muted">{blocked}</span>
-          ) : (
-            missing(launch) &&
-            job?.state !== 'running' && (
-              <span className="small muted start-install">
-                {t(container ? 'sess.container_missing' : canInstall ? 'sess.install_then_start' : 'sess.install_first', { tool: t(`launch.${launch}.title`) })}
-                {canInstall && (
-                  <select value={mirror} onChange={(e) => setMirror(e.target.value)} aria-label={t('tools.mirror')}>
-                    {['npmmirror', 'tencent', 'official'].map((m) => (
-                      <option key={m} value={m}>
-                        {t(`tools.mirrors.${m}`)}
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </span>
-            )
-          )}
-          <button type="submit" className="start-go" disabled={busy || Boolean(blocked)} aria-label={t('sess.start')} title={blocked ?? t('sess.start_hint')}>
-            {busy || job?.state === 'running' ? <Spinner size={18} /> : dshRow ? <ExternalLink size={18} /> : <ArrowUp size={20} />}
-          </button>
-        </div>
-        {job?.tool === launch && job.state !== 'ok' && (
-          <div className="start-install-log">
-            <InstallProgress job={job} tool={t(`launch.${launch}.title`)} onRetry={install} busy={false} />
-            {job.state === 'running' && <p className="small muted">{t('sess.install_auto_start')}</p>}
-          </div>
-        )}
-        {container && (
-          <div className="start-container">
-            <label className="start-container-dir">
-              <span className="muted">{t('sess.container_dir')}</span>
-              <input className="mono" value={container.dir} onChange={(e) => setContainer({ ...container, dir: e.target.value })} spellCheck={false} aria-label={t('sess.container_dir')} />
-              <Button variant="secondary" icon={FolderOpen} onClick={() => setDirPick(true)} aria-label={t('fs.browse')} title={t('fs.browse')} />
-            </label>
-            <FolderPicker
-              open={dirPick}
-              initial={container.dir}
-              client={containerFs(device, container.name)}
-              onClose={() => setDirPick(false)}
-              onPick={(dir) => setContainer((c) => c && { ...c, dir })}
-            />
-            <p className="small muted">
-              {t('sess.container_note')}
-              {container.root && canFull && fullAccess && launch === 'claude' ? ` ${t('sess.container_root')}` : ''}
-            </p>
-          </div>
-        )}
-        {adv && launch !== 'dsh' && (
-          <div className="start-advanced">
-            <label className="field">
-              <span className="field-label">{t('form.name')}</span>
-              <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={t('sess.name_ph')} />
-            </label>
-            <ShellPicker value={shell} onChange={setShell} data={shells} inherit={status.settings?.default_shell || null} />
-            {status.capabilities?.persistent && (
-              <div className="between">
-                <span className="grow">
-                  <b style={{ fontSize: 14 }}>{t('form.auto_start')}</b>
-                  <span className="field-hint" style={{ display: 'block' }}>
-                    {t('sess.adv_remember')}
-                  </span>
-                </span>
-                <Switch checked={autoStart} onChange={setAutoStart} label={t('form.auto_start')} />
-              </div>
-            )}
-          </div>
-        )}
-      </form>
-      {/* 用什么开始：一行一种，写清楚有没有对话页；常用的直接列出，其余在“更多类型”里 */}
-      <div className="start-kinds" role="radiogroup" aria-label={t('sess.kinds_title')}>
-        <div className="start-kinds-head">
-          <span className="sec">{t('sess.kinds_title')}</span>
-          {chatOk && <span className="small muted">{t('sess.kinds_note')}</span>}
-        </div>
-        {[...types.shown, ...(moreKinds ? types.more : [])].map((l) => (
-          <button key={l} type="button" role="radio" aria-checked={launch === l} className="start-kind" onClick={() => setLaunch(l)}>
-            <LaunchIcon launch={baseLaunch(l)} size={18} />
-            <span className="start-kind-text">
-              <span className="start-kind-name">
-                <b>{typeTitle(l)}</b>
-                {kindTag(l) && <span className="srow-kind">{t(`sess.kind_${kindTag(l)}`)}</span>}
-                {missing(l) && <span className="start-miss">{t('sess.not_installed')}</span>}
-              </span>
-              <span className="start-kind-desc">{t(`sess.kind_desc.${l}`, { defaultValue: typeDesc(l) })}</span>
-            </span>
-            {kindUsage(l) && (
-              <span className="start-kind-usage" data-level={kindUsage(l).level} title={t('sbar.usage_line', { name: kindUsage(l).name, n: kindUsage(l).left })}>
-                {t('sbar.left', { n: kindUsage(l).left })}
-                <UsageBar {...kindUsage(l)} />
-              </span>
-            )}
-          </button>
-        ))}
-        {types.more.length > 0 && (
-          <button type="button" className="start-kind start-kind-more" onClick={() => setMoreKinds(!moreKinds)} aria-expanded={moreKinds}>
-            <ChevronDown size={16} aria-hidden="true" />
-            {t(moreKinds ? 'sess.fewer_types' : 'sess.more_types')}
-          </button>
-        )}
-      </div>
-      {pickedUsage && pickedUsage.level === 'low' && (
-        <p className="start-usage-low small">
-          {t('sess.usage_low', { name: pickedUsage.name, n: pickedUsage.left })}
-          {pickedUsage.resets > 0 && ` ${t('sbar.resets', { in: spanText(t, pickedUsage.resets) })}`}
-        </p>
-      )}
-      <ErrorNote error={error} />
-      {missing(launch) && !container && (
-        <button type="button" className="btn btn-plain small" onClick={reloadTools}>
-          {t('tools.recheck')}
-        </button>
-      )}
-      {!inModal && (
-        <>
-          {!container && <PrevConversations device={device} workdir={workdir} launch={launch} focus={Boolean(want.prev)} />}
-          <RecentProjects current={project?.key} onPick={pickProject} />
-          <div className="start-foot">
-            <BackendNote />
-            <RemoteCard />
-            <SafetyNote />
-            <Promotions />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/** 开始页下面最近的几个项目，点一下换过去。 */
-function RecentProjects({ current, onPick }) {
-  const devices = useDevices();
-  const s = useSessions();
-  const list = s.projects.filter((p) => !p.offline && p.key !== current).slice(0, 4);
-  if (!list.length) return null;
-  return (
-    <div className="start-recent">
-      {list.map((p) => (
-        <button key={p.key} type="button" onClick={() => onPick(p.device, p.container ? "" : p.workdir, p.container ?? null)} title={p.container ? `${p.container.name}:${p.container.dir}` : p.workdir}>
-          {devices.multi ? <DeviceAvatar device={devices.byId(p.device)} size={16} /> : <Folder size={14} aria-hidden="true" />}
-          <span className="ellipsis">{p.name}</span>
-        </button>
-      ))}
     </div>
   );
 }
@@ -1207,9 +958,9 @@ function useFillHeight(ref, enabled) {
       const el = ref.current;
       if (!el) return;
       const top = el.getBoundingClientRect().top + window.scrollY;
-      // 宽屏底部的状态栏占的高度（见 styles.css 的 --sbar-h）
-      const bar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sbar-h')) || 0;
-      setH(Math.max(320, window.innerHeight - top - bar));
+      // 宽屏底部有状态栏（--sbar-h），要让出来，不然主区域多出这一截、整块出滚动条
+      const sbar = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--sbar-h')) || 0;
+      setH(Math.max(320, window.innerHeight - top - sbar));
     };
     on();
     const ro = new ResizeObserver(on);
@@ -1287,6 +1038,7 @@ export function SessionStage({ activeId }) {
             active={id === activeId}
             lead={inst && <LaunchIcon launch={inst.launch} size={16} />}
             sub={<SessionLead inst={inst} />}
+            named={!opensInPage()}
             menu={inst && <SessionMenu inst={inst} />}
             focusN={s.focusReq.id === id ? s.focusReq.n : 0}
             onStart={async () => {
@@ -1341,7 +1093,6 @@ export function SessionTabs({ activeId }) {
   const [ctx, setCtx] = useState(null);
   const [all, setAll] = useState(false);
   const [q, setQ] = useState('');
-  const [create, setCreate] = useState(false);
   const ctxRef = useRef(null);
   const allRef = useRef(null);
   useDismiss(ctxRef, Boolean(ctx), () => setCtx(null));
@@ -1391,8 +1142,19 @@ export function SessionTabs({ activeId }) {
             onMenu={(x, y) => setCtx({ id, x, y })}
           />
         ))}
+        {ui.draftAt && (
+          <div className="stab on stab-draft">
+            <span className="stab-main" role="tab" aria-selected="true">
+              <span className="draft-tile" aria-hidden="true" />
+              <span className="ellipsis">{t('sess.new')}</span>
+            </span>
+            <button type="button" className="stab-x" onClick={() => s.tabs.length && ui.openSession(s.tabs[s.tabs.length - 1])} aria-label={t('draft.close')} title={t('draft.close')}>
+              <X size={13} />
+            </button>
+          </div>
+        )}
       </div>
-      <button type="button" className="btn btn-plain btn-icon stabs-new" onClick={() => setCreate(true)} aria-label={t('sess.tab_new')} title={t('sess.tab_new_hint')}>
+      <button type="button" className="btn btn-plain btn-icon stabs-new" onClick={() => ui.newSession()} aria-label={t('sess.tab_new')} title={t('sess.tab_new_hint')}>
         <Plus size={16} />
       </button>
       <div className="stabs-all-wrap" ref={allRef}>
@@ -1441,7 +1203,6 @@ export function SessionTabs({ activeId }) {
           </div>
         )}
       </div>
-      {create && <QuickStart inst={s.byId(activeId)} onClose={() => setCreate(false)} />}
       {ctx && (
         <div className="pop-menu stabs-ctx" ref={ctxRef} role="menu" style={{ left: ctx.x, top: ctx.y }}>
           <button type="button" role="menuitem" onClick={() => close([ctx.id])}>{t('sess.tab_close')}</button>
@@ -1451,24 +1212,6 @@ export function SessionTabs({ activeId }) {
         </div>
       )}
     </div>
-  );
-}
-
-/** 标签栏“+”：弹出新建框，预先选好当前会话所在的电脑和项目（容器会话就是同一个容器）。 */
-function QuickStart({ inst, onClose }) {
-  const { t } = useTranslation();
-  const devices = useDevices();
-  const [want] = useState(() => {
-    if (!inst) return { nonce: 0 };
-    const device = devices.multi ? terminalDevice(inst.id) : undefined;
-    return inst.container
-      ? { device, container: { ...inst.container, dir: inst.container.dir || '/' }, nonce: 0 }
-      : { device, workdir: inst.workdir || sessionDir(inst), nonce: 0 };
-  });
-  return (
-    <Modal open onClose={onClose} title={t('sess.tab_new')} wide className="start-modal">
-      <StartForm want={want} onDone={onClose} inModal />
-    </Modal>
   );
 }
 

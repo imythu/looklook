@@ -33,6 +33,7 @@ PollInterrupter::PollInterrupter() {
 		mSock = ::socket(ai->ai_family, ai->ai_socktype, ai->ai_protocol);
 		if (mSock == INVALID_SOCKET)
 			throw std::runtime_error("UDP socket creation failed");
+		sock_no_inherit(mSock); // looklook
 
 		// Set non-blocking
 		ctl_t nbio = 1;
@@ -68,6 +69,8 @@ PollInterrupter::PollInterrupter() {
 
 	::fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
 	::fcntl(pipefd[1], F_SETFL, O_NONBLOCK);
+	sock_no_inherit(pipefd[0]); // looklook
+	sock_no_inherit(pipefd[1]); // looklook
 	mPipeOut = pipefd[1]; // read
 	mPipeIn = pipefd[0];  // write
 #endif

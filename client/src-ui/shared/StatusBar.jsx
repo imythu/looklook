@@ -1,20 +1,22 @@
 // 宽屏底部的状态栏：左边连接（本机 / 远程和延迟），右边等待回复、运行中的会话数，
 // 这台电脑上登录了的 Claude、Codex 账号的 5 小时用量（点开看回满时间和建议用哪个）。手机上不显示。
-// 用量的取数和列表（useAccountsUsage、UsageRows）手机上也用：侧栏底部、新建会话、对话页圆环点开的面板。
+// 用量的取数和列表（useAccountsUsage、UsageRows）手机上也用：新建会话、对话页圆环点开的面板。
 
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useSessionUi } from '../pages/Sessions.jsx';
 import { api } from './api.js';
+import { keyLabel } from './hotkeys.js';
 import { LaunchIcon } from './brands.jsx';
-import { openPalette } from './Palette.jsx';
 import { useRouter } from './router.jsx';
 import { ConnChip, usePop } from './RelayStatus.jsx';
 import { sessionState, useSessions } from './sessions.jsx';
-import { spanText } from './time.js';
+import { relativeTime, spanText } from './time.js';
 
 const USAGE_POLL_MS = 60000;
+// 用量数字超过这么久没更新（网络不好时用的是上次读到的）就标出是什么时候的
+const STALE_MS = 3 * 60000;
 const AGENTS = [
   ['claude', 'Claude'],
   ['codex', 'Codex'],
@@ -103,7 +105,13 @@ export function UsageRows({ rows, tip = true }) {
             </div>
             <Bar {...x.r} big />
             <span className="muted small">
-              {[t(`sbar.level_${x.r.level}`), resets > 0 ? t('sbar.resets', { in: spanText(t, resets) }) : null].filter(Boolean).join(' · ')}
+              {[
+                t(`sbar.level_${x.r.level}`),
+                resets > 0 ? t('sbar.resets', { in: spanText(t, resets) }) : null,
+                Date.now() - x.d.fetched_at > STALE_MS ? t('sbar.stale', { ago: relativeTime(t, new Date(x.d.fetched_at).toISOString()) }) : null,
+              ]
+                .filter(Boolean)
+                .join(' · ')}
             </span>
           </div>
         );
@@ -177,22 +185,9 @@ export default function StatusBar() {
       )}
       {running > 0 && <span className="sbar-item">{t('sbar.running', { n: running })}</span>}
       <UsageGroup data={usage} />
-      <button type="button" className="sbar-item sbar-cmd" onClick={openPalette} title={t('pal.title')}>
-        <kbd className="pal-kbd">Ctrl K</kbd>
+      <button type="button" className="sbar-item sbar-cmd" onClick={() => window.dispatchEvent(new Event('ll-quick-switch'))} title={t('qs.title')}>
+        <kbd className="pal-kbd">{keyLabel('mod+K')}</kbd>
       </button>
     </footer>
-  );
-}
-
-/** 手机侧栏底部：这台电脑登录的账号的 5 小时额度（宽屏看底部状态栏）。侧栏打开时才挂上，不打开不轮询 */
-export function SideUsage() {
-  const { t } = useTranslation();
-  const rows = usageRows(useAccountsUsage());
-  if (!rows.length) return null;
-  return (
-    <section className="side-usage" aria-label={t('sbar.usage_title')}>
-      <div className="side-usage-head muted small">{t('sbar.usage_title')}</div>
-      <UsageRows rows={rows} tip={false} />
-    </section>
   );
 }

@@ -12,12 +12,13 @@ import { api, selectedDevice, terminalDevice } from '../shared/api.js';
 import { CHAT_LAUNCHES } from '../shared/chat.js';
 import { usePaths } from '../shared/paths.jsx';
 import { termFit, termFocus, termOffline, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn, useTermConn, useTermTheme } from '../shared/termFrame.js';
+import { backToDraft, retryFirst, useFirstSend } from '../shared/firstSend.js';
 import { errorText } from '../shared/i18n.js';
 import { AI_LAUNCHES } from '../shared/keys.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { customName, sessionTitle } from '../shared/sessions.jsx';
+import { customName, sessionTitle, useSessions } from '../shared/sessions.jsx';
 import TextSelect, { useTextSelect } from '../shared/TextSelect.jsx';
 import { TermThemeModal } from '../shared/ThemePicker.jsx';
 import { Button, Card, useLoad, useToast } from '../shared/ui.jsx';
@@ -27,6 +28,7 @@ import GitPanel from './GitPanel.jsx';
 import { setStatusChrome } from '../shared/StatusBar.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 import { APP_CHROME, termTheme, termVars } from '../shared/termTheme.js';
+import { useSeenPing } from '../shared/board.js';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -269,6 +271,40 @@ function OfflineNote() {
 }
 
 /** 终端没在运行 / 找不到时，终端区域里的提示。 */
+/** 没起来、带着第一句回到草稿页（换个类型、项目再开）。 */
+function useDraftBack(id, inst) {
+  const { navigate } = useRouter();
+  // 手机整页打开的会话不在会话列表的范围里（没有 SessionsProvider）
+  const s = useSessions();
+  return async () => {
+    await backToDraft(id, inst);
+    s?.closeTabs([id]);
+    s?.reload();
+    navigate(isTouch() ? '/new' : '/');
+  };
+}
+
+/** 草稿页发了第一句、会话却没起来（找不到命令等）：说明原因，字还在，重试或回到草稿。 */
+function FirstFailed({ inst, starting, onRetry, onBack }) {
+  const { t } = useTranslation();
+  const why = inst.error ? t(`instance.error.${inst.error}`, { defaultValue: t('instance.error.other') }) : t('term.stopped_body');
+  return (
+    <>
+      <p className="muted">
+        {why} {t('chat.first_kept')}
+      </p>
+      <span className="chat-acts">
+        <Button icon={Play} busy={starting} onClick={onRetry}>
+          {t('chat.first_retry')}
+        </Button>
+        <Button variant="secondary" onClick={onBack}>
+          {t('chat.first_back')}
+        </Button>
+      </span>
+    </>
+  );
+}
+
 function PaneNotice({ title, body, children }) {
   return (
     <div className="pane-notice">
@@ -286,8 +322,10 @@ function PaneNotice({ title, body, children }) {
  * 不是当前标签时只是隐藏（iframe 不卸载、会话保持连接），切回来时让终端重新适配大小并聚焦。
  * 最大化：铺满整个浏览器窗口（盖住侧栏和标签栏），但不进系统全屏；双击工具栏空白处也能切换。
  */
-export function TermPane({ id, inst, active, missing, offline = false, onStart, lead, sub, menu, focusN = 0 }) {
+export function TermPane({ id, inst, active, missing, offline = false, onStart, lead, sub, menu, named = true, focusN = 0 }) {
   const { t } = useTranslation();
+  // 有人正在看这个会话（任务看板：结束的这一轮算看过，不发通知）
+  useSeenPing(id, Boolean(active && hasChat(inst) && !offline));
   const { status } = useStatus();
   const wrap = useRef(null);
   const frame = useRef(null);
@@ -297,6 +335,8 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   const [full, setFull] = useState(false);
   const [max, setMax] = useState(false);
   const chat = inst ? hasChat(inst) : undefined;
+  const first = useFirstSend(id);
+  const draftBack = useDraftBack(id, inst);
   const [tab0, setTab] = useTab(id, chat);
   // 容器里的会话只有终端（文件、Git 看的是这台电脑上的目录，对话界面拿不到容器里的记录）
   const tab = inst?.container ? 'term' : tab0;
@@ -368,6 +408,20 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
     body = <TermConnecting onRetry={reload} />;
   } else if (!allowed) {
     body = <PaneNotice title={t('term.locked_title')} body={t(`gate.${status.account.reason}`, { defaultValue: t('gate.other') })} />;
+  } else if (!inst.running && first) {
+    body = (
+      <PaneNotice title={t('chat.first_start_failed', { agent: t(`launch.${inst.launch}.title`) })}>
+        <FirstFailed
+          inst={inst}
+          starting={starting}
+          onRetry={async () => {
+            await start();
+            retryFirst(id);
+          }}
+          onBack={draftBack}
+        />
+      </PaneNotice>
+    );
   } else if (!inst.running) {
     body = (
       <PaneNotice title={t('term.stopped_title')} body={t('term.stopped_body')}>
@@ -396,6 +450,8 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
       </>
     );
   }
+  // 上面的标签已经写着名字时不再重复；最大化、全屏盖住了标签时照常显示
+  const showName = named || max || full;
   return (
     <section
       ref={wrap}
@@ -409,9 +465,9 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
     >
       <header className="term-bar ws-pane-bar" onDoubleClick={(e) => !e.target.closest('button, a, input') && !full && toggleMax()}>
         <span className="term-title">
-          {lead ?? <span className={`dot ${running ? 'on' : ''}`} />}
-          <span className="ellipsis term-name" title={inst ? sessionTitle(inst) : id}>{inst ? sessionTitle(inst) : id}</span>
-          {customName(inst) && <span className="ellipsis term-mine">{customName(inst)}</span>}
+          {showName && (lead ?? <span className={`dot ${running ? 'on' : ''}`} />)}
+          {showName && <span className="ellipsis term-name" title={inst ? sessionTitle(inst) : id}>{inst ? sessionTitle(inst) : id}</span>}
+          {showName && customName(inst) && <span className="ellipsis term-mine">{customName(inst)}</span>}
           {sub}
           {running && <LinkBadge id={id} />}
         </span>
@@ -466,7 +522,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
         {/* 对话一直挂着（切到别的标签时只是隐藏）：切回来时内容和滚动位置都还在 */}
         {running && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} offline={offline} onTab={setTab} />
+            <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} offline={offline} onTab={setTab} onDraftBack={draftBack} />
           </div>
         )}
       </div>
@@ -490,6 +546,7 @@ export default function TerminalView({ id }) {
   const [loaded, setLoaded] = useState(false);
   const link = { src: termSrc(id) };
   const [loadedInst, loadError, reload] = useLoad(() => api.get(`/instances/${id}`), [id]);
+  useSeenPing(id, hasChat(loadedInst));
   // 连不上电脑（重连中、网络断了）时轮询会失败：沿用上一次的终端信息，不把终端换成错误页（那样会关掉终端、要点“返回”）
   const last = useRef(null);
   if (loadedInst) last.current = { id, inst: loadedInst };
@@ -497,6 +554,8 @@ export default function TerminalView({ id }) {
   const inst = loadedInst ?? (transient && last.current?.id === id ? last.current.inst : null);
   const error = transient ? null : loadError;
   const chat = inst ? hasChat(inst) : undefined;
+  const first = useFirstSend(id);
+  const draftBack = useDraftBack(id, inst);
   const [tab0, setTab] = useTab(id, chat);
   const tab = inst?.container ? 'term' : tab0;
   const allowed = status.account.allowed;
@@ -585,6 +644,22 @@ export default function TerminalView({ id }) {
         <Card title={t('term.locked_title')}>
           <p className="muted">{t(`gate.${status.account.reason}`, { defaultValue: t('gate.other') })}</p>
           <Button onClick={() => navigate('/')}>{t('term.back')}</Button>
+        </Card>
+      </div>
+    );
+  } else if (inst && !running && first) {
+    body = (
+      <div className="term-empty">
+        <Card title={t('chat.first_start_failed', { agent: t(`launch.${inst.launch}.title`) })}>
+          <FirstFailed
+            inst={inst}
+            starting={starting}
+            onRetry={async () => {
+              await start();
+              retryFirst(id);
+            }}
+            onBack={draftBack}
+          />
         </Card>
       </div>
     );
@@ -698,7 +773,7 @@ export default function TerminalView({ id }) {
         )}
         {live && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} offline={offline} onTab={setTab} />
+            <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} offline={offline} onTab={setTab} onDraftBack={draftBack} />
           </div>
         )}
       </div>

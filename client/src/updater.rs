@@ -816,7 +816,7 @@ fn launchd_keeps_alive() -> bool {
 pub fn restart_now() -> ! {
     if supervised() {
         tracing::info!("交给系统服务重新启动新版本");
-        std::process::exit(RESTART_EXIT_CODE);
+        crate::util::exit_now(RESTART_EXIT_CODE);
     }
     match exe_path() {
         Some(exe) => {
@@ -844,7 +844,7 @@ pub fn restart_now() -> ! {
         }
         None => tracing::error!("找不到程序路径，请手动启动看看"),
     }
-    std::process::exit(0);
+    crate::util::exit_now(0);
 }
 
 #[cfg(test)]

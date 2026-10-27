@@ -2,6 +2,7 @@
 // Windows 按官方四方格画）。都打包在客户端里，不从网上加载。
 // 电脑标识：每台电脑一种颜色（按电脑列表的顺序自动分配）+ 系统图标，会话页侧栏、会话顶栏、开始页、顶栏的电脑切换都用同一个。
 import { Command, SquareTerminal } from 'lucide-react';
+import { useId } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { deviceName, osLabel, useDevices } from './devices.jsx';
@@ -19,8 +20,17 @@ const OS = {
 };
 
 /** 会话类型的图标：Claude Code、Codex、OpenCode、DSH 用官方图标，普通终端和自定义命令用通用图标。 */
-export function LaunchIcon({ launch, size = 16, className = '' }) {
-  const svg = BRAND[launch];
+// Codex 标志的单色版（没有白色底板，颜色跟着文字）：Codex 的对话页用，见 docs/UI_REDESIGN_2026-10.md §3
+const CODEX_MONO = BRAND.codex.replace(/^<path[^>]*fill="#fff"><\/path>/, '').replace(/fill="url\(#ll-codex-grad\)"/, 'fill="currentColor"').replace(/<defs>.*<\/defs>$/, '');
+
+/**
+ * `mono`：单色（目前只有 Codex 有单色版）。渐变的 id 每个图标各用各的：同一个 id 时，定义它的那个图标被隐藏
+ * （窄屏上收起的行、display: none 的标签）后，别的图标都找不到渐变，Codex 就成了一块白方块。
+ */
+export function LaunchIcon({ launch, size = 16, className = '', mono = false }) {
+  const uid = useId().replace(/[^a-zA-Z0-9_-]/g, '');
+  const raw = mono && launch === 'codex' ? CODEX_MONO : BRAND[launch];
+  const svg = raw?.replaceAll('ll-codex-grad', `ll-codex-grad-${uid}`);
   if (svg) return <svg className={`brand-icon ${className}`} width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" dangerouslySetInnerHTML={{ __html: svg }} />;
   const Icon = launch === 'custom' ? Command : SquareTerminal;
   return <Icon className={className} size={size} aria-hidden="true" />;
