@@ -6,6 +6,7 @@
 //! - **收**：每台电脑都连长连接，飞书把每个回调随机给其中一台（集群模式）。会话在本机就直接处理；
 //!   在别的电脑上就先回一个 toast，再经 WebRTC 用设备签名转给那台（`POST /api/notify/action`），由它处理并更新卡片；
 //! - **绑定**：设置页显示 6 位绑定码 = HMAC(App Secret, 时间窗) 的前 6 位，私聊机器人发这个码。收到的电脑自己就能校验，不用存。
+//! - **只通知的渠道**（同步项 `notify/hooks`，`push.rs`）：企业微信、钉钉、Server酱、PushPlus、Bark、ntfy，和飞书同时发同样的事，只带“打开”的链接。
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -23,6 +24,7 @@ use crate::error::LocalError;
 use crate::feishu::card::{self, Act, Attn, Info};
 use crate::feishu::{self, ws, Api};
 use crate::gateway::App;
+use crate::push::{self, Hook, Msg};
 use crate::rtc::outbound::PeerCheck;
 use crate::settings_sync;
 
@@ -146,6 +148,16 @@ pub fn save_feishu(app: &App, f: Option<&Feishu>) -> Result<(), LocalError> {
 
 pub fn save_rules(app: &App, r: &Rules) -> Result<(), LocalError> {
     save(app, "rules", Some(serde_json::to_value(r).unwrap_or_default()))
+}
+
+/// 只通知的渠道（同步项 `notify/hooks`）；格式不对的跳过
+pub fn load_hooks(store: &crate::store::Store) -> Vec<Hook> {
+    let v = settings_sync::values(store, COLLECTION).ok().and_then(|mut m| m.remove("hooks"));
+    v.and_then(|v| v.as_array().cloned()).unwrap_or_default().into_iter().filter_map(|h| serde_json::from_value::<Hook>(h).ok()).filter(|h| h.validate().is_ok()).collect()
+}
+
+pub fn save_hooks(app: &App, hooks: &[Hook]) -> Result<(), LocalError> {
+    save(app, "hooks", (!hooks.is_empty()).then(|| serde_json::to_value(hooks).unwrap_or_default()))
 }
 
 /// 绑定码：HMAC-SHA256(App Secret, 应用 + 10 分钟时间窗) 取 6 位数字
@@ -295,6 +307,20 @@ struct Held {
     at: i64,
 }
 
+/// 一个只通知渠道在这台电脑上的情况
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct HookStatus {
+    pub sent_at: Option<i64>,
+    /// 最近一次失败：`{msg, at}`，成功一次就清掉
+    pub error: Option<Value>,
+}
+
+/// 这一轮发到哪：飞书（绑定好了才有）+ 只通知的渠道
+struct Out {
+    feishu: Option<(Arc<Api>, String)>,
+    hooks: Vec<Hook>,
+}
+
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct Status {
     pub connected: bool,
@@ -320,6 +346,7 @@ pub struct Notifier {
     /// 凭证错了：不再重试刷屏，等配置变了再说
     auth_failed: AtomicBool,
     http: std::sync::OnceLock<reqwest::Client>,
+    hooks: Arc<Mutex<HashMap<String, HookStatus>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -353,6 +380,10 @@ impl Notifier {
 
     pub fn status(&self) -> Status {
         lock(&self.status).clone()
+    }
+
+    pub fn hook_status(&self, id: &str) -> HookStatus {
+        lock(&self.hooks).get(id).cloned().unwrap_or_default()
     }
 
     fn set_error(&self, code: i64, msg: &str) {
@@ -401,11 +432,12 @@ impl Notifier {
             if tick.is_multiple_of(3) {
                 self.keep_connected(&app, f.as_ref());
             }
-            let Some(f) = f else { continue };
-            if f.open_id.is_none() || self.auth_failed.load(Ordering::SeqCst) {
+            let feishu = f.filter(|f| f.open_id.is_some() && !self.auth_failed.load(Ordering::SeqCst)).map(|f| (self.api(&f), f.open_id.clone().unwrap_or_default()));
+            let out = Out { feishu, hooks: load_hooks(&app.store) };
+            if out.feishu.is_none() && out.hooks.is_empty() {
                 continue;
             }
-            self.check(&app, &f).await;
+            self.check(&app, &out).await;
         }
         if let Some((_, h)) = lock(&self.conn).take() {
             h.abort();
@@ -478,11 +510,9 @@ impl Notifier {
         Some(Owned { en, agent: agent.into(), title, project, device, url: page_url(app, &format!("s/{id}")), content: rules.content, actions: rules.actions })
     }
 
-    async fn check(&self, app: &App, f: &Feishu) {
+    async fn check(&self, app: &App, out: &Out) {
         let rules = load_rules(&app.store);
         let now = crate::util::system_ms();
-        let api = self.api(f);
-        let open_id = f.open_id.clone().unwrap_or_default();
         let own = app.account.session().map(|s| s.device_id).unwrap_or_default();
         let quiet = quiet_now(&rules);
         let ids = app.chat.ids();
@@ -496,14 +526,14 @@ impl Notifier {
             let busy = live.as_ref().is_some_and(|s| s.busy);
             if let Some(s) = live.as_ref().filter(|_| !busy) {
                 if s.key != key {
-                    self.close(&api, s, &close_text(&brief, s.info.en)).await;
+                    self.close(out, s, &close_text(&brief, s.info.en)).await;
                 }
             }
             if let Some(k) = key.as_ref().filter(|_| !busy) {
                 let fresh = live.as_ref().is_none_or(|s| s.key.as_ref() != Some(k));
                 if fresh && !quiet && attn_due(&brief, now, muted) {
                     if let Some(info) = self.info(app, id, &brief, &rules) {
-                        self.send_attn(&api, &open_id, &own, id, k, &brief, info).await;
+                        self.send_attn(out, &own, id, k, &brief, info).await;
                     }
                 }
             }
@@ -527,30 +557,30 @@ impl Notifier {
                 let n = nonce();
                 let base = Act { dev: own.clone(), inst: id.clone(), n: n.clone(), ..Default::default() };
                 let c = card::ended(&info.info(), failed, text, end - started, &base);
-                let msg = self.send(&api, &open_id, &c).await;
+                let m = push::ended(&info.info(), failed, text, end - started);
+                let msg = self.send(out, &c, &m).await;
                 self.remember(Sent { msg, inst: id.clone(), key: None, nonce: n, busy: false, info });
             }
         }
         if !quiet && rules.stall_min > 0 {
             for id in &ids {
-                self.check_stall(app, &api, &open_id, &own, id, &rules, now).await;
+                self.check_stall(app, out, &own, id, &rules, now).await;
             }
         }
         // 会话没了：清掉记录
         lock(&self.seen).retain(|k, _| ids.contains(k));
-        self.flush_held(app, &api, &open_id, &rules, quiet, now).await;
+        self.flush_held(app, out, &rules, quiet, now).await;
         // 合并发的那一条
         let dropped = self.dropped.load(Ordering::SeqCst);
         if dropped > 0 && self.budget() {
             self.dropped.store(0, Ordering::SeqCst);
-            let c = card::digest(rules.lang.starts_with("en"), dropped, &page_url(app, "tasks"));
-            self.send(&api, &open_id, &c).await;
+            let (en, url) = (rules.lang.starts_with("en"), page_url(app, "tasks"));
+            self.send(out, &card::digest(en, dropped, &url), &push::digest(en, dropped, &url)).await;
         }
     }
 
     /// 卡住提醒：正在干活、但 `stall_min` 分钟没有新进展（额度用完在等重置的不算）。同一次停顿只提醒一次
-    #[allow(clippy::too_many_arguments)]
-    async fn check_stall(&self, app: &App, api: &Api, open_id: &str, own: &str, id: &str, rules: &Rules, now: i64) {
+    async fn check_stall(&self, app: &App, out: &Out, own: &str, id: &str, rules: &Rules, now: i64) {
         let Some(brief) = app.chat.brief(id) else { return };
         if brief["board"] != "working" || !brief["limit"].is_null() || brief["watched"] == true {
             return;
@@ -575,12 +605,12 @@ impl Notifier {
         // `p` 带上这次停顿的开始时间：点“停止”时还是这次停顿才停
         let base = Act { dev: own.into(), inst: id.into(), p: active.to_string(), n: n.clone(), ..Default::default() };
         let c = card::stalled(&info.info(), &doing, now - active, &base);
-        let msg = self.send(api, open_id, &c).await;
+        let msg = self.send(out, &c, &push::stalled(&info.info(), &doing, now - active)).await;
         self.remember(Sent { msg, inst: id.into(), key: None, nonce: n, busy: false, info });
     }
 
     /// 攒着的一轮合成一张卡片发：勿扰时段一结束就发；合并发的到时间了才发
-    async fn flush_held(&self, app: &App, api: &Api, open_id: &str, rules: &Rules, quiet: bool, now: i64) {
+    async fn flush_held(&self, app: &App, out: &Out, rules: &Rules, quiet: bool, now: i64) {
         let lines = {
             let mut held = lock(&self.held);
             let due = !quiet && !held.is_empty() && (held.iter().any(|h| h.quiet) || now - held[0].at >= i64::from(rules.done_batch) * 60_000);
@@ -590,12 +620,12 @@ impl Notifier {
             let was_quiet = held.iter().any(|h| h.quiet);
             (std::mem::take(&mut *held).into_iter().map(|h| h.line).collect::<Vec<_>>(), was_quiet)
         };
-        let c = card::summary(rules.lang.starts_with("en"), lines.1, &lines.0, rules.content, &page_url(app, "tasks"));
-        self.send(api, open_id, &c).await;
+        let (en, url) = (rules.lang.starts_with("en"), page_url(app, "tasks"));
+        let c = card::summary(en, lines.1, &lines.0, rules.content, &url);
+        self.send(out, &c, &push::summary(en, lines.1, &lines.0, rules.content, &url)).await;
     }
 
-    #[allow(clippy::too_many_arguments)]
-    async fn send_attn(&self, api: &Api, open_id: &str, own: &str, id: &str, key: &str, brief: &Value, info: Owned) {
+    async fn send_attn(&self, out: &Out, own: &str, id: &str, key: &str, brief: &Value, info: Owned) {
         let a = &brief["attn"];
         let options: Vec<String> = a["options"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         let limit_wait = options.iter().position(|o| o.starts_with(crate::chat::screen::LIMIT_AUTO));
@@ -604,7 +634,7 @@ impl Notifier {
         let n = nonce();
         let base = Act { dev: own.into(), inst: id.into(), p: key.into(), n: n.clone(), ..Default::default() };
         let c = card::attn(&info.info(), &at, &base);
-        let msg = self.send(api, open_id, &c).await;
+        let msg = self.send(out, &c, &push::attn(&info.info(), &at)).await;
         self.remember(Sent { msg, inst: id.into(), key: Some(key.into()), nonce: n, busy: false, info });
     }
 
@@ -625,13 +655,17 @@ impl Notifier {
         g.len() < PER_MINUTE
     }
 
-    /// 发一张卡片；超出每分钟上限时不发、记一笔（之后合并成一条）。返回消息 id
-    async fn send(&self, api: &Api, open_id: &str, c: &Value) -> Option<String> {
+    /// 发一条：飞书发卡片，只通知的渠道各发一条消息（后台发，不等）。超出每分钟上限时不发、记一笔（之后合并成一条）。返回飞书的消息 id
+    async fn send(&self, out: &Out, c: &Value, m: &Msg) -> Option<String> {
         if !self.budget() {
             self.dropped.fetch_add(1, Ordering::SeqCst);
             return None;
         }
         lock(&self.sent).push_back(Instant::now());
+        for h in &out.hooks {
+            self.push(h.clone(), m.clone());
+        }
+        let (api, open_id) = out.feishu.as_ref()?;
         // 发给同一个人每秒最多 5 条
         tokio::time::sleep(Duration::from_millis(220)).await;
         match api.send_card(open_id, c).await {
@@ -648,9 +682,31 @@ impl Notifier {
         }
     }
 
-    /// 把一张“等你处理”的卡片改成灰色，写明结果
-    async fn close(&self, api: &Api, s: &Sent, result: &str) {
+    /// 发到一个只通知的渠道，记下成败
+    fn push(&self, h: Hook, m: Msg) {
+        let http = self.http();
+        let st = self.hooks.clone();
+        tokio::spawn(async move {
+            let r = push::send(&http, &h, &m).await;
+            let mut g = lock(&st);
+            let s = g.entry(h.id.clone()).or_default();
+            match r {
+                Ok(()) => {
+                    s.sent_at = Some(crate::util::system_ms());
+                    s.error = None;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, kind = ?h.kind, "通知渠道");
+                    s.error = Some(json!({ "msg": e.to_string(), "at": crate::util::system_ms() }));
+                }
+            }
+        });
+    }
+
+    /// 把一张“等你处理”的卡片改成灰色，写明结果（只通知的渠道发出去就改不了了）
+    async fn close(&self, out: &Out, s: &Sent, result: &str) {
         lock(&self.cards).retain(|c| c.nonce != s.nonce);
+        let Some((api, _)) = out.feishu.as_ref() else { return };
         if let Some(msg) = &s.msg {
             if let Err(e) = api.patch_card(msg, &card::resolved(&s.info.info(), result)).await {
                 tracing::debug!(error = %e, "飞书：卡片没改成已处理");
@@ -860,6 +916,26 @@ impl Notifier {
                 None
             }
             _ => None,
+        }
+    }
+
+    /// 设置页里某个渠道的“发一条测试”：等它发完，错了直接告诉界面
+    pub async fn test_hook(&self, app: &App, id: &str) -> Result<(), LocalError> {
+        let h = load_hooks(&app.store).into_iter().find(|h| h.id == id).ok_or_else(|| LocalError::new("NOT_FOUND"))?;
+        let en = load_rules(&app.store).lang.starts_with("en");
+        let r = push::send(&self.http(), &h, &push::test(en, &page_url(app, "tasks"))).await;
+        let mut g = lock(&self.hooks);
+        let s = g.entry(h.id.clone()).or_default();
+        match r {
+            Ok(()) => {
+                s.sent_at = Some(crate::util::system_ms());
+                s.error = None;
+                Ok(())
+            }
+            Err(e) => {
+                s.error = Some(json!({ "msg": e.to_string(), "at": crate::util::system_ms() }));
+                Err(LocalError::new("NOTIFY_HOOK").with("msg", e.to_string()))
+            }
         }
     }
 

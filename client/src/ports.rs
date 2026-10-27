@@ -146,8 +146,17 @@ fn recognize(name: &str, cmd: &str, port: u16) -> Option<(&'static str, &'static
     let has = |w: &str| words.iter().any(|x| *x == w || x.trim_end_matches(".exe") == w || x.trim_end_matches(".js") == w || x.trim_end_matches(".mjs") == w);
     let found = if name == "openclaw" || has("openclaw") || cmd.contains("openclaw") && (cmd.contains("gateway") || port == 18789) {
         ("openclaw", "web")
+    } else if cmd.contains("hermes-webui") || cmd.contains("hermes_webui") {
+        ("hermes-webui", "web")
+    } else if cmd.contains("hermes-workspace") {
+        ("hermes-workspace", "web")
+    } else if cmd.contains("hermes-web-ui") || cmd.contains("hermes-studio") {
+        ("hermes-studio", "web")
     } else if (name == "hermes" || has("hermes")) && (cmd.contains("dashboard") || port == 9119) {
         ("hermes", "web")
+    } else if (name == "hermes" || has("hermes")) && has("gateway") {
+        // 网关开了 API_SERVER_ENABLED 时的接口（默认 8642），给 Hermes Workspace 这类界面用
+        ("hermes-api", "api")
     } else if (name == "qwen" || has("qwen")) && has("serve") {
         ("qwen", "web")
     } else if name == "ollama" || has("ollama") {
@@ -339,6 +348,10 @@ mod tests {
         assert_eq!(recognize("openclaw", "openclaw gateway", 18789), Some(("openclaw", "web")));
         assert_eq!(recognize("python3", "/home/a/.local/bin/hermes dashboard --no-open", 9119), Some(("hermes", "web")));
         assert_eq!(recognize("python3", "/home/a/.local/bin/hermes chat", 9120), None);
+        assert_eq!(recognize("python3", "/home/a/.local/bin/hermes gateway run", 8642), Some(("hermes-api", "api")));
+        assert_eq!(recognize("python3", "python /opt/hermes-webui/server.py", 8787), Some(("hermes-webui", "web")));
+        assert_eq!(recognize("node", "node /srv/hermes-workspace/server-entry.js", 3000), Some(("hermes-workspace", "web")));
+        assert_eq!(recognize("node", "node /usr/lib/node_modules/hermes-web-ui/dist/server.js", 8648), Some(("hermes-studio", "web")));
         assert_eq!(recognize("node", "node /p/node_modules/.bin/vite --host", 5173), Some(("vite", "web")));
         assert_eq!(recognize("node", "node /p/node_modules/next/dist/bin/next dev", 3000), Some(("next", "web")));
         assert_eq!(recognize("ollama", "/usr/local/bin/ollama serve", 11434), Some(("ollama", "api")));

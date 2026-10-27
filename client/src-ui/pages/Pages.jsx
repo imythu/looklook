@@ -136,8 +136,8 @@ function ShareDialog({ page, onClose }) {
 }
 
 // 认得的程序（同客户端 ports.rs 的 recognize）
-const APP_NAMES = { openclaw: 'OpenClaw', hermes: 'Hermes', qwen: 'Qwen Code', ollama: 'Ollama', jupyter: 'Jupyter', vite: 'Vite', next: 'Next.js', 'code-server': 'code-server', comfyui: 'ComfyUI', 'open-webui': 'Open WebUI', gradio: 'Gradio' };
-const APP_HINTS = new Set(['openclaw', 'hermes', 'qwen', 'ollama']);
+const APP_NAMES = { openclaw: 'OpenClaw', hermes: 'Hermes', 'hermes-api': 'Hermes API', 'hermes-webui': 'Hermes WebUI', 'hermes-workspace': 'Hermes Workspace', 'hermes-studio': 'Hermes Studio', qwen: 'Qwen Code', ollama: 'Ollama', jupyter: 'Jupyter', vite: 'Vite', next: 'Next.js', 'code-server': 'code-server', comfyui: 'ComfyUI', 'open-webui': 'Open WebUI', gradio: 'Gradio' };
+const APP_HINTS = new Set(['openclaw', 'hermes', 'hermes-api', 'hermes-webui', 'hermes-workspace', 'hermes-studio', 'qwen', 'ollama']);
 
 const baseName = (p) => (p ? p.split(/[\\/]/).filter(Boolean).pop() : '');
 

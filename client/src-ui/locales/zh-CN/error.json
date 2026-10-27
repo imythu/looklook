@@ -246,6 +246,7 @@
   "SYNC_PROTOCOL": "两台电脑的看看版本不兼容，先都更新到最新版。",
   "NOTIFY_FEISHU": "飞书返回错误 {{code}}：{{msg}}",
   "NOTIFY_NOT_CONFIGURED": "还没有设置飞书通知。",
+  "NOTIFY_HOOK": "通知渠道返回错误：{{msg}}",
   "NOTIFY_NOT_BOUND": "还没有绑定飞书账号。",
   "NOTIFY_SIGNATURE": "转来的飞书操作签名不对。",
   "NOTIFY_PROTOCOL": "电脑之间转发飞书操作的格式不对，两台电脑的看看版本可能不一样。",

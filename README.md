@@ -48,17 +48,23 @@ Then open your personal address (shown after you sign in) on your phone. On Wind
 - **Images and files for your agent.** Paste or upload screenshots and they reach Codex and Claude Code as images. Upload into the terminal's folder; `rz`/`sz` and `trzsz` work too.
 - **Built for headless boxes.** It runs as a systemd user service or launchd agent, updates itself when idle, and has a System page for CPU, memory, disk and network.
 - **Phone-friendly terminal.** A key bar for Esc, Tab, arrows and Ctrl combos, plus OSC 52 copy to the browser clipboard.
+- **Chat view and task board.** Claude Code and Codex replies become cards with buttons to approve and answer; every agent session on every machine is grouped into "needs you / working / just finished".
+- **Notifications where you are.** Feishu / Lark (respond right on the card), WeCom, DingTalk, WeChat via ServerChan or PushPlus, Bark and ntfy, with quiet hours, batching and stuck reminders.
+- **Safety net.** Dangerous commands pause until you confirm, and every turn saves a checkpoint you can roll back to.
+- **OpenClaw and Hermes, safely remote.** Recognizes OpenClaw, the Hermes dashboard and Hermes web UIs listening on your machine and puts them under an address only you can open, without opening any port.
 
 ## How it compares
 
-|  | Looklook | SSH + VPN + tmux | Claude Code Remote Control | Self-hosted web UI |
-| --- | --- | --- | --- | --- |
-| Install on the phone | Nothing, any browser | SSH app + VPN app | Claude app | Nothing |
-| Agents | Any CLI: Claude Code, Codex, Gemini CLI, OpenCode, Kimi… | Any CLI | Claude Code only | Usually a fixed list |
-| Network setup | None, outbound tunnel | VPN on every device | None | Expose a port or run a tunnel yourself |
-| Sessions survive a closed tab | Yes, tmux bundled | If you set up tmux | Yes | Depends |
-| Several machines on one page | Up to 7 | One at a time | — | One per install |
-| Phone keyboard for Esc / Ctrl / arrows | Yes | Depends on the app | Not a terminal | Depends |
+|  | Looklook | Claude Code Remote Control | Codex remote | Happy | SSH + VPN + tmux |
+| --- | --- | --- | --- | --- | --- |
+| Install on the phone | Nothing, any browser | Claude app | ChatGPT app | Happy app | SSH app + VPN app |
+| Agents | Any CLI: Claude Code, Codex, Gemini CLI, OpenCode, Kimi… | Claude Code only | Codex only | Claude Code, Codex | Any CLI |
+| Sign-ins that work | Whatever your CLI uses: subscription, API key, Bedrock, Vertex, third-party plans | claude.ai subscription only | ChatGPT account | Whatever your CLI uses | Whatever your CLI uses |
+| What you see | Full terminal + chat view | Chat | Chat | Chat | Full terminal |
+| Network setup | None, outbound tunnel | None | None | None | VPN on every device |
+| Sessions survive a closed tab | Yes, tmux bundled | Yes | Yes | Yes | If you set up tmux |
+| Several machines on one page | Up to 7 | — | — | Yes | One at a time |
+| Phone keyboard for Esc / Ctrl / arrows | Yes | Not a terminal | Not a terminal | Not a terminal | Depends on the app |
 
 ## How it works
 
@@ -75,8 +81,8 @@ phone / any browser ──HTTPS──▶ Looklook relay ──Noise tunnel──
 
 ## Security, plainly
 
-- **Encrypted on every hop:** HTTPS from the browser to the relay, then Noise from the relay to your machine.
-- **Relays decrypt in order to forward.** Like any HTTPS reverse proxy, a relay can technically see the traffic it forwards. Relays don't store or log terminal content. **End-to-end encryption**, where the browser and this app agree on keys and relays see only ciphertext, is [on the roadmap](https://looklook.dev/roadmap).
+- **Console and terminals are end-to-end encrypted:** when you open them remotely, the browser and your machine set up an encrypted WebRTC channel ([`src/rtc/`](client/src/rtc)), directly when possible and through a relay otherwise; relays only see ciphertext. Both sides' key fingerprints are vouched for by platform-issued credentials and the machine's device key.
+- **Local pages are the exception for now:** dev servers you put under your address still go through the HTTPS + Noise tunnel shown above, so the relay decrypts HTTPS to forward them (it doesn't store or log content). End-to-end encryption for them is [on the roadmap](https://looklook.dev/roadmap).
 - **Your data stays local.** Sessions, files and settings live on your machine; nothing is synced to the cloud.
 - **Releases are built here.** The `client-release` workflow in this repo builds every package and publishes it with `SHA256SUMS`. The installer and the in-app updater verify the checksum. Signed update manifests and code-signed or notarized installers are next on the roadmap. Today, Windows SmartScreen and macOS Gatekeeper will warn on first run.
 
@@ -98,6 +104,8 @@ This repository is the **desktop app / client** (`client/`) and the **client ↔
 
 **Does it work with my Claude / ChatGPT subscription?** Yes. Looklook doesn't touch your agent's login. Whatever works in your terminal (subscription, API key, Bedrock, Vertex, a custom gateway) works through Looklook.
 
+**Will my Claude or ChatGPT account get flagged for using a third-party tool?** Looklook just starts the official `claude` and `codex` CLIs, the same as typing them in a terminal; they handle sign-in and store their own tokens. Looklook never reads, stores or forwards your subscription tokens and doesn't impersonate an official client. Extra Claude Code accounts are separate config directories started with the official `CLAUDE_CONFIG_DIR` ([`src/claude_profiles.rs`](client/src/claude_profiles.rs)).
+
 **Do I need a public IP or to open a port?** No. The app connects out to a relay, so it works behind NAT, CGNAT and home routers.
 
 **What happens if my phone's connection drops?** Nothing on your machine. The session lives in tmux; reopen the page and you're back where you were.
@@ -106,7 +114,7 @@ This repository is the **desktop app / client** (`client/`) and the **client ↔
 
 ## Roadmap
 
-Next up: end-to-end encryption, signed updates, an agent board across all your machines (running / waiting / done), notifications (Web Push, Slack, Telegram, ntfy…), start tasks and review diffs from your phone, shareable previews, and more relay regions. See the [full roadmap](https://looklook.dev/roadmap). Feature requests and 👍 votes in [Issues](https://github.com/imythu/looklook/issues) shape the order.
+Next up: end-to-end encryption for local pages, signed updates, more notification channels (Web Push, Slack, Telegram, email…), start tasks and review diffs from your phone, shareable previews, and more relay regions. See the [full roadmap](https://looklook.dev/roadmap). Feature requests and 👍 votes in [Issues](https://github.com/imythu/looklook/issues) shape the order.
 
 ## Support the project
 

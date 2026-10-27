@@ -1,6 +1,6 @@
 //! 通知设置（docs/TASK_BOARD.md §6.1、§6.5）：设置页“通知”分区的接口，以及电脑之间转发飞书卡片操作。
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
 use serde::Deserialize;
@@ -10,6 +10,7 @@ use super::api::require_allowed;
 use super::{Access, App};
 use crate::error::LocalError;
 use crate::notify::{self, Feishu, Rules};
+use crate::push::{self, Hook, Kind};
 
 type R<T> = Result<T, LocalError>;
 
@@ -27,6 +28,15 @@ fn view(app: &App) -> Value {
         })),
         "rules": notify::load_rules(&app.store),
         "status": st,
+        // 地址和 key 只给遮住的样子
+        "hooks": notify::load_hooks(&app.store).iter().map(|h| json!({
+            "id": h.id,
+            "kind": h.kind,
+            "name": h.name,
+            "target": h.masked(),
+            "has_secret": !h.secret.is_empty(),
+            "status": app.notify.hook_status(&h.id),
+        })).collect::<Vec<_>>(),
         // 没绑定时才显示绑定码（绑定后换人也可以再发一次码）
         "pair": f.as_ref().map(|f| json!({ "code": notify::pair_code(f, now), "expires_at": notify::pair_expires(now) })),
         "sync_enabled": crate::settings_sync::enabled(&app.store),
@@ -107,6 +117,62 @@ pub async fn put_rules(State(app): State<App>, Json(mut r): Json<Rules>) -> R<Js
     r.stall_min = r.stall_min.min(240);
     notify::save_rules(&app, &r)?;
     Ok(Json(view(&app)))
+}
+
+#[derive(Deserialize)]
+pub struct HookReq {
+    /// 改已有的一项时带上；不带 = 新加
+    #[serde(default)]
+    id: Option<String>,
+    kind: Kind,
+    /// 改的时候不传 = 不变
+    #[serde(default)]
+    target: Option<String>,
+    #[serde(default)]
+    secret: Option<String>,
+    #[serde(default)]
+    name: String,
+}
+
+/// 加一个只通知的渠道，或者改名字、换地址
+pub async fn put_hook(State(app): State<App>, Json(req): Json<HookReq>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    let mut hooks = notify::load_hooks(&app.store);
+    let old = req.id.as_ref().and_then(|id| hooks.iter().find(|h| &h.id == id).cloned());
+    if req.id.is_some() && old.is_none() {
+        return Err(LocalError::new("NOT_FOUND"));
+    }
+    let trim = |s: Option<String>| s.map(|s| s.trim().to_string());
+    let same_kind = old.as_ref().is_some_and(|o| o.kind == req.kind);
+    let target = trim(req.target).filter(|s| !s.is_empty()).or_else(|| old.as_ref().filter(|_| same_kind).map(|o| o.target.clone())).unwrap_or_default();
+    let secret = match trim(req.secret) {
+        Some(s) => s,
+        None => old.as_ref().filter(|_| same_kind).map(|o| o.secret.clone()).unwrap_or_default(),
+    };
+    let id = old.as_ref().map(|o| o.id.clone()).unwrap_or_else(|| format!("h{:x}", rand::random::<u32>()));
+    let h = Hook { id, kind: req.kind, target, secret, name: req.name.trim().chars().take(40).collect() };
+    h.validate().map_err(|f| LocalError::invalid(f, "invalid"))?;
+    match hooks.iter().position(|x| x.id == h.id) {
+        Some(i) => hooks[i] = h,
+        None if hooks.len() >= push::MAX_HOOKS => return Err(LocalError::invalid("hooks", "max")),
+        None => hooks.push(h),
+    }
+    notify::save_hooks(&app, &hooks)?;
+    Ok(Json(view(&app)))
+}
+
+pub async fn delete_hook(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    let mut hooks = notify::load_hooks(&app.store);
+    hooks.retain(|h| h.id != id);
+    notify::save_hooks(&app, &hooks)?;
+    Ok(Json(view(&app)))
+}
+
+pub async fn test_hook(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    app.notify.test_hook(&app, &id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn test(State(app): State<App>) -> R<StatusCode> {

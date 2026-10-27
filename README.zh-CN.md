@@ -48,17 +48,23 @@ looklook login                                    # 用手机批准登录
 - **给 AI 发图片和文件。** 粘贴或上传截图，Codex 和 Claude Code 直接当图片收到；文件可以传到终端所在目录，`rz`/`sz` 和 `trzsz` 也能用。
 - **适合无显示器的服务器。** 以 systemd 用户服务或 launchd 运行，空闲时自动更新，自带系统页看 CPU、内存、磁盘和网络。
 - **手机上好用的终端。** 有 Esc、Tab、方向键和 Ctrl 组合键的按键栏，支持 OSC 52 复制到浏览器剪贴板。
+- **对话界面和任务看板。** Claude Code、Codex 的回复整理成卡片，点按钮批准、回答；所有电脑上的 AI 会话按“等你处理 / 正在干活 / 刚结束”分组。
+- **通知到你常用的地方。** 飞书（卡片上直接处理）、企业微信、钉钉、经 Server酱 / PushPlus 推到微信、Bark、ntfy；有勿扰时段、合并发和卡住提醒。
+- **安全网。** 危险命令先停下来等你确认，每一轮自动存检查点，改坏了能回去。
+- **安全地远程用 OpenClaw、Hermes。** 认出本机正在监听的 OpenClaw、Hermes 仪表盘和 Hermes 网页界面，一键放到只有你能打开的地址下，不用对外放行端口。
 
 ## 和其他方案比
 
-|  | 看看 | SSH + 组网 + tmux | Claude Code Remote Control | 自建 Web UI |
-| --- | --- | --- | --- | --- |
-| 手机要装什么 | 什么都不用，浏览器即可 | SSH 客户端 + 组网 App | Claude App | 什么都不用 |
-| 支持的 AI | 任何命令行：Claude Code、Codex、Gemini CLI、OpenCode、Kimi… | 任何命令行 | 只有 Claude Code | 通常是固定几种 |
-| 网络配置 | 不用，客户端主动连出 | 每台设备都要装组网 | 不用 | 自己开端口或搭内网穿透 |
-| 关网页后会话还在 | 在，内置 tmux | 自己配了 tmux 才在 | 在 | 看实现 |
-| 多台电脑一页看 | 最多 7 台 | 一次连一台 | — | 一套装一台 |
-| 手机上的 Esc / Ctrl / 方向键 | 有 | 看客户端 | 不是终端 | 看实现 |
+|  | 看看 | Claude Code Remote Control | Codex 远程 | Happy | SSH + 组网 + tmux |
+| --- | --- | --- | --- | --- | --- |
+| 手机要装什么 | 什么都不用，浏览器即可 | Claude App | ChatGPT App | Happy App | SSH 客户端 + 组网 App |
+| 支持的 AI | 任何命令行：Claude Code、Codex、Gemini CLI、OpenCode、Kimi… | 只有 Claude Code | 只有 Codex | Claude Code、Codex | 任何命令行 |
+| 能用的登录方式 | 命令行能用的都行：订阅、API Key、Bedrock、Vertex、国产 Coding Plan | 只支持 claude.ai 订阅 | ChatGPT 账号 | 命令行能用的都行 | 命令行能用的都行 |
+| 看到的是什么 | 完整终端 + 对话界面 | 对话 | 对话 | 对话 | 完整终端 |
+| 网络配置 | 不用，客户端主动连出 | 不用 | 不用 | 不用 | 每台设备都要装组网 |
+| 关网页后会话还在 | 在，内置 tmux | 在 | 在 | 在 | 自己配了 tmux 才在 |
+| 多台电脑一页看 | 最多 7 台 | — | — | 可以 | 一次连一台 |
+| 手机上的 Esc / Ctrl / 方向键 | 有 | 不是终端 | 不是终端 | 不是终端 | 看客户端 |
 
 ## 工作原理
 
@@ -75,8 +81,8 @@ looklook login                                    # 用手机批准登录
 
 ## 安全，说清楚
 
-- **每一段都加密：** 浏览器到中转是 HTTPS，中转到你的电脑是 Noise。
-- **中转要解开加密才能转发。** 和所有 HTTPS 反向代理一样，中转在技术上能看到它转发的流量；中转不保存、不记录终端内容。**端到端加密**（浏览器和本应用协商密钥，中转只看到密文）在[路线图](https://looklook.dev/roadmap)上。
+- **管理台和终端端到端加密：** 远程打开时，浏览器和你的电脑之间建一条 WebRTC 加密通道（[`src/rtc/`](client/src/rtc)），能直连就直连，不行再经中转转发，中转只看到密文。双方的密钥指纹由平台签发的凭证和电脑的设备密钥担保。
+- **本机网页暂时例外：** 放到专属地址下的开发网页目前走上图的 HTTPS + Noise 隧道，中转要解开 HTTPS 才能转发（不保存、不记录内容）；它的端到端加密在[路线图](https://looklook.dev/roadmap)上。
 - **数据留在本地。** 会话、文件和设置都在你的电脑上，不同步到云端。
 - **安装包在这个仓库里构建。** 本仓库的 `client-release` 工作流构建所有安装包并附带 `SHA256SUMS` 发布，安装脚本和应用内更新都会校验。签名的更新清单、代码签名和 macOS 公证在路线图上；目前首次运行时 Windows SmartScreen 和 macOS Gatekeeper 会有提示。
 
@@ -98,6 +104,8 @@ looklook login                                    # 用手机批准登录
 
 **能用我的 Claude / ChatGPT 订阅或国产 Coding Plan 吗？** 能。看看不碰 AI 助手的登录，终端里能用的（订阅、API Key、Bedrock、Vertex、自建网关）通过看看照样能用。
 
+**会不会被当成第三方工具封号？** 看看只是启动官方的 `claude`、`codex` 命令行，和你自己在终端里敲一样；登录和令牌都由它们自己管。看看不读取、不保存、不转发你的订阅令牌，也不模拟官方客户端。多个 Claude Code 账号是用官方的 `CLAUDE_CONFIG_DIR` 分开的配置目录（[`src/claude_profiles.rs`](client/src/claude_profiles.rs)）。
+
 **需要公网 IP 或开端口吗？** 不需要。客户端主动连到中转，NAT、运营商大内网、家用路由器后面都能用。
 
 **手机断网了会怎样？** 电脑上什么都不影响。会话在 tmux 里，重新打开页面就回到原处。
@@ -106,7 +114,7 @@ looklook login                                    # 用手机批准登录
 
 ## 路线图
 
-接下来：端到端加密、签名更新、跨电脑的 AI 任务看板（运行中 / 等待输入 / 已完成）、通知（Web Push、Slack、Telegram、ntfy…）、手机上发起任务和审阅 diff、可分享的预览、更多中转地区。详见[完整路线图](https://looklook.dev/roadmap)。在 [Issues](https://github.com/imythu/looklook/issues) 提需求或点 👍，会影响开发顺序。
+接下来：本机网页的端到端加密、签名更新、更多通知渠道（浏览器推送、邮件…）、手机上发起任务和审阅 diff、可分享的预览、更多中转地区。详见[完整路线图](https://looklook.dev/roadmap)。在 [Issues](https://github.com/imythu/looklook/issues) 提需求或点 👍，会影响开发顺序。
 
 ## 支持一下
 
