@@ -35,8 +35,7 @@ import { LaunchIcon } from "../shared/brands.jsx";
 import { errorText } from "../shared/i18n.js";
 import { Link } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
-import { ClaudeProfilePick } from "./ClaudeProfiles.jsx";
-import { ModelChoiceLine } from "./ModelProviders.jsx";
+import { ClaudeProfilePick, CodexProfilePick } from "./ClaudeProfiles.jsx";
 import RelayStatus from "../shared/RelayStatus.jsx";
 import {
   Button,
@@ -895,6 +894,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
   const [command, setCommand] = useState("");
   const [shell, setShell] = useState("");
   const [claudeProfile, setClaudeProfile] = useState(null);
+  const [codexProfile, setCodexProfile] = useState(null);
   const [name, setName] = useState("");
   const [workdir, setWorkdir] = useState("");
   const [autoStart, setAutoStart] = useState(false);
@@ -952,6 +952,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
       full_access: canFull && fullAccess,
       chat_ui: canChat && chatUi,
       claude_profile: !editing && launch === "claude" && claudeProfile ? claudeProfile : undefined,
+      codex_profile: !editing && launch === "codex" && codexProfile ? codexProfile : undefined,
     };
     const r = await run(() =>
       editing
@@ -1104,7 +1105,15 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
           data={shells}
           inherit={status.settings?.default_shell || null}
         />
-        <ModelChoiceLine client={client} device={dev} launch={launch} />
+        {!editing && launch === "codex" && (
+          <CodexProfilePick
+            client={client}
+            device={dev}
+            value={codexProfile}
+            onChange={setCodexProfile}
+            className="btn btn-secondary cprof-form-pick"
+          />
+        )}
         {!editing && launch === "claude" && (
           <ClaudeProfilePick
             client={client}

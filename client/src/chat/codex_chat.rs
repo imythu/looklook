@@ -136,6 +136,16 @@ fn model_options(list: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// 第三方接口的模型 → 模型菜单的选项：指定的模型放最前面当默认，服务商的其他模型放“服务商的其他模型”
+fn provider_model_options(chosen: Option<&str>, ids: &[String]) -> Vec<Value> {
+    let opt = |id: &str, main: bool| json!({ "value": id, "label": id, "section": if main { "main" } else { "provider" }, "model": id, "efforts": [], "default": main });
+    chosen
+        .map(|m| opt(m, true))
+        .into_iter()
+        .chain(ids.iter().filter(|id| Some(id.as_str()) != chosen && id.chars().all(|c| c.is_ascii_alphanumeric() || "._-/:".contains(c))).map(|id| opt(id, false)))
+        .collect()
+}
+
 /// app-server 的提问 → 界面认的 AskUserQuestion 格式
 fn questions_view(params: &Value) -> Value {
     let qs: Vec<Value> = params["questions"]
@@ -234,9 +244,18 @@ impl Chat {
         }
     }
 
-    /// 拿到能用的 app-server：没起过、退出了、第三方服务商的设置变了（且没有在跑的对话）就起一个新的。
+    /// `thread/start`、`thread/resume`、`thread/fork` 的参数：权限，加上这个会话的 Codex 配置选的服务商和模型
+    fn codex_thread_opts(&self, id: &str) -> Value {
+        let mut v = self.codex_policy(id);
+        let profile = crate::codex_profiles::for_instance(&self.store, id);
+        merge(&mut v, crate::codex_profiles::thread_params(&self.paths.home, &profile));
+        v
+    }
+
+    /// 拿到能用的 app-server：没起过、退出了、第三方接口的配置变了（且没有在跑的对话）就起一个新的。
+    /// 所有 Codex 配置都定义在这一个 app-server 上，每个会话用哪个由 [`Self::codex_thread_opts`] 选。
     async fn codex_server(&self) -> Result<Arc<AppServer>, LocalError> {
-        let env = crate::model::launch_env(&self.store, &self.paths.home, "codex");
+        let env = crate::codex_profiles::server_env(&self.store, &self.paths.home);
         let program = codex_app::program(self.instances.shell()).await;
         let signature = format!("{}|{}", program.display(), env.as_ref().map(|e| e.signature()).unwrap_or_default());
         let mut slot = self.codex.server.lock().await;
@@ -319,7 +338,7 @@ impl Chat {
         match thread {
             Some(t) => {
                 let mut params = json!({ "threadId": t, "cwd": row.workdir, "excludeTurns": true });
-                merge(&mut params, self.codex_policy(id));
+                merge(&mut params, self.codex_thread_opts(id));
                 let r = resume_thread(&server, &t, params).await.map_err(|e| match e.code.as_str() {
                     "CODEX_REQUEST_FAILED" => LocalError::new("CODEX_RESUME_FAILED").with("detail", e.params.get("detail").cloned().unwrap_or(Value::Null)),
                     _ => e,
@@ -379,7 +398,7 @@ impl Chat {
         let row = self.store.instance(&inst.id)?.ok_or_else(LocalError::not_found)?;
         self.codex_trust(server, &row.workdir).await;
         let mut params = json!({ "cwd": row.workdir });
-        merge(&mut params, self.codex_policy(&inst.id));
+        merge(&mut params, self.codex_thread_opts(&inst.id));
         let r = server.call("thread/start", params).await?;
         let tid = r["thread"]["id"].as_str().ok_or_else(|| LocalError::new("CODEX_REQUEST_FAILED"))?.to_string();
         self.codex_loaded(inst, &r, self.codex.generation.load(Ordering::SeqCst));
@@ -837,8 +856,20 @@ impl Chat {
     }
 
     pub(super) async fn codex_models(&self, id: &str) -> Result<Value, LocalError> {
+        use crate::codex_profiles as xp;
+        // 第三方接口：列服务商自己的模型（`model/list` 是 OpenAI 的目录，第三方一般不认这些名字）。
+        // 服务商列不出来时只列指定的模型；都没有时照常用目录（由接口自己对应 OpenAI 的模型名）
+        let profile = xp::for_instance(&self.store, id);
+        let third = profile.base_url.clone().filter(|_| xp::key_set(&self.paths.home, &profile.id));
+        let mut ours = vec![];
+        if let Some(base) = &third {
+            let key = std::fs::read_to_string(xp::key_path(&self.paths.home, &profile.id)).unwrap_or_default();
+            let ids = super::models::provider_models(&format!("{}/models", base.trim_end_matches('/')), key.trim()).await;
+            ours = provider_model_options(profile.model.as_deref(), &ids);
+        }
         let cached = lock(&self.codex.models).as_ref().filter(|(t, _)| t.elapsed() < MODELS_TTL).map(|(_, v)| v.clone());
         let options = match cached {
+            _ if !ours.is_empty() => json!(ours),
             Some(v) => v,
             None => {
                 let server = self.codex_server().await?;
@@ -850,7 +881,7 @@ impl Chat {
         };
         let inst = self.inst(id);
         let st = lock(&inst.st);
-        let provider = crate::model::launch_env(&self.store, &self.paths.home, "codex").and_then(|_| crate::model::choice(&self.store, crate::model::ModelAgent::Codex)).map(|c| json!({ "name": c.name }));
+        let provider = third.map(|_| json!({ "name": profile.name }));
         Ok(json!({ "options": options, "provider": provider, "model": st.model, "actual_model": st.actual_model, "effort": st.effort }))
     }
 
@@ -984,7 +1015,7 @@ impl Chat {
                     let server = self.codex_server().await?;
                     let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
                     let mut params = json!({ "threadId": r.id, "cwd": row.workdir });
-                    merge(&mut params, self.codex_policy(id));
+                    merge(&mut params, self.codex_thread_opts(id));
                     let res = server.call("thread/fork", params).await?;
                     self.codex_loaded(&self.inst(id), &res, self.codex.generation.load(Ordering::SeqCst));
                 } else {
@@ -1433,7 +1464,7 @@ impl Chat {
             }
             // 直接用这个新进程加载（不经 codex_attach：那里可能又起 app-server，会绕回这里）
             let mut params = json!({ "threadId": b.session_id, "cwd": row.workdir, "excludeTurns": true });
-            merge(&mut params, self.codex_policy(&row.id));
+            merge(&mut params, self.codex_thread_opts(&row.id));
             match resume_thread(&server, &b.session_id, params).await {
                 Ok(r) => self.codex_loaded(&self.inst(&row.id), &r, gen),
                 Err(e) => tracing::debug!(id = %row.id, error = ?e, "终端里的 Codex 会话没能重新加载"),
@@ -1656,6 +1687,16 @@ mod tests {
         assert_eq!(o[0]["value"], "gpt-6.1-sol");
         assert_eq!(o[0]["efforts"], json!(["low", "high"]));
         assert_eq!(o[1]["section"], "more");
+    }
+
+    #[test]
+    fn provider_models_to_options() {
+        let ids: Vec<String> = ["glm-4.6", "glm-4.5-air", "bad model"].map(String::from).into();
+        let o = provider_model_options(Some("glm-4.5-air"), &ids);
+        let v: Vec<(&str, &str)> = o.iter().map(|x| (x["value"].as_str().unwrap(), x["section"].as_str().unwrap())).collect();
+        assert_eq!(v, [("glm-4.5-air", "main"), ("glm-4.6", "provider")]);
+        assert_eq!(o[0]["default"], true);
+        assert!(provider_model_options(None, &[]).is_empty());
     }
 
     #[test]

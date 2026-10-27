@@ -402,9 +402,10 @@ fn cap(s: &str) -> String {
 
 static PROVIDER_CACHE: Mutex<Option<(String, Instant, Vec<String>)>> = Mutex::new(None);
 
-/// 服务商 `/v1/models` 里的模型 ID（缓存 10 分钟；取不到时为空，不报错）。
-pub async fn provider_models(base_url: &str, token: &str) -> Vec<String> {
-    let key = base_url.trim_end_matches('/').to_string();
+/// 服务商的模型列表里的模型 ID（缓存 10 分钟；取不到时为空，不报错）。`url` 是列表的完整地址：
+/// Anthropic 格式是 `{接口地址}/v1/models`，OpenAI 格式（Codex）是 `{接口地址}/models`；两种格式的返回都是 `data[].id`。
+pub async fn provider_models(url: &str, token: &str) -> Vec<String> {
+    let key = url.to_string();
     if let Some((k, at, list)) = PROVIDER_CACHE.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
         if *k == key && at.elapsed() < PROVIDER_TTL {
             return list.clone();
@@ -415,10 +416,10 @@ pub async fn provider_models(base_url: &str, token: &str) -> Vec<String> {
     list
 }
 
-async fn fetch_models(base: &str, token: &str) -> Option<Vec<String>> {
+async fn fetch_models(url: &str, token: &str) -> Option<Vec<String>> {
     let c = reqwest::Client::builder().timeout(Duration::from_secs(6)).redirect(reqwest::redirect::Policy::none()).build().ok()?;
     let r = c
-        .get(format!("{base}/v1/models?limit=1000"))
+        .get(url)
         .header("x-api-key", token)
         .bearer_auth(token)
         .header("anthropic-version", "2023-06-01")

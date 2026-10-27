@@ -13,8 +13,8 @@ import { api } from '../shared/api.js';
 import AccessCard from './Access.jsx';
 import DirectCard from './DirectConnect.jsx';
 import { AttachmentsCard } from '../shared/Attachments.jsx';
-import ClaudeProfilesCard from './ClaudeProfiles.jsx';
-import ModelProvidersCard from './ModelProviders.jsx';
+import ClaudeProfilesCard, { CodexProfilesCard } from './ClaudeProfiles.jsx';
+import UsageStatsCard from './UsageStats.jsx';
 import GuardCard from './Guard.jsx';
 import NotifySection from './Notify.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
@@ -24,7 +24,7 @@ import { DiagCard } from '../shared/Report.jsx';
 import RelayPicker, { RELAYS_ANCHOR } from '../shared/RelayPicker.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { shouldRemind, UpdateCheck } from '../shared/Update.jsx';
-import { Card, ErrorNote, Field, useLoad } from '../shared/ui.jsx';
+import { Card, ErrorNote, Field, Seg, useLoad } from '../shared/ui.jsx';
 import { SyncCard, SyncLabel } from '../shared/SettingsSync.jsx';
 
 // 开源仓库（客户端 AGPL-3.0-or-later）
@@ -48,17 +48,8 @@ function useTerminalFonts(enabled) {
   }, [enabled]);
 }
 
-export function Seg({ value, options, onChange, label }) {
-  return (
-    <div className="seg" role="group" aria-label={label}>
-      {options.map(([v, text]) => (
-        <button key={v} type="button" aria-pressed={value === v} onClick={() => onChange(v)}>
-          {text}
-        </button>
-      ))}
-    </div>
-  );
-}
+// 分段选择挪到了 shared/ui.jsx；别的页面还从这里引用
+export { Seg };
 
 /** 终端配色：每个选项是一小块终端的样子（栏、提示符、光标、几种 ANSI 颜色） */
 const SECTIONS = [
@@ -70,7 +61,7 @@ const SECTIONS = [
   ['about', Info],
 ];
 // 别处链接用的锚点（#model、#claude-accounts、#relays、#access）落到所在的分区
-const ALIAS = { model: 'ai', 'claude-accounts': 'ai', [RELAYS_ANCHOR]: 'network', access: 'network' };
+const ALIAS = { model: 'ai', 'claude-accounts': 'ai', 'codex-profiles': 'ai', usage: 'ai', [RELAYS_ANCHOR]: 'network', access: 'network' };
 
 function sectionOf(hash) {
   const h = hash.replace(/^#/, '');
@@ -229,7 +220,8 @@ export default function Settings() {
     ai: (
       <>
         <ClaudeProfilesCard />
-        <ModelProvidersCard />
+        <CodexProfilesCard />
+        <UsageStatsCard />
         <GuardCard />
       </>
     ),

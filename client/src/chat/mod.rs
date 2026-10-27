@@ -1862,11 +1862,13 @@ impl Chat {
         let mut provider = Value::Null;
         if let Some(base) = base.filter(|b| !b.contains("api.anthropic.com")) {
             let ours = ours.filter(|u| u.trim_end_matches('/') == base.trim_end_matches('/')).map(|_| &profile);
-            let token = ctx.env.get("ANTHROPIC_AUTH_TOKEN").or_else(|| ctx.env.get("ANTHROPIC_API_KEY")).cloned().or_else(|| {
+            // 没用到的那个变量启动时设成了空的（model.rs 的 claude_api_env / claude_api_key_env）
+            let var = |k: &str| ctx.env.get(k).filter(|v| !v.is_empty()).cloned();
+            let token = var("ANTHROPIC_AUTH_TOKEN").or_else(|| var("ANTHROPIC_API_KEY")).or_else(|| {
                 ours.and_then(|p| std::fs::read_to_string(crate::claude_profiles::key_path(&self.paths.home, &p.id)).ok()).map(|k| k.trim().to_string())
             });
             if let Some(token) = token.filter(|t| !t.is_empty()) {
-                let ids = models::provider_models(&base, &token).await;
+                let ids = models::provider_models(&format!("{}/v1/models?limit=1000", base.trim_end_matches('/')), &token).await;
                 options.extend(models::provider_options(&options, &ids));
             }
             provider = json!({ "name": ours.map(|p| p.name.clone()) });

@@ -434,3 +434,16 @@ export function useLoad(fn, deps = []) {
   }, [...deps, tick]);
   return [state.data, state.error, () => setTick((n) => n + 1), state.loading];
 }
+
+/** 分段选择（几个互斥的按钮） */
+export function Seg({ value, options, onChange, label }) {
+  return (
+    <div className="seg" role="group" aria-label={label}>
+      {options.map(([v, text]) => (
+        <button key={v} type="button" aria-pressed={value === v} onClick={() => onChange(v)}>
+          {text}
+        </button>
+      ))}
+    </div>
+  );
+}
