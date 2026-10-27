@@ -10,9 +10,11 @@ import { useSessionUi } from '../pages/Sessions.jsx';
 import { terminalDevice } from './api.js';
 import { LaunchIcon } from './brands.jsx';
 import { deviceName, useDevices } from './devices.jsx';
+import { errorText } from './i18n.js';
 import { isMod, keyLabel } from './hotkeys.js';
 import { useRouter } from './router.jsx';
 import { projectPath, sessionDir, sessionState, sessionTitle, useSessions } from './sessions.jsx';
+import { useToast } from './ui.jsx';
 
 const ACTIONS = [
   { key: 'new', icon: Plus, label: 'sess.new', hint: 'mod+shift+O', run: (c) => c.ui.newSession() },
@@ -41,6 +43,7 @@ export default function QuickSwitch() {
   const ui = useSessionUi();
   const devices = useDevices();
   const { navigate } = useRouter();
+  const toast = useToast();
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const [at, setAt] = useState(0);
@@ -74,6 +77,11 @@ export default function QuickSwitch() {
   useEffect(() => {
     if (open) requestAnimationFrame(() => input.current?.focus());
   }, [open]);
+  // 以前的对话：最近还在写的（可能正开在别处）先去项目页看一眼，跟侧栏一样，不直接接着
+  const openConv = (p, c) =>
+    c.live && !c.instance_id
+      ? navigate(`${projectPath(p)}&c=${encodeURIComponent(`${c.agent}:${c.id}`)}`)
+      : ui.continueConv(p.device, c).catch((e) => toast(errorText(t, e), 'error'));
   const results = useMemo(() => {
     if (!open) return [];
     const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
@@ -95,7 +103,7 @@ export default function QuickSwitch() {
       if (!words.length) continue;
       for (const c of p.convs ?? []) {
         const csc = score(words, c.title ?? '', `${c.last ?? ''} ${p.name}`);
-        if (csc) out.push({ key: `c:${p.key}:${c.agent}:${c.id}`, group: 'convs', sc: csc, icon: <LaunchIcon launch={c.agent} size={16} />, title: c.title, sub: [p.name, dev(p.device)].filter(Boolean).join(' · '), run: () => ui.continueConv(p.device, c) });
+        if (csc) out.push({ key: `c:${p.key}:${c.agent}:${c.id}`, group: 'convs', sc: csc, icon: <LaunchIcon launch={c.agent} size={16} />, title: c.title, sub: [p.name, dev(p.device)].filter(Boolean).join(' · '), run: () => openConv(p, c) });
       }
     }
     for (const a of ACTIONS) {

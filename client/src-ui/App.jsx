@@ -321,7 +321,7 @@ function NavRail({ path, paneOpen, onPane }) {
         <BrandMark size={30} />
       </Link>
       <RailItem onClick={() => ui.newSession()} icon={Plus} label={t('sess.new')} hint={keyLabel('mod+shift+O')} className="rail-new" disabled={!status.account.allowed} />
-      <RailItem onClick={openSessions} icon={MessageSquare} label={t(area && paneOpen ? 'sess.collapse_side' : 'sess.title')} hint={keyLabel('mod+shift+S')} active={area} />
+      <RailItem onClick={openSessions} icon={MessageSquare} label={t(!area ? 'sess.title' : paneOpen ? 'sess.collapse_side' : 'sess.expand_side')} hint={keyLabel('mod+shift+S')} active={area} />
       <RailItem to="/tasks" icon={ListTodo} label={n > 0 ? t('board.nav_count', { count: n }) : t('board.title')} active={path === '/tasks'} count={n} />
       <RailItem to="/history" icon={History} label={t('hist.title')} active={path === '/history'} />
       <span className="rail-sep" aria-hidden="true" />
@@ -341,7 +341,7 @@ function NavRail({ path, paneOpen, onPane }) {
 }
 
 /** 会话栏：项目和会话列表，右边缘可以拖动改宽度（记在本机）。 */
-function SessionPane({ path, width, onWidth }) {
+function SessionPane({ path, width, onWidth, onCollapse }) {
   const { t } = useTranslation();
   const current = path.match(SESS)?.[1];
   const drag = (e) => {
@@ -371,7 +371,7 @@ function SessionPane({ path, width, onWidth }) {
   };
   return (
     <aside className="spane" id="side-nav" aria-label={t('sess.title')}>
-      <SessionList currentId={current} />
+      <SessionList currentId={current} onCollapse={onCollapse} />
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex -- 分隔条可以用方向键调宽度 */}
       <div className="spane-resize" role="separator" aria-orientation="vertical" aria-valuenow={width} aria-valuemin={PANE_MIN} aria-valuemax={PANE_MAX} aria-label={t('sess.pane_resize')} tabIndex={0} onPointerDown={drag} onKeyDown={key} onDoubleClick={() => onWidth(288, true)} />
     </aside>
@@ -456,7 +456,10 @@ function ConsoleLayout({ path, stale, children }) {
   };
   const paneRef = useRef(paneOpen);
   paneRef.current = paneOpen;
-  // Ctrl+Shift+O 新会话，Ctrl+Shift+S 收起 / 展开会话栏（焦点在终端里时由终端自己处理按键）
+  const pathRef = useRef(path);
+  pathRef.current = path;
+  // Ctrl+Shift+O 新会话，Ctrl+Shift+S 收起 / 展开会话栏（焦点在终端里时由终端自己处理按键）。
+  // 工具页上没有会话栏：不改记住的状态，免得回到会话时侧栏莫名其妙没了
   useEffect(() => {
     const onKey = (e) => {
       if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey) return;
@@ -464,7 +467,7 @@ function ConsoleLayout({ path, stale, children }) {
       if (k === 'o') {
         e.preventDefault();
         ui.newSession();
-      } else if (k === 's' && window.innerWidth >= 900) {
+      } else if (k === 's' && window.innerWidth >= 900 && isSessionArea(pathRef.current)) {
         e.preventDefault();
         setPane(!paneRef.current);
       }
@@ -491,7 +494,7 @@ function ConsoleLayout({ path, stale, children }) {
       </header>
       <div className={`console ${pane ? 'console-pane' : ''}`} style={{ '--pane-w': `${width}px` }}>
         <NavRail path={path} paneOpen={paneOpen} onPane={setPane} />
-        {pane && <SessionPane path={path} width={width} onWidth={onWidth} />}
+        {pane && <SessionPane path={path} width={width} onWidth={onWidth} onCollapse={() => setPane(false)} />}
         <div className="console-col">
           {/* 提示横幅放在内容区上面：图标栏和会话栏从窗口顶上一直到底 */}
           <GateBanner />

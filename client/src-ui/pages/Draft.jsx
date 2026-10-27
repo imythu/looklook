@@ -17,7 +17,7 @@ import { errorText } from '../shared/i18n.js';
 import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
-import { baseName, isDraftProject, projectEntries, projectKey, useSessions } from '../shared/sessions.jsx';
+import { baseName, isDraftProject, projectEntries, projectKey, projectPath, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
 import { DiscoverCard } from './AddProject.jsx';
@@ -685,9 +685,12 @@ function RecentConvs({ device, items }) {
   const { status } = useStatus();
   const ui = useSessionUi();
   const toast = useToast();
+  const { navigate } = useRouter();
   const [busy, setBusy] = useState(null);
   const go = async (c) => {
     if (busy) return;
+    // 最近还在写的（可能正开在别处）：先去项目页看一眼，跟侧栏一样，不直接接着
+    if (c.live && !c.instance_id) return navigate(`${projectPath({ device, workdir: c.workdir })}&c=${encodeURIComponent(`${c.agent}:${c.id}`)}`);
     setBusy(c.id);
     try {
       await ui.continueConv(device, c);

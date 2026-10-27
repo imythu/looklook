@@ -4,7 +4,7 @@
 // 侧栏每个项目只列最近几个，其余在项目页（Project.jsx）。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, Check, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, Laptop, ListTree, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, Laptop, ListTree, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, PanelLeftClose, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -669,7 +669,7 @@ function StatusFilter({ value, onChange }) {
 }
 
 /** 项目和会话列表（电脑上的会话栏、手机首页共用）：标题、搜索、电脑和状态筛选，下面是等你处理、项目。 */
-export function SessionList({ currentId }) {
+export function SessionList({ currentId, onCollapse }) {
   const links = useLinks();
   const { t } = useTranslation();
   const { navigate } = useRouter();
@@ -727,6 +727,14 @@ export function SessionList({ currentId }) {
   const instOk = (i) => (status === 'attn' ? sessionState(i) === 'attn' : status === 'running' ? isLive(i) : status === 'rest' ? !isLive(i) : true) && (!match || match(i));
   const restOk = status !== 'attn' && status !== 'running';
   const filtering = Boolean(match) || status !== 'all';
+  // 搜索、按状态筛选时项目默认都展开（符合的都看得到），点了也能收起；只记在这一次筛选里，不改平时的折叠
+  const [filterFold, setFilterFold] = useState({});
+  const filterKey = `${query.trim()}|${status}`;
+  const [seenFilter, setSeenFilter] = useState(filterKey);
+  if (seenFilter !== filterKey) {
+    setSeenFilter(filterKey);
+    setFilterFold({});
+  }
   // 按项目看时，多台电脑上的同一个仓库合成一个项目（只在选中的电脑里合，见 groupProjects）
   const mine = s.projects.filter((p) => devOk(p.device));
   const groups = multi && groupBy === 'project' ? groupProjects(mine, true) : mine.map((p) => ({ key: p.key, name: p.name, members: [p], primary: p }));
@@ -774,7 +782,8 @@ export function SessionList({ currentId }) {
   const renderProject = (x, showDevice) => {
     const { p } = x;
     const drafting = x.members.some((m) => isDraftProject(m, ui.draftAt));
-    const open = filtering || drafting ? true : isOpen(x);
+    const open = drafting || (filtering ? (filterFold[x.key] ?? true) : isOpen(x));
+    const toggle = () => (filtering ? setFilterFold((f) => ({ ...f, [x.key]: !open })) : setFold(x.key, !open));
     const shown = filtering ? x.rest : x.rest.slice(0, SIDE_SHOW);
     const more = filtering ? 0 : x.count - x.live.length - shown.length;
     // 合并的项目：每行标上是哪台电脑的
@@ -782,7 +791,7 @@ export function SessionList({ currentId }) {
       r.kind === 'inst' ? <SessionRow key={r.key} inst={r.inst} current={r.inst.id === currentId} devTag={x.merged} /> : <ConvSideRow key={r.key} p={r.m} conv={r.conv} devTag={x.merged} />;
     return (
       <section key={x.key} className="sproject" aria-label={p.name}>
-        <ProjectRow p={p} x={x} open={open} onToggle={() => setFold(x.key, !open)} showDevice={showDevice} />
+        <ProjectRow p={p} x={x} open={open} onToggle={toggle} showDevice={showDevice} />
         {open && p.offline && (
           <p className="slist-note">
             {Date.now() - (p.seenAt ?? 0) > 60000 && p.seenAt ? t('sess.offline_note_at', { count: p.count ?? 0, when: shortAgo(t, p.seenAt) }) : t('sess.offline_note', { count: p.count ?? 0 })}
@@ -872,6 +881,12 @@ export function SessionList({ currentId }) {
           <h2 className="slist-title grow">{t('sess.title')}</h2>
           <NewProjectButton />
           <PopMenu items={viewMenu} className="btn btn-plain btn-icon" icon={SlidersHorizontal} label={t('sess.view_menu')} sheet />
+          {/* 电脑上的会话栏：收起（收起后点图标栏的“会话”展开） */}
+          {onCollapse && (
+            <button type="button" className="btn btn-plain btn-icon" onClick={onCollapse} aria-label={t('sess.collapse_side')} title={`${t('sess.collapse_side')} (${keyLabel('mod+shift+S')})`}>
+              <PanelLeftClose size={16} />
+            </button>
+          )}
         </div>
         {searchable && (
           <label className="slist-search">
