@@ -72,12 +72,56 @@ pub struct Rules {
     pub muted: Vec<String>,
     /// 卡片的语言（设置页保存时带上界面语言）
     pub lang: String,
+    /// 勿扰时段（每台电脑按自己的本地时间）：时段内一条都不发，结束时汇总（docs/PLAN_2026-10-27.md §2）
+    pub quiet: Option<Quiet>,
+    /// 做完的通知攒多少分钟合成一张（0 = 逐条发）。出错和等你处理不合并
+    pub done_batch: u32,
+    /// 正在干活、但这么多分钟没有新进展时提醒一次（0 = 不提醒）
+    pub stall_min: u32,
 }
 
 impl Default for Rules {
     fn default() -> Self {
-        Self { done: true, failed: true, actions: true, content: true, muted: vec![], lang: "zh-CN".into() }
+        Self { done: true, failed: true, actions: true, content: true, muted: vec![], lang: "zh-CN".into(), quiet: None, done_batch: 0, stall_min: 20 }
     }
+}
+
+/// 勿扰时段：`HH:MM`，可以跨午夜（23:00–08:00）
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Quiet {
+    pub start: String,
+    pub end: String,
+}
+
+impl Quiet {
+    fn minutes(s: &str) -> Option<u32> {
+        let (h, m) = s.trim().split_once(':')?;
+        let (h, m) = (h.parse::<u32>().ok()?, m.parse::<u32>().ok()?);
+        (h < 24 && m < 60).then_some(h * 60 + m)
+    }
+
+    pub fn valid(&self) -> bool {
+        matches!((Self::minutes(&self.start), Self::minutes(&self.end)), (Some(a), Some(b)) if a != b)
+    }
+
+    /// 一天中的第几分钟在不在时段里
+    pub fn contains(&self, minute: u32) -> bool {
+        let (Some(a), Some(b)) = (Self::minutes(&self.start), Self::minutes(&self.end)) else { return false };
+        if a == b {
+            return false;
+        }
+        if a < b {
+            (a..b).contains(&minute)
+        } else {
+            minute >= a || minute < b
+        }
+    }
+}
+
+/// 现在在不在勿扰时段里（这台电脑的本地时间）
+fn quiet_now(rules: &Rules) -> bool {
+    let (_, _, _, h, m, _) = crate::util::local_now();
+    rules.quiet.as_ref().is_some_and(|q| q.contains(h * 60 + m))
 }
 
 pub fn load_feishu(store: &crate::store::Store) -> Option<Feishu> {
@@ -143,6 +187,11 @@ pub fn attn_key(brief: &Value) -> Option<String> {
 fn attn_due(brief: &Value, now: i64, muted: bool) -> bool {
     let since = brief["since"].as_i64().unwrap_or(now);
     now - since >= ATTN_DELAY_MS && brief["watched"] != true && !muted
+}
+
+/// 卡住了没有：最后一次进展之后超过 `min` 分钟
+fn stall_due(active_at: i64, now: i64, min: u32) -> bool {
+    min > 0 && now - active_at >= i64::from(min) * 60_000
 }
 
 /// “等你处理”解除了，卡片上写什么（§6.4）
@@ -234,6 +283,16 @@ impl Owned {
 struct Seen {
     /// 上次通知过（或开始时已经有）的一轮的结束时间
     last_end: i64,
+    /// 卡住提醒发给了哪一次停顿（停顿开始时的 `active_at`）
+    stalled: i64,
+}
+
+/// 攒着等汇总的一轮（勿扰期间、或“做完的合并发”）
+struct Held {
+    line: card::Line,
+    /// 勿扰期间攒下的：时段一结束就发
+    quiet: bool,
+    at: i64,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -250,6 +309,7 @@ pub struct Notifier {
     /// 消息 nonce → 卡片（最多留 500 张）
     cards: Mutex<VecDeque<Sent>>,
     seen: Mutex<HashMap<String, Seen>>,
+    held: Mutex<Vec<Held>>,
     /// 回调去重：event_id → 收到时间
     events: Mutex<HashMap<String, Instant>>,
     sent: Mutex<VecDeque<Instant>>,
@@ -424,6 +484,7 @@ impl Notifier {
         let api = self.api(f);
         let open_id = f.open_id.clone().unwrap_or_default();
         let own = app.account.session().map(|s| s.device_id).unwrap_or_default();
+        let quiet = quiet_now(&rules);
         let ids = app.chat.ids();
         for id in &ids {
             let Some(brief) = app.chat.brief(id) else { continue };
@@ -440,7 +501,7 @@ impl Notifier {
             }
             if let Some(k) = key.as_ref().filter(|_| !busy) {
                 let fresh = live.as_ref().is_none_or(|s| s.key.as_ref() != Some(k));
-                if fresh && attn_due(&brief, now, muted) {
+                if fresh && !quiet && attn_due(&brief, now, muted) {
                     if let Some(info) = self.info(app, id, &brief, &rules) {
                         self.send_attn(&api, &open_id, &own, id, k, &brief, info).await;
                     }
@@ -457,6 +518,12 @@ impl Notifier {
             if let (EndNotice::Send { failed }, Some(end), Some(info)) = (notice, turn["ended_at"].as_i64(), self.info(app, id, &brief, &rules)) {
                 let started = turn["started_at"].as_i64().unwrap_or(end);
                 let text = if failed { turn["error"].as_str() } else { turn["summary"].as_str() }.unwrap_or_default();
+                // 勿扰期间、或做完的合并发：攒着，之后合成一张
+                if quiet || (!failed && rules.done_batch > 0) {
+                    let line = card::Line { agent: info.agent, title: info.title, project: info.project, device: info.device, failed, text: text.to_string() };
+                    lock(&self.held).push(Held { line, quiet, at: now });
+                    continue;
+                }
                 let n = nonce();
                 let base = Act { dev: own.clone(), inst: id.clone(), n: n.clone(), ..Default::default() };
                 let c = card::ended(&info.info(), failed, text, end - started, &base);
@@ -464,8 +531,14 @@ impl Notifier {
                 self.remember(Sent { msg, inst: id.clone(), key: None, nonce: n, busy: false, info });
             }
         }
+        if !quiet && rules.stall_min > 0 {
+            for id in &ids {
+                self.check_stall(app, &api, &open_id, &own, id, &rules, now).await;
+            }
+        }
         // 会话没了：清掉记录
         lock(&self.seen).retain(|k, _| ids.contains(k));
+        self.flush_held(app, &api, &open_id, &rules, quiet, now).await;
         // 合并发的那一条
         let dropped = self.dropped.load(Ordering::SeqCst);
         if dropped > 0 && self.budget() {
@@ -475,13 +548,59 @@ impl Notifier {
         }
     }
 
+    /// 卡住提醒：正在干活、但 `stall_min` 分钟没有新进展（额度用完在等重置的不算）。同一次停顿只提醒一次
+    #[allow(clippy::too_many_arguments)]
+    async fn check_stall(&self, app: &App, api: &Api, open_id: &str, own: &str, id: &str, rules: &Rules, now: i64) {
+        let Some(brief) = app.chat.brief(id) else { return };
+        if brief["board"] != "working" || !brief["limit"].is_null() || brief["watched"] == true {
+            return;
+        }
+        let Some(active) = brief["active_at"].as_i64() else { return };
+        if !stall_due(active, now, rules.stall_min) || lock(&self.seen).get(id).is_some_and(|s| s.stalled == active) {
+            return;
+        }
+        let muted = app.store.instance(id).ok().flatten().is_some_and(|r| rules.muted.contains(&r.workdir));
+        lock(&self.seen).entry(id.to_string()).or_default().stalled = active;
+        if muted {
+            return;
+        }
+        let Some(info) = self.info(app, id, &brief, rules) else { return };
+        let d = &brief["doing"];
+        let doing = match (d["tool"].as_str(), d["detail"].as_str()) {
+            (Some(t), Some(x)) => format!("{t} · {x}"),
+            (Some(t), None) => t.to_string(),
+            _ => String::new(),
+        };
+        let n = nonce();
+        // `p` 带上这次停顿的开始时间：点“停止”时还是这次停顿才停
+        let base = Act { dev: own.into(), inst: id.into(), p: active.to_string(), n: n.clone(), ..Default::default() };
+        let c = card::stalled(&info.info(), &doing, now - active, &base);
+        let msg = self.send(api, open_id, &c).await;
+        self.remember(Sent { msg, inst: id.into(), key: None, nonce: n, busy: false, info });
+    }
+
+    /// 攒着的一轮合成一张卡片发：勿扰时段一结束就发；合并发的到时间了才发
+    async fn flush_held(&self, app: &App, api: &Api, open_id: &str, rules: &Rules, quiet: bool, now: i64) {
+        let lines = {
+            let mut held = lock(&self.held);
+            let due = !quiet && !held.is_empty() && (held.iter().any(|h| h.quiet) || now - held[0].at >= i64::from(rules.done_batch) * 60_000);
+            if !due {
+                return;
+            }
+            let was_quiet = held.iter().any(|h| h.quiet);
+            (std::mem::take(&mut *held).into_iter().map(|h| h.line).collect::<Vec<_>>(), was_quiet)
+        };
+        let c = card::summary(rules.lang.starts_with("en"), lines.1, &lines.0, rules.content, &page_url(app, "tasks"));
+        self.send(api, open_id, &c).await;
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn send_attn(&self, api: &Api, open_id: &str, own: &str, id: &str, key: &str, brief: &Value, info: Owned) {
         let a = &brief["attn"];
         let options: Vec<String> = a["options"].as_array().map(|o| o.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
         let limit_wait = options.iter().position(|o| o.starts_with(crate::chat::screen::LIMIT_AUTO));
         let kind = a["kind"].as_str().unwrap_or("dialog");
-        let at = Attn { kind, tool: a["tool"].as_str().unwrap_or_default(), detail: a["detail"].as_str().unwrap_or_default(), risk: a["risk"].as_str(), options: &options, limit_wait };
+        let at = Attn { kind, tool: a["tool"].as_str().unwrap_or_default(), detail: a["detail"].as_str().unwrap_or_default(), risk: a["risk"].as_str(), guard: a["guard"].as_str(), options: &options, limit_wait };
         let n = nonce();
         let base = Act { dev: own.into(), inst: id.into(), p: key.into(), n: n.clone(), ..Default::default() };
         let c = card::attn(&info.info(), &at, &base);
@@ -572,6 +691,18 @@ impl Notifier {
             (r.clone(), Some(card::resolved(&info.info(), &r)))
         };
         let said = text.map(str::trim).filter(|t| !t.is_empty()).map(|t| t.chars().take(1000).collect::<String>());
+        // 卡住提醒上的“停止”：还是那次停顿（之后没有新进展）才停
+        if act.a == "stop" && sent.key.is_none() {
+            let same = brief.as_ref().is_some_and(|b| b["board"] == "working" && b["active_at"].as_i64().map(|a| a.to_string()).as_deref() == Some(act.p.as_str()));
+            if !same {
+                let r = tr(en, "已经有新进展了，没有停止", "It made progress since; not stopped");
+                return Ok((r.clone(), Some(card::resolved(&info.info(), &r))));
+            }
+            app.chat.interrupt(&act.inst).await?;
+            tracing::info!(inst = %act.inst, "飞书：停止了卡住的会话");
+            let r = tr(en, "已停止 · 在飞书上", "Stopped · in Feishu");
+            return Ok((r.clone(), Some(card::resolved(&info.info(), &r))));
+        }
         // 结束卡片上的回复：送进会话，卡片换成“已发给 AI”
         if act.a == "say" && sent.key.is_none() {
             let text = said.ok_or_else(|| LocalError::invalid("text", "required"))?;
@@ -933,6 +1064,30 @@ mod tests {
         let r: Rules = serde_json::from_value(json!({ "done": false })).unwrap();
         assert!(!r.done && r.failed && r.actions && r.content);
         assert_eq!(r.lang, "zh-CN");
+        // 旧版电脑存的规则没有这几项：用默认（不勿扰、逐条发、20 分钟卡住提醒）
+        assert_eq!((r.quiet, r.done_batch, r.stall_min), (None, 0, 20));
+    }
+
+    #[test]
+    fn quiet_hours() {
+        let night = Quiet { start: "23:00".into(), end: "08:00".into() };
+        assert!(night.valid());
+        assert!(night.contains(23 * 60) && night.contains(2 * 60) && night.contains(8 * 60 - 1));
+        assert!(!night.contains(8 * 60) && !night.contains(12 * 60) && !night.contains(22 * 60 + 59));
+        let lunch = Quiet { start: "12:00".into(), end: "13:30".into() };
+        assert!(lunch.contains(12 * 60 + 45) && !lunch.contains(13 * 60 + 30) && !lunch.contains(11 * 60));
+        for bad in [("8:00", "8:00"), ("25:00", "08:00"), ("aa", "08:00")] {
+            let q = Quiet { start: bad.0.into(), end: bad.1.into() };
+            assert!(!q.valid());
+            assert!(!q.contains(8 * 60));
+        }
+    }
+
+    #[test]
+    fn stall() {
+        assert!(!stall_due(0, 19 * 60_000, 20));
+        assert!(stall_due(0, 20 * 60_000, 20));
+        assert!(!stall_due(0, 999 * 60_000, 0));
     }
 
     #[test]

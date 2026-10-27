@@ -63,6 +63,9 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/git", get(git_status))
         .route("/instances/{id}/git/diff", get(git_diff))
         .route("/instances/{id}/git/show", get(git_show))
+        .route("/instances/{id}/checkpoints", get(list_checkpoints))
+        .route("/instances/{id}/checkpoints/{cp}/diff", get(checkpoint_diff))
+        .route("/instances/{id}/checkpoints/{cp}/restore", post(restore_checkpoint))
         .route("/instances/{id}/page", post(instance_page))
         .route("/instances/{id}/chat", get(super::chat::snapshot))
         .route("/instances/{id}/chat/events", get(super::chat::events))
@@ -87,6 +90,9 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/chat/files", get(super::chat::files))
         .route("/instances/{id}/chat/file", get(super::chat::file))
         .route("/instances/{id}/chat/artifacts", get(super::chat::artifacts))
+        .route("/instances/{id}/chat/setup", get(super::chat::setup))
+        .route("/instances/{id}/chat/hooks", post(super::chat::hooks_answer))
+        .route("/instances/{id}/chat/codex-update", post(super::chat::codex_update))
         .route("/instances/{id}/chat/artifact", get(super::chat::artifact))
         .route("/instances/{id}/chat/changes", get(super::chat::changes))
         .route("/instances/{id}/chat/config", get(super::chat::config))
@@ -131,6 +137,8 @@ pub fn routes(app: App) -> Router<App> {
         .route("/relay/reconnect", post(relay_reconnect))
         .route("/relays", get(list_relays))
         .route("/relays/preference", put(set_relay))
+        .route("/ports", get(list_ports))
+        .route("/guard", get(get_guard).put(put_guard))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
         .route("/tunnels/{id}/shares", get(list_page_shares).post(create_page_share))
@@ -176,6 +184,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/claude-profiles/{id}", put(update_claude_profile).delete(delete_claude_profile))
         .route("/claude-profiles/{id}/status", get(claude_profile_status))
         .route("/claude-profiles/{id}/usage", post(claude_profile_usage))
+        .route("/ollama", get(ollama))
         .route("/claude-profiles/{id}/login", get(claude_login_state).post(login_claude_profile).delete(cancel_claude_login))
         .route("/claude-profiles/{id}/login/code", post(claude_login_code))
         .route("/metrics", get(metrics))
@@ -249,11 +258,20 @@ async fn status(State(app): State<App>, Extension(access): Extension<Access>) ->
     }))
 }
 
+#[derive(Deserialize, Default)]
+struct LoginReq {
+    /// 安装密钥（`looklook login --key`）：平台直接批准，不打开浏览器
+    #[serde(default)]
+    install_key: Option<String>,
+}
+
 /// 发起浏览器授权登录：返回授权码与授权页地址，并在桌面环境自动打开浏览器；进度用 `GET /auth/status` 查询。
-async fn login(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
+async fn login(State(app): State<App>, Extension(access): Extension<Access>, body: Option<Json<LoginReq>>) -> R<Json<Value>> {
     require_local(&access)?;
-    let start = app.account.start_login().await?;
-    if crate::util::has_desktop() {
+    let req = body.map(|Json(r)| r).unwrap_or_default();
+    let keyed = req.install_key.is_some();
+    let start = app.account.start_login(req.install_key).await?;
+    if crate::util::has_desktop() && !keyed {
         let url = start.verification_url.clone();
         // xdg-open 等可能阻塞到浏览器返回，放到阻塞线程里。
         tokio::task::spawn_blocking(move || crate::util::open_url(&url));
@@ -431,7 +449,7 @@ async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> 
         tokio::spawn(async move { chat.codex_first(&id, prompt, resume).await });
     }
     if req.start && app.instances.codex_app_mode(&v.row) {
-        app.chat.codex_warm().await;
+        app.chat.codex_warm(&v.row.workdir).await;
     }
     let v = if req.start { app.instances.start(&v.row.id).await? } else { v };
     Ok((StatusCode::CREATED, Json(v)))
@@ -595,6 +613,7 @@ async fn delete_instance(State(app): State<App>, Path(id): Path<String>) -> R<St
     let page: Option<DshPage> = app.store.get(&page_key(&id))?;
     app.instances.delete(&id).await?;
     app.chat.forget(&id);
+    crate::checkpoint::forget(&app.store, &id);
     if let Some(p) = page {
         // 映射跟着删；平台上已经没有（用户自己删了）或暂时连不上都不影响删除终端
         if let Err(e) = app.account.delete_tunnel(&p.tunnel_id).await {
@@ -618,8 +637,8 @@ async fn stop_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl
 
 /// 对话模式的 Codex 终端启动前先起好 app-server（见 [`crate::chat::Chat::codex_warm`]）
 async fn warm_codex(app: &App, id: &str) {
-    if app.store.instance(id).ok().flatten().is_some_and(|r| app.instances.codex_app_mode(&r)) {
-        app.chat.codex_warm().await;
+    if let Some(r) = app.store.instance(id).ok().flatten().filter(|r| app.instances.codex_app_mode(r)) {
+        app.chat.codex_warm(&r.workdir).await;
     }
 }
 
@@ -940,6 +959,30 @@ async fn git_dir(app: &App, id: &str, path: &str) -> R<std::path::PathBuf> {
         app.instances.get(id).await?;
         Ok(path.trim().into())
     }
+}
+
+/// 检查点按会话的工作目录（拍的时候也是这个目录，docs/PLAN_2026-10-27.md §3.3）
+fn checkpoint_dir(app: &App, id: &str) -> R<std::path::PathBuf> {
+    Ok(app.store.instance(id)?.ok_or_else(LocalError::not_found)?.workdir.into())
+}
+
+async fn list_checkpoints(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    let dir = checkpoint_dir(&app, &id)?;
+    Ok(Json(blocking(move || crate::checkpoint::list(&app.store, &id, &dir)).await?))
+}
+
+async fn checkpoint_diff(State(app): State<App>, Path((id, cp)): Path<(String, i64)>) -> R<Json<Value>> {
+    let dir = checkpoint_dir(&app, &id)?;
+    Ok(Json(blocking(move || crate::checkpoint::diff(&app.store, &id, &dir, cp)).await?))
+}
+
+/// AI 正在干活时不恢复（先停下），免得恢复到一半又被改
+async fn restore_checkpoint(State(app): State<App>, Path((id, cp)): Path<(String, i64)>) -> R<Json<Value>> {
+    let dir = checkpoint_dir(&app, &id)?;
+    if app.chat.brief(&id).is_some_and(|b| matches!(b["board"].as_str(), Some("working" | "attn"))) {
+        return Err(LocalError::new("CHECKPOINT_BUSY"));
+    }
+    Ok(Json(blocking(move || crate::checkpoint::restore(&app.store, &id, &dir, cp)).await?))
 }
 
 async fn git_status(State(app): State<App>, Path(id): Path<String>, Query(q): Query<GitQ>) -> R<Json<crate::git::Status>> {
@@ -1336,6 +1379,23 @@ async fn set_relay(State(app): State<App>, Json(req): Json<RelayPreference>) -> 
     let r = app.account.set_relay(req.relay, false).await?;
     app.relay_watch.changed();
     Ok(Json(json!({ "preferred": r.preferred, "current": r.current })))
+}
+
+/// 这台电脑上正在监听的端口（docs/PLAN_2026-10-27.md §1）。哪些已经转成网页由界面对照网页列表，这里不再问平台。
+async fn list_ports(State(app): State<App>) -> R<Json<Value>> {
+    let (ui, relay) = (app.ui_addr.port(), app.relay_addr.port());
+    let items = tokio::task::spawn_blocking(move || crate::ports::list(|p| p == ui || p == relay || crate::instances::Instances::is_reserved_port(p))).await.unwrap_or_default();
+    Ok(Json(json!({ "items": items })))
+}
+
+/// 命令规则（docs/PLAN_2026-10-27.md §3.2）：所有电脑一份，跟着设置同步
+async fn get_guard(State(app): State<App>) -> Json<Value> {
+    Json(json!({ "guard": crate::guard::load(&app.store), "sync_enabled": crate::settings_sync::enabled(&app.store) }))
+}
+
+async fn put_guard(State(app): State<App>, Json(g): Json<crate::guard::Guard>) -> R<Json<Value>> {
+    crate::guard::save(&app, &crate::guard::validate(g)?)?;
+    Ok(get_guard(State(app)).await)
 }
 
 async fn list_tunnels(State(app): State<App>) -> R<Json<Value>> {
@@ -2120,6 +2180,7 @@ fn claude_profiles_view(app: &App) -> Value {
             let mut v = json!(p);
             if p.kind == cp::Kind::Api {
                 v["key_set"] = json!(cp::key_set(&app.paths.home, &p.id));
+                v["quota"] = json!(p.base_url.as_deref().is_some_and(crate::provider_quota::supported));
             }
             v
         })
@@ -2144,10 +2205,16 @@ async fn claude_profile_status(State(app): State<App>, Path(id): Path<String>) -
 /// 查官方账号的订阅用量（`claude -p /usage`，要几秒）；顺便给出登录状态，登录失效时界面提示重新登录
 async fn claude_profile_usage(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    // 第三方接口：问服务商（智谱、Kimi、MiniMax，见 provider_quota.rs）
     if p.kind != crate::claude_profiles::Kind::Official {
-        return Err(LocalError::not_found());
+        return Ok(Json(crate::claude_profiles::api_usage(&app.paths.home, &p).await));
     }
     Ok(Json(crate::claude_profiles::usage(app.instances.shell(), &app.paths.home, &p).await))
+}
+
+/// 本机有没有在运行 Ollama（添加第三方接口时一键填好，见 provider_quota.rs）
+async fn ollama() -> Json<Value> {
+    Json(json!({ "ollama": crate::provider_quota::ollama().await }))
 }
 
 #[derive(Deserialize)]

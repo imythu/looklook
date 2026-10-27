@@ -499,34 +499,38 @@ pub fn dialog_with(capture: &str, cursor: char) -> Option<Dialog> {
             on || l.chars().take_while(|c| *c == ' ').count() == text_col
         }
     };
-    // 编号选项之间可以隔着空行、选项的说明（AskUserQuestion 每个选项下面缩进得更深的一行）：最多隔 3 行，后面还有选项才算连着
+    // 编号选项之间可以隔着选项的说明（AskUserQuestion 每个选项下面缩进得更深的几行，终端窄的时候——例如在手机上看——
+    // 一段说明会折成好几行，多少行都算）和最多 3 个空行；后面还有选项才算连着
     let is_desc = |l: &str| !l.trim().is_empty() && !is_opt(l) && l.chars().take_while(|c| *c == ' ').count() > text_col;
-    let gap = |l: &str| is_num && (l.trim().is_empty() || is_desc(l));
-    let mut first = sel;
-    'up: while first > 0 {
-        for k in 1..=4.min(first) {
-            if is_opt(&lines[first - k]) {
-                first -= k;
-                continue 'up;
+    let next_opt = |from: usize, up: bool| -> Option<usize> {
+        let mut blanks = 0;
+        let mut i = from;
+        loop {
+            i = if up { i.checked_sub(1)? } else { Some(i + 1).filter(|i| *i < lines.len())? };
+            let l = &lines[i];
+            if is_opt(l) {
+                return Some(i);
             }
-            if !gap(&lines[first - k]) {
-                break;
+            if !is_num {
+                return None;
+            }
+            if l.trim().is_empty() {
+                blanks += 1;
+                if blanks > 3 {
+                    return None;
+                }
+            } else if !is_desc(l) {
+                return None;
             }
         }
-        break;
+    };
+    let mut first = sel;
+    while let Some(i) = next_opt(first, true) {
+        first = i;
     }
     let mut last = sel;
-    'down: while last + 1 < lines.len() {
-        for k in 1..=4.min(lines.len() - 1 - last) {
-            if is_opt(&lines[last + k]) {
-                last += k;
-                continue 'down;
-            }
-            if !gap(&lines[last + k]) {
-                break;
-            }
-        }
-        break;
+    while let Some(i) = next_opt(last, false) {
+        last = i;
     }
     let mut out = Dialog::default();
     for (i, l) in lines.iter().enumerate().take(last + 1).skip(first) {
@@ -843,6 +847,11 @@ mod tests {
         assert_eq!(d.title, "你喜欢红色还是蓝色？");
         let opts: Vec<(&str, &str)> = d.options.iter().map(|o| (o.label.as_str(), o.hint.as_str())).collect();
         assert_eq!(opts, [("红色", "热烈、醒目，给人充满活力的感觉"), ("蓝色", "沉静、清爽，给人冷静可靠的感觉"), ("Type something.", "")]);
+        // 手机上看（终端 49 列）：每个选项的说明折成 3～5 行，选项之间隔得很远也照样是一个选择框（以前读不出来，点了报“界面已经变了”）
+        let d = dialog(include_str!("testdata/ask-long-narrow.txt")).expect("读得出来");
+        assert_eq!(d.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["1.44.1 (Recommended)", "1.45.0", "Hold off", "Type something."]);
+        assert!(d.options[0].hint.starts_with("Lower than 1.45.0-beta.1") && d.options[0].hint.ends_with("contains features."), "{}", d.options[0].hint);
+        assert_eq!((d.title.as_str(), d.selected), ("Version", 0));
     }
 
     #[test]
@@ -865,4 +874,3 @@ mod tests {
     }
 
 }
-

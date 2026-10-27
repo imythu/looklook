@@ -1,6 +1,6 @@
 // 任务看板（docs/TASK_BOARD.md §5）：会话在看板上属于哪一组、那一句话怎么说，以及“正在看”的心跳。
 // 状态都由电脑算好（`GET /instances` 的 `chat`），这里只负责分组和文字；旧版客户端没有 `chat.board` 时按 phase 推。
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 import { api } from './api.js';
 
@@ -116,4 +116,81 @@ export function useSeenPing(id, on) {
       document.removeEventListener('visibilitychange', onFocus);
     };
   }, [id, on]);
+}
+
+// “你离开期间”（docs/PLAN_2026-10-27.md §2.3）：上次看看板是什么时候，存在这个浏览器里（本机优先，不同步）
+const AWAY_KEY = 'looklook.board.left_at';
+/** 离开多久才算“离开过”（毫秒） */
+export const AWAY_MIN = 30 * 60 * 1000;
+
+function readLeft() {
+  try {
+    return Number(localStorage.getItem(AWAY_KEY)) || 0;
+  } catch {
+    return 0;
+  }
+}
+
+function writeLeft(at) {
+  try {
+    localStorage.setItem(AWAY_KEY, String(at));
+  } catch {
+    // 无痕窗口等：不记，下次就不显示
+  }
+}
+
+// 这次回来之前离开的时间：打开看看或切回来时读一次
+let awaySince = readLeft();
+// 这次回来的摘要已经关掉了
+let awayDismissed = 0;
+
+/**
+ * 在整个界面里挂一次：看着看看时每分钟记一次“现在”，切走时也记；切回来时先读出上次离开的时间。
+ * 看板据此显示“你离开期间”。
+ */
+export function useAwayTracker() {
+  useEffect(() => {
+    const mark = () => writeLeft(Date.now());
+    mark();
+    const timer = setInterval(() => !document.hidden && mark(), 60000);
+    const onVis = () => {
+      if (!document.hidden) awaySince = readLeft();
+      mark();
+    };
+    document.addEventListener('visibilitychange', onVis);
+    window.addEventListener('pagehide', mark);
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVis);
+      window.removeEventListener('pagehide', mark);
+    };
+  }, []);
+}
+
+/** 看板用：这次回来之前离开的时间（关掉过就是 0），和关掉它的函数 */
+export function useAwaySince() {
+  const [since, setSince] = useState(() => (awayDismissed === awaySince ? 0 : awaySince));
+  const dismiss = () => {
+    awayDismissed = awaySince;
+    setSince(0);
+  };
+  return [since, dismiss];
+}
+
+/** 离开期间：多久、结束了几轮（做完 / 出错，按最新一轮算）、现在几个在等你。离开不到 AWAY_MIN 或什么都没发生时为 null */
+export function awayRecap(items, since, now = Date.now()) {
+  if (!since || now - since < AWAY_MIN) return null;
+  let done = 0;
+  let failed = 0;
+  let attn = 0;
+  for (const i of items) {
+    const turn = i.chat?.turn;
+    if (turn?.ended_at > since) {
+      if (turn.outcome === 'done') done += 1;
+      else if (turn.outcome === 'failed') failed += 1;
+    }
+    if (boardState(i) === 'attn') attn += 1;
+  }
+  if (!done && !failed && !attn) return null;
+  return { span: now - since, done, failed, attn };
 }

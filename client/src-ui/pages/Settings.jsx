@@ -15,6 +15,7 @@ import DirectCard from './DirectConnect.jsx';
 import { AttachmentsCard } from '../shared/Attachments.jsx';
 import ClaudeProfilesCard from './ClaudeProfiles.jsx';
 import ModelProvidersCard from './ModelProviders.jsx';
+import GuardCard from './Guard.jsx';
 import NotifySection from './Notify.jsx';
 import { FolderField, ShellPicker } from './Terminals.jsx';
 import { setLocale } from '../shared/i18n.js';
@@ -229,6 +230,7 @@ export default function Settings() {
       <>
         <ClaudeProfilesCard />
         <ModelProvidersCard />
+        <GuardCard />
       </>
     ),
     notify: <NotifySection />,

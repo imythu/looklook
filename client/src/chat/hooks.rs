@@ -46,6 +46,8 @@ const EVENTS: [&str; 15] = [
     "SubagentStop",
 ];
 /// 权限审批最多等多久（秒）。客户端自己最多挂起 590 秒，到时间放行给 TUI（§4.4）。
+/// 命令（Bash）的 PreToolUse 也这么久：命中命令规则时要等人确认，客户端 590 秒内一定答复（没人确认就拒绝），
+/// 不能让 hook 超时（PreToolUse 超时 Claude Code 照常执行）。没命中时立即答复。
 const PERMISSION_TIMEOUT: u64 = 600;
 
 pub fn settings_path(paths: &Paths) -> PathBuf {
@@ -89,7 +91,7 @@ pub fn settings_json(exe: &Path, endpoint: &Path) -> Value {
     let hooks: serde_json::Map<String, Value> = EVENTS
         .iter()
         .map(|ev| {
-            let timeout = if *ev == "PermissionRequest" { PERMISSION_TIMEOUT } else { 10 };
+            let timeout = if matches!(*ev, "PermissionRequest" | "PreToolUse") { PERMISSION_TIMEOUT } else { 10 };
             (ev.to_string(), json!([{ "matcher": "*", "hooks": [{ "type": "command", "command": command, "timeout": timeout }] }]))
         })
         .collect();
@@ -170,7 +172,7 @@ fn forward(endpoint_file: &str, instance: &str, input: &str) -> Option<String> {
         return None;
     }
     let event: Value = serde_json::from_str(input).ok()?;
-    let waits = event["hook_event_name"] == "PermissionRequest";
+    let waits = event["hook_event_name"] == "PermissionRequest" || event["hook_event_name"] == "PreToolUse" && event["tool_name"] == "Bash";
     let mut s = TcpStream::connect_timeout(&addr, Duration::from_millis(300)).ok()?;
     let _ = s.set_nodelay(true);
     s.set_write_timeout(Some(Duration::from_secs(2))).ok()?;
@@ -214,6 +216,8 @@ mod tests {
             assert!(h.get("async").is_none(), "{ev} 必须同步");
         }
         assert_eq!(v["hooks"]["PermissionRequest"][0]["hooks"][0]["timeout"], 600);
+        assert_eq!(v["hooks"]["PreToolUse"][0]["hooks"][0]["timeout"], 600);
+        assert_eq!(v["hooks"]["Stop"][0]["hooks"][0]["timeout"], 10);
         assert_eq!(v["skipDangerousModePermissionPrompt"], true);
     }
 

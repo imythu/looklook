@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 /// 按钮上带的东西（回调原样带回来）
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Act {
-    /// allow / deny / answer / dialog / say / test
+    /// allow / deny / answer / dialog / say / stop / test
     pub a: String,
     /// 会话所在的电脑
     #[serde(default)]
@@ -142,6 +142,8 @@ pub struct Attn<'a> {
     pub tool: &'a str,
     pub detail: &'a str,
     pub risk: Option<&'a str>,
+    /// 命中的命令规则（docs/PLAN_2026-10-27.md §3.2）
+    pub guard: Option<&'a str>,
     pub options: &'a [String],
     /// 额度菜单里“等重置后自动继续”是第几项
     pub limit_wait: Option<usize>,
@@ -149,7 +151,7 @@ pub struct Attn<'a> {
 
 pub fn attn(i: &Info, a: &Attn, base: &Act) -> Value {
     let act = |name: &str, idx: Option<usize>| Act { a: name.into(), i: idx, ..base.clone() };
-    let high = a.risk == Some("high");
+    let high = a.risk == Some("high") || a.guard.is_some();
     let (title, template) = match a.kind {
         "permission" => (tr(i.en, &format!("{} 在等你批准", i.agent), &format!("{} needs your approval", i.agent)), if high { "red" } else { "orange" }),
         "question" => (tr(i.en, &format!("{} 有个问题", i.agent), &format!("{} has a question", i.agent)), "orange"),
@@ -165,6 +167,9 @@ pub fn attn(i: &Info, a: &Attn, base: &Act) -> Value {
             els.push(div(&tr(i.en, &format!("要用 {}：", a.tool), &format!("Wants to use {}:", a.tool))));
             if i.content && !a.detail.is_empty() {
                 els.push(if a.tool == "Bash" { code(a.detail) } else { div(a.detail) });
+            }
+            if let Some(rule) = a.guard {
+                els.push(note(&tr(i.en, &format!("命中了看看的命令规则：{rule}"), &format!("Matches a Looklook command rule: {rule}"))));
             }
             if i.actions {
                 let confirm = high.then_some((if i.en { "Allow a high-risk action?" } else { "允许高风险操作？" }, if i.en { "This runs on your computer right away." } else { "允许后会马上在电脑上执行。" }));
@@ -265,6 +270,72 @@ pub fn test(en: bool, act: &Act, ok: bool) -> Value {
     )
 }
 
+/// 汇总卡片里的一行：一轮结束了（勿扰期间、或“做完的合并发”攒下的，docs/PLAN_2026-10-27.md §2）
+pub struct Line {
+    pub agent: String,
+    pub title: String,
+    pub project: String,
+    pub device: String,
+    pub failed: bool,
+    pub text: String,
+}
+
+/// 汇总卡片最多列几行
+const SUMMARY_MAX: usize = 10;
+
+/// 勿扰时段结束、或合并的时间到了：一张卡片列出这段时间结束的每一轮
+pub fn summary(en: bool, quiet: bool, lines: &[Line], content: bool, url: &str) -> Value {
+    let failed = lines.iter().filter(|l| l.failed).count();
+    let title = match (quiet, en) {
+        (true, false) => format!("勿扰期间结束了 {} 个会话", lines.len()),
+        (true, true) => format!("{} sessions finished during quiet hours", lines.len()),
+        (false, false) => format!("{} 个会话做完了", lines.len()),
+        (false, true) => format!("{} sessions finished", lines.len()),
+    };
+    let mut els = Vec::new();
+    for l in lines.iter().take(SUMMARY_MAX) {
+        let mark = if l.failed { "✗" } else { "✓" };
+        let mut head = format!("{mark} {} · {}", l.agent, if l.title.is_empty() { &l.project } else { &l.title });
+        if !l.title.is_empty() {
+            head.push_str(&format!(" · {}", l.project));
+        }
+        if !l.device.is_empty() {
+            head.push_str(&format!(" · {}", l.device));
+        }
+        els.push(div(&head));
+        if content && !l.text.is_empty() {
+            els.push(note(l.text.lines().next().unwrap_or_default()));
+        }
+    }
+    if lines.len() > SUMMARY_MAX {
+        let more = lines.len() - SUMMARY_MAX;
+        els.push(note(&tr(en, &format!("还有 {more} 个"), &format!("and {more} more"))));
+    }
+    els.push(row(vec![link(&tr(en, "打开任务", "Open Tasks"), url)]));
+    let template = if failed > 0 { "orange" } else { "green" };
+    card(header(&title, "", template, None), &title, els)
+}
+
+/// 正在干活、但很久没有新进展了（卡住提醒）
+pub fn stalled(i: &Info, doing: &str, idle_ms: i64, base: &Act) -> Value {
+    let title = tr(i.en, "看起来没有动静了", "No progress for a while");
+    let mut els = vec![div(&tr(
+        i.en,
+        &format!("已经 {}没有新的进展。可能卡住了，也可能在跑很久的命令。", duration(idle_ms, false)),
+        &format!("Nothing new for {}. It may be stuck, or running a long command.", duration(idle_ms, true)),
+    ))];
+    if i.content && !doing.is_empty() {
+        els.push(note(&tr(i.en, &format!("正在：{doing}"), &format!("Doing: {doing}"))));
+    }
+    let mut buttons = vec![open(i)];
+    if i.actions {
+        let stop = Act { a: "stop".into(), ..base.clone() };
+        buttons.push(button(&tr(i.en, "停止", "Stop"), "danger", &stop, Some((&tr(i.en, "停止这一轮？", "Stop this turn?"), &tr(i.en, "相当于在会话里按 Esc。", "Same as pressing Esc in the session.")))));
+    }
+    els.push(row(buttons));
+    card(header(&title, &subtitle(i), "orange", None), &format!("{title} · {}", i.title), els)
+}
+
 /// 超出每分钟上限时合并成一条
 pub fn digest(en: bool, n: usize, url: &str) -> Value {
     let title = tr(en, &format!("还有 {n} 条通知没发"), &format!("{n} more notifications"));
@@ -315,7 +386,7 @@ mod tests {
     #[test]
     fn high_risk_permission() {
         let base = Act { dev: "d".into(), inst: "i".into(), p: "7".into(), n: "abc".into(), ..Default::default() };
-        let a = Attn { kind: "permission", tool: "Bash", detail: "git push --force", risk: Some("high"), options: &[], limit_wait: None };
+        let a = Attn { kind: "permission", tool: "Bash", detail: "git push --force", risk: Some("high"), guard: None, options: &[], limit_wait: None };
         let c = attn(&info(true), &a, &base);
         assert_eq!(c["schema"], "2.0");
         assert_eq!(c["config"]["update_multi"], true);
@@ -334,7 +405,7 @@ mod tests {
     #[test]
     fn question_and_content_switch() {
         let opts = vec!["SQLite".to_string(), "Postgres".to_string()];
-        let a = Attn { kind: "question", tool: "AskUserQuestion", detail: "用哪个？", risk: None, options: &opts, limit_wait: None };
+        let a = Attn { kind: "question", tool: "AskUserQuestion", detail: "用哪个？", risk: None, guard: None, options: &opts, limit_wait: None };
         let c = attn(&info(true), &a, &Act::default());
         assert_eq!(buttons(&c), ["SQLite", "Postgres", "打开", "发送"]);
         let hidden = Info { content: false, ..info(true) };
@@ -348,5 +419,23 @@ mod tests {
         assert!(c.to_string().contains("用时 12 分"));
         assert_eq!(duration(3_900_000, true), "1h 5m");
         assert_eq!(resolved(&info(true), "已允许 · 在飞书上")["header"]["template"], "grey");
+    }
+
+    #[test]
+    fn summary_and_stalled() {
+        let line = |failed: bool, n: usize| Line { agent: "Claude".into(), title: format!("任务{n}"), project: "looklook".into(), device: "工作站".into(), failed, text: "改好了。\n第二行".into() };
+        let lines: Vec<Line> = (0..12).map(|n| line(n == 3, n)).collect();
+        let c = summary(false, true, &lines, true, "https://a.example/tasks");
+        assert_eq!(c["header"]["template"], "orange");
+        let s = c.to_string();
+        assert!(s.contains("勿扰期间结束了 12 个会话"));
+        assert!(s.contains("✗ Claude · 任务3 · looklook · 工作站"));
+        assert!(s.contains("还有 2 个"));
+        assert!(!s.contains("第二行"));
+        assert!(!summary(true, false, &lines[..1], false, "u").to_string().contains("改好了"));
+        let c = stalled(&info(true), "运行 cargo build", 1_260_000, &Act { n: "x".into(), ..Default::default() });
+        assert_eq!(buttons(&c), ["打开", "停止"]);
+        assert!(c.to_string().contains("已经 21 分没有新的进展"));
+        assert_eq!(buttons(&stalled(&info(false), "", 60_000, &Act::default())), ["打开"]);
     }
 }

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, knownDialog, latestTodos, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, knownDialog, latestTodos, localFilePath, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -208,4 +208,15 @@ test('trust and bypass dialogs are recognized by their options', () => {
   assert.deepEqual(knownDialog(bypass), { kind: 'bypass', path: '' });
   assert.equal(knownDialog({ title: 'Bash command', body: [], options: [{ label: 'Yes' }, { label: 'No' }] }), null);
   assert.equal(knownDialog(null), null);
+});
+
+test('links to files on this computer', () => {
+  assert.equal(localFilePath('/Users/a/.codex/sessions/2026/10/23/rollout-x.jsonl'), '/Users/a/.codex/sessions/2026/10/23/rollout-x.jsonl');
+  assert.equal(localFilePath('/Users/a/my%20proj/src/main.rs:12'), '/Users/a/my proj/src/main.rs');
+  assert.equal(localFilePath('/p/a.rs:12:3'), '/p/a.rs');
+  assert.equal(localFilePath('/p/a.rs#L12-L20'), '/p/a.rs');
+  assert.equal(localFilePath('file:///C:/out/a.pdf'), 'C:/out/a.pdf');
+  assert.equal(localFilePath('F:\\out\\a.pdf'), 'F:\\out\\a.pdf');
+  assert.equal(localFilePath('file:///home/a/x.txt'), '/home/a/x.txt');
+  for (const h of ['https://x.com/a', '//cdn/x.js', 'docs/a.md', '#top', 'mailto:a@b.c', '', null]) assert.equal(localFilePath(h), null, String(h));
 });

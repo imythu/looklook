@@ -1,0 +1,34 @@
+─────────────────────────────────────────────────
+ ☐ Version
+
+│ Today yulastleaf published 1.45.0-beta.1
+│ (bottom status bar, quota ring, Git commits,
+│ etc.) from the feat/ui-2 branch, and that code
+│ is not on main. If this release is numbered
+│ 1.45.0, Beta users count it as newer and update
+│ to it, losing those Beta features. Also, this
+│ release will include the 4 unpushed commits on
+│ main from the other session (notification
+│ digest, safety net, third-party plan usage,
+│ local web pages). Which version number should
+│ this release use?
+
+❯ 1. 1.44.1 (Recommended)
+     Lower than 1.45.0-beta.1, so Beta users stay
+     on Beta and nothing is lost; stable users
+     get these fixes and features. Downside: the
+     number is a patch bump although it contains
+     features.
+  2. 1.45.0
+     Version semantics are correct, but Beta
+     users get pulled back onto stable 1.45.0 and
+     lose the status bar and other Beta features
+     until the Beta content lands on main.
+  3. Hold off
+     Sort out the Beta branch and main with
+     yulastleaf first, then release.
+  4. Type something.
+─────────────────────────────────────────────────
+  5. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel

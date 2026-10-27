@@ -1,7 +1,7 @@
 // 设置 → Claude Code 账号：本机默认账号、另外登录的官方账号、第三方接口（Anthropic 官方格式），选一个当默认。
 // 新建的会话用默认的（开始页可以另选），之后切换默认不影响已经建好的会话。
 // 官方账号的登录由 Claude Code 自己完成（后台运行 `claude auth login`，界面显示授权页地址、收授权码），看看不经手令牌。
-import { Check, ExternalLink, Gauge, KeyRound, LogIn, Plus, Server, UserRound } from 'lucide-react';
+import { Check, Cpu, ExternalLink, Gauge, KeyRound, LogIn, Plus, Server, UserRound } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -14,6 +14,8 @@ import { Button, Card, CopyButton, ErrorNote, Field, FoldNote, Modal, Note, Pass
 import { Disclaimer, ProviderLogo } from './ModelProviders.jsx';
 
 const CUSTOM = 'custom';
+// 本机的 Ollama（docs/PLAN_2026-10-27.md §4）：检测到才出现，一键填好地址和 Key，模型从已下载的里选
+const OLLAMA = 'ollama';
 const MODEL_KEYS = ['main', 'opus', 'sonnet', 'haiku'];
 
 /** 配置显示的名字：本机默认账号没有名字；另外的官方账号登录成功后才有（登录的邮箱） */
@@ -50,12 +52,18 @@ function UsageLine({ limits }) {
     ['usage_7d', limits?.seven_day],
   ].filter(([, w]) => w);
   if (!wins.length) return <span className="muted">{t('cprof.usage_empty')}</span>;
-  return wins.map(([key, w], i) => (
-    <span key={key} className={w.used > 85 ? 'cprof-warn' : 'muted'} title={w.resets_at ? t('cprof.usage_reset', { at: formatTime(w.resets_at) }) : undefined}>
-      {i > 0 && ' · '}
-      {t(`cprof.${key}`, { used: Math.round(w.used) })}
-    </span>
-  ));
+  return (
+    <>
+      {wins.map(([key, w], i) => (
+        <span key={key} className={w.used > 85 ? 'cprof-warn' : 'muted'} title={w.resets_at ? t('cprof.usage_reset', { at: formatTime(w.resets_at) }) : undefined}>
+          {i > 0 && ' · '}
+          {t(`cprof.${key}`, { used: Math.round(w.used) })}
+        </span>
+      ))}
+      {/* 第三方接口的用量是问服务商的（不是正式接口），标明出处 */}
+      {limits.provider && <span className="muted"> · {t('cprof.usage_from', { provider: limits.provider })}</span>}
+    </>
+  );
 }
 
 /** 登录失败时 Claude Code 说的话：授权码被拒（400）换成能照着做的说明 */
@@ -210,6 +218,9 @@ function ApiForm({ initial, accepted, onClose, onSaved }) {
   const [key, setKey] = useState('');
   const [agree, setAgree] = useState(false);
   const { busy, error, run } = useAction();
+  const [local] = useLoad(() => (initial ? Promise.resolve(null) : api.get('/ollama').then((r) => r.ollama, () => null)), []);
+  const [localModel, setLocalModel] = useState('');
+  const ollama = pick === OLLAMA && local;
   // 列表到了还没选：有推荐的选第一个，没有就自定义
   useEffect(() => {
     if (pick === null && data) setPick(providers[0]?.id ?? CUSTOM);
@@ -218,10 +229,26 @@ function ApiForm({ initial, accepted, onClose, onSaved }) {
   const endpoint = chosen?.clients.find((c) => c.client === 'claude_code')?.base_url;
   const keepKey = Boolean(initial?.key_set);
   const urlChanged = !initial || pick !== (initial.provider_id ?? CUSTOM) || (pick === CUSTOM && baseUrl.trim() !== initial.base_url);
-  const ready = pick !== null && (accepted || agree) && (pick !== CUSTOM || (name.trim() && baseUrl.trim())) && (keepKey || key.trim());
+  const ready = ollama
+    ? (accepted || agree) && local.new_enough && Boolean(localModel || local.models[0])
+    : pick !== null && pick !== OLLAMA && (accepted || agree) && (pick !== CUSTOM || (name.trim() && baseUrl.trim())) && (keepKey || key.trim());
   const save = (e) => {
     e.preventDefault();
     run(async () => {
+      if (ollama) {
+        // Ollama 不认 Key（随便填），所有档位都用选的模型：Claude Code 的后台小任务默认用 haiku，本机没有
+        const m = localModel || local.models[0];
+        const r = await api.post('/claude-profiles', {
+          kind: 'api',
+          name: name.trim() || 'Ollama',
+          base_url: local.base_url,
+          api_key: 'ollama',
+          models: Object.fromEntries(MODEL_KEYS.map((k) => [k, m])),
+          accept: !accepted && agree,
+        });
+        onSaved(r);
+        return;
+      }
       const body = {
         kind: 'api',
         name: pick === CUSTOM || initial || name.trim() ? name : undefined,
@@ -266,6 +293,17 @@ function ApiForm({ initial, accepted, onClose, onSaved }) {
                 {p.tagline && <span className="small muted">{p.tagline}</span>}
               </button>
             ))}
+            {local && (
+              <button type="button" role="radio" aria-checked={pick === OLLAMA} className="launch model-option" onClick={() => setPick(OLLAMA)}>
+                <span className="model-option-head">
+                  <span className="model-logo">
+                    <Cpu size={16} />
+                  </span>
+                  <b className="grow">{t('cprof.ollama')}</b>
+                </span>
+                <span className="small muted">{t('cprof.ollama_desc', { version: local.version, count: local.models.length })}</span>
+              </button>
+            )}
             <button type="button" role="radio" aria-checked={pick === CUSTOM} className="launch model-option" onClick={() => setPick(CUSTOM)}>
               <span className="model-option-head">
                 <span className="model-logo">
@@ -288,29 +326,53 @@ function ApiForm({ initial, accepted, onClose, onSaved }) {
             </p>
           </div>
         )}
-        <Field label={t('cprof.name')} hint={pick !== CUSTOM && !initial ? t('cprof.name_hint_provider') : undefined}>
-          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={chosen?.name ?? ''} required={pick === CUSTOM} />
+        {ollama && (
+          <div className="model-detail">
+            <p className="small" style={{ margin: 0 }}>
+              {t('cprof.ollama_intro')} <span className="mono">{local.base_url}</span>
+            </p>
+            {!local.new_enough && <Note kind="warn">{t('cprof.ollama_old', { version: local.version })}</Note>}
+            {local.models.length === 0 && <Note kind="warn">{t('cprof.ollama_no_models')}</Note>}
+          </div>
+        )}
+        {ollama && local.models.length > 0 && (
+          <Field label={t('cprof.ollama_model')} hint={t('cprof.ollama_model_hint')}>
+            <select value={localModel || local.models[0]} onChange={(e) => setLocalModel(e.target.value)}>
+              {local.models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
+        <Field label={t('cprof.name')} hint={pick !== CUSTOM && !initial && !ollama ? t('cprof.name_hint_provider') : undefined}>
+          <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={ollama ? 'Ollama' : (chosen?.name ?? '')} required={pick === CUSTOM} />
         </Field>
         {pick === CUSTOM && (
           <Field label={t('model.custom_url')} hint={t('model.custom_url_hint_claude')}>
             <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com" inputMode="url" spellCheck={false} autoCapitalize="none" required />
           </Field>
         )}
-        <Field label="API Key" hint={keepKey ? t('model.key_keep') : t('model.key_hint')}>
-          <PasswordInput value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} placeholder={keepKey ? '••••••••' : 'sk-…'} />
-        </Field>
-        <FoldNote summary={t('cprof.models')}>
-          <p className="small muted" style={{ marginTop: 0 }}>
-            {t('cprof.models_hint')}
-          </p>
-          <div className="cprof-models">
-            {MODEL_KEYS.map((k) => (
-              <Field key={k} label={t(`cprof.model.${k}`)}>
-                <input className="mono" value={models[k]} onChange={(e) => setModels({ ...models, [k]: e.target.value })} maxLength={100} spellCheck={false} autoCapitalize="none" />
-              </Field>
-            ))}
-          </div>
-        </FoldNote>
+        {!ollama && (
+          <>
+            <Field label="API Key" hint={keepKey ? t('model.key_keep') : t('model.key_hint')}>
+              <PasswordInput value={key} onChange={(e) => setKey(e.target.value)} autoComplete="off" spellCheck={false} placeholder={keepKey ? '••••••••' : 'sk-…'} />
+            </Field>
+            <FoldNote summary={t('cprof.models')}>
+              <p className="small muted" style={{ marginTop: 0 }}>
+                {t('cprof.models_hint')}
+              </p>
+              <div className="cprof-models">
+                {MODEL_KEYS.map((k) => (
+                  <Field key={k} label={t(`cprof.model.${k}`)}>
+                    <input className="mono" value={models[k]} onChange={(e) => setModels({ ...models, [k]: e.target.value })} maxLength={100} spellCheck={false} autoCapitalize="none" />
+                  </Field>
+                ))}
+              </div>
+            </FoldNote>
+          </>
+        )}
         <ErrorNote error={error} />
         <div className="modal-actions">
           <Button variant="ghost" onClick={onClose}>
@@ -346,7 +408,7 @@ function ProfileRow({ p, isDefault, busy, nonce, onDefault, onLogin, onEdit, onR
     if (r.status && !r.status.error) setFresh(r.status);
     setUsage(r.state === 'ok' ? r : r.state === 'logged_out' ? { state: 'logged_out' } : null);
     if (r.state === 'logged_out') toast(t('cprof.expired_toast', { name: profileName(t, p) }), 'error');
-    else if (r.state === 'no_limits') toast(t('cprof.usage_none'), 'error');
+    else if (r.state === 'no_limits') toast(t(official ? 'cprof.usage_none' : 'cprof.usage_none_api'), 'error');
     else if (r.state === 'failed') toast(t('cprof.usage_failed'), 'error');
   };
   useEffect(() => {
@@ -387,7 +449,7 @@ function ProfileRow({ p, isDefault, busy, nonce, onDefault, onLogin, onEdit, onR
             </>
           )}
         </span>
-        {official && loggedIn && usage?.state === 'ok' && (
+        {(loggedIn || !official) && usage?.state === 'ok' && (
           <span className="small" style={{ display: 'block' }}>
             <UsageLine limits={usage.limits} />
           </span>
@@ -404,6 +466,11 @@ function ProfileRow({ p, isDefault, busy, nonce, onDefault, onLogin, onEdit, onR
               {t('cprof.login')}
             </Button>
           ))}
+        {!official && p.quota && p.key_set && (
+          <Button variant="ghost" icon={Gauge} onClick={queryUsage} busy={q.busy} disabled={busy} title={t('cprof.usage_hint_api')}>
+            {t('cprof.usage')}
+          </Button>
+        )}
         {(p.id !== 'official' || loggedIn) && (
           <PopMenu
             label={t('action.more')}

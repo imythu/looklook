@@ -98,6 +98,13 @@ pub async fn put_rules(State(app): State<App>, Json(mut r): Json<Rules>) -> R<Js
     if !matches!(r.lang.as_str(), "zh-CN" | "en-US") {
         r.lang = "zh-CN".into();
     }
+    if r.quiet.as_ref().is_some_and(|q| !q.valid()) {
+        return Err(LocalError::invalid("quiet", "invalid"));
+    }
+    if !matches!(r.done_batch, 0 | 10 | 30 | 60) {
+        return Err(LocalError::invalid("done_batch", "invalid"));
+    }
+    r.stall_min = r.stall_min.min(240);
     notify::save_rules(&app, &r)?;
     Ok(Json(view(&app)))
 }

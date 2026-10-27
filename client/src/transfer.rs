@@ -373,49 +373,8 @@ fn part_path(dir: &Path, name: &str) -> PathBuf {
 
 /// 本机时间 `YYYYMMDD-HHMMSS`（文件名用）
 fn stamp() -> String {
-    let (y, mo, d, h, mi, s) = local_now();
+    let (y, mo, d, h, mi, s) = crate::util::local_now();
     format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
-}
-
-#[cfg(unix)]
-fn local_now() -> (i32, u32, u32, u32, u32, u32) {
-    unsafe {
-        let t = libc::time(std::ptr::null_mut());
-        let mut tm: libc::tm = std::mem::zeroed();
-        if libc::localtime_r(&t, &mut tm).is_null() {
-            return utc_now();
-        }
-        (tm.tm_year + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32, tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32)
-    }
-}
-
-#[cfg(windows)]
-fn local_now() -> (i32, u32, u32, u32, u32, u32) {
-    #[repr(C)]
-    #[derive(Default)]
-    struct SystemTime {
-        year: u16,
-        month: u16,
-        day_of_week: u16,
-        day: u16,
-        hour: u16,
-        minute: u16,
-        second: u16,
-        ms: u16,
-    }
-    #[link(name = "kernel32")]
-    extern "system" {
-        fn GetLocalTime(t: *mut SystemTime);
-    }
-    let mut t = SystemTime::default();
-    unsafe { GetLocalTime(&mut t) };
-    (t.year as i32, t.month as u32, t.day as u32, t.hour as u32, t.minute as u32, t.second as u32)
-}
-
-#[cfg_attr(windows, allow(dead_code))]
-fn utc_now() -> (i32, u32, u32, u32, u32, u32) {
-    let t = time::OffsetDateTime::now_utc();
-    (t.year(), t.month() as u32, t.day() as u32, t.hour() as u32, t.minute() as u32, t.second() as u32)
 }
 
 // ---------------- 分块上传 ----------------
@@ -819,6 +778,8 @@ pub async fn download(path: &str) -> R<Response> {
 
 /// 预览最多读这么多字节；更大的文件界面提示下载。
 pub const PREVIEW_MAX: u64 = 1024 * 1024;
+/// 图片截断了就显示不出来：对话里引用的截图常常超过 [`PREVIEW_MAX`]，单独放宽
+const PREVIEW_IMAGE_MAX: u64 = 20 * 1024 * 1024;
 
 pub async fn preview(path: &str) -> R<Response> {
     use tokio::io::AsyncReadExt;
@@ -840,10 +801,11 @@ pub async fn preview(path: &str) -> R<Response> {
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => return Err(LocalError::new("FORBIDDEN").with("path", path)),
         Err(e) => return Err(e.into()),
     };
-    let mut buf = Vec::with_capacity(m.len().min(PREVIEW_MAX) as usize);
-    f.take(PREVIEW_MAX).read_to_end(&mut buf).await?;
     let ext = p.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     let kind = preview_type(&ext);
+    let max = if kind.starts_with("image/") { PREVIEW_IMAGE_MAX } else { PREVIEW_MAX };
+    let mut buf = Vec::with_capacity(m.len().min(max) as usize);
+    f.take(max).read_to_end(&mut buf).await?;
     Ok((
         [
             (header::CONTENT_TYPE, kind.to_string()),
@@ -909,6 +871,11 @@ mod tests {
         assert_eq!(r.headers()["x-looklook-size"], (PREVIEW_MAX + 10).to_string().as_str());
         let body = axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.len() as u64, PREVIEW_MAX);
+        let png = tmp.path().join("shot.png");
+        std::fs::write(&png, vec![0u8; PREVIEW_MAX as usize + 10]).unwrap();
+        let r = preview(&png.display().to_string()).await.ok().unwrap();
+        assert_eq!(r.headers()["content-type"], "image/png");
+        assert_eq!(axum::body::to_bytes(r.into_body(), usize::MAX).await.unwrap().len() as u64, PREVIEW_MAX + 10, "图片不截断");
         assert!(preview("relative/path").await.is_err());
         assert!(preview(&tmp.path().display().to_string()).await.is_err(), "目录不能预览");
     }

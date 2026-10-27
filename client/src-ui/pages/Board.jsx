@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api, terminalDevice } from '../shared/api.js';
-import { boardSort, boardSpan, boardState, boardSummary, BOARD_GROUPS } from '../shared/board.js';
+import { awayRecap, boardSort, boardSpan, boardState, boardSummary, useAwaySince, BOARD_GROUPS } from '../shared/board.js';
 import { DeviceTag, LaunchIcon } from '../shared/brands.jsx';
 import { useDevices } from '../shared/devices.jsx';
 import { errorText } from '../shared/i18n.js';
@@ -95,7 +95,7 @@ function Row({ i, state, selected, onSelect, now, act }) {
   const sum = boardSummary(t, i, act);
   const span = boardSpan(i, now);
   const title = c.title || i.name || baseName(i.workdir);
-  const risk = state === 'attn' && c.attn?.risk === 'high';
+  const risk = state === 'attn' && (c.attn?.risk === 'high' || Boolean(c.attn?.guard));
   return (
     <button type="button" className={`bd-row bd-${state} ${selected ? 'selected' : ''}`} onClick={onSelect} aria-expanded={selected}>
       <StateIcon state={state} outcome={c.turn?.outcome} />
@@ -142,7 +142,7 @@ function Peek({ i, state, onOpen }) {
   };
   const answer = (decision, extra = {}) => run(decision, () => api.post(`/instances/${i.id}/chat/permission`, { id: a.pending_id, decision, ...extra }));
   const allow = async () => {
-    if (a.risk === 'high' && !(await confirm({ title: t('board.confirm_high_title'), body: a.detail, confirm: t('board.allow'), danger: true }))) return;
+    if ((a.risk === 'high' || a.guard) && !(await confirm({ title: t('board.confirm_high_title'), body: a.detail, confirm: t('board.allow'), danger: true }))) return;
     answer('allow');
   };
   const reply = (label) => answer('answer', { answers: { [a.question ?? a.detail]: label } });
@@ -165,10 +165,10 @@ function Peek({ i, state, onOpen }) {
       <>
         <p className="bd-peek-lead">{t('board.wants', { agent, tool: a.tool })}</p>
         {a.detail && <pre className="bd-code">{a.detail}</pre>}
-        {a.risk === 'high' && (
+        {(a.risk === 'high' || a.guard) && (
           <p className="bd-warn">
             <AlertTriangle size={16} aria-hidden="true" />
-            {t('board.risk_high_note')}
+            {a.guard ? t('chat.guard_hit', { rule: a.guard }) : t('board.risk_high_note')}
           </p>
         )}
       </>
@@ -286,6 +286,7 @@ export default function Board() {
   const [pick, setPick] = useState(null);
   const [showRest, setShowRest] = useState(false);
   const feishuDown = useFeishuDown();
+  const [awaySince, dismissAway] = useAwaySince();
 
   const groups = useMemo(() => {
     const g = { attn: [], working: [], ended: [], idle: [], stopped: [] };
@@ -310,6 +311,7 @@ export default function Board() {
   }
   const empty = all.length === 0;
   const counts = t('board.counts', { attn: groups.attn.length, working: groups.working.length });
+  const away = awayRecap(sessions.items, awaySince, now);
   return (
     <div className="board">
       <header className="bd-head">
@@ -321,6 +323,17 @@ export default function Board() {
           <Note kind="warn">
             {t('board.feishu_down')} <Link to="/settings#notify">{t('board.feishu_down_fix')}</Link>
           </Note>
+        </div>
+      )}
+      {away && (
+        <div className="bd-away" role="status">
+          <span className="grow">
+            {t('board.away', { span: spanText(t, away.span) })}
+            {[away.done > 0 && t('board.away_done', { n: away.done }), away.failed > 0 && t('board.away_failed', { n: away.failed }), away.attn > 0 && t('board.away_attn', { n: away.attn })].filter(Boolean).join(t('board.away_sep'))}
+          </span>
+          <button type="button" className="btn btn-plain btn-icon" onClick={dismissAway} aria-label={t('action.close')} title={t('action.close')}>
+            <X size={16} />
+          </button>
         </div>
       )}
       <div className={`bd-body ${!narrow && selected ? 'with-side' : ''}`}>

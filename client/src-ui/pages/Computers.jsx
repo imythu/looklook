@@ -13,6 +13,7 @@ import { platform } from '../shared/platform.js';
 import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { Button, Card, Empty, ErrorNote, Field, Modal, Note, PasswordInput, Skeleton, Time, useAction, useLoad, useToast } from '../shared/ui.jsx';
+import InstallKeysCard from './InstallKeys.jsx';
 import { SourceTag } from './Membership.jsx';
 
 /** 这台电脑的专属地址，直接连到指定的电脑。 */
@@ -174,9 +175,9 @@ export default function Computers() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   // 本机：App 里是这台电脑自己（多台时是列表的 default，选中别的电脑后状态来自那台）
+  const session = status.account.session;
   const hereId = rtcMode ? null : devices.multi ? devices.def : session.device_id;
   const currentId = devices.multi ? devices.selected : rtcMode ? session.device_id : null;
-  const session = status.account.session;
   const hostUrl = session.user_host_url;
   const items = data?.items ?? [];
   const max = data?.max ?? 7;
@@ -246,6 +247,7 @@ export default function Computers() {
           </a>
         </div>
       </Card>
+      <InstallKeysCard />
       {data?.history?.length > 0 && (
         <Card title={t('acct.history')}>
           <ul className="list">

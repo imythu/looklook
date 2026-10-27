@@ -25,6 +25,7 @@
 mod account;
 mod agents;
 mod chat;
+mod checkpoint;
 mod claude_profiles;
 mod clock;
 mod diag;
@@ -34,6 +35,7 @@ mod feishu;
 mod fsops;
 mod gateway;
 mod git;
+mod guard;
 mod history;
 mod hardening;
 mod instances;
@@ -43,7 +45,9 @@ mod model;
 mod notify;
 mod paths;
 mod platform;
+mod ports;
 mod proctree;
+mod provider_quota;
 mod relay;
 mod relay_watch;
 mod rtc;
@@ -103,6 +107,9 @@ const HELP_EXAMPLES: &str = "\
 没有图形界面的服务器 / Servers without a desktop:
   looklook login            登录：显示授权码和二维码，用手机或任意浏览器批准
                             Sign in: shows a code and QR code to approve from your phone or any browser
+  looklook login --key LLK-…
+                            用安装密钥直接登录（云服务器、开机脚本；在网页“我的电脑”页生成）
+                            Sign in with an install key (cloud servers, startup scripts)
   looklook status           查看登录状态 / Show sign-in status
   looklook upgrade          升级到最新版本 / Upgrade to the latest version
   looklook access lan on    允许局域网设备打开管理台 / Let LAN devices open the console
@@ -139,7 +146,11 @@ enum Cmd {
         action: Option<RtcCmd>,
     },
     /// 登录看看账户（在手机或任意浏览器上批准）/ Sign in (approve from your phone or any browser)
-    Login,
+    Login {
+        /// 安装密钥（网页“电脑”页生成，LLK- 开头），不用到浏览器里批准 / Install key (LLK-…, made on the Devices page); no browser approval needed
+        #[arg(long, env = "LOOKLOOK_INSTALL_KEY", hide_env_values = true)]
+        key: Option<String>,
+    },
     /// 退出登录 / Sign out
     Logout {
         /// 连不上服务器时也清除本机登录 / Clear the local sign-in even if the server can't be reached
@@ -281,7 +292,7 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Access { action }) => rt.block_on(cli_access(&cli.home, cli_listen, action)),
         Some(Cmd::Rtc { action }) => rt.block_on(cli_rtc(&cli.home, cli_listen, action)),
-        Some(Cmd::Login) => rt.block_on(cli_login(&cli.home, cli_listen)),
+        Some(Cmd::Login { key }) => rt.block_on(cli_login(&cli.home, cli_listen, key)),
         Some(Cmd::Logout { force }) => {
             let v = rt.block_on(call(&cli.home, cli_listen, "POST", "/api/auth/logout", Some(json!({ "force": force }))))?;
             print_status(&v);
@@ -749,26 +760,36 @@ Can't reach the Looklook client. Start it with: looklook run (installed as a ser
 
 /// 授权登录：打印授权码、网址和二维码，等用户在任意设备（通常是手机）的浏览器里批准。
 /// 没有图形界面的服务器就靠它登录；Ctrl+C 取消。
-async fn cli_login(home: &Option<PathBuf>, listen: SocketAddr) -> Result<()> {
+async fn cli_login(home: &Option<PathBuf>, listen: SocketAddr, key: Option<String>) -> Result<()> {
     let st = call(home, listen, "GET", "/api/status", None).await?;
     if st["account"]["logged_in"].as_bool() == Some(true) {
         print_status(&st["account"]);
         println!("要换账户，先运行 looklook logout / To switch accounts, run looklook logout first");
         return Ok(());
     }
-    let v = call(home, listen, "POST", "/api/auth/login", Some(json!({}))).await?;
-    let url = v["verification_url"].as_str().unwrap_or("-");
-    println!("用手机扫描二维码，或在任意设备的浏览器中打开下面的网址，核对授权码后批准这台电脑：");
-    println!("Scan the QR code with your phone, or open the link in any browser, check the code and approve this computer:");
-    if let Some(qr) = qr_text(url) {
-        println!("\n{qr}");
-    }
-    println!("  网址 / Link: {url}");
-    println!("  授权码 / Code: {}", v["user_code"].as_str().unwrap_or("-"));
-    let minutes = v["expires_in"].as_u64().map(|s| s.div_ceil(60)).unwrap_or(10);
-    println!("\n等待批准…（{minutes} 分钟内有效，Ctrl+C 取消）/ Waiting for approval… (valid for {minutes} min, Ctrl+C to cancel)");
-    if util::has_desktop() {
-        util::open_url(url);
+    let key = key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty());
+    if let Some(k) = &key {
+        // 安装密钥：平台直接批准，不用扫码、不开浏览器（云服务器、开机脚本）
+        if !k.starts_with("LLK-") {
+            bail!("安装密钥是 LLK- 开头的 / Install keys start with LLK-");
+        }
+        call(home, listen, "POST", "/api/auth/login", Some(json!({ "install_key": k }))).await?;
+        println!("用安装密钥登录… / Signing in with the install key…");
+    } else {
+        let v = call(home, listen, "POST", "/api/auth/login", Some(json!({}))).await?;
+        let url = v["verification_url"].as_str().unwrap_or("-");
+        println!("用手机扫描二维码，或在任意设备的浏览器中打开下面的网址，核对授权码后批准这台电脑：");
+        println!("Scan the QR code with your phone, or open the link in any browser, check the code and approve this computer:");
+        if let Some(qr) = qr_text(url) {
+            println!("\n{qr}");
+        }
+        println!("  网址 / Link: {url}");
+        println!("  授权码 / Code: {}", v["user_code"].as_str().unwrap_or("-"));
+        let minutes = v["expires_in"].as_u64().map(|s| s.div_ceil(60)).unwrap_or(10);
+        println!("\n等待批准…（{minutes} 分钟内有效，Ctrl+C 取消）/ Waiting for approval… (valid for {minutes} min, Ctrl+C to cancel)");
+        if util::has_desktop() {
+            util::open_url(url);
+        }
     }
     let wait = async {
         loop {
@@ -980,6 +1001,8 @@ fn cli_error(code: &str, params: &Value) -> String {
     match code {
         "AUTHORIZATION_EXPIRED" => "授权已过期，请重新运行 looklook login / The code expired; run looklook login again".into(),
         "AUTHORIZATION_DENIED" => "授权被拒绝 / Sign-in was denied".into(),
+        "INSTALL_KEY_INVALID" => "安装密钥不对、已过期、已撤销或次数用完了，请在看看网页的“电脑”页重新生成 / The install key is wrong, expired, revoked or used up; make a new one on the Devices page".into(),
+        "INSTALL_KEY_UNSUPPORTED" => "这个看看服务器还不支持安装密钥，请改用 looklook login（不带 --key）/ This Looklook server doesn't support install keys yet; use looklook login without --key".into(),
         "DEVICE_ALREADY_LOGGED_IN" => {
             let name = params["device_name"].as_str().unwrap_or("另一台电脑 / another computer");
             format!(

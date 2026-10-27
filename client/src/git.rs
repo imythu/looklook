@@ -25,10 +25,18 @@ fn git_bin() -> R<String> {
 
 /// 在 `dir` 里运行 git，超时就结束它。返回完整输出（不检查退出码）。
 fn run(dir: &Path, args: &[&str], timeout: Duration) -> R<Output> {
+    run_env(dir, args, &[], timeout)
+}
+
+/// 同 [`run`]，另外带上环境变量（检查点用自己的 index，见 checkpoint.rs）
+pub(crate) fn run_env(dir: &Path, args: &[&str], env: &[(&str, &std::ffi::OsStr)], timeout: Duration) -> R<Output> {
     let mut cmd = Command::new(git_bin()?);
     cmd.arg("-C").arg(dir).args(["-c", "core.quotepath=false", "-c", "color.ui=false"]).args(args);
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     cmd.env("GIT_TERMINAL_PROMPT", "0").env("LC_ALL", "C").env("GIT_OPTIONAL_LOCKS", "0");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -76,7 +84,7 @@ fn run_ok(dir: &Path, args: &[&str], timeout: Duration) -> R<String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn failed(out: &Output) -> LocalError {
+pub(crate) fn failed(out: &Output) -> LocalError {
     let text = String::from_utf8_lossy(if out.stderr.is_empty() { &out.stdout } else { &out.stderr }).trim().to_string();
     let tail: Vec<&str> = text.lines().rev().take(12).collect();
     let detail: String = tail.into_iter().rev().collect::<Vec<_>>().join("\n").chars().take(2000).collect();
@@ -88,7 +96,7 @@ fn failed(out: &Output) -> LocalError {
 }
 
 /// 仓库根目录；不是仓库时为 None。
-fn toplevel(dir: &Path) -> R<Option<PathBuf>> {
+pub(crate) fn toplevel(dir: &Path) -> R<Option<PathBuf>> {
     if !dir.is_dir() {
         return Err(LocalError::not_found().with("path", dir.display().to_string()));
     }
@@ -346,7 +354,7 @@ pub struct Diff {
     pub binary: bool,
 }
 
-fn cap(bytes: &[u8]) -> Diff {
+pub(crate) fn cap(bytes: &[u8]) -> Diff {
     let truncated = bytes.len() > DIFF_MAX;
     let mut text = String::from_utf8_lossy(&bytes[..bytes.len().min(DIFF_MAX)]).into_owned();
     if truncated {

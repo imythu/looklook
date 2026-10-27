@@ -182,7 +182,7 @@
   "DSH_NEEDS_PERSISTENT": "DSH needs terminals that keep running in the background, which this computer doesn't support",
   "MODEL_KEY_REQUIRED": "Please enter an API key",
   "MODEL_DISCLAIMER_REQUIRED": "Please read and accept the disclaimer first",
-  "MODEL_URL_UNSUPPORTED": "Unsupported endpoint: it must start with https:// and the path may only contain letters, digits and - . _ ~ /",
+  "MODEL_URL_UNSUPPORTED": "Unsupported API address: it must start with https:// (http://localhost is allowed for local services), and the path may only contain letters, digits and - . _ ~ /",
   "MODEL_PROVIDER_GONE": "This provider is no longer available for this client. Refresh and choose again.",
   "FILE_EXISTS": "A file or folder with that name already exists. Pick another name.",
   "GIT_MISSING": "Git isn’t installed on this computer. Install Git and try again.",
@@ -233,6 +233,8 @@
   "CODEX_APP_SERVER": "The Codex background service didn't start: {{detail}}",
   "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer ({{detail}})",
   "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}",
+  "CODEX_HOOKS_CHANGED": "These hooks changed again. Review the new version, then confirm.",
+  "CODEX_UPDATE_MANUAL": "This Codex wasn't installed with npm. Update it the way you installed it.",
   "CHAT_TERMINAL_ONLY": "The chat can't reach Codex right now; use the terminal for now",
   "CODEX_TERMINAL_BUSY": "The program in the terminal didn't exit. Quit it in the terminal, then reconnect",
   "CODEX_TERMINAL_STOPPED": "The terminal isn't running. Start it first",
@@ -245,5 +247,10 @@
   "NOTIFY_NOT_CONFIGURED": "Feishu notifications aren't set up yet.",
   "NOTIFY_NOT_BOUND": "No Feishu account is bound yet.",
   "NOTIFY_SIGNATURE": "The forwarded Feishu action has a bad signature.",
-  "NOTIFY_PROTOCOL": "Couldn't forward the Feishu action between computers. They may be running different LookLook versions."
+  "NOTIFY_PROTOCOL": "Couldn't forward the Feishu action between computers. They may be running different LookLook versions.",
+  "CHECKPOINT_BUSY": "The AI is still working. Stop this turn first, then restore.",
+  "CHECKPOINT_MOVED": "The session's folder is no longer the repository this checkpoint was taken in, so it can't be restored.",
+  "CHECKPOINT_GONE": "Git has cleaned up this checkpoint's contents, so it can't be compared or restored.",
+  "INSTALL_KEY_INVALID": "The install key is wrong, expired, revoked or used up. Make a new one on the Devices page of the Looklook website.",
+  "INSTALL_KEY_UNSUPPORTED": "This Looklook server doesn't support install keys yet. Sign in through the browser instead."
 }

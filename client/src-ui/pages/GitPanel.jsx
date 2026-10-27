@@ -1,13 +1,14 @@
 // 终端页的 “Git” 标签（只读）：终端当前目录所在仓库的分支、改动、提交历史；点文件或提交在右边看对比。
 // 暂存、提交、拉取、推送交给终端（AI 编程助手或 git 命令）。手机上列表和对比分两屏。
-import { ArrowDown, ArrowLeft, ArrowUp, Check, GitBranch, GitCommitHorizontal, History, RefreshCw } from 'lucide-react';
+// 唯一会改文件的是“检查点”：每轮开始自动拍的快照，可以看之后改了什么、回到那一轮之前（docs/PLAN_2026-10-27.md §3.3）。
+import { ArrowDown, ArrowLeft, ArrowUp, Check, GitBranch, GitCommitHorizontal, History, RefreshCw, RotateCcw } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { relativeTime } from '../shared/time.js';
-import { Button, Empty } from '../shared/ui.jsx';
+import { Button, Empty, useConfirm, useToast } from '../shared/ui.jsx';
 
 const POLL_MS = 5000;
 
@@ -76,7 +77,7 @@ function FileRow({ f, selected, onOpen }) {
   );
 }
 
-function DiffView({ view, onBack, narrow }) {
+function DiffView({ view, onBack, narrow, onRestore, restoring }) {
   const { t } = useTranslation();
   const lines = useMemo(() => parseDiff(view?.data?.text), [view?.data?.text]);
   if (!view) {
@@ -99,6 +100,11 @@ function DiffView({ view, onBack, narrow }) {
         )}
         <b className="ellipsis grow mono" title={view.title}>{view.title}</b>
         {view.tag && <span className="badge">{view.tag}</span>}
+        {view.cp && data && (
+          <Button variant="secondary" icon={RotateCcw} busy={restoring} disabled={!data.files?.length} onClick={() => onRestore(view.cp, data)}>
+            {t('git.cp_restore')}
+          </Button>
+        )}
       </div>
       <div className="git-diff-body">
         {error ? (
@@ -131,9 +137,63 @@ function DiffView({ view, onBack, narrow }) {
   );
 }
 
+/** 检查点列表：新的在前，每个写着之后改了几个文件 */
+function Checkpoints({ id, active, view, onOpen, reloadKey }) {
+  const { t } = useTranslation();
+  const [state, setState] = useState({});
+  useEffect(() => {
+    if (!active) return undefined;
+    let live = true;
+    const load = () =>
+      api.get(`/instances/${id}/checkpoints`).then(
+        (data) => live && setState({ data }),
+        (error) => live && setState((s) => ({ data: s.data, error })),
+      );
+    load();
+    const iv = setInterval(() => !document.hidden && load(), POLL_MS * 2);
+    return () => {
+      live = false;
+      clearInterval(iv);
+    };
+  }, [id, active, reloadKey]);
+  const items = state.data?.items ?? [];
+  const now = Date.now();
+  return (
+    <div className="git-scroll">
+      <p className="muted small fb-pad">{t('git.cp_lead')}</p>
+      {state.error && <pre className="git-error">{errorText(t, state.error)}</pre>}
+      {state.data && items.length === 0 && <p className="muted small fb-pad">{t('git.cp_none')}</p>}
+      <ol className="git-log" style={{ margin: 0, padding: 0 }}>
+        {items.map((c) => (
+          <li key={c.id}>
+            <button type="button" className={`git-commit-item ${view?.key === `cp:${c.id}` ? 'selected' : ''}`} onClick={() => onOpen(c)} disabled={c.missing}>
+              <span className={`git-node ${c.before_restore ? '' : 'head'}`} aria-hidden="true" />
+              <span className="git-commit-text">
+                <span className="ellipsis git-subject">{cpTitle(t, c)}</span>
+                <span className="small muted ellipsis">
+                  {relativeTime(t, new Date(c.id).toISOString(), now)} · {c.missing ? t('git.cp_missing') : c.changed ? t('git.cp_changed', { count: c.changed }) : t('git.cp_same')}
+                </span>
+              </span>
+            </button>
+          </li>
+        ))}
+      </ol>
+    </div>
+  );
+}
+
+function cpTitle(t, c) {
+  if (c.before_restore) return t('git.cp_before_restore', { label: c.label || t('git.cp_unnamed') });
+  return c.label || t('git.cp_unnamed');
+}
+
 /** `id` 终端；`active` 标签可见（不可见时不刷新）。 */
 export default function GitPanel({ id, active }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
+  const toast = useToast();
+  const [restoring, setRestoring] = useState(false);
+  const [cpReload, setCpReload] = useState(0);
   const [state, setState] = useState({ loading: true });
   const [mode, setMode] = useState('changes');
   const [view, setView] = useState(null); // { key, title, tag, data?, error? }
@@ -188,6 +248,34 @@ export default function GitPanel({ id, active }) {
     }
   };
 
+  const openCheckpoint = async (c) => {
+    const key = `cp:${c.id}`;
+    setView({ key, title: cpTitle(t, c), tag: relativeTime(t, new Date(c.id).toISOString(), Date.now()), cp: c });
+    try {
+      const d = await api.get(`/instances/${id}/checkpoints/${c.id}/diff`);
+      setView((v) => (v?.key === key ? { ...v, data: d } : v));
+    } catch (error) {
+      setView((v) => (v?.key === key ? { ...v, error } : v));
+    }
+  };
+  const restore = async (c, d) => {
+    const added = d.files.filter((f) => f.status === 'A').length;
+    const body = t('git.cp_restore_body', { count: d.files.length }) + (added ? ` ${t('git.cp_restore_added', { count: added })}` : '');
+    if (!(await confirm({ title: t('git.cp_restore_title'), body, confirm: t('git.cp_restore'), danger: true }))) return;
+    setRestoring(true);
+    try {
+      await api.post(`/instances/${id}/checkpoints/${c.id}/restore`, {});
+      toast(t('git.cp_restored'));
+      setView(null);
+      setCpReload((n) => n + 1);
+      load();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setRestoring(false);
+    }
+  };
+
   if (state.error && !data) {
     return (
       <div className="git git-center">
@@ -235,9 +323,15 @@ export default function GitPanel({ id, active }) {
               <History size={14} aria-hidden="true" />
               {t('git.history')}
             </button>
+            <button type="button" role="tab" aria-pressed={mode === 'checkpoints'} onClick={() => setMode('checkpoints')}>
+              <RotateCcw size={14} aria-hidden="true" />
+              {t('git.checkpoints')}
+            </button>
           </div>
 
-          {mode === 'changes' ? (
+          {mode === 'checkpoints' ? (
+            <Checkpoints id={id} active={active} view={view} onOpen={openCheckpoint} reloadKey={cpReload} />
+          ) : mode === 'changes' ? (
             <div className="git-scroll">
               {nChanges === 0 && (
                 <Empty icon={Check} title={t('git.clean_title')}>
@@ -278,7 +372,7 @@ export default function GitPanel({ id, active }) {
           )}
         </aside>
       )}
-      {(!narrow || view) && <DiffView view={view} narrow={narrow} onBack={() => setView(null)} />}
+      {(!narrow || view) && <DiffView view={view} narrow={narrow} onBack={() => setView(null)} onRestore={restore} restoring={restoring} />}
     </div>
   );
 }

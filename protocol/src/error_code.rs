@@ -56,6 +56,7 @@ error_codes! {
     AuthorizationPending = 400,
     AuthorizationExpired = 410,
     AuthorizationDenied = 403,
+    InstallKeyInvalid = 401,
     ClientVersionUnsupported = 426,
     SignatureMissing = 401,
     SignatureInvalid = 401,

@@ -275,6 +275,45 @@ pub async fn file(State(app): State<App>, Path(id): Path<String>, Query(q): Quer
 }
 
 /// 对话产出的文件（Codex 新建、改过、提到过的本机文件）
+/// `GET /api/instances/{id}/chat/setup`：要用户先处理的——工作目录里新的、改过的 hook（Codex 要信任过才运行）、还没登录
+pub async fn setup(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    Ok(Json(app.chat.setup(&id).await?))
+}
+
+#[derive(Deserialize)]
+pub struct HooksReq {
+    trust: bool,
+    /// 界面上列出的 `{ key, hash }`
+    hooks: Vec<HookRef>,
+}
+
+#[derive(Deserialize)]
+pub struct HookRef {
+    key: String,
+    hash: String,
+}
+
+#[derive(Deserialize)]
+pub struct UpdateReq {
+    /// true：开始更新；false：跳过这个版本
+    install: bool,
+}
+
+/// `POST /api/instances/{id}/chat/codex-update`：更新 Codex（返回安装任务，进度看 `GET /tools/install/codex`）或跳过这个版本
+pub async fn codex_update(State(app): State<App>, Path(id): Path<String>, Json(req): Json<UpdateReq>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    app.store.instance(&id)?.ok_or_else(LocalError::not_found)?;
+    Ok(Json(app.chat.codex_update(req.install).await?))
+}
+
+/// `POST /api/instances/{id}/chat/hooks`：信任（`trust: true`）或跳过这几条
+pub async fn hooks_answer(State(app): State<App>, Path(id): Path<String>, Json(req): Json<HooksReq>) -> R<StatusCode> {
+    require_allowed(&app)?;
+    let picked: Vec<(String, String)> = req.hooks.into_iter().map(|h| (h.key, h.hash)).collect();
+    app.chat.hooks_answer(&id, req.trust, &picked).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn artifacts(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     Ok(Json(app.chat.artifacts(&id).await?))
 }

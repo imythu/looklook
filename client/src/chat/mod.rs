@@ -107,6 +107,8 @@ struct Pending {
     kind: &'static str,
     input: Value,
     suggestions: Value,
+    /// 命令规则要人确认的（规则的样子，见 guard.rs）：答复给 PreToolUse，不能“以后都允许”，也不能交给终端
+    guard: Option<String>,
     tx: Option<oneshot::Sender<String>>,
 }
 
@@ -174,6 +176,8 @@ struct State {
     compacting: Option<Instant>,
     /// 看板（board.rs）：进入当前状态的时间（毫秒）
     since: i64,
+    /// 最近一次有进展的时间（毫秒）：hook 事件、Codex 事件、状态变化。卡住提醒用（docs/PLAN_2026-10-27.md §2）
+    active_at: i64,
     /// 看板：这一轮、看过没有、标题（存在本机数据库里）
     board: board::Meta,
     /// `board` 改了、还没存
@@ -350,6 +354,7 @@ impl Chat {
                         drawn: false,
                         compacting: None,
                         since: crate::util::system_ms(),
+                        active_at: 0,
                         board: meta,
                         board_dirty: false,
                         end_hint: None,
@@ -435,6 +440,7 @@ impl Chat {
                 "tool": p.tool,
                 "input": p.input,
                 "suggestions": p.suggestions,
+                "guard": p.guard,
             })),
         })
     }
@@ -471,6 +477,7 @@ impl Chat {
         let now = crate::util::system_ms();
         let (was, since) = (st.phase, st.since);
         st.since = now;
+        st.active_at = now;
         let active = st.board.turn.as_ref().is_some_and(board::Turn::active);
         match phase {
             Phase::Running | Phase::Approval if !active => {
@@ -516,6 +523,7 @@ impl Chat {
         let rebound = {
             let mut st = lock(&inst.st);
             st.last_hook = Some(Instant::now());
+            st.active_at = crate::util::system_ms();
             if let Some(m) = ev["permission_mode"].as_str() {
                 st.mode = Some(m.to_string());
             }
@@ -563,7 +571,8 @@ impl Chat {
                     }
                 }
                 "PostToolUse" | "PostToolUseFailure" | "PermissionDenied" => {
-                    if st.pending.as_ref().is_some_and(|p| Some(&p.tool) == tool.as_ref()) {
+                    // 命令规则挂起的确认还在等：同时跑的另一条命令结束了，不能把它放掉
+                    if st.pending.as_ref().is_some_and(|p| Some(&p.tool) == tool.as_ref() && p.guard.is_none()) {
                         Self::drop_pending(&mut st);
                     }
                     Self::set_phase(&inst, &mut st, Phase::Running, None);
@@ -641,6 +650,15 @@ impl Chat {
         if name == "PermissionRequest" {
             return self.permission_request(&inst, tool.unwrap_or_default(), &ev).await;
         }
+        if name == "UserPromptSubmit" {
+            self.checkpoint_turn(id, ev["prompt"].as_str().unwrap_or_default(), true).await;
+        }
+        if name == "PreToolUse" && tool.as_deref() == Some("Bash") {
+            let hit = ev["tool_input"]["command"].as_str().and_then(|c| crate::guard::check(&crate::guard::load(&self.store), c));
+            if let Some(hit) = hit {
+                return self.guard_request(&inst, hit, &ev).await;
+            }
+        }
         String::new()
     }
 
@@ -686,7 +704,7 @@ impl Chat {
             let mut st = lock(&inst.st);
             Self::drop_pending(&mut st);
             let kind = inst.agent.pending_kind(&tool);
-            st.pending = Some(Pending { id, at: Instant::now(), tool, kind, input: ev["tool_input"].clone(), suggestions: ev["permission_suggestions"].clone(), tx: Some(tx) });
+            st.pending = Some(Pending { id, at: Instant::now(), tool, kind, input: ev["tool_input"].clone(), suggestions: ev["permission_suggestions"].clone(), guard: None, tx: Some(tx) });
             Self::enter(&mut st, Phase::Approval);
             st.phase = Phase::Approval;
             st.reason = None;
@@ -698,6 +716,53 @@ impl Chat {
             // 超时：TUI 的确认框还在等，要到终端里回答
             st.pending = None;
             Self::set_phase(inst, &mut st, Phase::Tui, None);
+        }
+        out
+    }
+
+    /// 每轮开始拍检查点（docs/PLAN_2026-10-27.md §3.3）。`wait`：最多等 2 秒（hook 要尽快答复，AI 改文件之前拍好），
+    /// 没拍完就在后台接着拍
+    pub(super) async fn checkpoint_turn(&self, id: &str, prompt: &str, wait: bool) {
+        if !crate::guard::load(&self.store).checkpoints {
+            return;
+        }
+        let Some(row) = self.store.instance(id).ok().flatten() else { return };
+        let (store, id, prompt) = (self.store.clone(), id.to_string(), prompt.to_string());
+        let h = tokio::task::spawn_blocking(move || {
+            if let Err(e) = crate::checkpoint::take(&store, &id, Path::new(&row.workdir), &prompt, false) {
+                tracing::debug!(error = ?e, "没拍上检查点");
+            }
+        });
+        if wait {
+            let _ = tokio::time::timeout(Duration::from_secs(2), h).await;
+        }
+    }
+
+    /// 命令命中命令规则（docs/PLAN_2026-10-27.md §3.2）：拒绝的直接答复 PreToolUse；要确认的挂起来，和审批一样等界面回答。
+    /// 没人确认（超时、这一轮停了、被别的审批顶掉）就拒绝：PreToolUse 不做决定 Claude Code 会照常执行。
+    async fn guard_request(&self, inst: &Arc<Inst>, hit: crate::guard::Hit, ev: &Value) -> String {
+        if hit.action == crate::guard::Action::Deny {
+            return pre_tool_use("deny", &format!("A Looklook safety rule blocks this command ({}). Do not retry it or work around it; use another approach, or ask the user to run it themselves.", hit.rule));
+        }
+        let (tx, rx) = oneshot::channel();
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut st = lock(&inst.st);
+            Self::drop_pending(&mut st);
+            st.pending = Some(Pending { id, at: Instant::now(), tool: "Bash".into(), kind: "permission", input: ev["tool_input"].clone(), suggestions: Value::Null, guard: Some(hit.rule.clone()), tx: Some(tx) });
+            Self::enter(&mut st, Phase::Approval);
+            st.phase = Phase::Approval;
+            st.reason = None;
+            Self::emit_status(inst, &st);
+        }
+        let out = tokio::time::timeout(PERMISSION_WAIT, rx).await.ok().and_then(|r| r.ok()).unwrap_or_default();
+        let mut st = lock(&inst.st);
+        if st.pending.as_ref().is_some_and(|p| p.id == id) {
+            st.pending = None;
+            Self::set_phase(inst, &mut st, Phase::Running, None);
+        }
+        if out.is_empty() {
+            return pre_tool_use("deny", &format!("This command matches a Looklook safety rule ({}) and nobody confirmed it in time, so it was not run. Ask the user before trying again.", hit.rule));
         }
         out
     }
@@ -741,6 +806,9 @@ impl Chat {
                 Self::emit_status(inst, &st);
             }
             st.stats = stats;
+            if matches!(change, Ok(Change::Upsert { .. })) {
+                st.active_at = crate::util::system_ms();
+            }
         }
         match change {
             Ok(Change::Upsert { start, items }) if !fresh => {
@@ -1013,7 +1081,7 @@ impl Chat {
                 let risk = (p.kind == "permission").then(|| risk::level(&p.tool, &p.input));
                 // 回答提问要用问题原文
                 let question = (p.kind == "question").then(|| &p.input["questions"][0]["question"]);
-                Some(json!({ "kind": p.kind, "pending_id": p.id, "tool": p.tool, "detail": detail, "risk": risk, "options": options, "question": question }))
+                Some(json!({ "kind": p.kind, "pending_id": p.id, "tool": p.tool, "detail": detail, "risk": risk, "options": options, "question": question, "guard": p.guard }))
             }
             (None, Some(d)) if st.phase == Phase::Tui => Some(json!({
                 "kind": if d.is_limit() { "limit" } else { "dialog" },
@@ -1042,6 +1110,7 @@ impl Chat {
             "agent": inst.agent.launch(),
             "board": state,
             "since": st.since,
+            "active_at": st.active_at.max(st.since),
             "attn": attn,
             "title": title,
             "doing": st.doing,
@@ -1422,21 +1491,33 @@ impl Chat {
         let Some(p) = st.pending.as_mut().filter(|p| p.id == req.id) else { return Err(LocalError::new("CHAT_STALE")) };
         // Codex：答复直接是 app-server 请求的结果
         if inst.agent.launch() == "codex" {
+            // 命令规则标出来的：只能这一次允许
+            if p.guard.is_some() && req.decision == "allow_session" {
+                return Err(LocalError::invalid("decision", "invalid"));
+            }
             let result = codex_chat::decision(&p.tool, p.kind, &p.input, req)?;
             p.resolve(result.to_string());
             st.pending = None;
             Self::set_phase(&inst, &mut st, Phase::Running, None);
             // 拒绝时写的理由：Codex 的拒绝不带话，接着插一句给它
             let msg = req.message.as_deref().map(str::trim).filter(|m| !m.is_empty() && req.decision == "deny").map(String::from);
-            if let (Some(msg), Some(me)) = (msg, self.me.upgrade()) {
-                let id = id.to_string();
-                tokio::spawn(async move {
-                    tokio::time::sleep(Duration::from_millis(300)).await;
-                    if let Err(e) = me.codex_input(&id, &msg, &[]).await {
-                        tracing::debug!(error = ?e, "拒绝理由没送到");
-                    }
-                });
+            if let Some(msg) = msg {
+                self.codex_say_later(id, msg);
             }
+            return Ok(());
+        }
+        if p.guard.is_some() {
+            let out = match req.decision.as_str() {
+                "allow" => pre_tool_use("allow", "The user confirmed this command in Looklook."),
+                "deny" => {
+                    let why = req.message.as_deref().map(str::trim).filter(|m| !m.is_empty());
+                    pre_tool_use("deny", &format!("The user declined this command in Looklook.{}", why.map(|m| format!(" Their note: {m}")).unwrap_or_default()))
+                }
+                _ => return Err(LocalError::invalid("decision", "invalid")),
+            };
+            p.resolve(out);
+            st.pending = None;
+            Self::set_phase(&inst, &mut st, Phase::Running, None);
             return Ok(());
         }
         if req.decision == "terminal" {
@@ -1812,6 +1893,11 @@ impl Chat {
         let (window, mut limits) = tokio::task::block_in_place(|| (model.as_deref().map(|m| models::context_window(&ctx, m)), models::limits(&ctx)));
         // 订阅用量只读 Claude Code 自己的缓存；缓存没有或旧了，请它自己去取（第三方接口没有订阅用量）。
         // 一点都没有时等它取完再读，否则在后台取，下次来取就是新的
+        // 第三方接口：服务商的套餐用量（认得的几家，见 provider_quota.rs），带着服务商的名字
+        if profile.kind == crate::claude_profiles::Kind::Api {
+            let r = crate::claude_profiles::api_usage(&self.paths.home, &profile).await;
+            limits = r["limits"].clone();
+        }
         if profile.kind == crate::claude_profiles::Kind::Official {
             let fetched = limits["fetched_at"].as_i64().unwrap_or(0);
             if crate::util::system_ms() - fetched > models::LIMITS_STALE_MS {
@@ -1847,6 +1933,24 @@ impl Chat {
             return Ok(json!({ "items": [] }));
         }
         Ok(self.codex_artifacts(id).await)
+    }
+
+    /// 要用户先处理的：待确认的 hook、还没登录（只有 Codex 有，见 `codex_chat::codex_setup`）
+    pub async fn setup(&self, id: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Ok(json!({ "hooks": [], "login_required": false }));
+        }
+        self.codex_setup(id).await
+    }
+
+    /// 信任或跳过界面上列出的 hook
+    pub async fn hooks_answer(&self, id: &str, trust: bool, picked: &[(String, String)]) -> Result<(), LocalError> {
+        self.require(id)?;
+        if !self.is_codex(id) {
+            return Err(LocalError::new("CHAT_UNAVAILABLE"));
+        }
+        self.codex_hooks_answer(id, trust, picked).await
     }
 
     /// 产出的某个文件的路径：只认这段对话里出现过的
@@ -2260,6 +2364,11 @@ pub struct PermissionAnswer {
     pub answers: Option<Value>,
 }
 
+/// PreToolUse hook 的答复：`allow` 不再走 Claude Code 自己的权限确认，`deny` 时 Claude 会看到理由
+fn pre_tool_use(decision: &str, reason: &str) -> String {
+    json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": decision, "permissionDecisionReason": reason } }).to_string()
+}
+
 /// 按收到的 prompt 找子代理的 transcript（新的优先）。prompt 在参数里可能被截断过，只比开头。
 fn find_subagent(dir: &Path, prompt: &str) -> Option<PathBuf> {
     use std::io::BufRead;
@@ -2287,7 +2396,7 @@ fn find_subagent(dir: &Path, prompt: &str) -> Option<PathBuf> {
 
 /// 输入框里显示的内容是不是送进去的那段（只比开头，不算空白：折行、续行的缩进都会变）
 /// `2.1.310` 这样的版本号不低于 `min`（认不出来的当作够新）
-fn version_at_least(v: &str, min: (u32, u32, u32)) -> bool {
+pub(crate) fn version_at_least(v: &str, min: (u32, u32, u32)) -> bool {
     let mut it = v.trim().split('.').map(|p| p.chars().take_while(char::is_ascii_digit).collect::<String>().parse::<u32>());
     match (it.next(), it.next(), it.next()) {
         (Some(Ok(a)), Some(Ok(b)), Some(Ok(c))) => (a, b, c) >= min,
@@ -2519,6 +2628,78 @@ mod tests {
         }
     }
     use super::*;
+
+    /// 命令规则和检查点走 hook：不用真的 Claude Code，直接喂事件（docs/PLAN_2026-10-27.md §3）
+    #[tokio::test(flavor = "multi_thread")]
+    async fn guard_and_checkpoint_hooks() {
+        let home = tempfile::tempdir().unwrap();
+        let repo = tempfile::tempdir().unwrap();
+        let dir = repo.path().canonicalize().unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&dir).args(args).env("GIT_AUTHOR_NAME", "t").env("GIT_AUTHOR_EMAIL", "t@t").env("GIT_COMMITTER_NAME", "t").env("GIT_COMMITTER_EMAIL", "t@t").status().unwrap().success());
+        if crate::shells::which("git").is_none() {
+            return;
+        }
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let paths = Paths::discover(Some(home.path().to_path_buf())).unwrap();
+        let store = Arc::new(Store::memory().unwrap());
+        let instances = Instances::new(store.clone(), paths.clone());
+        let input = crate::instances::Input { name: Some("guard".into()), workdir: Some(dir.display().to_string()), launch: Some("claude".into()), ..Default::default() };
+        let id = instances.create(input).await.unwrap().row.id;
+        let chat = Chat::new(store.clone(), paths.clone(), instances.clone());
+        let ev = |name: &str, extra: Value| {
+            let mut v = json!({ "hook_event_name": name });
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v
+        };
+        let bash = |cmd: &str| ev("PreToolUse", json!({ "tool_name": "Bash", "tool_input": { "command": cmd } }));
+
+        // 每轮开始拍检查点
+        assert_eq!(chat.hook(&id, ev("UserPromptSubmit", json!({ "prompt": "改一下 a.txt" }))).await, "");
+        let cps = crate::checkpoint::list(&store, &id, &dir).unwrap();
+        assert_eq!(cps["items"][0]["label"], "改一下 a.txt", "{cps}");
+
+        // 没命中：立即放行，不输出
+        assert_eq!(chat.hook(&id, bash("ls -la")).await, "");
+        // 内置规则：挂起等确认，允许后答复 PreToolUse allow
+        let c = chat.clone();
+        let (i2, b) = (id.clone(), bash("git reset --hard HEAD~1"));
+        let waiting = tokio::spawn(async move { c.hook(&i2, b).await });
+        let mut pending = Value::Null;
+        for _ in 0..40 {
+            pending = chat.snapshot(&id).await.unwrap()["status"]["pending"].clone();
+            if pending.is_object() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert_eq!(pending["guard"], "git reset --hard", "{pending}");
+        assert_eq!(chat.brief(&id).unwrap()["attn"]["guard"], "git reset --hard");
+        let pid = pending["id"].as_u64().unwrap();
+        // 不能“以后都允许”
+        let bad = PermissionAnswer { id: pid, decision: "allow_session".into(), message: None, answers: None };
+        assert!(chat.answer(&id, &bad).is_err());
+        chat.answer(&id, &PermissionAnswer { id: pid, decision: "allow".into(), message: None, answers: None }).unwrap();
+        let out: Value = serde_json::from_str(&waiting.await.unwrap()).unwrap();
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "allow");
+        // 同时跑的另一条命令结束不会放掉等待中的确认；一轮结束（Stop）没人确认就拒绝
+        let c = chat.clone();
+        let (i2, b) = (id.clone(), bash("rm -rf ~"));
+        let waiting = tokio::spawn(async move { c.hook(&i2, b).await });
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        chat.hook(&id, ev("PostToolUse", json!({ "tool_name": "Bash", "tool_input": { "command": "ls" } }))).await;
+        assert!(chat.snapshot(&id).await.unwrap()["status"]["pending"].is_object());
+        chat.hook(&id, ev("Stop", json!({}))).await;
+        let out: Value = serde_json::from_str(&waiting.await.unwrap()).unwrap();
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+
+        // 用户的拒绝规则：直接拒绝，带理由
+        let g = crate::guard::Guard { rules: vec![crate::guard::Rule { pattern: "npm publish".into(), action: crate::guard::Action::Deny }], ..Default::default() };
+        crate::settings_sync::write_local(&store, 1, "guard", &[("config", Some(serde_json::to_value(&g).unwrap()))]).unwrap();
+        let out: Value = serde_json::from_str(&chat.hook(&id, bash("npm publish --tag next")).await).unwrap();
+        assert_eq!(out["hookSpecificOutput"]["permissionDecision"], "deny");
+        assert!(out["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("npm publish"));
+    }
 
     #[test]
     fn exe_stem_sees_claude_after_self_update() {

@@ -1,6 +1,7 @@
 // 本机网页：把电脑上正在运行的网页（例如 localhost:5173）放到自己的专属地址下，在外面也能打开。
 // 每个账户最多 10 个；只有本人登录后才能打开，或在有效期内临时分享给指定的看看账户。数据登记在看看服务端。
-import { Bot, ExternalLink, Globe, Plus, Trash2, UserPlus, X } from 'lucide-react';
+// 上面列出这台电脑上正在监听的端口（docs/PLAN_2026-10-27.md §1），点一下转成网页，不用记端口号。
+import { AlertTriangle, Bot, ExternalLink, Globe, Plus, Radar, RefreshCw, Trash2, UserPlus, X } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -134,6 +135,91 @@ function ShareDialog({ page, onClose }) {
   );
 }
 
+// 认得的程序（同客户端 ports.rs 的 recognize）
+const APP_NAMES = { openclaw: 'OpenClaw', hermes: 'Hermes', qwen: 'Qwen Code', ollama: 'Ollama', jupyter: 'Jupyter', vite: 'Vite', next: 'Next.js', 'code-server': 'code-server', comfyui: 'ComfyUI', 'open-webui': 'Open WebUI', gradio: 'Gradio' };
+const APP_HINTS = new Set(['openclaw', 'hermes', 'qwen', 'ollama']);
+
+const baseName = (p) => (p ? p.split(/[\\/]/).filter(Boolean).pop() : '');
+
+function PortRow({ l, page, canAdd, busy, onAdd, fullHint }) {
+  const { t } = useTranslation();
+  return (
+    <li className="page-row port-row">
+      <span className="port-num mono">{l.port}</span>
+      <span className="grow">
+        <b className="ellipsis">
+          {l.app ? APP_NAMES[l.app] : l.process || t('ports.unknown')}
+          {l.kind === 'api' && <span className="badge" style={{ marginLeft: 8 }}>{t('ports.api')}</span>}
+        </b>
+        <span className="muted small ellipsis" title={l.cmd ?? ''}>
+          {[l.app && l.process, baseName(l.cwd)].filter(Boolean).join(' · ') || l.cmd || t('ports.other_user')}
+        </span>
+        {l.scope === 'network' && (
+          <span className="small port-warn">
+            <AlertTriangle size={13} aria-hidden="true" /> {t('ports.network')}
+          </span>
+        )}
+        {l.app && APP_HINTS.has(l.app) && <span className="small muted">{t(`ports.hint.${l.app}`)}</span>}
+      </span>
+      {page ? (
+        <a className="btn btn-ghost" href={page.url} target="_blank" rel="noopener noreferrer">
+          <ExternalLink size={16} aria-hidden="true" /> {t('ports.open')}
+        </a>
+      ) : (
+        <Button variant="ghost" icon={Plus} busy={busy} disabled={!canAdd} title={fullHint} onClick={onAdd}>
+          {t('ports.add')}
+        </Button>
+      )}
+    </li>
+  );
+}
+
+/** 这台电脑上正在监听的端口：一行一个，“转成网页”就是添加一个本机网页。 */
+function PortsCard({ pages, max, allowed, onAdded }) {
+  const { t } = useTranslation();
+  const toast = useToast();
+  const [data, error, reload] = useLoad(() => api.get('/ports'));
+  const [adding, setAdding] = useState(null);
+  const items = data?.items ?? [];
+  const full = pages.length >= max;
+  const add = async (l) => {
+    setAdding(l.port);
+    try {
+      const name = (l.app ? APP_NAMES[l.app] : l.process || 'localhost').slice(0, 24);
+      await api.post('/tunnels', { name: `${name} :${l.port}`.slice(0, 32), target_port: l.port });
+      toast(t('pages.added'));
+      onAdded();
+      reload();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setAdding(null);
+    }
+  };
+  return (
+    <Card
+      title={t('ports.title')}
+      actions={<Button variant="ghost" icon={RefreshCw} aria-label={t('action.refresh')} title={t('action.refresh')} onClick={reload} />}
+    >
+      <p className="muted small" style={{ marginTop: 0 }}>{t('ports.intro')}</p>
+      <ErrorNote error={error} />
+      {!data && !error ? (
+        <Skeleton height={80} />
+      ) : items.length === 0 ? (
+        <Empty icon={Radar} title={t('ports.empty_title')}>
+          <p>{t('ports.empty_body')}</p>
+        </Empty>
+      ) : (
+        <ul className="list ports-list">
+          {items.map((l) => (
+            <PortRow key={l.port} l={l} page={pages.find((p) => p.target_port === l.port)} canAdd={allowed && !full && l.kind !== 'api'} busy={adding === l.port} onAdd={() => add(l)} fullHint={full ? t('pages.full', { max }) : undefined} />
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
 function AddForm({ count, max, onAdded }) {
   const { t } = useTranslation();
   const [name, setName] = useState('');
@@ -260,6 +346,7 @@ export default function Pages() {
                 </ul>
               )}
             </Card>
+            <PortsCard pages={items} max={data.max} allowed={status.account.allowed} onAdded={reload} />
             {status.account.allowed && <AddForm count={items.length} max={data.max} onAdded={reload} />}
             <Note kind="info" icon={Bot}>
               {t('pages.mcp_moved')} <Link to="/ai">{t('nav.ai')}</Link>

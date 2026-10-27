@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { localFilePath } from './chat.js';
 import { copyText } from './chatCopy.js';
 
 export const isMarkdown = (name) => /\.(md|markdown|mdx|mdown|mkd)$/i.test(name ?? '');
@@ -102,9 +103,10 @@ function linkify(root, links) {
 
 /**
  * text：Markdown 原文；imageUrl(相对路径) → 图片地址（没有时相对路径的图片不显示）；
- * links：{ 文字里的写法: 地址 }，对话里提到的本机文件变成可以点开的链接。
+ * links：{ 文字里的写法: 地址 }，对话里提到的本机文件变成可以点开的链接；
+ * fileUrl(绝对路径) → 地址：其他指向这台电脑上文件的链接也能点开（对话页传，“文件”页不传）。
  */
-export default function Markdown({ text, imageUrl, links }) {
+export default function Markdown({ text, imageUrl, links, fileUrl }) {
   const { t } = useTranslation();
   const [html, setHtml] = useState(null);
   const [failed, setFailed] = useState(false);
@@ -116,7 +118,16 @@ export default function Markdown({ text, imageUrl, links }) {
         // 指向这台电脑上文件的链接（例如 Codex 写的 [下载 PDF](F:/out/a.pdf)）：是这段对话产出的文件就换成它的地址。
         // 要在清洗之前换：`F:/…` 会被当成不认识的协议去掉
         purify.addHook('beforeSanitizeAttributes', (node) => {
-          if (node.tagName !== 'A' || !links) return;
+          // 回复里插的本机截图（`![验收](/Users/a/shot.png)`）：换成文件地址，不然只剩替代文字
+          if (node.tagName === 'IMG' && fileUrl) {
+            const local = localFilePath(node.getAttribute('src'));
+            if (local) {
+              node.setAttribute('src', fileUrl(local));
+              node.setAttribute('data-file', '1');
+            }
+            return;
+          }
+          if (node.tagName !== 'A' || !(links || fileUrl)) return;
           const href = node.getAttribute('href') ?? '';
           let raw = href;
           try {
@@ -124,7 +135,8 @@ export default function Markdown({ text, imageUrl, links }) {
           } catch {
             /* 不是合法的转义，按原样比 */
           }
-          const to = links[raw] ?? links[raw.replace(/^file:\/\/\/?/i, '')];
+          const local = fileUrl && localFilePath(href);
+          const to = links?.[raw] ?? links?.[raw.replace(/^file:\/\/\/?/i, '')] ?? (local ? fileUrl(local) : null);
           if (to) {
             node.setAttribute('href', to);
             node.setAttribute('data-file', '1');
@@ -137,7 +149,7 @@ export default function Markdown({ text, imageUrl, links }) {
               node.removeAttribute('data-file');
               node.setAttribute('class', 'md-file');
               // 要下载的（PDF 等）直接下载，不开新标签页；能看的在新标签页里打开
-              if (href.includes('&download=1')) {
+              if (href.includes('&download=1') || /^\/api\/instances\/[^/]+\/download\?/.test(href)) {
                 node.setAttribute('download', '');
               } else {
                 node.setAttribute('target', '_blank');
@@ -152,6 +164,11 @@ export default function Markdown({ text, imageUrl, links }) {
             }
           } else if (node.tagName === 'IMG') {
             const src = node.getAttribute('src') ?? '';
+            if (node.getAttribute('data-file') === '1' && src.startsWith('/api/')) {
+              node.removeAttribute('data-file');
+              node.setAttribute('loading', 'lazy');
+              return;
+            }
             if (SAFE_IMAGE.test(src)) return;
             const local = src && !/^[a-z][a-z0-9+.-]*:/i.test(src) && imageUrl ? imageUrl(decodeURI(src.split(/[?#]/)[0])) : null;
             if (local) node.setAttribute('src', local);
@@ -178,7 +195,7 @@ export default function Markdown({ text, imageUrl, links }) {
       alive = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- t 只用于按钮的文字
-  }, [text, links]);
+  }, [text, links, fileUrl]);
   if (failed) return <pre className="fb-text fb-wrap">{text}</pre>;
   if (html == null) return <p className="muted small fb-pad">{t('fb.loading')}</p>;
   // eslint-disable-next-line react/no-danger -- 已用 DOMPurify 清洗

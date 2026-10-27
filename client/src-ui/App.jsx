@@ -26,6 +26,7 @@ import { opensInPage, SessionHome, SessionList, SessionStage, SessionTabs, Sessi
 import { DraftPane } from './pages/Draft.jsx';
 import TerminalView from './pages/TerminalView.jsx';
 import { api, rtcMode, selectedDevice } from './shared/api.js';
+import { useAwayTracker } from './shared/board.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
 import { Link, Router, useCanonicalPath, useRouter } from './shared/router.jsx';
 import PopMenu from './shared/PopMenu.jsx';
@@ -622,6 +623,7 @@ function Shell() {
   const path = route.drawer ? route.behind : path0;
   const [status, setStatus] = useState(undefined);
   const [down, setDown] = useState(false);
+  useAwayTracker();
   // 状态来自哪台电脑（多设备时随顶栏的选择）
   const [statusDevice, setStatusDevice] = useState(null);
   const devRef = useRef(null);

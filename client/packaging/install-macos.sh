@@ -46,8 +46,19 @@ cat >"$PLIST" <<PL
 PL
 launchctl bootstrap "gui/$(id -u)" "$PLIST"
 
-sleep 2
-"$APP/looklook" open || true
+# 安装密钥（LOOKLOOK_INSTALL_KEY，网站的 install.sh --key 传进来）：启动后直接登录，不用打开浏览器批准
+if [ -n "${LOOKLOOK_INSTALL_KEY:-}" ]; then
+  i=0
+  until "$APP/looklook" status >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ $i -ge 30 ] && break
+    sleep 1
+  done
+  "$APP/looklook" login || echo "用安装密钥登录没有成功，稍后可以再运行 / Sign-in with the install key failed; run later: looklook login --key …"
+else
+  sleep 2
+  "$APP/looklook" open || true
+fi
 echo ""
 echo "✓ 看看客户端已安装，并会在每次登录 Mac 后自动运行。"
 echo "✓ Looklook client installed; it starts every time you log in to your Mac."

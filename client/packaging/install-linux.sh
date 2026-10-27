@@ -12,6 +12,7 @@
 # 这一版同时放进数据目录（LOOKLOOK_HOME，默认 ~/.local/share/looklook）的 versions/，自动更新也装在那里：
 # 容器只映射数据目录就能保留程序和更新，重建容器后用 {数据目录}/bin/looklook 启动。
 # LOOKLOOK_CONTAINER=1：由 Docker 主机上的一键安装（/install-docker.sh）调用，只安装、不装服务，启动由它负责。
+# LOOKLOOK_INSTALL_KEY=LLK-…：装完、启动后用安装密钥登录（云服务器、开机脚本）。
 set -eu
 
 SRC=$(cd "$(dirname "$0")" && pwd)
@@ -110,6 +111,18 @@ else
   say "没有 systemd，开机后请手动启动 / No systemd; after a reboot start it yourself:"
   say "  nohup $PREFIX/looklook run --no-browser >/dev/null 2>&1 &"
   [ $START = 1 ] && nohup "$PREFIX/looklook" run --no-browser >/dev/null 2>&1 &
+fi
+
+# 安装密钥（LOOKLOOK_INSTALL_KEY，网站的 install.sh --key 传进来，docs/PLAN_2026-10-27.md §5）：启动后直接登录，
+# 云服务器、开机脚本不用到浏览器里批准。looklook login 自己读这个环境变量。
+if [ -n "${LOOKLOOK_INSTALL_KEY:-}" ] && [ $START = 1 ]; then
+  i=0
+  until "$PREFIX/looklook" status >/dev/null 2>&1; do
+    i=$((i + 1))
+    [ $i -ge 30 ] && break
+    sleep 1
+  done
+  "$PREFIX/looklook" login || say "用安装密钥登录没有成功，稍后可以再运行 / Sign-in with the install key failed; run later: looklook login --key …"
 fi
 
 # Docker 主机上的一键安装自己给出后续命令

@@ -375,7 +375,8 @@ impl Account {
     }
 
     /// 发起浏览器授权登录：生成密钥、向平台申请授权码，然后在后台轮询直到批准 / 拒绝 / 过期。
-    pub async fn start_login(self: &Arc<Self>) -> PResult<LoginStart> {
+    /// 带安装密钥（`LLK-…`，docs/PLAN_2026-10-27.md §5）时平台直接批准，不用到浏览器里点。
+    pub async fn start_login(self: &Arc<Self>, install_key: Option<String>) -> PResult<LoginStart> {
         if self.session().is_some() {
             return Err(api("ALREADY_LOGGED_IN"));
         }
@@ -395,7 +396,9 @@ impl Account {
                 target: paths::target().into(),
                 locale: Some("zh-CN".into()),
             },
+            install_key: install_key.map(|k| k.trim().to_string()).filter(|k| !k.is_empty()),
         };
+        let keyed = req.install_key.is_some();
         let r: AuthorizeStartResponse = platform.call_unsigned("/device/authorize/start", &req).await?;
         let start = LoginStart { user_code: r.user_code, verification_url: r.verification_url, expires_in: r.expires_in };
         let deadline = Instant::now() + Duration::from_secs(r.expires_in.max(30) as u64 + 5);
@@ -406,8 +409,9 @@ impl Account {
             id
         };
         let me = self.clone();
-        let interval = Duration::from_secs(r.interval.clamp(1, 30) as u64);
-        let task = tokio::spawn(async move { me.run_login_flow(id, key, r.poll_token, interval, deadline).await });
+        // 用安装密钥时已经批准了：马上去取
+        let interval = if keyed { Duration::from_millis(300) } else { Duration::from_secs(r.interval.clamp(1, 30) as u64) };
+        let task = tokio::spawn(async move { me.run_login_flow(id, key, r.poll_token, interval, deadline, keyed).await });
         if let Some(f) = lock_mut(&self.flow).as_mut().filter(|f| f.id == id) {
             f.abort = Some(task.abort_handle());
         }
@@ -432,7 +436,7 @@ impl Account {
         self.bump();
     }
 
-    async fn run_login_flow(self: Arc<Self>, id: u64, key: SigningKey, poll_token: String, interval: Duration, deadline: Instant) {
+    async fn run_login_flow(self: Arc<Self>, id: u64, key: SigningKey, poll_token: String, interval: Duration, deadline: Instant, keyed: bool) {
         let req = AuthorizePollRequest { poll_token };
         loop {
             tokio::time::sleep(interval).await;
@@ -449,6 +453,11 @@ impl Account {
                         Err(e) => FlowState::Failed(e),
                     };
                     self.set_flow_state(id, state);
+                    return;
+                }
+                // 带了安装密钥还要等批准：服务器不认安装密钥（版本太旧），不让它干等十分钟
+                Err(e) if keyed && e.is("AUTHORIZATION_PENDING") => {
+                    self.set_flow_state(id, FlowState::Failed(api("INSTALL_KEY_UNSUPPORTED")));
                     return;
                 }
                 // 还没批准，或暂时连不上：继续等。

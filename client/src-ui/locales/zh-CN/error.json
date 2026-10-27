@@ -182,7 +182,7 @@
   "DSH_NEEDS_PERSISTENT": "DSH 需要能在后台持续运行的终端，这台电脑上不支持",
   "MODEL_KEY_REQUIRED": "请填写 API Key",
   "MODEL_DISCLAIMER_REQUIRED": "请先阅读并同意免责声明",
-  "MODEL_URL_UNSUPPORTED": "接口地址不支持：必须是 https:// 开头，路径里只能有字母、数字和 - . _ ~ /",
+  "MODEL_URL_UNSUPPORTED": "接口地址不支持：必须是 https:// 开头（本机的接口可以用 http://localhost），路径里只能有字母、数字和 - . _ ~ /",
   "MODEL_PROVIDER_GONE": "这个服务商已下线或不再支持该客户端，请刷新后重新选择",
   "FILE_EXISTS": "已经有同名的文件或文件夹了，换个名字吧。",
   "GIT_MISSING": "这台电脑上没有找到 git，先安装 Git 再试。",
@@ -233,6 +233,8 @@
   "CODEX_APP_SERVER": "Codex 的后台服务没能启动：{{detail}}",
   "CODEX_NOT_FOUND": "没找到 Codex，请确认这台电脑装了 Codex（{{detail}}）",
   "CODEX_REQUEST_FAILED": "Codex 没能完成这个操作：{{detail}}",
+  "CODEX_HOOKS_CHANGED": "这些 hook 刚刚又改过了，请看过新的内容再确认",
+  "CODEX_UPDATE_MANUAL": "这个 Codex 不是用 npm 装的，请用你安装它的方式更新",
   "CHAT_TERMINAL_ONLY": "对话页暂时连不上 Codex，可以先在终端里用",
   "CODEX_TERMINAL_BUSY": "终端里的程序没有退出，请在终端里手动退出后再重新连接",
   "CODEX_TERMINAL_STOPPED": "终端没在运行，请先启动",
@@ -245,5 +247,10 @@
   "NOTIFY_NOT_CONFIGURED": "还没有设置飞书通知。",
   "NOTIFY_NOT_BOUND": "还没有绑定飞书账号。",
   "NOTIFY_SIGNATURE": "转来的飞书操作签名不对。",
-  "NOTIFY_PROTOCOL": "电脑之间转发飞书操作的格式不对，两台电脑的看看版本可能不一样。"
+  "NOTIFY_PROTOCOL": "电脑之间转发飞书操作的格式不对，两台电脑的看看版本可能不一样。",
+  "CHECKPOINT_BUSY": "AI 还在干活，先停下这一轮再恢复。",
+  "CHECKPOINT_MOVED": "会话的文件夹已经不是拍这个检查点时的仓库了，没法恢复。",
+  "CHECKPOINT_GONE": "这个检查点的内容已经被 git 清理掉了，没法对比或恢复。",
+  "INSTALL_KEY_INVALID": "安装密钥不对、已过期、已撤销或次数用完了，请在看看网页的“电脑”页重新生成。",
+  "INSTALL_KEY_UNSUPPORTED": "这个看看服务器还不支持安装密钥，请改用浏览器授权登录。"
 }

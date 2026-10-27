@@ -123,6 +123,48 @@ pub fn exit_now(code: i32) -> ! {
     std::process::exit(code)
 }
 
+/// 本机时间：（年，月，日，时，分，秒）。取不到本地时区时用 UTC。
+#[cfg(unix)]
+pub fn local_now() -> (i32, u32, u32, u32, u32, u32) {
+    unsafe {
+        let t = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return utc_now();
+        }
+        (tm.tm_year + 1900, tm.tm_mon as u32 + 1, tm.tm_mday as u32, tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32)
+    }
+}
+
+#[cfg(windows)]
+pub fn local_now() -> (i32, u32, u32, u32, u32, u32) {
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        ms: u16,
+    }
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetLocalTime(t: *mut SystemTime);
+    }
+    let mut t = SystemTime::default();
+    unsafe { GetLocalTime(&mut t) };
+    (t.year as i32, t.month as u32, t.day as u32, t.hour as u32, t.minute as u32, t.second as u32)
+}
+
+#[cfg_attr(windows, allow(dead_code))]
+fn utc_now() -> (i32, u32, u32, u32, u32, u32) {
+    let t = time::OffsetDateTime::now_utc();
+    (t.year(), t.month() as u32, t.day() as u32, t.hour() as u32, t.minute() as u32, t.second() as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

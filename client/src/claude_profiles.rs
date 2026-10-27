@@ -639,6 +639,19 @@ pub async fn usage(shell: &str, home: &Path, p: &Profile) -> Value {
     json!({ "state": state, "limits": limits, "status": st })
 }
 
+/// 第三方接口的套餐用量：问服务商（见 provider_quota.rs）。`unsupported`：认不出是哪家；`no_limits`：没取到
+pub async fn api_usage(home: &Path, p: &Profile) -> Value {
+    let Some(url) = p.base_url.as_deref().filter(|u| crate::provider_quota::supported(u)) else { return json!({ "state": "unsupported" }) };
+    let key = std::fs::read_to_string(key_path(home, &p.id)).unwrap_or_default();
+    if key.trim().is_empty() {
+        return json!({ "state": "no_limits" });
+    }
+    match crate::provider_quota::fetch(url, key.trim()).await {
+        Some(limits) => json!({ "state": "ok", "limits": limits }),
+        None => json!({ "state": "no_limits" }),
+    }
+}
+
 fn parse_status(stdout: &str) -> Value {
     // 前面可能有登录 shell 打出来的东西：从第一个 `{` 开始
     let Some(v) = stdout.find('{').and_then(|i| serde_json::from_str::<Value>(&stdout[i..]).ok()) else { return json!({ "error": "failed" }) };

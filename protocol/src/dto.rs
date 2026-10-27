@@ -29,6 +29,9 @@ pub struct AuthorizeStartRequest {
     /// Ed25519 公钥，base64url 无填充。
     pub public_key: String,
     pub device: DeviceInfo,
+    /// 安装密钥（`LLK-…`）：带上且有效时授权直接是“已批准”，不用到浏览器里批准（云服务器、开机脚本）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub install_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

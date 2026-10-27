@@ -123,16 +123,23 @@ pub fn clear(store: &Store, home: &Path, agent: ModelAgent) -> Result<(), LocalE
 
 /// 接口地址只接受 `https://主机[:端口][/路径]`，路径里只能有字母、数字和 `-._~/`：
 /// 地址会原样拼进启动命令（Codex 的 `-c` 参数），不能有任何 shell 会解释的字符。
+/// 本机的接口（Ollama 等，docs/PLAN_2026-10-27.md §4）可以用 `http://localhost` / `http://127.0.0.1`：Key 不出这台电脑。
 pub fn check_base_url(url: &str) -> Result<(), LocalError> {
     let bad = || LocalError::new("MODEL_URL_UNSUPPORTED");
-    let rest = url.strip_prefix("https://").ok_or_else(bad)?;
+    let (rest, local) = match url.strip_prefix("https://") {
+        Some(r) => (r, false),
+        None => (url.strip_prefix("http://").ok_or_else(bad)?, true),
+    };
     if url.len() > 512 {
         return Err(bad());
     }
     let (host_port, path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
     let (host, port) = host_port.split_once(':').map_or((host_port, None), |(h, p)| (h, Some(p)));
+    if local && !matches!(host, "localhost" | "127.0.0.1") {
+        return Err(bad());
+    }
     let host_ok = !host.is_empty()
-        && host.contains('.')
+        && (host.contains('.') || local)
         && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
         && !host.starts_with(['-', '.'])
         && !host.ends_with(['-', '.']);
@@ -315,11 +322,14 @@ mod tests {
 
     #[test]
     fn base_url_rules() {
-        for ok in ["https://api.example.com", "https://api.example.com/", "https://a.b.co:8443/v1", "https://x.y/anthropic/v1_beta-2"] {
+        for ok in ["https://api.example.com", "https://api.example.com/", "https://a.b.co:8443/v1", "https://x.y/anthropic/v1_beta-2", "http://localhost:11434", "http://127.0.0.1:11434/v1"] {
             assert!(check_base_url(ok).is_ok(), "{ok}");
         }
         for bad in [
             "http://api.example.com",
+            "http://localhost.example.com",
+            "http://127.0.0.2:11434",
+            "http://localhost:11434/$(id)",
             "https://",
             "https://localhost",
             "https://a.com/v1?x=1",

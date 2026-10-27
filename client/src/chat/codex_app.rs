@@ -408,10 +408,15 @@ fn log_tail(run: &Path) -> String {
 /// 对话界面据此认出“这是看看开的、只是暂时走终端”（[`super::codex_chat`]），不当成别人开的。
 pub fn local_command(base: &str, thread: Option<&str>) -> String {
     match thread.filter(|t| crate::history::valid_id(t)) {
-        Some(t) => format!("{base} --no-daemon resume {t}"),
-        None => format!("{base} --no-daemon"),
+        Some(t) => format!("{base} {NO_UPDATE_PROMPT} --no-daemon resume {t}"),
+        None => format!("{base} {NO_UPDATE_PROMPT} --no-daemon"),
     }
 }
+
+/// 看看开的 TUI 不弹“Update available”：这个框对话页看不到，只会把终端卡住；在终端里选“Update now”还会在
+/// app-server 运行时替换 codex。新版本由看看自己查、在对话页提示（`codex_chat::codex_update_info`）。
+/// 值里没有引号，PowerShell、cmd、psmux 都原样传
+const NO_UPDATE_PROMPT: &str = "-c check_for_update_on_startup=false";
 
 /// 终端里接到同一个 app-server 的 Codex TUI：`<codex 命令> resume <thread> --remote <地址> --remote-auth-token-env …`；
 /// 还没有会话时开一个新的（app-server 会通知看看）。`base` 是 `codex` / `codex --yolo`。
@@ -420,10 +425,10 @@ pub fn local_command(base: &str, thread: Option<&str>) -> String {
 pub fn tui_command(base: &str, ep: &Endpoint, thread: Option<&str>, cwd: &str) -> String {
     let remote = format!("--remote {} --remote-auth-token-env {TOKEN_ENV}", ep.url);
     match thread.filter(|t| crate::history::valid_id(t)) {
-        Some(t) => format!("{base} resume {t} {remote}"),
+        Some(t) => format!("{base} {NO_UPDATE_PROMPT} resume {t} {remote}"),
         None => {
             let dir = if cwd.is_empty() || cwd.contains(['"', '$', '`']) { ".".to_string() } else { format!("\"{cwd}\"") };
-            format!("{base} --cd {dir} {remote}")
+            format!("{base} {NO_UPDATE_PROMPT} --cd {dir} {remote}")
         }
     }
 }
@@ -468,15 +473,15 @@ mod tests {
     #[test]
     fn tui_commands() {
         let ep = Endpoint { url: "ws://127.0.0.1:40123".into(), token_file: PathBuf::from("t") };
-        assert_eq!(tui_command("codex", &ep, Some("01a1-b2"), r"F:\p"), "codex resume 01a1-b2 --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
+        assert_eq!(tui_command("codex", &ep, Some("01a1-b2"), r"F:\p"), "codex -c check_for_update_on_startup=false resume 01a1-b2 --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
         assert_eq!(
             tui_command("codex --yolo", &ep, None, r"F:\my proj"),
-            r#"codex --yolo --cd "F:\my proj" --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN"#,
+            r#"codex --yolo -c check_for_update_on_startup=false --cd "F:\my proj" --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN"#,
             "新开时带上工作目录"
         );
         assert!(tui_command("codex", &ep, None, "/tmp/a$b").contains("--cd . "), "目录里有特殊字符时用当前目录");
         assert!(!tui_command("codex", &ep, Some("x; rm -rf /"), "/p").contains("rm"), "会话号不合法时不拼进命令");
-        assert_eq!(local_command("codex", Some("01a1-b2")), "codex --no-daemon resume 01a1-b2");
-        assert_eq!(local_command("codex --yolo", None), "codex --yolo --no-daemon");
+        assert_eq!(local_command("codex", Some("01a1-b2")), "codex -c check_for_update_on_startup=false --no-daemon resume 01a1-b2");
+        assert_eq!(local_command("codex --yolo", None), "codex --yolo -c check_for_update_on_startup=false --no-daemon");
     }
 }

@@ -287,6 +287,23 @@ export function questionAnswers(questions, picked) {
   return out;
 }
 
+/**
+ * 回复里指向这台电脑上文件的链接（`[查看会话记录](/Users/a/.codex/sessions/x.jsonl)`、`F:/out/a.pdf`、`file:///…`）：
+ * 返回文件的绝对路径，去掉 Codex 常带的行号（`a.rs:12`、`a.rs:12:3`、`#L12-L20`）。不是绝对路径时返回 null。
+ */
+export function localFilePath(href) {
+  let s = String(href ?? '').trim();
+  try {
+    s = decodeURI(s);
+  } catch {
+    /* 不是合法的转义，按原样用 */
+  }
+  s = s.replace(/^file:\/\/(localhost)?/i, '');
+  if (/^\/[A-Za-z]:[\\/]/.test(s)) s = s.slice(1);
+  if (!/^(\/(?!\/)|[A-Za-z]:[\\/])/.test(s)) return null;
+  return s.replace(/#L\d+(C\d+)?(-L?\d+(C\d+)?)?$/, '').replace(/:\d+(:\d+)?$/, '') || null;
+}
+
 /** 内容里的文字（工具结果的完整原始记录里取） */
 export function contentText(content) {
   if (typeof content === 'string') return content;

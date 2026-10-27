@@ -273,6 +273,28 @@ export function RulesCard({ data, reload }) {
     </div>
   );
   const name = (d) => d.split(/[\\/]/).filter(Boolean).pop() || d;
+  const pick = (k, title, hint, options) => (
+    <div className="between" style={{ flexWrap: 'nowrap', gap: 12 }}>
+      <span>
+        <b>{title}</b>
+        <span className="small muted" style={{ display: 'block' }}>
+          {hint}
+        </span>
+      </span>
+      <select value={r[k] ?? 0} disabled={busy} onChange={(e) => save({ [k]: Number(e.target.value) })} aria-label={title} style={{ width: 'auto', minWidth: 120, flexShrink: 0 }}>
+        {options.map(([v, label]) => (
+          <option key={v} value={v}>
+            {label}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+  const quiet = r.quiet;
+  const setQuiet = (patch) => {
+    const q = { start: '23:00', end: '08:00', ...quiet, ...patch };
+    if (/^\d{2}:\d{2}$/.test(q.start) && /^\d{2}:\d{2}$/.test(q.end) && q.start !== q.end) save({ quiet: q });
+  };
   return (
     <Card title={t('notify.rules_title')}>
       <div className="stack" style={{ gap: 14 }}>
@@ -283,6 +305,40 @@ export function RulesCard({ data, reload }) {
         {toggle('failed', t('notify.rule_failed'))}
         {toggle('actions', t('notify.rule_actions'), t('notify.rule_actions_hint'))}
         {toggle('content', t('notify.rule_content'), t('notify.rule_content_hint'))}
+        <div className="stack nt-calm" style={{ gap: 14 }}>
+          <b className="nt-calm-title">{t('notify.calm_title')}</b>
+          <div className="stack" style={{ gap: 8 }}>
+            <div className="between" style={{ flexWrap: 'nowrap', gap: 12 }}>
+              <span>
+                <b>{t('notify.quiet')}</b>
+                <span className="small muted" style={{ display: 'block' }}>
+                  {t('notify.quiet_hint')}
+                </span>
+              </span>
+              <Switch checked={Boolean(quiet)} disabled={busy} onChange={(v) => (v ? setQuiet({}) : save({ quiet: null }))} label={t('notify.quiet')} />
+            </div>
+            {quiet && (
+              <div className="nt-actions nt-quiet">
+                <input type="time" value={quiet.start} disabled={busy} aria-label={t('notify.quiet_start')} onChange={(e) => setQuiet({ start: e.target.value })} />
+                <span className="muted">–</span>
+                <input type="time" value={quiet.end} disabled={busy} aria-label={t('notify.quiet_end')} onChange={(e) => setQuiet({ end: e.target.value })} />
+              </div>
+            )}
+          </div>
+          {pick('done_batch', t('notify.batch'), t('notify.batch_hint'), [
+            [0, t('notify.batch_off')],
+            [10, t('notify.every_min', { n: 10 })],
+            [30, t('notify.every_min', { n: 30 })],
+            [60, t('notify.every_hour')],
+          ])}
+          {pick('stall_min', t('notify.stall'), t('notify.stall_hint'), [
+            [0, t('notify.stall_off')],
+            [10, t('notify.after_min', { n: 10 })],
+            [20, t('notify.after_min', { n: 20 })],
+            [30, t('notify.after_min', { n: 30 })],
+            [60, t('notify.after_min', { n: 60 })],
+          ])}
+        </div>
         <div className="stack" style={{ gap: 8 }}>
           <b>{t('notify.muted')}</b>
           <span className="small muted">{t('notify.muted_hint')}</span>

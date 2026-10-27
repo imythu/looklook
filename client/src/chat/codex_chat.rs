@@ -59,6 +59,14 @@ pub struct Hub {
     pub(super) adopting: Mutex<HashSet<String>>,
     /// 刚让 TUI 不带会话号启动、等它自己开一段对话的终端（终端 id → 什么时候开始等）
     tui_waiting: Mutex<HashMap<String, Instant>>,
+    /// 已经确认在 Codex 配置里有信任记录的工作目录（见 [`Chat::codex_trust`]）
+    trusted: Mutex<HashSet<String>>,
+    /// 这个 app-server 进程里已经记过“模型升级提示看过了”（见 [`Chat::codex_model_notices`]）
+    notices_done: AtomicU64,
+    /// 新版本检查的结果（见 [`Chat::codex_update_info`]）
+    update: Mutex<Option<(Instant, Value)>>,
+    /// 更新过 Codex：app-server 还是旧的，下次要用时（没有在跑的对话）换成新的
+    stale: std::sync::atomic::AtomicBool,
 }
 
 /// Codex 这边每个终端多记的状态
@@ -234,9 +242,11 @@ impl Chat {
         let mut slot = self.codex.server.lock().await;
         if let Some(s) = slot.as_ref().filter(|s| s.alive()) {
             let busy = lock(&self.codex.threads).values().any(|id| lock(&self.inst(id).st).phase != Phase::Idle);
-            if s.signature == signature || busy {
+            let stale = self.codex.stale.load(Ordering::SeqCst);
+            if (s.signature == signature && !stale) || busy {
                 return Ok(s.clone());
             }
+            self.codex.stale.store(false, Ordering::SeqCst);
             s.kill();
         }
         let (tx, rx) = mpsc::unbounded_channel();
@@ -303,7 +313,7 @@ impl Chat {
             Some(t) => {
                 let mut params = json!({ "threadId": t, "cwd": row.workdir, "excludeTurns": true });
                 merge(&mut params, self.codex_policy(id));
-                let r = server.call("thread/resume", params).await?;
+                let r = resume_thread(&server, &t, params).await?;
                 self.codex_loaded(&inst, &r, gen);
             }
             None => {
@@ -357,6 +367,7 @@ impl Chat {
     /// 还没有会话：建一个
     async fn codex_new_thread(&self, server: &AppServer, inst: &Inst) -> Result<String, LocalError> {
         let row = self.store.instance(&inst.id)?.ok_or_else(LocalError::not_found)?;
+        self.codex_trust(server, &row.workdir).await;
         let mut params = json!({ "cwd": row.workdir });
         merge(&mut params, self.codex_policy(&inst.id));
         let r = server.call("thread/start", params).await?;
@@ -479,8 +490,14 @@ impl Chat {
         let mut poll = false;
         {
             let mut st = lock(&inst.st);
+            st.active_at = crate::util::system_ms();
             match method {
                 "turn/started" => {
+                    // 终端里直接打字开始的一轮也拍检查点（界面发的在 codex_input 里已经先拍了，一样的不会重复）
+                    if let Some(me) = self.me.upgrade() {
+                        let id = inst.id.clone();
+                        tokio::spawn(async move { me.checkpoint_turn(&id, "", false).await });
+                    }
                     st.codex.turn = p["turn"]["id"].as_str().map(String::from);
                     st.codex.retrying = false;
                     st.error = None;
@@ -643,12 +660,21 @@ impl Chat {
             let _ = server.respond(rid, json!({ "decision": "cancel" })).await;
             return;
         };
+        // 命令规则（docs/PLAN_2026-10-27.md §3.2）：Codex 只在它自己来问时能用上。拒绝的替用户拒绝，并告诉它为什么
+        let guard = match p["command"].as_str().filter(|_| tool == "Bash").and_then(|c| crate::guard::check(&crate::guard::load(&self.store), c)) {
+            Some(hit) if hit.action == crate::guard::Action::Deny => {
+                let _ = server.respond(rid, json!({ "decision": "decline" })).await;
+                self.codex_say_later(&inst.id, format!("A Looklook safety rule blocks that command ({}). Do not retry it or work around it; use another approach, or ask me to run it myself.", hit.rule));
+                return;
+            }
+            hit => hit.map(|h| h.rule),
+        };
         let (tx, rx) = oneshot::channel();
         let pid = self.next_id.fetch_add(1, Ordering::Relaxed);
         {
             let mut st = lock(&inst.st);
             Self::drop_pending(&mut st);
-            st.pending = Some(Pending { id: pid, at: Instant::now(), tool: tool.to_string(), kind, input, suggestions: Value::Null, tx: Some(tx) });
+            st.pending = Some(Pending { id: pid, at: Instant::now(), tool: tool.to_string(), kind, input, suggestions: Value::Null, guard, tx: Some(tx) });
             Self::enter(&mut st, Phase::Approval);
             st.phase = Phase::Approval;
             st.reason = None;
@@ -658,6 +684,17 @@ impl Chat {
         let out = rx.await.unwrap_or_default();
         let result = serde_json::from_str::<Value>(&out).unwrap_or_else(|_| if kind == "question" { json!({ "answers": {} }) } else { json!({ "decision": "cancel" }) });
         let _ = server.respond(rid, result).await;
+    }
+
+    /// 过一会儿给 Codex 插一句话（拒绝不带话）。不是 async：在 app-server 的事件处理里直接 spawn `codex_input` 会形成类型上的循环
+    pub(super) fn codex_say_later(&self, id: &str, msg: String) {
+        let (Some(me), id) = (self.me.upgrade(), id.to_string()) else { return };
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            if let Err(e) = me.codex_input(&id, &msg, &[]).await {
+                tracing::debug!(error = ?e, "给 Codex 的话没送到");
+            }
+        });
     }
 
     // ---------------- 界面的操作 ----------------
@@ -730,6 +767,7 @@ impl Chat {
         if let Some(e) = effort {
             params["effort"] = json!(e);
         }
+        self.checkpoint_turn(id, text, true).await;
         let r = server.call("turn/start", params).await?;
         let mut st = lock(&inst.st);
         st.codex.turn = r["turn"]["id"].as_str().map(String::from).or(st.codex.turn.take());
@@ -961,16 +999,79 @@ impl Chat {
     /// 对话模式的 Codex 终端启动之前：先起好 app-server，终端里一开始就是接在它上面的 TUI。
     /// 不等的话 app-server 还没起来（Windows 上要好几秒），终端会先改成本机直接运行，对话页先显示“暂时连不上”再自己转过来。
     /// 起不来时照旧走本机直接运行，原因记在日志里。
-    pub async fn codex_warm(&self) {
-        if let Err(e) = self.codex_server().await {
-            tracing::warn!(error = ?e, "Codex 的后台服务起不来，终端改成直接运行");
+    pub async fn codex_warm(&self, workdir: &str) {
+        match self.codex_server().await {
+            Ok(server) => self.codex_before_tui(&server, workdir).await,
+            Err(e) => tracing::warn!(error = ?e, "Codex 的后台服务起不来，终端改成直接运行"),
+        }
+    }
+
+    /// 终端里的 TUI 启动前：把它启动时会停下来问、而对话页看不到的几个提示先处理好（信任文件夹、模型升级提示）
+    async fn codex_before_tui(&self, server: &AppServer, workdir: &str) {
+        self.codex_trust(server, workdir).await;
+        self.codex_model_notices(server).await;
+    }
+
+    /// TUI 启动时的“Codex just got an upgrade … Try new model / Use existing model”：对话页自己选模型（菜单里有新模型），
+    /// 这个框只会把终端卡住。替用户记成看过，和在 TUI 里选“Use existing model”写的一样：`notice.model_migrations.<旧> = <新>`。
+    /// 只记目录里还在的模型（`model/list` 里带 `upgrade`、新模型也在列表里）；已经下线的旧模型 TUI 里没得选，照常提示。
+    /// 一个 app-server 进程只做一次。
+    async fn codex_model_notices(&self, server: &AppServer) {
+        let gen = self.codex.generation.load(Ordering::SeqCst);
+        if self.codex.notices_done.swap(gen, Ordering::SeqCst) == gen {
+            return;
+        }
+        let r: Result<(), LocalError> = async {
+            let list = server.call("model/list", json!({})).await?;
+            let cfg = server.call("config/read", json!({ "includeLayers": false })).await?;
+            let todo = unseen_migrations(&list, &cfg["config"]["notice"]["model_migrations"]);
+            if !todo.is_empty() {
+                let edit = json!({ "keyPath": "notice.model_migrations", "value": todo, "mergeStrategy": "upsert" });
+                server.call("config/batchWrite", json!({ "edits": [edit], "reloadUserConfig": true })).await?;
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(e) = r {
+            tracing::debug!(error = ?e, "没能记下 Codex 的模型升级提示，终端里可能会问一次");
+            self.codex.notices_done.store(0, Ordering::SeqCst);
+        }
+    }
+
+    /// Codex 启动时的“信任这个文件夹？”用户不用管（和 Claude Code 一样，见 `claude_profiles::skip_first_run`）：
+    /// 终端里的 TUI 带 `--cd` 新开对话时会问（0.164 实测；接着以前的会话不问），这个框只在终端里，对话页看不到，
+    /// 终端就一直停在那里。启动 TUI 之前在 app-server 里写好用户选“Trust and continue”时 TUI 自己写的同一个值：
+    /// `projects."<工作目录>".trust_level = "trusted"`（用户的 config.toml）。对话页新开的会话也是同一个目录，一起算上。
+    /// 已经有 trust_level 的不动（包括用户自己选的 `untrusted`：接 app-server 的 TUI 这时不问）；
+    /// 读写失败只记日志，TUI 照常问。
+    async fn codex_trust(&self, server: &AppServer, workdir: &str) {
+        if workdir.is_empty() || lock(&self.codex.trusted).contains(workdir) {
+            return;
+        }
+        let r: Result<(), LocalError> = async {
+            let cfg = server.call("config/read", json!({ "includeLayers": false, "cwd": workdir })).await?;
+            if !has_trust_level(&cfg["config"]["projects"], workdir) {
+                let edit = json!({ "keyPath": trust_key_path(workdir), "value": "trusted", "mergeStrategy": "replace" });
+                server.call("config/batchWrite", json!({ "edits": [edit], "reloadUserConfig": true })).await?;
+                tracing::info!(workdir, "已在 Codex 配置里信任工作目录");
+            }
+            Ok(())
+        }
+        .await;
+        match r {
+            Ok(()) => {
+                lock(&self.codex.trusted).insert(workdir.to_string());
+            }
+            Err(e) => tracing::warn!(workdir, error = ?e, "没能在 Codex 配置里信任工作目录，终端里会再问一次"),
         }
     }
 
     /// 终端标签连上之前：起好 app-server、加载好会话（还没有就建一个），这样终端里的 TUI 接的是同一个会话。
     pub async fn codex_prepare_terminal(&self, id: &str) {
         let r: Result<(), LocalError> = async {
-            self.codex_attach(id).await?;
+            let server = self.codex_attach(id).await?;
+            let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+            self.codex_before_tui(&server, &row.workdir).await;
             self.codex_expect_tui(id);
             Ok(())
         }
@@ -1024,7 +1125,8 @@ impl Chat {
             return Err(LocalError::new("CODEX_TERMINAL_BUSY"));
         }
         // 起好 app-server、加载好会话；--remote 要有地址
-        self.codex_attach(id).await?;
+        let server = self.codex_attach(id).await?;
+        self.codex_before_tui(&server, &row.workdir).await;
         if codex_app::endpoint().is_none() {
             return Err(LocalError::new("CODEX_APP_SERVER").with("detail", "app-server connection closed"));
         }
@@ -1078,6 +1180,114 @@ impl Chat {
         Self::emit_status(&inst, &st);
         drop(st);
         let _ = inst.tx.send(super::Event::Reset);
+    }
+
+    // ---------------- 新版本 ----------------
+
+    /// Codex 有没有新版本：看看开的 TUI 不再自己提示（见 `codex_app::NO_UPDATE_PROMPT`），由这里查、在对话页提示。
+    /// 用 npm 装的可以一键更新（`npm install -g @openai/codex`，和新建会话时装 Codex 同一个任务）；别的装法只提示。
+    /// 最新版本查 npm 镜像（和装的时候同一个源，国内能连上），[`UPDATE_TTL`] 内用上次的结果；跳过的版本不再提示。
+    /// 没有新版本、查不到时为 null。
+    pub(super) async fn codex_update_info(&self) -> Value {
+        let cached = lock(&self.codex.update).as_ref().filter(|(t, _)| t.elapsed() < UPDATE_TTL).map(|(_, v)| v.clone());
+        let info = match cached {
+            Some(v) => v,
+            None => {
+                let program = codex_app::program(self.instances.shell()).await;
+                let (current, npm) = installed_version(&program).await;
+                let latest = latest_version().await;
+                let v = json!({ "current": current, "latest": latest, "npm": npm });
+                // 查不到最新版本（没联网）时不缓存太久：过一会儿再查
+                if latest.is_some() {
+                    *lock(&self.codex.update) = Some((Instant::now(), v.clone()));
+                }
+                v
+            }
+        };
+        let skipped: Option<String> = self.store.get(UPDATE_SKIPPED).ok().flatten();
+        let (Some(cur), Some(latest)) = (info["current"].as_str(), info["latest"].as_str()) else { return Value::Null };
+        if !newer(latest, cur) || skipped.as_deref() == Some(latest) {
+            return Value::Null;
+        }
+        info
+    }
+
+    /// 对话页上的“更新”：开始装（进度用 `GET /tools/install/codex` 看）；装好后 app-server 等空闲时换成新的。
+    /// “跳过这个版本”：记下来，同一个版本不再提示。
+    pub async fn codex_update(self: &Arc<Self>, install: bool) -> Result<Value, LocalError> {
+        let info = self.codex_update_info().await;
+        if !install {
+            if let Some(v) = info["latest"].as_str() {
+                self.store.set(UPDATE_SKIPPED, &v)?;
+            }
+            return Ok(Value::Null);
+        }
+        if info["npm"] != true {
+            return Err(LocalError::new("CODEX_UPDATE_MANUAL"));
+        }
+        let job = crate::tools::start_install(self.instances.shell(), "codex", "npmmirror").ok_or_else(|| LocalError::new("CHAT_UNAVAILABLE"))?;
+        let me = self.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                match crate::tools::job("codex").map(|j| j.state) {
+                    Some("running") => continue,
+                    Some("ok") => {
+                        tracing::info!("Codex 更新好了，app-server 空闲时换成新版本");
+                        me.codex.stale.store(true, Ordering::SeqCst);
+                        *lock(&me.codex.update) = None;
+                        *lock(&me.codex.models) = None;
+                    }
+                    _ => {}
+                }
+                break;
+            }
+        });
+        Ok(json!(job))
+    }
+
+    // ---------------- 待确认的 hook ----------------
+
+    /// 工作目录里新的、改过的 hook（用户的、项目 `.codex/` 的、插件的）：Codex 只运行用户信任过的，
+    /// 没信任的在对话里也不运行，终端里的 TUI 每次启动都会问（“Hooks need review”）。
+    /// 对话页显示成卡片，让用户在这里信任或跳过；跳过过的（同一条、内容没变）不再列出。
+    /// 同时带上还没登录（`login_required`）：要用 OpenAI 账号、又没登录时，对话发不出去，TUI 启动时停在登录页。
+    pub async fn codex_setup(&self, id: &str) -> Result<Value, LocalError> {
+        let (server, list) = self.codex_hooks_list(id).await?;
+        let skipped: Vec<String> = self.store.get(HOOKS_SKIPPED)?.unwrap_or_default();
+        let hooks: Vec<Value> = list.iter().filter(|h| !skipped.contains(&hook_id(h))).map(hook_view).collect();
+        let login_required = server.call("account/read", json!({})).await.is_ok_and(|a| a["requiresOpenaiAuth"] == true && a["account"].is_null());
+        let update = self.codex_update_info().await;
+        Ok(json!({ "hooks": hooks, "login_required": login_required, "update": update }))
+    }
+
+    /// 信任（和 TUI 的“Trust all and continue”写同一个值：`hooks.state.<key>.trusted_hash`）或跳过界面上列出的这几条。
+    /// `picked` 是 `(key, hash)`：只认现在还是这个内容的，用户看过之后命令又改了的不算（要重新确认）。
+    pub async fn codex_hooks_answer(&self, id: &str, trust: bool, picked: &[(String, String)]) -> Result<(), LocalError> {
+        let (server, list) = self.codex_hooks_list(id).await?;
+        let hooks: Vec<&Value> = list.iter().filter(|h| picked.iter().any(|(k, hash)| h["key"] == k.as_str() && h["currentHash"] == hash.as_str())).collect();
+        if hooks.len() != picked.len() {
+            return Err(LocalError::new("CODEX_HOOKS_CHANGED"));
+        }
+        if trust {
+            let state: serde_json::Map<String, Value> = hooks.iter().map(|h| (h["key"].as_str().unwrap_or_default().to_string(), json!({ "trusted_hash": h["currentHash"] }))).collect();
+            let edit = json!({ "keyPath": "hooks.state", "value": state, "mergeStrategy": "upsert" });
+            server.call("config/batchWrite", json!({ "edits": [edit], "reloadUserConfig": true })).await?;
+        } else {
+            let mut skipped: Vec<String> = self.store.get(HOOKS_SKIPPED)?.unwrap_or_default();
+            skipped.extend(hooks.iter().map(|h| hook_id(h)).filter(|s| !skipped.contains(s)).collect::<Vec<_>>());
+            self.store.set(HOOKS_SKIPPED, &skipped)?;
+        }
+        Ok(())
+    }
+
+    /// app-server 的 `hooks/list`（这个终端的工作目录）里要用户确认的那些
+    async fn codex_hooks_list(&self, id: &str) -> Result<(Arc<AppServer>, Vec<Value>), LocalError> {
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        let server = self.codex_server().await?;
+        let r = server.call("hooks/list", json!({ "cwds": [row.workdir] })).await?;
+        let hooks = r["data"].as_array().and_then(|d| d.first()).and_then(|e| e["hooks"].as_array()).cloned().unwrap_or_default();
+        Ok((server, hooks.into_iter().filter(|h| matches!(h["trustStatus"].as_str(), Some("untrusted" | "modified"))).collect()))
     }
 
     // ---------------- 以前的会话转到对话模式 ----------------
@@ -1190,7 +1400,7 @@ impl Chat {
             // 直接用这个新进程加载（不经 codex_attach：那里可能又起 app-server，会绕回这里）
             let mut params = json!({ "threadId": b.session_id, "cwd": row.workdir, "excludeTurns": true });
             merge(&mut params, self.codex_policy(&row.id));
-            match server.call("thread/resume", params).await {
+            match resume_thread(&server, &b.session_id, params).await {
                 Ok(r) => self.codex_loaded(&self.inst(&row.id), &r, gen),
                 Err(e) => tracing::debug!(id = %row.id, error = ?e, "终端里的 Codex 会话没能重新加载"),
             }
@@ -1209,6 +1419,112 @@ enum TermCodex {
     Foreign,
 }
 
+/// `config/read` 的 `projects` 里这个目录已经有 trust_level（Windows 上路径不分大小写，和 Codex 的查法一样）
+fn has_trust_level(projects: &Value, workdir: &str) -> bool {
+    let windows = workdir.contains('\\') || workdir.as_bytes().get(1) == Some(&b':');
+    projects.as_object().is_some_and(|m| {
+        m.iter().any(|(k, v)| (k == workdir || windows && k.eq_ignore_ascii_case(workdir)) && v["trust_level"].is_string())
+    })
+}
+
+/// `thread/resume`；会话被归档了（在 TUI 里 `/archive`、Codex 桌面版里归档）就先取消归档再接：
+/// 用户打开的就是这个终端的对话，不然对话页接不上，终端里的 TUI 也会停在 “This conversation is archived” 上。
+/// 只认 app-server 对这个会话说的“已归档”，别的错误照常返回（和 TUI 的 session_start.rs 一样）
+async fn resume_thread(server: &AppServer, thread: &str, params: Value) -> Result<Value, LocalError> {
+    match server.call("thread/resume", params.clone()).await {
+        Err(e) if e.params.get("detail").and_then(Value::as_str).is_some_and(|m| m.starts_with(&format!("session {thread} is archived. "))) => {
+            tracing::info!(thread, "Codex 会话已归档，取消归档后接着用");
+            server.call("thread/unarchive", json!({ "threadId": thread })).await?;
+            server.call("thread/resume", params).await
+        }
+        r => r,
+    }
+}
+
+/// 多久查一次 Codex 的新版本（Codex 自己是 20 小时）
+const UPDATE_TTL: Duration = Duration::from_secs(6 * 3600);
+/// 跳过的版本号
+const UPDATE_SKIPPED: &str = "codex_update_skipped";
+
+/// 装着的 Codex 版本，以及是不是 npm 装的。npm 装的从包里的 package.json 读（不用起进程）：
+/// `…/node_modules/@openai/codex/bin/codex.js`（macOS、Linux 的 PATH 里是指向它的链接）或
+/// `…/@openai/codex/node_modules/@openai/codex-<平台>/vendor/<三元组>/bin/codex(.exe)`（Windows 上直接调的）
+async fn installed_version(program: &Path) -> (Option<String>, bool) {
+    let real = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let pkg = real.ancestors().find(|d| d.file_name().is_some_and(|n| n == "codex") && d.parent().and_then(Path::file_name).is_some_and(|n| n == "@openai"));
+    if let Some(v) = pkg.and_then(|d| std::fs::read_to_string(d.join("package.json")).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok()).and_then(|j| j["version"].as_str().map(String::from)) {
+        return (Some(v), true);
+    }
+    let mut cmd = tokio::process::Command::new(program);
+    cmd.arg("--version").stdin(std::process::Stdio::null()).kill_on_drop(true);
+    #[cfg(windows)]
+    cmd.creation_flags(0x0800_0000);
+    let out = tokio::time::timeout(Duration::from_secs(10), cmd.output()).await.ok().and_then(Result::ok);
+    let v = out.and_then(|o| String::from_utf8_lossy(&o.stdout).split_whitespace().last().map(String::from)).filter(|v| v.chars().next().is_some_and(|c| c.is_ascii_digit()));
+    (v, false)
+}
+
+/// npm 上 `@openai/codex` 的最新正式版（npmmirror，连不上再试官方源）
+async fn latest_version() -> Option<String> {
+    let client = reqwest::Client::builder().connect_timeout(Duration::from_secs(5)).timeout(Duration::from_secs(10)).build().ok()?;
+    for mirror in ["npmmirror", "official"] {
+        let url = format!("{}@openai%2fcodex/latest", crate::tools::registry(mirror));
+        if let Ok(r) = client.get(&url).send().await.and_then(reqwest::Response::error_for_status) {
+            if let Some(v) = r.json::<Value>().await.ok().and_then(|j| j["version"].as_str().map(String::from)) {
+                return Some(v);
+            }
+        }
+    }
+    None
+}
+
+/// `a` 比 `b` 新（按数字比 `x.y.z`；带预发布后缀的不算新版本）
+fn newer(a: &str, b: &str) -> bool {
+    let parse = |v: &str| -> Option<Vec<u64>> { v.trim_start_matches('v').split('.').map(|p| p.parse().ok()).collect() };
+    matches!((parse(a), parse(b)), (Some(x), Some(y)) if x > y)
+}
+
+/// `model/list` 里有升级、还没记成看过的：`{ 旧模型: 新模型 }`
+fn unseen_migrations(list: &Value, seen: &Value) -> serde_json::Map<String, Value> {
+    let models = list["data"].as_array().cloned().unwrap_or_default();
+    let listed = |m: &str| models.iter().any(|x| x["model"] == m);
+    models
+        .iter()
+        .filter_map(|m| Some((m["model"].as_str()?, m["upgrade"].as_str()?)))
+        .filter(|(from, to)| from != to && listed(to) && seen[*from] != *to)
+        .map(|(from, to)| (from.to_string(), json!(to)))
+        .collect()
+}
+
+/// 跳过过的 hook：`<key>\n<哈希>`（命令改了哈希就变，会再问）
+const HOOKS_SKIPPED: &str = "codex_hooks_skipped";
+
+fn hook_id(h: &Value) -> String {
+    format!("{}\n{}", h["key"].as_str().unwrap_or_default(), h["currentHash"].as_str().unwrap_or_default())
+}
+
+/// 界面上显示的一条 hook：什么时候运行、运行什么、写在哪里
+fn hook_view(h: &Value) -> Value {
+    json!({
+        "key": h["key"],
+        "hash": h["currentHash"],
+        "event": h["eventName"],
+        "matcher": h["matcher"],
+        "type": h["handlerType"],
+        "command": h["command"],
+        "source": h["source"],
+        "path": h["sourcePath"],
+        "plugin": h["pluginId"],
+        "modified": h["trustStatus"] == "modified",
+        "enabled": h["enabled"],
+    })
+}
+
+/// `config/batchWrite` 的键：目录里有 `.`，要用双引号括起来当一整段（和 Codex TUI 写的一样）
+fn trust_key_path(workdir: &str) -> String {
+    format!("projects.\"{}\".trust_level", workdir.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 fn merge(a: &mut Value, b: Value) {
     if let (Some(a), Value::Object(b)) = (a.as_object_mut(), b) {
         a.extend(b);
@@ -1225,6 +1541,64 @@ fn set_usage(st: &mut super::State, u: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn versions() {
+        assert!(newer("0.165.0", "0.164.0"));
+        assert!(newer("0.164.10", "0.164.9"), "按数字比");
+        assert!(!newer("0.164.0", "0.164.0"));
+        assert!(!newer("0.165.0-alpha.1", "0.164.0"), "预发布版不提示");
+        assert!(!newer("0.163.0", "0.164.0"));
+    }
+
+    #[tokio::test]
+    async fn npm_install_version() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pkg = tmp.path().join("lib/node_modules/@openai/codex");
+        let bin = pkg.join("node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        std::fs::write(pkg.join("package.json"), r#"{"name":"@openai/codex","version":"0.164.0"}"#).unwrap();
+        std::fs::write(bin.join("codex"), "").unwrap();
+        assert_eq!(installed_version(&bin.join("codex")).await, (Some("0.164.0".into()), true), "Windows 上直接调的平台包里的程序");
+        std::fs::create_dir_all(pkg.join("bin")).unwrap();
+        std::fs::write(pkg.join("bin/codex.js"), "").unwrap();
+        assert_eq!(installed_version(&pkg.join("bin/codex.js")).await, (Some("0.164.0".into()), true));
+    }
+
+    #[test]
+    fn model_upgrade_notices() {
+        let list = json!({ "data": [
+            { "model": "gpt-5.4", "upgrade": "gpt-6-sol" },
+            { "model": "gpt-6-sol", "upgrade": null },
+            { "model": "gpt-5.4-mini", "upgrade": "gpt-6-luna" },
+            { "model": "o1", "upgrade": "o1" },
+        ] });
+        let todo = unseen_migrations(&list, &Value::Null);
+        assert_eq!(Value::Object(todo), json!({ "gpt-5.4": "gpt-6-sol" }), "新模型不在列表里的不记（TUI 也不问）；升级到自己的不算");
+        assert!(unseen_migrations(&list, &json!({ "gpt-5.4": "gpt-6-sol" })).is_empty(), "已经看过的不再写");
+        assert_eq!(unseen_migrations(&list, &json!({ "gpt-5.4": "gpt-5.5" })).len(), 1, "看过的是更早的一次升级：再记");
+    }
+
+    #[test]
+    fn hook_views() {
+        let h = json!({ "key": "/u/.codex/config.toml:pre_tool_use:0:0", "eventName": "preToolUse", "handlerType": "command", "command": "echo hi", "matcher": "Bash", "sourcePath": "/u/.codex/config.toml", "source": "user", "pluginId": null, "enabled": true, "currentHash": "sha256:ab", "trustStatus": "modified" });
+        assert_eq!(hook_id(&h), "/u/.codex/config.toml:pre_tool_use:0:0\nsha256:ab");
+        let v = hook_view(&h);
+        assert_eq!((v["event"].as_str(), v["command"].as_str(), v["hash"].as_str(), v["modified"].as_bool()), (Some("preToolUse"), Some("echo hi"), Some("sha256:ab"), Some(true)));
+    }
+
+    #[test]
+    fn folder_trust() {
+        // 0.164 的 TUI 自己选“Trust and continue”时写的就是这个键（config_update.rs 的 trusted_project_edit）
+        assert_eq!(trust_key_path("/home/a/my.proj"), r#"projects."/home/a/my.proj".trust_level"#);
+        assert_eq!(trust_key_path(r#"C:\Users\a "b""#), r#"projects."C:\\Users\\a \"b\"".trust_level"#);
+        let projects = json!({ "/a": { "trust_level": "untrusted" }, "/b": {}, r"c:\users\x": { "trust_level": "trusted" } });
+        assert!(has_trust_level(&projects, "/a"), "用户自己选的不信任不改");
+        assert!(!has_trust_level(&projects, "/b"));
+        assert!(!has_trust_level(&projects, "/A"), "Unix 路径分大小写");
+        assert!(has_trust_level(&projects, r"C:\Users\x"), "Windows 路径不分大小写");
+        assert!(!has_trust_level(&Value::Null, "/a"));
+    }
 
     #[test]
     fn limits_map_windows() {

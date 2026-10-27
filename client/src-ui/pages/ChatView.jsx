@@ -38,6 +38,7 @@ import {
   Plug,
   Plus,
   Search,
+  ShieldAlert,
   ShieldCheck,
   Sparkle,
   Square,
@@ -108,10 +109,18 @@ const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
 /** 这个对话的 AI 工具和它支持的操作（`status.caps`；老版本服务端不带 caps，就是全部可用）：界面只按它显示按钮 */
 const AgentCtx = createContext({ id: 'claude', name: AGENT_NAMES.claude, caps: {} });
 /** 这段对话产出的文件（Codex）：list 给资源栏，links（文字里的写法 → 地址）给回复里的路径变成链接 */
-const ArtifactCtx = createContext({ list: [], links: null });
+const ArtifactCtx = createContext({ list: [], links: null, fileUrl: null });
 
 /** 产出的文件的地址：图片、PDF、音视频、文本直接在浏览器里看，其余下载 */
 const artifactUrl = (id, path, download) => `/api/instances/${id}/chat/artifact?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`;
+/**
+ * 回复里链接到这台电脑上其他文件（不是这段对话产出的）：文字和图片和“文件”标签一样用预览打开（浏览器里直接看），
+ * 其他（PDF、Office、压缩包……）预览只会显示成乱码，直接下载
+ */
+const localFileUrl = (id, path) => {
+  const kind = /\.(pdf|docx?|xlsx?|pptx?|zip|7z|rar|gz|tgz|tar|bz2|xz|dmg|exe|msi|pkg|apk|mp3|mp4|mov|wav|webm|sqlite|db)$/i.test(path) ? 'download' : 'preview';
+  return `/api/instances/${id}/${kind}?path=${encodeURIComponent(path)}`;
+};
 
 /** 和 useTranslation 一样，但文案里的 {{agent}} 换成这个对话的 AI 工具（`name` 给了就用它，否则看上层的 AgentCtx） */
 function useT(name) {
@@ -703,7 +712,7 @@ function ToolGroup({ id, row, results, live }) {
  */
 function Rows({ id, items, live, limit = 0 }) {
   const { t } = useT();
-  const { links } = useContext(ArtifactCtx);
+  const { links, fileUrl } = useContext(ArtifactCtx);
   const results = useMemo(() => resultsById(items), [items]);
   const all = useMemo(() => chatRows(items, toolUseIds(items)), [items]);
   const [max, setMax] = useState(limit);
@@ -719,8 +728,8 @@ function Rows({ id, items, live, limit = 0 }) {
       case 'text': {
         // 一段回复的最后一段文字（后面是用户消息、提示或者没有了）：下面放复制按钮，复制这段回复的全部文字
         const next = rows[n + 1];
-        if (live && !next) return <Markdown key={r.key} text={r.block.text} links={links} />;
-        if (next && next.k !== 'item') return <Markdown key={r.key} text={r.block.text} links={links} />;
+        if (live && !next) return <Markdown key={r.key} text={r.block.text} links={links} fileUrl={fileUrl} />;
+        if (next && next.k !== 'item') return <Markdown key={r.key} text={r.block.text} links={links} fileUrl={fileUrl} />;
         let from = n;
         while (from > 0 && rows[from - 1].k !== 'item') from--;
         const all = rows.slice(from, n + 1).filter((x) => x.k === 'text').map((x) => x.block.text).join('\n\n');
@@ -751,12 +760,12 @@ function Rows({ id, items, live, limit = 0 }) {
 /** 一段回复的最后一段文字，下面是复制和用时；手机上长按这一段弹出复制菜单 */
 function ReplyEnd({ text, all, turn }) {
   const { t } = useT();
-  const { links } = useContext(ArtifactCtx);
+  const { links, fileUrl } = useContext(ArtifactCtx);
   const [sheet, setSheet] = useState(false);
   const press = useLongPress(() => setSheet(true));
   return (
     <div className="chat-reply-end" {...press}>
-      <Markdown text={text} links={links} />
+      <Markdown text={text} links={links} fileUrl={fileUrl} />
       <div className="chat-reply-acts">
         <CopyButton text={all} label={false} variant="plain" />
         {turn && <span className="chat-turn">{t('chat.turn', { s: Math.max(1, Math.round(turn.ms / 1000)) })}</span>}
@@ -1047,7 +1056,8 @@ function PendingCard({ id, pending, active }) {
   const kind = pending.kind;
   const enter = useCallback(() => {
     if (busy) return;
-    if (kind === 'permission') answer('allow');
+    // 命令规则拦下的命令要点按钮确认，不能顺手按回车放过去
+    if (kind === 'permission' && !pending.guard) answer('allow');
     else if (kind === 'plan') plan(1);
   }, [busy, kind, pending.id]);
   useEnterKey(active && kind !== 'question', enter);
@@ -1107,16 +1117,22 @@ function PendingCard({ id, pending, active }) {
         )}
         {pending.tool !== 'apply_patch' && (open || (diff && diff.length <= 40)) && (diff ? <DiffView lines={diff} /> : <Pre text={JSON.stringify(input, null, 2)} />)}
         {input.description && <p className="chat-note">{input.description}</p>}
+        {pending.guard && (
+          <p className="chat-guard">
+            <ShieldAlert size={14} aria-hidden="true" />
+            <span>{t('chat.guard_hit', { rule: pending.guard })}</span>
+          </p>
+        )}
         <div className="chat-acts">
           <Button busy={busy} onClick={() => answer('allow')}>
-            {t('chat.allow')} <kbd className="chat-kbd">↵</kbd>
+            {pending.guard ? t('chat.guard_allow') : t('chat.allow')} {!pending.guard && <kbd className="chat-kbd">↵</kbd>}
           </Button>
-          {caps.allow_session !== false && (
+          {caps.allow_session !== false && !pending.guard && (
             <Button variant="secondary" busy={busy} onClick={() => answer('allow_session')} title={t('chat.allow_session_hint')}>
               {t('chat.allow_session')}
             </Button>
           )}
-          {caps.allow_dirs !== false && dirs.length > 0 && (
+          {caps.allow_dirs !== false && !pending.guard && dirs.length > 0 && (
             <Button variant="secondary" busy={busy} onClick={() => answer('allow_dirs')} title={dirs.flatMap((d) => d.directories ?? []).join('\n')}>
               {t('chat.allow_dirs')}
             </Button>
@@ -1146,6 +1162,166 @@ function PendingCard({ id, pending, active }) {
         <b>{title}</b>
       </header>
       <div className="chat-ask-body">{body}</div>
+    </section>
+  );
+}
+
+// ---------------- Codex 要先处理的：待确认的 hook、还没登录 ----------------
+
+/**
+ * 终端里的 Codex 启动时会停下来问、对话页原本看不到的事（docs/CODEX_UI.md）：
+ * - 还没登录：对话发不出去，登录要在终端里做（Codex 自己的登录页）；
+ * - 工作目录里新的、改过的 hook（用户的、项目 `.codex/` 的、插件的）：Codex 只运行信任过的，没信任的在对话里也不运行，
+ *   终端里启动时会问（“Hooks need review”）。在这里列出来，信任或跳过；不挡着输入。
+ * 打开对话、每一轮做完时重新看一次（hook 文件随时可能被改）。
+ */
+function CodexSetup({ id, phase, onTab }) {
+  const { t } = useT();
+  const [setup, setSetup] = useState(null);
+  const load = useCallback(async () => {
+    try {
+      setSetup(await api.get(`/instances/${id}/chat/setup`));
+    } catch {
+      // 读不到（app-server 还没起来、旧版 Codex 没有 hooks/list）：不显示，下次再看
+    }
+  }, [id]);
+  const idle = phase === 'idle';
+  useEffect(() => {
+    if (idle) load();
+  }, [idle, load]);
+  return (
+    <>
+      {setup?.login_required && (
+        <p className="chat-event">
+          <TriangleAlert size={13} aria-hidden="true" /> {t('chat.codex_login_required')}
+          {onTab && (
+            <button type="button" className="chat-more" onClick={() => onTab('term')}>
+              {t('chat.codex_login_go')}
+            </button>
+          )}
+        </p>
+      )}
+      {setup?.update && <CodexUpdate id={id} update={setup.update} onDone={load} />}
+      {setup?.hooks?.length > 0 && <HooksCard id={id} items={setup.hooks} onDone={load} />}
+    </>
+  );
+}
+
+/**
+ * Codex 有新版本（终端里的 TUI 不再自己弹更新提示，见 codex_app.rs 的 NO_UPDATE_PROMPT）。
+ * npm 装的一键更新：和新建会话时装 Codex 是同一个后台任务，看得到进度；装好后对话空闲时自动换成新版本。
+ */
+function CodexUpdate({ id, update, onDone }) {
+  const { t } = useT();
+  const toast = useToast();
+  const [job, setJob] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const running = job?.state === 'running';
+  useEffect(() => {
+    if (!running) return undefined;
+    const timer = setInterval(async () => {
+      const j = await api.get('/tools/install/codex').catch(() => null);
+      if (j) setJob(j);
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [running]);
+  const act = async (install) => {
+    setBusy(true);
+    try {
+      const r = await api.post(`/instances/${id}/chat/codex-update`, { install });
+      if (install) setJob(r);
+      else onDone();
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(false);
+    }
+  };
+  if (job?.state === 'ok') {
+    return (
+      <p className="chat-event">
+        <Check size={13} aria-hidden="true" /> {t('chat.codex_updated', { version: update.latest })}
+      </p>
+    );
+  }
+  return (
+    <div className="chat-event chat-update">
+      <span>
+        <Sparkle size={13} aria-hidden="true" /> {running ? t('chat.codex_updating', { version: update.latest }) : t('chat.codex_update', { latest: update.latest, current: update.current })}
+        {!update.npm && !running && ` ${t('chat.codex_update_manual')}`}
+      </span>
+      {running && <LoaderCircle size={13} className="spin" aria-hidden="true" />}
+      {!running && update.npm && (
+        <button type="button" className="chat-more" disabled={busy} onClick={() => act(true)}>
+          {job?.state === 'failed' ? t('chat.codex_update_retry') : t('chat.codex_update_now')}
+        </button>
+      )}
+      {!running && (
+        <button type="button" className="chat-more" disabled={busy} onClick={() => act(false)}>
+          {t('chat.codex_update_skip')}
+        </button>
+      )}
+      {job?.state === 'failed' && (
+        <>
+          <span className="chat-note">{t('chat.codex_update_failed')}</span>
+          <Pre text={(job.output ?? '').split('\n').slice(-12).join('\n')} />
+        </>
+      )}
+    </div>
+  );
+}
+
+function HooksCard({ id, items, onDone }) {
+  const { t } = useT();
+  const toast = useToast();
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const answer = async (trust) => {
+    setBusy(true);
+    try {
+      await api.post(`/instances/${id}/chat/hooks`, { trust, hooks: items.map((h) => ({ key: h.key, hash: h.hash })) });
+      if (trust) toast(t('chat.hooks_trusted', { count: items.length }));
+    } catch (e) {
+      toast(errorText(t, e), 'error');
+    } finally {
+      setBusy(false);
+      onDone();
+    }
+  };
+  return (
+    <section className="chat-ask chat-hooks">
+      <header>
+        <ShieldAlert size={16} aria-hidden="true" />
+        <b>{t('chat.hooks_title', { count: items.length })}</b>
+      </header>
+      <div className="chat-ask-body">
+        <p className="chat-note">{t('chat.hooks_note')}</p>
+        <button type="button" className="chat-tool-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+          <span className="chat-tool-sum ellipsis">{open ? t('chat.hooks_hide') : t('chat.hooks_show')}</span>
+        </button>
+        {open &&
+          items.map((h) => (
+            <div key={h.key} className="chat-hook">
+              <div className="chat-note">
+                {t('chat.hooks_when', { event: t(`chat.hook_event.${h.event}`, { defaultValue: h.event }), matcher: h.matcher || '*' })}
+                {h.modified && ` · ${t('chat.hooks_modified')}`}
+              </div>
+              <Pre text={h.command ? `$ ${h.command}` : h.type} className="cmd" />
+              <div className="chat-note ellipsis" title={h.path}>
+                {h.plugin ? t('chat.hooks_from_plugin', { plugin: h.plugin }) : h.path}
+              </div>
+            </div>
+          ))}
+        <div className="chat-acts">
+          <Button busy={busy} onClick={() => answer(true)}>
+            {t('chat.hooks_trust')}
+          </Button>
+          <Button variant="secondary" busy={busy} onClick={() => answer(false)}>
+            {t('chat.hooks_skip')}
+          </Button>
+        </div>
+      </div>
     </section>
   );
 }
@@ -2733,7 +2909,7 @@ function UsageTab({ id, status, onCompact }) {
       {lim?.five_hour && <Meter label={t('chat.usage_5h')} value={lim.five_hour.used} sub={resetText(t, lim.five_hour.resets_at)} />}
       {lim?.seven_day && <Meter label={t('chat.usage_7d')} value={lim.seven_day.used} sub={resetText(t, lim.seven_day.resets_at)} />}
       {lim?.reached && <p className="chat-note chat-warn">{t('chat.usage_reached')}</p>}
-      {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{t(lim.account ? 'chat.usage_limits_note_codex' : lim.live ? 'chat.usage_limits_note_live' : 'chat.usage_limits_note')}</p>}
+      {lim && (lim.five_hour || lim.seven_day) && <p className="chat-note">{lim.provider ? t('chat.usage_limits_note_provider', { provider: lim.provider }) : t(lim.account ? 'chat.usage_limits_note_codex' : lim.live ? 'chat.usage_limits_note_live' : 'chat.usage_limits_note')}</p>}
       {!lim?.live && lim?.fetched_at > 0 && <p className="chat-note">{t(lim.five_hour || lim.seven_day ? 'chat.usage_fetched' : 'chat.usage_stale', { ago: spanText(t, Date.now() - lim.fetched_at) })}</p>}
       <Button variant="secondary" onClick={onCompact} disabled={status?.phase !== 'idle' || !used}>
         {t('chat.usage_compact')}
@@ -3191,7 +3367,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
       // 文字里的写法，加上完整路径的两种斜杠（Codex 引用文件时用正斜杠，路径里可能有空格）
       for (const m of [...(a.mentions ?? []), a.path, a.path.replaceAll('\\', '/')]) links[m] = url;
     }
-    return { list, links: list.length ? links : null };
+    return { list, links: list.length ? links : null, fileUrl: (p) => localFileUrl(id, p) };
   }, [arts, id]);
   // 这一轮从什么时候开始跑的（运行中显示用了多久）；等审批时接着算
   const [since, setSince] = useState(null);
@@ -3326,6 +3502,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           {/* 第一句在等它起来：上面已经写着“正在启动”，这里不再说一遍 */}
           {phase === 'detached' && !first && <Detached id={id} status={status} />}
           {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
+          {agentId === 'codex' && status != null && <CodexSetup id={id} phase={phase} onTab={onTab} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
           <Composer id={id} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
