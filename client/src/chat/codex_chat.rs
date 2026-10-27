@@ -270,9 +270,9 @@ impl Chat {
         Some(self.inst(&id))
     }
 
-    /// 让这个终端的 thread 在当前 app-server 里加载着（打开对话、发消息、回答之前调用）。
-    /// 还没有会话时什么都不做：第一条消息时再 `thread/start`。
-    pub(super) async fn codex_attach(&self, id: &str) -> Result<Arc<AppServer>, LocalError> {
+    /// 能在这个终端里用 app-server 了：终端里没有不接 app-server 的 Codex、app-server 起好了。
+    /// 不加载这个终端现在的会话（换会话、新开会话用：现在的会话接不上也不妨碍换走）。
+    async fn codex_ready(&self, id: &str) -> Result<Arc<AppServer>, LocalError> {
         // 终端里跑着的 Codex 不是接在看看 app-server 上的：两边会同时写一个会话，现在不接；
         // 在后台等它空闲时转到对话模式（接着同一段对话），转好后界面自己刷新
         match self.codex_terminal_kind(id).await {
@@ -284,7 +284,14 @@ impl Chat {
             }
             TermCodex::None | TermCodex::Remote => {}
         }
-        let server = self.codex_server().await?;
+        self.codex_server().await
+    }
+
+    /// 让这个终端的 thread 在当前 app-server 里加载着（打开对话、发消息、回答之前调用）。
+    /// 还没有会话时什么都不做：第一条消息时再 `thread/start`。
+    /// app-server 好好的、只是这段会话接不上时返回 `CODEX_RESUME_FAILED`（界面上让用户换一段，不当成 Codex 没启动）。
+    pub(super) async fn codex_attach(&self, id: &str) -> Result<Arc<AppServer>, LocalError> {
+        let server = self.codex_ready(id).await?;
         let gen = self.codex.generation.load(Ordering::SeqCst);
         let inst = self.inst(id);
         let (thread, loaded) = {
@@ -313,7 +320,10 @@ impl Chat {
             Some(t) => {
                 let mut params = json!({ "threadId": t, "cwd": row.workdir, "excludeTurns": true });
                 merge(&mut params, self.codex_policy(id));
-                let r = resume_thread(&server, &t, params).await?;
+                let r = resume_thread(&server, &t, params).await.map_err(|e| match e.code.as_str() {
+                    "CODEX_REQUEST_FAILED" => LocalError::new("CODEX_RESUME_FAILED").with("detail", e.params.get("detail").cloned().unwrap_or(Value::Null)),
+                    _ => e,
+                })?;
                 self.codex_loaded(&inst, &r, gen);
             }
             None => {
@@ -700,8 +710,36 @@ impl Chat {
     // ---------------- 界面的操作 ----------------
 
     pub(super) async fn codex_input(&self, id: &str, text: &str, images: &[String]) -> Result<Value, LocalError> {
-        let server = self.codex_attach(id).await?;
         let inst = self.inst(id);
+        let phase = lock(&inst.st).phase;
+        if phase == Phase::Approval {
+            return Err(LocalError::new("CHAT_BUSY"));
+        }
+        // 换走现在的会话：不用先把它加载上（它接不上时，用户就靠这两个离开）
+        let resume_to = text.trim().strip_prefix("/resume ").map(str::trim).filter(|s| !s.is_empty() && images.is_empty());
+        let fresh = matches!(text.trim(), "/clear" | "/new") && images.is_empty();
+        if resume_to.is_some() || fresh {
+            if phase == Phase::Running {
+                return Err(LocalError::new("CHAT_RUNNING"));
+            }
+            let thread = lock(&inst.st).binding.as_ref().map(|b| b.session_id.clone());
+            // /resume <会话>：界面上选的以前的对话，在这个终端里接着（原来的留在“以前的对话”里）
+            if let Some(to) = resume_to {
+                if !to.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+                    return Err(LocalError::invalid("resume", "invalid"));
+                }
+                if thread.as_deref() != Some(to) {
+                    self.codex_resume(id, thread, to).await?;
+                }
+                return Ok(json!({ "delivered": true }));
+            }
+            // /clear、/new：开一个新会话（原来的留在“以前的对话”里）
+            let server = self.codex_ready(id).await?;
+            self.codex_forget(thread).await;
+            self.codex_new_thread(&server, &inst).await?;
+            return Ok(json!({ "delivered": true }));
+        }
+        let server = self.codex_attach(id).await?;
         let (thread, turn, phase, model, effort) = {
             let st = lock(&inst.st);
             let chosen = st.model_set_at.is_some();
@@ -710,32 +748,10 @@ impl Chat {
         if phase == Phase::Approval {
             return Err(LocalError::new("CHAT_BUSY"));
         }
-        // /resume <会话>：界面上选的以前的对话，在这个终端里接着（原来的留在“以前的对话”里）
-        if let Some(to) = text.trim().strip_prefix("/resume ").map(str::trim).filter(|s| !s.is_empty() && images.is_empty()) {
-            if phase == Phase::Running {
-                return Err(LocalError::new("CHAT_RUNNING"));
-            }
-            if !to.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
-                return Err(LocalError::invalid("resume", "invalid"));
-            }
-            if thread.as_deref() != Some(to) {
-                self.codex_resume(id, thread, to).await?;
-            }
-            return Ok(json!({ "delivered": true }));
-        }
         let thread = match thread {
             Some(t) => t,
             None => self.codex_new_thread(&server, &inst).await?,
         };
-        // /clear、/new：开一个新会话（原来的留在“以前的对话”里）
-        if matches!(text.trim(), "/clear" | "/new") && images.is_empty() {
-            if phase == Phase::Running {
-                return Err(LocalError::new("CHAT_RUNNING"));
-            }
-            self.codex_forget(Some(thread)).await;
-            self.codex_new_thread(&server, &inst).await?;
-            return Ok(json!({ "delivered": true }));
-        }
         // 界面上的“压缩上下文”
         if text.trim() == "/compact" && images.is_empty() {
             server.call("thread/compact/start", json!({ "threadId": thread })).await?;
@@ -777,8 +793,12 @@ impl Chat {
     }
 
     pub(super) async fn codex_interrupt(&self, id: &str) -> Result<(), LocalError> {
-        let server = self.codex_attach(id).await?;
         let inst = self.inst(id);
+        // 没有在跑的一轮：不用去加载会话（会话接不上时“停止”也不报错）
+        if lock(&inst.st).codex.turn.is_none() {
+            return Ok(());
+        }
+        let server = self.codex_attach(id).await?;
         let (thread, turn) = {
             let st = lock(&inst.st);
             (st.binding.as_ref().map(|b| b.session_id.clone()), st.codex.turn.clone())
@@ -1180,6 +1200,20 @@ impl Chat {
         Self::emit_status(&inst, &st);
         drop(st);
         let _ = inst.tx.send(super::Event::Reset);
+        // 全部权限的终端：TUI 不带 --yolo（见 instances 的 codex_tui_command），它新开的会话在这里设上。
+        // 认领前就发出的第一轮按 Codex 的默认权限跑（会来问），不会多给权限
+        if self.instances.opts(&id).full_access {
+            if let Some(me) = self.me.upgrade() {
+                let tid = tid.to_string();
+                tokio::spawn(async move {
+                    let Some(server) = me.codex.server.lock().await.clone() else { return };
+                    let params = json!({ "threadId": tid, "approvalPolicy": "never", "sandboxPolicy": { "type": "dangerFullAccess" } });
+                    if let Err(e) = server.call("thread/settings/update", params).await {
+                        tracing::warn!(id, error = ?e, "没能给终端里新开的 Codex 会话设上全部权限");
+                    }
+                });
+            }
+        }
     }
 
     // ---------------- 新版本 ----------------

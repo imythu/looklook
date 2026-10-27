@@ -55,6 +55,7 @@ import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 
 import { api, deviceApi, fetchRaw, plainLinksWork, terminalDevice } from '../shared/api.js';
+import { chatEventsMode, onChatEventsMode, subscribeChat } from '../shared/chatEvents.js';
 import { spinnerText } from '../shared/spinner.js';
 import {
   CODEX_COMMANDS,
@@ -149,12 +150,20 @@ function codexActivity(t, activity, tool) {
   return { text: s, detail: '', orig: '' };
 }
 
-/** 订阅对话事件。连不上时 EventSource 自己重连；服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。 */
-function useChat(id) {
+/**
+ * 订阅对话事件（怎么收见 shared/chatEvents.js）。多路 WebSocket 断线、订阅出错时它自己重连、重新订阅，这里取一次快照拿到错误；
+ * SSE 连不上时 EventSource 自己重连，服务端拒绝（4xx）时它会放弃，这里隔几秒再试，并取一次快照拿到错误。
+ * WebSocket 用不了、退回 SSE 时只给显示着的对话（`active`）开，免得把浏览器同一地址的 6 条连接占满。
+ */
+function useChat(id, active) {
   const [state, dispatch] = useReducer((s, a) => applyEvent(s, a.type, a.data), EMPTY);
   const [online, setOnline] = useState(false);
   const [error, setError] = useState(null);
+  const [mode, setMode] = useState(chatEventsMode);
+  useEffect(() => onChatEventsMode(setMode), []);
+  const listen = mode === 'sse' || (mode === 'fallback' && active);
   useEffect(() => {
+    if (mode !== 'mux' && !listen) return undefined;
     let es = null;
     let retry = null;
     let alive = true;
@@ -167,23 +176,41 @@ function useChat(id) {
         },
         (e) => alive && setError(e),
       );
-    const connect = () => {
-      es = new EventSource(`/api/instances/${encodeURIComponent(id)}/chat/events`, { withCredentials: true });
-      const on = (type) => (e) => {
-        try {
-          dispatch({ type, data: JSON.parse(e.data) });
-        } catch {
-          /* 坏数据：等下一个快照 */
-        }
-      };
-      es.addEventListener('snapshot', (e) => {
+    const on = (type, data) => {
+      if (type === 'snapshot') {
         setOnline(true);
         setError(null);
-        on('snapshot')(e);
+      }
+      if (type === 'reset') snapshot();
+      else dispatch({ type, data });
+    };
+    if (mode === 'mux') {
+      const off = subscribeChat(id, {
+        event: on,
+        down: () => {
+          if (!alive) return;
+          setOnline(false);
+          snapshot();
+        },
       });
-      es.addEventListener('status', on('status'));
-      es.addEventListener('items', on('items'));
-      es.addEventListener('reset', () => snapshot());
+      return () => {
+        alive = false;
+        off();
+      };
+    }
+    const connect = () => {
+      es = new EventSource(`/api/instances/${encodeURIComponent(id)}/chat/events`, { withCredentials: true });
+      for (const type of ['snapshot', 'status', 'items', 'reset']) {
+        es.addEventListener(type, (e) => {
+          let data;
+          try {
+            data = JSON.parse(e.data);
+          } catch {
+            return; /* 坏数据：等下一个快照 */
+          }
+          on(type, data);
+        });
+      }
       es.onerror = () => {
         setOnline(false);
         if (es.readyState === EventSource.CLOSED) {
@@ -199,7 +226,7 @@ function useChat(id) {
       clearTimeout(retry);
       es?.close();
     };
-  }, [id]);
+  }, [id, mode, listen]);
   const loadOlder = useCallback(async () => {
     if (state.start <= 0) return;
     const data = await api.get(`/instances/${id}/chat/history?before=${state.start}&limit=200`);
@@ -1968,6 +1995,12 @@ function Composer({ id, status, phase, touch, offline, models, usage, items, onA
     window.addEventListener(`ll-chat-model:${id}`, open);
     return () => window.removeEventListener(`ll-chat-model:${id}`, open);
   }, [id]);
+  // 外面（会话接不上时的“接以前的对话”）要打开以前的对话
+  useEffect(() => {
+    const open = () => setMenu('resume');
+    window.addEventListener(`ll-chat-resume:${id}`, open);
+    return () => window.removeEventListener(`ll-chat-resume:${id}`, open);
+  }, [id]);
   // 换成了新会话（/new、/clear）：回到空的首页，光标放回输入框。发出命令时输入框暂时不可用，焦点已经丢了，等能用了再放
   const sid = status?.session_id ?? null;
   const seenSid = useRef(sid);
@@ -2397,6 +2430,8 @@ function StatusNotice({ status, online, offline }) {
     );
   }
   if (!error && (phase === 'idle' || phase === 'running' || phase === 'detached')) return null;
+  // 会话接不上：原因已经写在上面的说明里
+  if (phase === 'detached' && reason === 'resume_failed') return null;
   const label = phase === 'detached' && reason === 'not_attached' ? 'chat.phase_not_attached' : `chat.phase_${phase}`;
   return (
     <div className="chat-status" data-phase={phase}>
@@ -2503,10 +2538,10 @@ function Detached({ id, status }) {
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const reason = status?.reason ?? 'starting';
-  const run = async (path) => {
+  const run = async (path, body) => {
     setBusy(true);
     try {
-      await api.post(path);
+      await api.post(path, body);
       setConfirming(false);
     } catch (e) {
       toast(errorText(t, e), 'error');
@@ -2528,6 +2563,22 @@ function Detached({ id, status }) {
       {(reason === 'starting' || reason === 'adopting' || reason === 'switching' || adoptable) && <LoaderCircle size={18} className="spin" aria-hidden="true" />}
       <b>{t(`chat.detached_${key}_title`, { defaultValue: t('chat.detached_starting_title') })}</b>
       {body && <p className="muted">{body}</p>}
+      {reason === 'resume_failed' && (
+        <>
+          {status?.error && <p className="chat-note">{t('chat.detached_resume_failed_detail', { detail: status.error })}</p>}
+          <div className="chat-acts">
+            <Button busy={busy} onClick={() => run(`/instances/${id}/chat/input`, { text: '/new', images: [] })}>
+              {t('chat.resume_failed_new')}
+            </Button>
+            <Button variant="ghost" onClick={() => window.dispatchEvent(new Event(`ll-chat-resume:${id}`))}>
+              {t('chat.resume_failed_pick')}
+            </Button>
+            <Button variant="ghost" busy={busy} onClick={relaunch}>
+              {t('chat.relaunch_app_server')}
+            </Button>
+          </div>
+        </>
+      )}
       {adoptable && (
         <div className="chat-acts">
           {confirming ? (
@@ -3326,7 +3377,7 @@ const readSide = () => {
  */
 export default function ChatView({ id, launch, active, touch, offline = false, onTab, onDraftBack }) {
   const router = useRouter();
-  const chat = useChat(id);
+  const chat = useChat(id, active);
   const { status, items } = chat;
   // 草稿页发出的第一句：起来前先显示；发出去、记录里有了之后换成真的那条
   const firstRaw = useFirstSend(id);

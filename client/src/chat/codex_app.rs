@@ -419,7 +419,7 @@ pub fn local_command(base: &str, thread: Option<&str>) -> String {
 const NO_UPDATE_PROMPT: &str = "-c check_for_update_on_startup=false";
 
 /// 终端里接到同一个 app-server 的 Codex TUI：`<codex 命令> resume <thread> --remote <地址> --remote-auth-token-env …`；
-/// 还没有会话时开一个新的（app-server 会通知看看）。`base` 是 `codex` / `codex --yolo`。
+/// 还没有会话时开一个新的（app-server 会通知看看）。`base` 是 `codex`（权限由看看在 app-server 上设，不带 `--yolo`）。
 /// 新开时要带 `--cd <工作目录>`：`--remote` 下不带的话，新对话的目录是 app-server 进程的目录，不是终端的。
 /// 目录用双引号括起来（PowerShell、bash 都认）；里面有引号、`$`、反引号时用 `.`（TUI 就在这个目录里启动）。
 pub fn tui_command(base: &str, ep: &Endpoint, thread: Option<&str>, cwd: &str) -> String {
@@ -475,8 +475,8 @@ mod tests {
         let ep = Endpoint { url: "ws://127.0.0.1:40123".into(), token_file: PathBuf::from("t") };
         assert_eq!(tui_command("codex", &ep, Some("01a1-b2"), r"F:\p"), "codex -c check_for_update_on_startup=false resume 01a1-b2 --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN");
         assert_eq!(
-            tui_command("codex --yolo", &ep, None, r"F:\my proj"),
-            r#"codex --yolo -c check_for_update_on_startup=false --cd "F:\my proj" --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN"#,
+            tui_command("codex", &ep, None, r"F:\my proj"),
+            r#"codex -c check_for_update_on_startup=false --cd "F:\my proj" --remote ws://127.0.0.1:40123 --remote-auth-token-env LOOKLOOK_CODEX_TOKEN"#,
             "新开时带上工作目录"
         );
         assert!(tui_command("codex", &ep, None, "/tmp/a$b").contains("--cd . "), "目录里有特殊字符时用当前目录");

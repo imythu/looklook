@@ -850,6 +850,10 @@ impl Chat {
                 } else if e.code == "CHAT_TERMINAL_ONLY" {
                     // 后台连不上时终端在本机直接跑：说明对话暂时不可用，终端照常能用
                     Self::set_phase(&inst, &mut st, Phase::Detached, Some("terminal_only"));
+                } else if e.code == "CODEX_RESUME_FAILED" {
+                    // app-server 好好的，只是这段会话接不上：界面上让用户新开或者换一段
+                    st.error = e.params.get("detail").and_then(Value::as_str).map(|d| d.chars().take(500).collect());
+                    Self::set_phase(&inst, &mut st, Phase::Detached, Some("resume_failed"));
                 } else {
                     st.error = Some(format!("{:?}", e).chars().take(500).collect());
                     Self::set_phase(&inst, &mut st, Phase::Detached, Some("app_server"));

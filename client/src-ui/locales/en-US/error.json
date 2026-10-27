@@ -233,6 +233,7 @@
   "CODEX_APP_SERVER": "The Codex background service didn't start: {{detail}}",
   "CODEX_NOT_FOUND": "Codex wasn't found. Make sure it's installed on this computer ({{detail}})",
   "CODEX_REQUEST_FAILED": "Codex couldn't do that: {{detail}}",
+  "CODEX_RESUME_FAILED": "Codex couldn't reopen this conversation: {{detail}}",
   "CODEX_HOOKS_CHANGED": "These hooks changed again. Review the new version, then confirm.",
   "CODEX_UPDATE_MANUAL": "This Codex wasn't installed with npm. Update it the way you installed it.",
   "CHAT_TERMINAL_ONLY": "The chat can't reach Codex right now; use the terminal for now",

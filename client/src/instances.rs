@@ -1068,13 +1068,19 @@ impl Instances {
     /// 接到看看起的 app-server 上（见 `chat::codex_app`）。app-server 还没起时 None。
     /// app-server 用不了（起不来、连不上）时改成本机直接运行同一个会话的 Codex：对话界面暂时不可用，终端照常能用。
     fn codex_tui_command(&self, row: &InstanceRow) -> Option<String> {
-        let base = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
+        let opts = self.opts(&row.id);
         // 对话还没有记录文件（新开的、还没聊过）时 TUI 接不上它（thread/resume 报 no rollout found）：
         // 不带会话号启动，让 TUI 自己开一段，看看收到 thread/started 再认领（见 chat::codex_chat 的 codex_claim_thread）
         let thread = crate::chat::binding(&self.store, &row.id).filter(|b| b.transcript_path.is_file()).map(|b| b.session_id);
         Some(match crate::chat::codex_app::endpoint() {
-            Some(ep) => crate::chat::codex_app::tui_command(&base, &ep, thread.as_deref(), &row.workdir),
-            None => crate::chat::codex_app::local_command(&base, thread.as_deref()),
+            // 接在 app-server 上的 TUI 不带权限参数（--yolo）：权限只由看看在 app-server 上设（thread/start、thread/resume、
+            // 认领时的 thread/settings/update）。带了的话 TUI 里 /resume、换会话会报
+            // “Permission overrides are not supported when resuming a remote task.”
+            Some(ep) => {
+                let base = launch_command_line(row, Opts { full_access: false, ..opts }, crate::platform::is_root())?;
+                crate::chat::codex_app::tui_command(&base, &ep, thread.as_deref(), &row.workdir)
+            }
+            None => crate::chat::codex_app::local_command(&launch_command_line(row, opts, crate::platform::is_root())?, thread.as_deref()),
         })
     }
 

@@ -12,6 +12,7 @@ pub mod access;
 mod api;
 mod assets;
 mod chat;
+mod chat_mux;
 mod notify;
 pub mod mcp;
 mod proxy;

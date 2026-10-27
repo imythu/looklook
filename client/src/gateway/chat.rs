@@ -46,29 +46,36 @@ pub async fn snapshot(State(app): State<App>, Path(id): Path<String>) -> R<Json<
     Ok(Json(app.chat.snapshot(&id).await?))
 }
 
-/// SSE：`snapshot`（第一条，以及落后太多时）、`status`、`items`、`reset`（界面重新取快照）。
-pub async fn events(State(app): State<App>, Path(id): Path<String>) -> R<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>> {
+/// 一个对话的事件（事件名、JSON 文本）：`snapshot`（第一条，以及落后太多时）、`status`、`items`、`reset`（界面重新取快照）。
+/// 看着的期间（流还在）算一个观看者。SSE（[`events`]）和多路 WebSocket（`chat_mux`）共用。
+pub(super) async fn feed(app: App, id: String) -> R<impl Stream<Item = (&'static str, String)> + Send + 'static> {
     require_allowed(&app)?;
     let (rx, viewer) = app.chat.subscribe(&id)?;
     let first = app.chat.snapshot(&id).await?;
-    let stream = futures_util::stream::unfold((app, id, rx, viewer, Some(first)), |(app, id, mut rx, viewer, first)| async move {
+    Ok(futures_util::stream::unfold((app, id, rx, viewer, Some(first)), |(app, id, mut rx, viewer, first)| async move {
         if let Some(snap) = first {
-            let ev = SseEvent::default().event("snapshot").data(snap.to_string());
-            return Some((Ok(ev), (app, id, rx, viewer, None)));
+            return Some((("snapshot", snap.to_string()), (app, id, rx, viewer, None)));
         }
         let ev = match rx.recv().await {
-            Ok(Event::Status(s)) => SseEvent::default().event("status").data(s.to_string()),
-            Ok(Event::Items { start, items }) => SseEvent::default().event("items").data(json!({ "start": start, "items": items }).to_string()),
-            Ok(Event::Reset) => SseEvent::default().event("reset").data("{}"),
+            Ok(Event::Status(s)) => ("status", s.to_string()),
+            Ok(Event::Items { start, items }) => ("items", json!({ "start": start, "items": items }).to_string()),
+            Ok(Event::Reset) => ("reset", "{}".to_string()),
             // 落后太多（界面卡住了）：重新发一份快照
             Err(RecvError::Lagged(_)) => match app.chat.snapshot(&id).await {
-                Ok(s) => SseEvent::default().event("snapshot").data(s.to_string()),
+                Ok(s) => ("snapshot", s.to_string()),
                 Err(_) => return None,
             },
             Err(RecvError::Closed) => return None,
         };
-        Some((Ok(ev), (app, id, rx, viewer, None)))
-    });
+        Some((ev, (app, id, rx, viewer, None)))
+    }))
+}
+
+/// SSE：见 [`feed`]。远程打开（平台的 HTTP/2、WebRTC 的 Service Worker）、别的电脑转发过来时用；
+/// 本机明文 http 打开的管理台用多路 WebSocket（`chat_mux`，不占浏览器同一地址的 6 条 HTTP/1.1 连接）。
+pub async fn events(State(app): State<App>, Path(id): Path<String>) -> R<Sse<impl Stream<Item = Result<SseEvent, Infallible>>>> {
+    use futures_util::StreamExt;
+    let stream = feed(app, id).await?.map(|(ev, data)| Ok(SseEvent::default().event(ev).data(data)));
     Ok(Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
