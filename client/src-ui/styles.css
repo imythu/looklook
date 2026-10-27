@@ -1273,6 +1273,21 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .cprof-url { display: grid; gap: 8px; }
 .cprof-url code { display: block; max-height: 6.5em; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); font-size: 12px; line-height: 1.5; word-break: break-all; user-select: all; }
 .cprof-form-pick { margin: -6px 0 14px; max-width: 100%; }
+.model-group { margin: 4px 0 8px; }
+.model-grid-compact { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+.model-grid-compact .model-option { padding-top: 8px; padding-bottom: 8px; }
+
+/* 用量统计（UsageStats.jsx）：数字卡片、每天费用的柱子、按模型的表 */
+.usage-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; margin: 12px 0; }
+.usage-tile { display: flex; flex-direction: column; gap: 2px; padding: 10px 12px; border-radius: 12px; background: var(--panel-2); }
+.usage-tile b { font-size: 22px; font-variant-numeric: tabular-nums; }
+.usage-chart { position: relative; margin: 8px 0 14px; }
+.usage-max { position: absolute; top: -2px; left: 0; }
+.usage-bars { display: flex; align-items: flex-end; gap: 2px; height: 120px; padding-top: 18px; border-bottom: 1px solid var(--line); }
+.usage-bar-hit { flex: 1 1 0; min-width: 0; height: 100%; display: flex; align-items: flex-end; cursor: default; }
+.usage-bar { display: block; width: 100%; background: var(--brand); border-radius: 4px 4px 0 0; }
+.usage-bar-hit:hover .usage-bar { opacity: .75; }
+.usage-axis { display: flex; justify-content: space-between; margin-top: 4px; font-variant-numeric: tabular-nums; }
 .start-adv .ellipsis { max-width: 12em; }
 
 /* ---------- SSH 主机 ---------- */

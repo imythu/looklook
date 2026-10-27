@@ -188,7 +188,13 @@ pub fn routes(app: App) -> Router<App> {
         .route("/diag/report", post(diag_report))
         .route("/promotions", get(promotions))
         .route("/model-providers", get(get_model_providers))
-        .route("/model-providers/{agent}", put(put_model_provider).delete(delete_model_provider))
+        .route("/model-presets", get(model_presets))
+        .route("/codex-profiles", get(get_codex_profiles).post(add_codex_profile))
+        .route("/codex-profiles/default", put(set_default_codex_profile))
+        .route("/codex-profiles/{id}", put(update_codex_profile).delete(delete_codex_profile))
+        .route("/codex-profiles/{id}/usage", post(codex_profile_usage))
+        .route("/usage-stats", get(usage_stats))
+        .route("/usage-stats/scan", post(usage_stats_scan))
         .route("/claude-profiles", get(get_claude_profiles).post(add_claude_profile))
         .route("/claude-profiles/default", put(set_default_claude_profile))
         .route("/claude-profiles/{id}", put(update_claude_profile).delete(delete_claude_profile))
@@ -223,7 +229,7 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
     // The UI login screen alone cannot protect these APIs. Keep bootstrap,
     // status and local access configuration available before account login.
     let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "notify" | "tools" | "tunnels" | "metrics" | "model-providers" | "claude-profiles" | "platform") && app.account.session().is_none() {
+    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "notify" | "tools" | "tunnels" | "metrics" | "model-providers" | "model-presets" | "claude-profiles" | "codex-profiles" | "usage-stats" | "platform") && app.account.session().is_none() {
         return LocalError::new("NOT_LOGGED_IN").into_response();
     }
     let mut r = next.run(req).await;
@@ -2184,65 +2190,35 @@ async fn platform_providers(app: &App, locale: &str) -> Result<Vec<Value>, Local
 struct ModelQ {
     #[serde(default)]
     locale: Option<String>,
-    /// 只要本机保存的选择，不取平台列表（新建终端表单里显示用）
-    #[serde(default)]
-    local: bool,
 }
 
+/// 平台推荐的服务商（含推广）和免责声明是否同意过
 async fn get_model_providers(State(app): State<App>, Query(q): Query<ModelQ>) -> Json<Value> {
     let locale = q.locale.filter(|l| l == "en-US").unwrap_or_else(|| "zh-CN".into());
-    let (providers, error) = match q.local {
-        true => (vec![], None),
-        false => match platform_providers(&app, &locale).await {
-            Ok(p) => (p, None),
-            Err(e) => (vec![], Some(e.code)),
-        },
+    let (providers, error) = match platform_providers(&app, &locale).await {
+        Ok(p) => (p, None),
+        Err(e) => (vec![], Some(e.code)),
     };
-    Json(model_view(&app, providers, error))
-}
-
-fn model_view(app: &App, providers: Vec<Value>, error: Option<String>) -> Value {
-    use crate::model::{self, ModelAgent};
-    // Claude Code 的第三方接口改在“Claude Code 账号”里管（claude_profiles.rs），这里只剩 Codex
-    let agents: Vec<Value> = ModelAgent::ALL
-        .iter()
-        .filter(|a| **a != ModelAgent::Claude)
-        .map(|a| {
-            json!({
-                "agent": a.id(),
-                "client": a.platform_client(),
-                "choice": model::choice(&app.store, *a),
-                "key_set": model::key_set(&app.paths.home, *a),
-            })
-        })
-        .collect();
-    json!({
-        "accepted_at": model::disclaimer_accepted(&app.store),
-        "agents": agents,
-        "providers": providers,
-        "error": error,
-    })
+    Json(json!({ "accepted_at": crate::model::disclaimer_accepted(&app.store), "providers": providers, "error": error }))
 }
 
 #[derive(Deserialize)]
-struct ModelReq {
-    /// 平台列表里的服务商；不填表示自填接口地址（`name` + `base_url`）
+struct PresetQ {
+    agent: String,
     #[serde(default)]
-    provider_id: Option<String>,
-    #[serde(default)]
-    name: Option<String>,
-    #[serde(default)]
-    base_url: Option<String>,
-    /// 不填沿用已保存的 Key
-    #[serde(default)]
-    api_key: Option<String>,
-    /// 同意免责声明（第一次保存时必须）
-    #[serde(default)]
-    accept: bool,
+    locale: Option<String>,
 }
 
-fn model_agent(s: &str) -> R<crate::model::ModelAgent> {
-    crate::model::ModelAgent::parse(s).filter(|a| *a != crate::model::ModelAgent::Claude).ok_or_else(LocalError::not_found)
+/// 常见服务商的快速配置（model_presets.rs），带 models.dev 上这家现在的模型和价格
+async fn model_presets(Query(q): Query<PresetQ>) -> R<Json<Value>> {
+    if !matches!(q.agent.as_str(), "claude" | "codex") {
+        return Err(LocalError::invalid("agent", "enum"));
+    }
+    let cat = crate::pricing::catalog();
+    Ok(Json(json!({
+        "presets": crate::model_presets::list(&q.agent, q.locale.as_deref() == Some("en-US")),
+        "pricing": cat.map(|c| json!({ "source": "models.dev", "fetched_at": c.fetched_at })),
+    })))
 }
 
 /// 平台推荐的服务商给某个客户端的接口地址（以平台下发的为准，不信任请求里的）：返回 (名字, 地址)
@@ -2257,46 +2233,46 @@ async fn platform_endpoint(app: &App, id: &str, client: &str) -> R<(String, Stri
     Ok((p["name"].as_str().unwrap_or_default().into(), base_url.into()))
 }
 
-async fn put_model_provider(State(app): State<App>, Path(agent): Path<String>, Json(req): Json<ModelReq>) -> R<Json<Value>> {
-    use crate::model::{self, Choice};
-    let agent = model_agent(&agent)?;
-    if req.accept {
-        model::accept_disclaimer(&app.store)?;
-    } else if model::disclaimer_accepted(&app.store).is_none() {
+/// 第三方接口的来源（Claude Code、Codex 共用）。先看免责声明；地址以平台下发的（推荐的服务商）
+/// 或预设（常见服务商的快速配置）为准，不信任请求里的；没填名字时用服务商的名字。
+struct ApiSource<'a> {
+    agent: &'a str,
+    accept: bool,
+    provider_id: Option<String>,
+    preset: Option<String>,
+}
+
+async fn api_source(app: &App, src: ApiSource<'_>, base_url: &mut Option<String>, name: &mut Option<String>) -> R<()> {
+    if src.accept {
+        crate::model::accept_disclaimer(&app.store)?;
+    } else if crate::model::disclaimer_accepted(&app.store).is_none() {
         return Err(LocalError::new("MODEL_DISCLAIMER_REQUIRED"));
     }
-    let client = agent.platform_client();
-    let choice = match req.provider_id.as_deref().filter(|s| !s.is_empty()) {
-        // 接口地址以平台下发的为准，不信任请求里的
-        Some(id) => {
-            let (name, base_url) = platform_endpoint(&app, id, client).await?;
-            Choice { provider_id: Some(id.into()), name, base_url, selected_at: crate::util::now_rfc3339() }
-        }
-        None => {
-            let name: String = req.name.as_deref().unwrap_or("").trim().chars().filter(|c| !c.is_control()).take(40).collect();
-            if name.is_empty() {
-                return Err(LocalError::invalid("name", "required"));
-            }
-            let base_url = req.base_url.as_deref().unwrap_or("").trim().trim_end_matches('/').to_string();
-            Choice { provider_id: None, name, base_url, selected_at: crate::util::now_rfc3339() }
-        }
-    };
-    model::save(&app.store, &app.paths.home, agent, &choice, req.api_key.as_deref())?;
-    // 统计选用人数；失败不影响使用
-    if let Some(id) = choice.provider_id.clone() {
+    let client = if src.agent == "codex" { "codex" } else { "claude_code" };
+    let found = if let Some(id) = src.provider_id.filter(|s| !s.is_empty()) {
+        let found = platform_endpoint(app, &id, client).await?;
+        // 统计选用人数；失败不影响使用
         let account = app.account.clone();
         tokio::spawn(async move {
             if let Err(e) = account.select_model_provider(&id, client).await {
                 tracing::debug!(error = %e, "模型服务商选用上报失败");
             }
         });
+        Some(found)
+    } else if let Some(p) = src.preset.as_deref().filter(|s| !s.is_empty()) {
+        let p = crate::model_presets::get(p).ok_or_else(|| LocalError::invalid("preset", "not_found"))?;
+        let url = if src.agent == "codex" { p.codex } else { p.claude };
+        Some((p.name.to_string(), url.ok_or_else(|| LocalError::invalid("preset", "unsupported"))?.to_string()))
+    } else {
+        None
+    };
+    if let Some((n, url)) = found {
+        *base_url = Some(url);
+        if name.as_deref().is_none_or(|n| n.trim().is_empty()) {
+            *name = Some(n);
+        }
     }
-    Ok(Json(model_view(&app, vec![], None)))
-}
-
-async fn delete_model_provider(State(app): State<App>, Path(agent): Path<String>) -> R<Json<Value>> {
-    crate::model::clear(&app.store, &app.paths.home, model_agent(&agent)?)?;
-    Ok(Json(model_view(&app, vec![], None)))
+    Ok(())
 }
 
 // ---------------- Claude Code 账号切换（见 claude_profiles.rs） ----------------
@@ -2341,6 +2317,100 @@ async fn claude_profile_usage(State(app): State<App>, Path(id): Path<String>) ->
     Ok(Json(crate::claude_profiles::usage(app.instances.shell(), &app.paths.home, &p).await))
 }
 
+// ---------------- Codex 配置（见 codex_profiles.rs） ----------------
+
+fn codex_profiles_view(app: &App) -> Value {
+    use crate::codex_profiles as xp;
+    let profiles: Vec<Value> = xp::list(&app.store)
+        .into_iter()
+        .map(|p| {
+            let mut v = json!(p);
+            v["kind"] = json!(if p.is_api() { "api" } else { "official" });
+            if p.is_api() {
+                v["key_set"] = json!(xp::key_set(&app.paths.home, &p.id));
+                v["quota"] = json!(p.base_url.as_deref().is_some_and(crate::provider_quota::supported));
+            }
+            v
+        })
+        .collect();
+    json!({ "default": xp::default_id(&app.store), "profiles": profiles, "accepted_at": crate::model::disclaimer_accepted(&app.store) })
+}
+
+async fn get_codex_profiles(State(app): State<App>) -> Json<Value> {
+    Json(codex_profiles_view(&app))
+}
+
+#[derive(Deserialize)]
+struct CodexProfileReq {
+    #[serde(flatten)]
+    input: crate::codex_profiles::Input,
+    #[serde(default)]
+    accept: bool,
+}
+
+async fn codex_api_input(app: &App, req: &mut CodexProfileReq) -> R<()> {
+    let src = ApiSource { agent: "codex", accept: req.accept, provider_id: req.input.provider_id.clone(), preset: req.input.preset.clone() };
+    api_source(app, src, &mut req.input.base_url, &mut req.input.name).await
+}
+
+async fn add_codex_profile(State(app): State<App>, Json(mut req): Json<CodexProfileReq>) -> R<Json<Value>> {
+    codex_api_input(&app, &mut req).await?;
+    let p = crate::codex_profiles::add(&app.store, &app.paths.home, req.input)?;
+    let mut v = codex_profiles_view(&app);
+    v["added"] = json!(p.id);
+    Ok(Json(v))
+}
+
+async fn update_codex_profile(State(app): State<App>, Path(id): Path<String>, Json(mut req): Json<CodexProfileReq>) -> R<Json<Value>> {
+    crate::codex_profiles::get(&app.store, &id).filter(|p| p.is_api()).ok_or_else(LocalError::not_found)?;
+    if req.input.base_url.is_some() || req.input.provider_id.is_some() || req.input.preset.is_some() {
+        codex_api_input(&app, &mut req).await?;
+    }
+    crate::codex_profiles::update(&app.store, &app.paths.home, &id, req.input)?;
+    Ok(Json(codex_profiles_view(&app)))
+}
+
+async fn delete_codex_profile(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    crate::codex_profiles::remove(&app.store, &app.paths.home, &id)?;
+    Ok(Json(codex_profiles_view(&app)))
+}
+
+async fn set_default_codex_profile(State(app): State<App>, Json(req): Json<DefaultReq>) -> R<Json<Value>> {
+    crate::codex_profiles::set_default(&app.store, &req.id)?;
+    Ok(Json(codex_profiles_view(&app)))
+}
+
+/// 第三方接口的套餐用量（智谱、Kimi、MiniMax，见 provider_quota.rs）
+async fn codex_profile_usage(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    let p = crate::codex_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
+    Ok(Json(crate::provider_quota::usage_view(p.base_url.as_deref(), &crate::codex_profiles::key_path(&app.paths.home, &p.id)).await))
+}
+
+// ---------------- 用量统计（见 usage_stats.rs） ----------------
+
+#[derive(Deserialize)]
+struct UsageQ {
+    #[serde(default = "default_days")]
+    days: u32,
+    /// 界面所在时区比 UTC 早多少分钟
+    #[serde(default)]
+    tz: i32,
+}
+
+fn default_days() -> u32 {
+    30
+}
+
+async fn usage_stats(State(app): State<App>, Query(q): Query<UsageQ>) -> Json<Value> {
+    Json(crate::usage_stats::report(&app.store, q.days, q.tz))
+}
+
+/// 马上重新扫一遍
+async fn usage_stats_scan(State(app): State<App>, Query(q): Query<UsageQ>) -> Json<Value> {
+    crate::usage_stats::scan(app.paths.home.clone()).await;
+    Json(crate::usage_stats::report(&app.store, q.days, q.tz))
+}
+
 /// 本机有没有在运行 Ollama（添加第三方接口时一键填好，见 provider_quota.rs）
 async fn ollama() -> Json<Value> {
     Json(json!({ "ollama": crate::provider_quota::ollama().await }))
@@ -2355,26 +2425,12 @@ struct ClaudeProfileReq {
     accept: bool,
 }
 
-/// 第三方接口：免责声明；选的是平台推荐的服务商时，地址和名字以平台下发的为准
+/// 第三方接口：免责声明、地址来源（见 [`api_source`]）；快速配置没说 Key 怎么发时按预设的
 async fn claude_api_input(app: &App, req: &mut ClaudeProfileReq) -> R<()> {
-    if req.accept {
-        crate::model::accept_disclaimer(&app.store)?;
-    } else if crate::model::disclaimer_accepted(&app.store).is_none() {
-        return Err(LocalError::new("MODEL_DISCLAIMER_REQUIRED"));
-    }
-    if let Some(id) = req.input.provider_id.clone().filter(|s| !s.is_empty()) {
-        let (name, base_url) = platform_endpoint(app, &id, crate::model::ModelAgent::Claude.platform_client()).await?;
-        req.input.base_url = Some(base_url);
-        if req.input.name.as_deref().is_none_or(|n| n.trim().is_empty()) {
-            req.input.name = Some(name);
-        }
-        // 统计选用人数；失败不影响使用
-        let account = app.account.clone();
-        tokio::spawn(async move {
-            if let Err(e) = account.select_model_provider(&id, "claude_code").await {
-                tracing::debug!(error = %e, "模型服务商选用上报失败");
-            }
-        });
+    let src = ApiSource { agent: "claude", accept: req.accept, provider_id: req.input.provider_id.clone(), preset: req.input.preset.clone() };
+    api_source(app, src, &mut req.input.base_url, &mut req.input.name).await?;
+    if req.input.auth.is_none() {
+        req.input.auth = req.input.preset.as_deref().and_then(crate::model_presets::get).map(|p| p.auth);
     }
     Ok(())
 }
@@ -2391,7 +2447,7 @@ async fn add_claude_profile(State(app): State<App>, Json(mut req): Json<ClaudePr
 
 async fn update_claude_profile(State(app): State<App>, Path(id): Path<String>, Json(mut req): Json<ClaudeProfileReq>) -> R<Json<Value>> {
     let p = crate::claude_profiles::get(&app.store, &id).ok_or_else(LocalError::not_found)?;
-    if p.kind == crate::claude_profiles::Kind::Api && (req.input.base_url.is_some() || req.input.provider_id.is_some()) {
+    if p.kind == crate::claude_profiles::Kind::Api && (req.input.base_url.is_some() || req.input.provider_id.is_some() || req.input.preset.is_some()) {
         claude_api_input(&app, &mut req).await?;
     }
     crate::claude_profiles::update(&app.store, &app.paths.home, &id, req.input)?;

@@ -19,7 +19,7 @@ import PopMenu from '../shared/PopMenu.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { baseName, isDraftProject, projectEntries, projectKey, projectPath, useSessions } from '../shared/sessions.jsx';
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
-import { ClaudeProfilePick } from './ClaudeProfiles.jsx';
+import { ClaudeProfilePick, CodexProfilePick } from './ClaudeProfiles.jsx';
 import { DiscoverCard } from './AddProject.jsx';
 import PromptsMenu from './PromptTemplates.jsx';
 import { AI_TOOLS, FULL_ACCESS, fullAccessFor, opensInPage, shortAgo, useSessionUi } from './Sessions.jsx';
@@ -244,7 +244,9 @@ function DraftForm() {
   const [text, setText] = useState(() => want.text || readDrafts()[draftKey] || '');
   const [files, setFiles] = useState(() => (want.files ?? []).map((file, k) => ({ key: k, file, url: URL.createObjectURL(file) })));
   // Claude Code 用哪个账号 / 接口：null 用那台电脑上的默认
+  // Claude Code 账号 / Codex 配置（null 用默认）；换了助手就回到默认
   const [profile, setProfile] = useState(null);
+  useEffect(() => setProfile(null), [launch]);
   const [picking, setPicking] = useState(false);
   const [dirPick, setDirPick] = useState(false);
   const [adv, setAdv] = useState(false);
@@ -407,6 +409,7 @@ function DraftForm() {
         auto_start: autoStart,
         full_access: canFull && fullAccess,
         claude_profile: launch === 'claude' && !container && profile ? profile : undefined,
+        codex_profile: launch === 'codex' && !container && profile ? profile : undefined,
         start: true,
       });
       if (device && r.id) rememberTerminals(device, [r]);
@@ -618,6 +621,7 @@ function DraftForm() {
               items={typeItems}
             />
             {launch === 'claude' && !container && <ClaudeProfilePick client={client} device={device} value={profile} onChange={setProfile} className="draft-chip" />}
+            {launch === 'codex' && !container && <CodexProfilePick client={client} device={device} value={profile} onChange={setProfile} className="draft-chip" />}
             {canFull && (
               <button type="button" className="draft-chip draft-full" aria-pressed={fullAccess} onClick={() => setFullAccess(!fullAccess)} title={t(`form.full_access_hint_${launch}`)}>
                 <ShieldCheck size={14} aria-hidden="true" />

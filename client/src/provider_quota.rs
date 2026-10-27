@@ -45,6 +45,19 @@ fn vendor(base_url: &str) -> Option<(Vendor, String, &'static str)> {
     None
 }
 
+/// 一个第三方配置的套餐用量，给界面的样子：`{state: ok|no_limits|unsupported, limits}`
+pub async fn usage_view(base_url: Option<&str>, key_file: &std::path::Path) -> Value {
+    let Some(url) = base_url.filter(|u| supported(u)) else { return json!({ "state": "unsupported" }) };
+    let key = std::fs::read_to_string(key_file).unwrap_or_default();
+    if key.trim().is_empty() {
+        return json!({ "state": "no_limits" });
+    }
+    match fetch(url, key.trim()).await {
+        Some(limits) => json!({ "state": "ok", "limits": limits }),
+        None => json!({ "state": "no_limits" }),
+    }
+}
+
 /// 这个地址能不能查用量（界面上显示“查用量”按钮）
 pub fn supported(base_url: &str) -> bool {
     vendor(base_url).is_some()
