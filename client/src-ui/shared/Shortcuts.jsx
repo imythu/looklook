@@ -6,7 +6,7 @@ import { isMod, keyLabel } from './hotkeys.js';
 import { Modal } from './ui.jsx';
 
 const GROUPS = [
-  ['app', [['mod+K', 'quick'], ['mod+shift+O', 'new'], ['mod+shift+S', 'pane'], ['mod+,', 'settings'], ['mod+/', 'help']]],
+  ['app', [['mod+K', 'quick'], ['mod+shift+O', 'new'], ['mod+shift+S', 'pane'], ['mod+W', 'close_tab'], ['mod+,', 'settings'], ['mod+/', 'help']]],
   ['chat', [['Enter', 'send'], ['shift+Enter', 'newline'], ['mod+F', 'find'], ['alt+↑ / alt+↓', 'jump'], ['↑ / ↓', 'history'], ['Ctrl+R', 'history_search'], ['Tab', 'suggest'], ['shift+Tab', 'mode'], ['Esc', 'stop']]],
 ];
 

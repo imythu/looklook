@@ -155,7 +155,7 @@ pub(super) async fn ensure(app: &App, id: &str, port: u16) -> Result<Option<Stri
     }
     begin(id, "tab");
     step(id, "install", "skip", None);
-    start(app, id, &v).await?;
+    let port = start(app, id, &v).await?.unwrap_or(port);
     let login = api::dsh_login(app, id, port).await;
     if let Some(l) = &login {
         cookies().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), l.cookie.clone());
@@ -163,24 +163,101 @@ pub(super) async fn ensure(app: &App, id: &str, port: u16) -> Result<Option<Stri
     Ok(login.map(|l| l.cookie))
 }
 
-/// 启动这一步：没在运行（或任务退出了，例如 dsh 崩了）就重新运行
-pub(super) async fn start(app: &App, id: &str, v: &crate::instances::View) -> Result<(), crate::error::LocalError> {
-    if v.running && v.task_alive == Some(true) {
-        step(id, "start", "ok", Some(format!("已在运行，端口 {}", v.web_port.unwrap_or(0))));
-        return Ok(());
+/// 刚启动的会话里 shell 还没来得及运行 dsh：这段时间里前台是 shell 不算 dsh 退出了
+const SHELL_GRACE_MS: i64 = 10_000;
+
+/// 启动这一步：没在运行、任务退出了，或者终端还在但 dsh 已经退出（前台只剩 shell，例如端口被占用没起来）就重新运行。
+/// 端口被别的程序占着时换一个空闲的，返回换成的端口（没换是 None）。
+pub(super) async fn start(app: &App, id: &str, v: &crate::instances::View) -> Result<Option<u16>, crate::error::LocalError> {
+    let alive = v.running && v.task_alive == Some(true);
+    let mut exited = false;
+    if alive {
+        let young = v.started_at.as_deref().and_then(crate::util::parse_time_ms).is_some_and(|t| crate::util::system_ms() - t < SHELL_GRACE_MS);
+        let pane = app.instances.pane(id).await;
+        let port = v.web_port.unwrap_or(0);
+        match pane {
+            Some(p) if crate::chat::is_shell(&p.command) && !young => {
+                exited = true;
+                note(id, &format!("终端还在，但 dsh 已经退出（前台是 {}），重新运行", p.command));
+            }
+            // 前台不是 shell，但端口被别的程序占着（终端里跑的是别的，或者 dsh 没监听上）：换个端口重新运行。
+            // 用这次输出里的口令能登录上就肯定是它（dsh 把网页服务放到脱离终端的进程里时 lsof 会认错）
+            Some(p) => match foreign_holder(app, id, port).await {
+                Some(who) if !api::dsh_answers(app, id, port).await => {
+                    exited = true;
+                    note(id, &format!("前台是 {}，但端口 {port} 是 {who} 在监听，重新运行", p.command));
+                }
+                _ => {
+                    step(id, "start", "ok", Some(format!("已在运行，端口 {port}")));
+                    return Ok(None);
+                }
+            },
+            None => {
+                step(id, "start", "ok", Some(format!("已在运行，端口 {port}")));
+                return Ok(None);
+            }
+        }
     }
     forget(id);
-    step(id, "start", "run", Some(format!("running={} task_alive={:?}", v.running, v.task_alive)));
-    match app.instances.start(id).await {
+    let mut moved = None;
+    if let Some(port) = v.web_port.filter(|p| !port_free(*p)) {
+        let new = crate::instances::Instances::pick_web_port()?;
+        let who = port_holder(port).await.map_or_else(|| "不知道是哪个程序".into(), |h| h.who);
+        note(id, &format!("端口 {port} 被占用（{who}），换成 {new}"));
+        app.instances.set_web_port(id, new)?;
+        moved = Some(new);
+    }
+    let port = moved.or(v.web_port).unwrap_or(0);
+    step(id, "start", "run", Some(format!("running={} task_alive={:?} exited={exited}", v.running, v.task_alive)));
+    let r = if exited { app.instances.restart(id).await } else { app.instances.start(id).await };
+    match r {
         Ok(_) => {
-            step(id, "start", "ok", Some(format!("已启动，端口 {}", v.web_port.unwrap_or(0))));
-            Ok(())
+            step(id, "start", "ok", Some(format!("已启动，端口 {port}")));
+            Ok(moved)
         }
         Err(e) => {
             fail_with_output(app, id, "start", format!("{} {:?}", e.code, e.params)).await;
             Err(e)
         }
     }
+}
+
+fn port_free(port: u16) -> bool {
+    std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).is_ok()
+}
+
+pub(super) struct Holder {
+    pids: Vec<u32>,
+    /// 写进诊断信息的：`node（pid 123）`
+    pub who: String,
+}
+
+/// 谁在监听这个端口（`lsof`）。没有 lsof（Windows、精简的 Linux）或者没人监听时是 None
+pub(super) async fn port_holder(port: u16) -> Option<Holder> {
+    if cfg!(windows) {
+        return None;
+    }
+    let out = tokio::process::Command::new("lsof").args(["-nP", &format!("-iTCP:{port}"), "-sTCP:LISTEN", "-Fpc"]).output().await.ok()?;
+    parse_lsof(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `lsof -F pc` 的输出：每个进程一行 `p<pid>`，后面跟一行 `c<程序名>`
+fn parse_lsof(text: &str) -> Option<Holder> {
+    let pids: Vec<u32> = text.lines().filter_map(|l| l.strip_prefix('p')?.parse().ok()).collect();
+    let cmd = text.lines().find_map(|l| l.strip_prefix('c')).unwrap_or("?");
+    let who = format!("{cmd}（pid {}）", pids.iter().map(u32::to_string).collect::<Vec<_>>().join(", "));
+    (!pids.is_empty()).then_some(Holder { pids, who })
+}
+
+/// 端口被这个终端以外的程序占着时返回是谁。查不到（没有 lsof、没人监听）当作不是别人
+pub(super) async fn foreign_holder(app: &App, id: &str, port: u16) -> Option<String> {
+    let h = port_holder(port).await?;
+    for pid in &h.pids {
+        if app.instances.owns_pid(id, *pid).await {
+            return None;
+        }
+    }
+    Some(h.who)
 }
 
 /// `/w/{id}/…`
@@ -251,4 +328,16 @@ pub async fn web(State(app): State<App>, mut req: Request) -> Response {
     // DSH 不会再发 Cookie（口令只在首页交换时用）；万一发了也不交给浏览器
     r.headers_mut().remove(header::SET_COOKIE);
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lsof_output() {
+        let h = parse_lsof("p123\ncnode\nf21\np456\ncnode\nf22\n").unwrap();
+        assert_eq!((h.pids, h.who.as_str()), (vec![123, 456], "node（pid 123, 456）"));
+        assert!(parse_lsof("").is_none());
+    }
 }

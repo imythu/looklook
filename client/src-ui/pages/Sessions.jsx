@@ -18,7 +18,7 @@ import { isTouch } from '../shared/KeyBar.jsx';
 import PopMenu from '../shared/PopMenu.jsx';
 import { Link, useRouter } from '../shared/router.jsx';
 import { baseName, customName, groupProjects, isActive as isLive, isDraftProject, lastUsed, projectEntries, projectPath, sessionDir, sessionState, sessionTitle, startedAt, useSessions } from '../shared/sessions.jsx';
-import { keyLabel } from '../shared/hotkeys.js';
+import { isMod, keyLabel } from '../shared/hotkeys.js';
 import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
 import { AddProjectDialog } from './AddProject.jsx';
 import { CAN_FORK } from './History.jsx';
@@ -1144,8 +1144,30 @@ export function SessionTabs({ activeId }) {
   useEffect(() => {
     bar.current?.querySelector('.stab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }, [activeId, s.tabs.length]);
+  // ⌘W / Ctrl+W 关掉当前标签。焦点在终端里时按键进不来（Ctrl+W 留给终端删词）；
+  // Mac 桌面版由原生菜单发 `ll-menu`（src/desktop.rs），在终端里也能用。浏览器普通标签页里 Ctrl+W 是浏览器自己的
+  const closeRef = useRef(null);
+  useEffect(() => {
+    const run = (e) => {
+      if (!closeRef.current?.()) return;
+      e.preventDefault?.();
+    };
+    const onKey = (e) => isMod(e, 'w') && run(e);
+    const onMenu = (e) => e.detail === 'close_tab' && run(e);
+    window.addEventListener('keydown', onKey);
+    window.addEventListener('ll-menu', onMenu);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('ll-menu', onMenu);
+    };
+  }, []);
+  closeRef.current = () => {
+    if (!opensInPage() || !activeId || !s.tabs.includes(activeId)) return false;
+    close([activeId]);
+    return true;
+  };
   if (!opensInPage() || s.tabs.length === 0) return null;
-  const close = (ids) => {
+  function close(ids) {
     setCtx(null);
     s.closeTabs(ids);
     if (!activeId || !ids.includes(activeId)) return;
@@ -1155,7 +1177,7 @@ export function SessionTabs({ activeId }) {
     const next = s.tabs.slice(at + 1).find(keep) ?? s.tabs.slice(0, at).reverse().find(keep);
     if (next) ui.openSession(next);
     else navigate('/');
-  };
+  }
   const tip = (inst) => {
     if (!inst) return '';
     const dev = devices.multi ? devices.byId(terminalDevice(inst.id)) : null;

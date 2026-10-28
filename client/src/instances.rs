@@ -465,6 +465,18 @@ impl Instances {
         bind(0).and_then(|l| l.local_addr().ok()).map(|a| a.port()).ok_or_else(|| LocalError::new("NO_FREE_PORT"))
     }
 
+    /// 这个进程是不是这个终端里运行的（会话里的程序及其子孙）
+    pub async fn owns_pid(&self, id: &str, pid: u32) -> bool {
+        self.task_processes(id).await.contains(pid)
+    }
+
+    /// DSH 换端口（原来的被别的程序占了）：下次启动时用
+    pub fn set_web_port(&self, id: &str, port: u16) -> Result<(), LocalError> {
+        let mut opts = self.opts(id);
+        opts.web_port = Some(port);
+        Ok(self.store.set(&opts_key(id), &opts)?)
+    }
+
     // ---------------- 增删改 ----------------
 
     fn validate(&self, row: &mut InstanceRow) -> Result<(), LocalError> {

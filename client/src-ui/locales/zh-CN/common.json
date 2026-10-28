@@ -196,7 +196,7 @@
     "start_open": "启动并打开",
     "stop": "停止",
     "edit": "修改",
-    "duplicate": "复制终端",
+    "duplicate": "复制会话",
     "duplicate_name": "{{name}} 副本",
     "duplicated": "已复制为“{{name}}”",
     "restart": "重新启动",
@@ -233,8 +233,8 @@
     "history_output": "终端最近输出",
     "history_output_empty": "（暂无输出，或此模式不保存输出）",
     "history_service": "终端服务记录",
-    "duplicate_conv": "复制会话（连同对话）",
-    "duplicated_conv": "已复制为“{{name}}”，对话也一起复制了"
+    "duplicate_conv": "复制一份接着聊",
+    "duplicated_conv": "已复制一份对话，在“{{name}}”里接着聊"
   },
   "form": {
     "new_title": "新建会话",
@@ -2459,7 +2459,8 @@
     "suggest": "采用推荐的下一句",
     "mode": "切换权限模式",
     "stop": "停止（输入框为空时）",
-    "settings": "打开设置"
+    "settings": "打开设置",
+    "close_tab": "关闭当前标签页（焦点在终端里时只在 Mac 桌面版可用）"
   },
   "notify": {
     "hooks_title": "更多通知渠道",

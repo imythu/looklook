@@ -341,8 +341,8 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
     }
 }
 
-/// macOS 菜单里的常用快捷键（⌘, 设置、⌘N 新会话、⌘R 重新载入、⌘+ / ⌘- / ⌘0 缩放），作用在当前窗口上。
-/// 设置、新会话交给页面（`ll-menu` 事件，见 App.jsx）；页面载入、缩放在这里做。
+/// macOS 菜单里的常用快捷键（⌘, 设置、⌘N 新会话、⌘W 关标签、⇧⌘W 关窗口、⌘R 重新载入、⌘+ / ⌘- / ⌘0 缩放），作用在当前窗口上。
+/// 设置、新会话、关标签交给页面（`ll-menu` 事件，见 App.jsx、Sessions.jsx 的 SessionTabs）；关窗口、页面载入、缩放在这里做。
 fn page_command(app: &AppHandle, id: &str) {
     static ZOOM: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
     let windows = app.webview_windows();
@@ -357,8 +357,11 @@ fn page_command(app: &AppHandle, id: &str) {
         let _ = w.set_zoom(next);
     };
     match id {
-        "settings" | "new_session" => {
+        "settings" | "new_session" | "close_tab" => {
             let _ = w.eval(format!("window.dispatchEvent(new CustomEvent('ll-menu', {{ detail: '{id}' }}))"));
+        }
+        "close_window" => {
+            let _ = w.close();
         }
         "reload" => {
             let _ = w.eval("location.reload()");
@@ -422,6 +425,9 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     // 常用快捷键（见 page_command）
     let settings = MenuItem::with_id(app, "settings", tr("设置…", "Settings…"), true, Some("CmdOrCtrl+,"))?;
     let new_session = MenuItem::with_id(app, "new_session", tr("新会话", "New Session"), true, Some("CmdOrCtrl+N"))?;
+    // 不用系统自带的“关闭窗口”：它占着 ⌘W，焦点在终端里也会直接关掉整个窗口
+    let close_tab = MenuItem::with_id(app, "close_tab", tr("关闭标签页", "Close Tab"), true, Some("CmdOrCtrl+W"))?;
+    let close_window = MenuItem::with_id(app, "close_window", tr("关闭窗口", "Close Window"), true, Some("CmdOrCtrl+Shift+W"))?;
     let reload = MenuItem::with_id(app, "reload", tr("重新载入", "Reload"), true, Some("CmdOrCtrl+R"))?;
     let zoom_in = MenuItem::with_id(app, "zoom_in", tr("放大", "Zoom In"), true, Some("CmdOrCtrl+="))?;
     let zoom_out = MenuItem::with_id(app, "zoom_out", tr("缩小", "Zoom Out"), true, Some("CmdOrCtrl+-"))?;
@@ -437,7 +443,7 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
         .separator()
         .item(&quit)
         .build()?;
-    let file = SubmenuBuilder::new(app, tr("文件", "File")).item(&new_session).separator().close_window().build()?;
+    let file = SubmenuBuilder::new(app, tr("文件", "File")).item(&new_session).separator().item(&close_tab).item(&close_window).build()?;
     let edit = SubmenuBuilder::new(app, tr("编辑", "Edit")).undo().redo().separator().cut().copy().paste().select_all().build()?;
     let view = SubmenuBuilder::new(app, tr("显示", "View")).item(&reload).separator().item(&zoom_reset).item(&zoom_in).item(&zoom_out).separator().fullscreen().build()?;
     let window = SubmenuBuilder::new(app, tr("窗口", "Window")).minimize().maximize().build()?;

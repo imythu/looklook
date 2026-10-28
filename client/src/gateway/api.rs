@@ -550,8 +550,8 @@ async fn instance_page(State(app): State<App>, Extension(access): Extension<Acce
     let port = v.web_port.ok_or_else(LocalError::not_found)?;
     super::dsh::begin(&id, "external");
     dsh_installed(&app, &id).await?;
-    // 已经在运行时什么也不做；任务退出了（例如 dsh 崩了）会重新运行
-    super::dsh::start(&app, &id, &v).await?;
+    // 已经在运行时什么也不做；任务退出了（例如 dsh 崩了）会重新运行，端口被占用时换一个
+    let port = super::dsh::start(&app, &id, &v).await?.unwrap_or(port);
     // 映射（要问平台）和口令（等 dsh 启动完）互不依赖，一起等
     step(&id, "tunnel", "run", None);
     let (tunnel, login) = tokio::join!(dsh_tunnel(&app, &id, port), dsh_login(&app, &id, port));
@@ -721,6 +721,7 @@ pub(super) async fn dsh_login(app: &App, id: &str, port: u16) -> Option<DshLogin
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
     let (mut process, mut listening, mut token_seen, mut last_exchange) = (false, false, None::<String>, String::new());
     let mut shell_since: Option<tokio::time::Instant> = None;
+    let mut foreign: Option<(String, tokio::time::Instant)> = None;
     step(id, "process", "run", None);
     loop {
         // dsh 退出了、终端里只剩 shell：再等也不会好，直接报错（带上它的输出）。刚启动时 shell 还没开始运行 dsh，宽限几秒
@@ -746,12 +747,15 @@ pub(super) async fn dsh_login(app: &App, id: &str, port: u16) -> Option<DshLogin
                 return None;
             }
         }
-        if !listening && tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
-            listening = true;
-            if !process {
-                process = true;
-                step(id, "process", "ok", None);
+        // 只在 dsh 跑着时才看端口：前台还是 shell 时端口能连上，说明是别的程序占着
+        if process && !listening && tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            // 再用 lsof 确认监听的是这个终端里的程序（查不到时不拦）；是别人的就别等口令了，下次打开时换端口重新运行
+            // （dsh 把网页服务放到脱离终端的进程里时会认错：先记下，10 秒内口令还登录不上才算是别人的）
+            if let Some(who) = super::dsh::foreign_holder(app, id, port).await {
+                note(id, &format!("127.0.0.1:{port} 是 {who} 在监听，不在这个终端的进程里"));
+                foreign = Some((who, tokio::time::Instant::now()));
             }
+            listening = true;
             step(id, "listen", "ok", Some(format!("127.0.0.1:{port}")));
             step(id, "token", "run", None);
         }
@@ -773,6 +777,10 @@ pub(super) async fn dsh_login(app: &App, id: &str, port: u16) -> Option<DshLogin
                 Err(_) => {}
             }
         }
+        if let Some((who, _)) = foreign.as_ref().filter(|(_, at)| at.elapsed() >= std::time::Duration::from_secs(10)) {
+            fail_with_output(app, id, "listen", format!("127.0.0.1:{port} 被 {who} 占着，不是这个终端里的 dsh；再打开一次会换个端口重新运行")).await;
+            return None;
+        }
         if tokio::time::Instant::now() >= deadline {
             let at = if !process {
                 "process"
@@ -793,6 +801,14 @@ pub(super) async fn dsh_login(app: &App, id: &str, port: u16) -> Option<DshLogin
             return None;
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    }
+}
+
+/// 用终端输出里最近的口令能不能登录上（能就说明端口上是这个终端里的 dsh）
+pub(super) async fn dsh_answers(app: &App, id: &str, port: u16) -> bool {
+    match app.instances.full_output(id).await.as_deref().and_then(parse_dsh_token) {
+        Some(token) => dsh_exchange(port, &token).await.is_ok(),
+        None => false,
     }
 }
 

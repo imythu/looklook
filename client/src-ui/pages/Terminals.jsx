@@ -11,6 +11,7 @@ import {
   Folder,
   FolderOpen,
   FolderPlus,
+  GitFork,
   Globe,
   HardDrive,
   Home,
@@ -36,6 +37,7 @@ import { Link } from "../shared/router.jsx";
 import { relativeTime } from "../shared/time.js";
 import { ClaudeProfilePick, CodexProfilePick } from "./ClaudeProfiles.jsx";
 import RelayStatus from "../shared/RelayStatus.jsx";
+import { sessionTitle } from "../shared/sessions.jsx";
 import {
   Button,
   Card,
@@ -369,17 +371,17 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
       onChanged();
     }
   };
-  // 复制终端：同一台电脑上照原样（启动方式、文件夹、shell、权限）新建一个并启动，然后在本页打开。
-  // 聊过的 Claude Code / Codex 会话连同对话一起复制（复制一份接着聊，原来的不动）。
-  // 不复制开机自动运行，免得重启后一下子多跑一份；DSH 一台电脑只有一个，不能复制。
+  // 复制会话：同一台电脑上照原样（启动方式、文件夹、shell、权限）新建一个并启动，然后在本页打开。
+  // 默认是空白的新会话（同一个项目再开一个干别的）；聊过的 Claude Code / Codex 会话另有“复制一份接着聊”
+  // （fork，换个方向试，原来的不动）。不复制开机自动运行，免得重启后一下子多跑一份；DSH 一台电脑只有一个，不能复制。
   const conv = ["claude", "codex"].includes(inst.launch) && inst.chat?.turn && inst.chat?.session_id;
-  const duplicate = async () => {
+  const duplicate = async (fork = false) => {
     const dev = terminalDevice(inst.id);
     const client = deviceApi(dev);
     setBusy(true);
     try {
       const r = await client.post("/instances", {
-        name: t("instance.duplicate_name", { name: inst.name }).slice(0, 40),
+        name: t("instance.duplicate_name", { name: (fork && sessionTitle(inst)) || inst.name }).slice(0, 40),
         workdir: inst.workdir,
         launch: inst.launch,
         command: inst.launch === "custom" ? inst.command : "",
@@ -388,14 +390,14 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
         full_access: inst.full_access,
         root_confirmed: inst.root_confirmed,
         chat_ui: inst.chat_ui,
-        ...(conv ? { resume: { id: inst.chat.session_id, fork: true } } : {}),
+        ...(fork && conv ? { resume: { id: inst.chat.session_id, fork: true } } : {}),
         start: true,
       });
       if (dev && r.id) rememberTerminals(dev, [r]);
       // 先刷新列表再打开：不然新会话还没在列表里，标签会先显示“会话不在了”
       await onChanged();
       onOpenHere(r.id);
-      toast(t(conv ? "instance.duplicated_conv" : "instance.duplicated", { name: r.name }), "ok");
+      toast(t(fork && conv ? "instance.duplicated_conv" : "instance.duplicated", { name: r.name }), "ok");
     } catch (e) {
       toast(errorText(t, e), "error");
     } finally {
@@ -408,7 +410,8 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
     full && dsh && { icon: ExternalLink, label: t("dsh.open_browser"), onClick: openPage, disabled: busy || !allowed },
     full && !dsh && { icon: ExternalLink, label: t("instance.new_window"), onClick: openTab, disabled: busy || !allowed },
     { icon: Pencil, label: t("instance.edit"), onClick: () => onEdit(inst) },
-    !dsh && { icon: CopyPlus, label: t(conv ? "instance.duplicate_conv" : "instance.duplicate"), onClick: duplicate, disabled: busy || !allowed },
+    !dsh && { icon: CopyPlus, label: t("instance.duplicate"), onClick: () => duplicate(false), disabled: busy || !allowed },
+    !dsh && conv && { icon: GitFork, label: t("instance.duplicate_conv"), onClick: () => duplicate(true), disabled: busy || !allowed },
     inst.running && { icon: RotateCcw, label: t("instance.restart"), onClick: restart },
     full && live && { icon: Square, label: t("instance.stop"), onClick: stop, disabled: busy },
     { icon: FileText, label: t("instance.logs"), onClick: () => onLogs(inst) },

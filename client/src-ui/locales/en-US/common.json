@@ -196,7 +196,7 @@
     "start_open": "Start and open",
     "stop": "Stop",
     "edit": "Edit",
-    "duplicate": "Duplicate terminal",
+    "duplicate": "Duplicate session",
     "duplicate_name": "{{name}} copy",
     "duplicated": "Duplicated as \"{{name}}\"",
     "restart": "Restart",
@@ -233,8 +233,8 @@
     "history_output": "Recent terminal output",
     "history_output_empty": "(No output yet, or this mode doesn't keep output)",
     "history_service": "Terminal service log",
-    "duplicate_conv": "Duplicate with conversation",
-    "duplicated_conv": "Duplicated as “{{name}}”, including the conversation"
+    "duplicate_conv": "Continue in a copy",
+    "duplicated_conv": "Copied the conversation; continue in “{{name}}”"
   },
   "form": {
     "new_title": "New session",
@@ -2459,7 +2459,8 @@
     "suggest": "Use the suggested reply",
     "mode": "Switch permission mode",
     "stop": "Stop (when the box is empty)",
-    "settings": "Open settings"
+    "settings": "Open settings",
+    "close_tab": "Close the current tab (with focus in a terminal, Mac desktop app only)"
   },
   "notify": {
     "hooks_title": "More notification channels",

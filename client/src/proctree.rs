@@ -30,6 +30,10 @@ impl Doomed {
         self.pids.is_empty()
     }
 
+    pub fn contains(&self, pid: u32) -> bool {
+        self.pids.contains(&pid)
+    }
+
     pub fn exclude(&mut self, pid: u32) {
         self.pids.retain(|&p| p != pid);
     }
