@@ -1571,7 +1571,7 @@
     "detached_adopting_title": "Switching to the chat view…",
     "detached_adopting_body": "Continuing the same conversation; {{agent}} in the terminal will reopen in a few seconds.",
     "detached_switching_title": "Switching accounts…",
-    "detached_switching_body": "Continuing the same conversation; {{agent}} in the terminal reopens with the new account and sends continue.",
+    "detached_switching_body": "{{agent}} in the terminal reopens with the new account.",
     "adopt_now": "Switch now",
     "adopt_now_confirm": "This quits the earlier {{agent}} in the terminal (the turn in progress is interrupted), then continues the same conversation in the chat view.",
     "detached_not_attached_title": "This {{agent}} wasn't opened by Looklook, so the chat view can't be used",
@@ -1850,7 +1850,11 @@
       "fail_authentication_failed": "This account's login has expired",
       "fail_rate_limit": "Usage limit reached and this turn stopped",
       "fail_hint": "You can continue this conversation with another Claude Code account or API on this computer.",
-      "add_account": "Add an account or API"
+      "add_account": "Add an account or API",
+      "switch_short": "Switch account",
+      "switch_plain_hint": "Continue this conversation with another Claude Code account or API on this computer (Claude Code reopens)",
+      "switched_plain": "Switching to {{name}}",
+      "fail_account_on_hold": "This account is on hold"
     },
     "shells_unlisted_one": "1 more background command is running but isn't in this conversation's record (a subagent or something before /clear may have started it). Press ↓ in the terminal to see it.",
     "shells_unlisted_other": "{{count}} more background commands are running but aren't in this conversation's record (a subagent or something before /clear may have started them). Press ↓ in the terminal to see them.",

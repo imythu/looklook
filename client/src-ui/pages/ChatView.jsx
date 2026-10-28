@@ -1608,8 +1608,8 @@ function LimitWait({ id, waiting }) {
   );
 }
 
-/** 这一轮因为账号的问题停了（StopFailure 的 error）：订阅到期 / 欠费、登录失效、余额不足、额度用完后没在等 */
-const ACCOUNT_ERRORS = ['oauth_org_not_allowed', 'billing_error', 'authentication_failed', 'rate_limit'];
+/** 这一轮因为账号的问题停了（StopFailure 的 error，官方 hooks 文档）：订阅到期 / 欠费、账号被暂停、登录失效、余额不足、额度用完后没在等 */
+const ACCOUNT_ERRORS = ['oauth_org_not_allowed', 'account_on_hold', 'billing_error', 'authentication_failed', 'rate_limit'];
 
 /** 账号用不了、这一轮停下了：输入框上面一张卡片，可以换个账号接着这段对话 */
 function AccountFail({ id, error }) {
@@ -1628,9 +1628,9 @@ function AccountFail({ id, error }) {
   );
 }
 
-/** 额度用完时“换个账号继续”：这台电脑上另外的 Claude Code 账号 / 接口，选了就用它接着同一段对话、发 continue。
- *  `manage`：没有别的账号时也给一个去添加账号的按钮 */
-function SwitchProfile({ id, manage }) {
+/** “换个账号继续”：这台电脑上另外的 Claude Code 账号 / 接口，选了就用它接着同一段对话。
+ *  `goOn`（额度用完、账号用不了时）：起来后自动发 continue。`manage`：没有别的账号时也给一个去添加账号的按钮 */
+function SwitchProfile({ id, manage, goOn = true }) {
   const { t } = useT();
   const { navigate } = useRouter();
   const toast = useToast();
@@ -1652,8 +1652,8 @@ function SwitchProfile({ id, manage }) {
   const pick = async (p) => {
     setBusy(true);
     try {
-      await api.post(`/instances/${id}/chat/switch-profile`, { profile: p.id });
-      toast(t('chat.limit.switched', { name: profileName(t, p) }), 'ok');
+      await api.post(`/instances/${id}/chat/switch-profile`, { profile: p.id, continue: goOn });
+      toast(t(goOn ? 'chat.limit.switched' : 'chat.limit.switched_plain', { name: profileName(t, p) }), 'ok');
     } catch (e) {
       toast(errorText(t, e), 'error');
     } finally {
@@ -1664,8 +1664,8 @@ function SwitchProfile({ id, manage }) {
     <PopMenu
       className="btn btn-ghost"
       icon={UserRound}
-      text={t('chat.limit.switch')}
-      label={t('chat.limit.switch_hint')}
+      text={t(goOn ? 'chat.limit.switch' : 'chat.limit.switch_short')}
+      label={t(goOn ? 'chat.limit.switch_hint' : 'chat.limit.switch_plain_hint')}
       disabled={busy}
       items={[
         ...others.map((p) => ({
@@ -3262,7 +3262,7 @@ const resetText = (_t, iso) => (iso ? <ResetAt at={iso} /> : '');
 
 function UsageTab({ id, status, onCompact }) {
   const { t } = useT();
-  const { name: agentName } = useContext(AgentCtx);
+  const { id: agentId, name: agentName } = useContext(AgentCtx);
   const { data, error } = usePoll(`/instances/${id}/chat/usage`, { deps: [status?.context, status?.actual_model] });
   if (!data) return error ? <p className="chat-note">{errorText(t, error)}</p> : <LoaderCircle size={16} className="spin" />;
   const used = data.context ?? 0;
@@ -3300,6 +3300,12 @@ function UsageTab({ id, status, onCompact }) {
             </>
           )}
         </dl>
+      )}
+      {/* 随时能换：订阅到期这类情况不一定报成额度用完、账号出错（见 AccountFail） */}
+      {agentId === 'claude' && status?.phase === 'idle' && (
+        <div className="chat-acts">
+          <SwitchProfile id={id} goOn={false} />
+        </div>
       )}
       {lim?.five_hour && <Meter label={t('chat.usage_5h')} value={lim.five_hour.used} sub={resetText(t, lim.five_hour.resets_at)} />}
       {lim?.seven_day && <Meter label={t('chat.usage_7d')} value={lim.seven_day.used} sub={resetText(t, lim.seven_day.resets_at)} />}

@@ -209,12 +209,19 @@ pub async fn plan(State(app): State<App>, Path(id): Path<String>, Json(req): Jso
 #[derive(Deserialize)]
 pub struct SwitchProfileReq {
     profile: String,
+    /// 起来后发 continue（额度用完、账号用不了时）；在用量栏里随手换的不发
+    #[serde(default = "yes", rename = "continue")]
+    go_on: bool,
 }
 
-/// 额度用完时换个 Claude Code 账号接着同一段对话继续
+fn yes() -> bool {
+    true
+}
+
+/// 换个 Claude Code 账号接着同一段对话继续
 pub async fn switch_profile(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SwitchProfileReq>) -> R<StatusCode> {
     require_allowed(&app)?;
-    app.chat.switch_profile(&id, &req.profile).await?;
+    app.chat.switch_profile(&id, &req.profile, req.go_on).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 

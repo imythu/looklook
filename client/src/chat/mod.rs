@@ -1354,6 +1354,9 @@ impl Chat {
             }
             (st.binding.is_some() || inst.agent.session_starts_on_prompt(), st.phase == Phase::Running)
         };
+        if !running && images.is_empty() && matches!(text, "/new" | "/clear") && self.new_with_default(id).await? {
+            return Ok(json!({ "delivered": null }));
+        }
         // 确认输入框是普通输入框（选择器打开时打进去的字母会被当成快捷键）。
         // 刚启动时 SessionStart 比输入框先到，多看几次。
         let mut ready = false;
@@ -1655,13 +1658,11 @@ impl Chat {
         Ok(())
     }
 
-    /// 额度用完时“换个账号继续”：退出 Claude Code，这个会话改用 `profile`（claude_profiles.rs），
-    /// 接着同一段对话重新启动（各账号的对话记录是共用的），起来后发一句 `continue`。
-    pub async fn switch_profile(self: &Arc<Self>, id: &str, profile: &str) -> Result<(), LocalError> {
+    /// “换个账号继续”：退出 Claude Code，这个会话改用 `profile`（claude_profiles.rs），
+    /// 接着同一段对话重新启动（各账号的对话记录是共用的）。`go_on`（额度用完、账号用不了时）起来后发一句 `continue`。
+    pub async fn switch_profile(self: &Arc<Self>, id: &str, profile: &str, go_on: bool) -> Result<(), LocalError> {
         self.require(id)?;
-        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
-        // 容器里的会话不用看看的账号（model_wrap）
-        if row.launch != "claude" || self.instances.container(id).is_some() {
+        if !self.profile_switchable(id)? {
             return Err(LocalError::new("CHAT_UNAVAILABLE"));
         }
         crate::claude_profiles::get(&self.store, profile).ok_or_else(|| LocalError::invalid("claude_profile", "not_found"))?;
@@ -1681,6 +1682,9 @@ impl Chat {
         let cmd = self.instances.chat_relaunch_command(id, Some(&session))?;
         self.instances.send_literal(id, &cmd).await?;
         self.instances.send_keys(id, &["Enter"]).await?;
+        if !go_on {
+            return Ok(());
+        }
         // 起来（SessionStart 到了、空闲）后发 continue；一分钟还没起来就不发了，用户自己发
         let me = self.clone();
         let id = id.to_string();
@@ -1700,6 +1704,31 @@ impl Chat {
             tracing::warn!(id, "换账号后一分钟内 Claude Code 没起来，不发 continue");
         });
         Ok(())
+    }
+
+    /// 这个会话能换账号：Claude Code、不在容器里（容器里的不用看看的账号，model_wrap）
+    fn profile_switchable(&self, id: &str) -> Result<bool, LocalError> {
+        let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
+        Ok(row.launch == "claude" && self.instances.container(id).is_none())
+    }
+
+    /// `/new`、`/clear` 只是在同一个 Claude Code 里开新对话，账号还是启动时那个。会话记的账号不是现在的默认
+    /// （例如订阅到期后登录了新账号、设成默认）时，改成退出、按默认账号重新启动一段新对话，跟新建会话一样用默认的。
+    async fn new_with_default(&self, id: &str) -> Result<bool, LocalError> {
+        let def = crate::claude_profiles::default_id(&self.store);
+        if crate::claude_profiles::pinned(&self.store, id).is_none_or(|p| p == def) || !self.profile_switchable(id)? {
+            return Ok(false);
+        }
+        let inst = self.inst(id);
+        tracing::info!(id, profile = %def, "/new：会话记的账号不是默认的，按默认账号重新启动");
+        Self::set_phase(&inst, &mut lock(&inst.st), Phase::Detached, Some("switching"));
+        self.quit_claude(id).await?;
+        Self::set_phase(&inst, &mut lock(&inst.st), Phase::Detached, Some("switching"));
+        crate::claude_profiles::pin(&self.store, id, None)?;
+        let cmd = self.instances.chat_relaunch_command(id, None)?;
+        self.instances.send_literal(id, &cmd).await?;
+        self.instances.send_keys(id, &["Enter"]).await?;
+        Ok(true)
     }
 
     /// 以前的 Claude Code 用的是哪段对话：命令行里的 `--resume` / `-r` / `--session-id`；已经记着的；

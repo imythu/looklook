@@ -1571,7 +1571,7 @@
     "detached_adopting_title": "正在转到对话模式…",
     "detached_adopting_body": "接着同一段对话，终端里的 {{agent}} 会重新打开，稍等几秒。",
     "detached_switching_title": "正在换账号…",
-    "detached_switching_body": "接着同一段对话，终端里的 {{agent}} 会用新账号重新打开，打开后自动发 continue。",
+    "detached_switching_body": "终端里的 {{agent}} 会用新账号重新打开。",
     "adopt_now": "现在就转过来",
     "adopt_now_confirm": "会先退出终端里以前的 {{agent}}，正在做的这一轮会被中断，然后接着同一段对话转到对话模式。",
     "detached_not_attached_title": "这个 {{agent}} 不是看看打开的，不能用对话界面",
@@ -1850,7 +1850,11 @@
       "fail_authentication_failed": "这个账号的登录失效了",
       "fail_rate_limit": "额度用完了，这一轮停下了",
       "fail_hint": "可以换这台电脑上另一个 Claude Code 账号或接口，接着这段对话继续。",
-      "add_account": "添加账号或接口"
+      "add_account": "添加账号或接口",
+      "switch_short": "换个账号",
+      "switch_plain_hint": "用这台电脑上另一个 Claude Code 账号或接口接着这段对话（会重新打开 Claude Code）",
+      "switched_plain": "正在换成 {{name}}",
+      "fail_account_on_hold": "这个账号被暂停使用了"
     },
     "shells_unlisted_one": "还有 {{count}} 个后台命令在运行，但不在这段对话记录里（可能是子代理或 /clear 之前启动的），可以在终端里按 ↓ 查看",
     "shells_unlisted_other": "还有 {{count}} 个后台命令在运行，但不在这段对话记录里（可能是子代理或 /clear 之前启动的），可以在终端里按 ↓ 查看",
