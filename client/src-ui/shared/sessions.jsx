@@ -115,12 +115,14 @@ export function isDraftProject(p, at) {
   return at.container ? p.container?.name === at.container.name && p.container?.dir === at.container.dir : !p.container && p.workdir === at.workdir;
 }
 
-/** 会话现在的状态：等你处理 / 正在干活 / 运行中 / 后台运行中 / 已停止。 */
+/** 会话现在的状态：等你处理 / 正在干活 / 做完了（没看过）/ 出错停下（没看过）/ 运行中 / 后台运行中 / 已停止。 */
 export function sessionState(i) {
   if (i.running && i.chat?.board === 'attn') return 'attn';
   if (i.running && i.chat?.pending) return 'attn';
   if (i.running && i.chat?.phase === 'tui') return 'attn';
   if (i.running && i.chat?.phase === 'running') return 'working';
+  // 这一轮做完了、还没看过：完成蓝点，出错红点（打开看过就回到普通的运行中）
+  if (i.running && i.chat?.board === 'ended') return i.chat.turn?.outcome === 'failed' ? 'failed' : 'done';
   if (i.running) return 'idle';
   return i.task_alive ? 'paused' : 'stopped';
 }
@@ -136,11 +138,11 @@ function useDeviceGroups(online, key) {
   const ids = useRef([]);
   ids.current = online ? online.map((d) => d.id) : [];
   const loadOne = (id) => {
-    if (inflight.current.has(id)) return;
+    if (inflight.current.has(id)) return undefined;
     inflight.current.add(id);
     const ctl = new AbortController();
     const timer = setTimeout(() => ctl.abort(), GROUP_TIMEOUT_MS);
-    deviceApi(id)
+    return deviceApi(id)
       .get('/instances', { signal: ctl.signal })
       .then(
         (r) => {
@@ -159,7 +161,8 @@ function useDeviceGroups(online, key) {
         setGroups((all) => ({ ...all, [id]: g.error ? { ...all[id], id, items: all[id]?.items ?? [], error: g.error } : g }));
       });
   };
-  const reload = () => ids.current.forEach(loadOne);
+  // 返回的 Promise 在这一轮都取完时完成（新建后要等它出现在列表里再打开）
+  const reload = () => Promise.all(ids.current.map(loadOne));
   useEffect(() => {
     alive.current = true;
     setGroups((all) => Object.fromEntries(Object.entries(all).filter(([id]) => ids.current.includes(id))));
@@ -182,9 +185,9 @@ function useSingle(enabled) {
   const [state, setState] = useState({ data: null, error: null });
   const busy = useRef(false);
   const reload = () => {
-    if (!enabled || busy.current) return;
+    if (!enabled || busy.current) return undefined;
     busy.current = true;
-    api
+    return api
       .get('/instances')
       .then(
         (r) => setState({ data: { items: Array.isArray(r?.items) ? r.items : [] }, error: null }),
@@ -400,7 +403,16 @@ export function SessionsProvider({ enabled, children }) {
   const onlineDevIds = multi ? online.map((d) => d.id) : [null];
   const [store, saveStore] = useStoredProjects(enabled ? onlineDevIds : [], `${enabled}:${multi}:${onlineKey}`);
   const [folders, reloadFolders] = useFolders(enabled ? onlineDevIds : [], `${enabled}:${multi}:${onlineKey}`);
-  const items = data?.items ?? [];
+  // 正在删除的会话：点了删除就先从列表里拿掉（标签也随之关掉），删除失败再放回来
+  const [deleting, setDeleting] = useState(() => new Set());
+  const hide = (id, on) =>
+    setDeleting((d) => {
+      const n = new Set(d);
+      if (on) n.add(id);
+      else n.delete(id);
+      return n;
+    });
+  const items = (data?.items ?? []).filter((i) => !deleting.has(i.id));
   const [cache, setCache] = useState(() => readJson(CACHE_KEY, {}));
   // 远程地址只在多台电脑时用得上（合并同一个仓库）
   const dirsByDev = {};
@@ -548,6 +560,8 @@ export function SessionsProvider({ enabled, children }) {
     error: multi ? null : singleError,
     reload,
     reloadFolders,
+    /** 正在删除：先从列表里拿掉（`on` 为假时放回来） */
+    hide,
     projects,
     /** 项目合成的组（多台电脑上的同一个仓库一组，见 groupProjects） */
     projectGroups: groupProjects(projects, multi),

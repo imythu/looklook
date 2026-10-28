@@ -255,7 +255,7 @@ export function usePressActivate(fn, disabled) {
 export function useActions(inst) {
   const s = useSessions();
   const ui = useSessionUi();
-  return useInstanceActions(inst, { onChanged: s.reload, onEdit: ui.edit, onLogs: ui.logs, onOpenHere: ui.openSession });
+  return useInstanceActions(inst, { onChanged: s.reload, onEdit: ui.edit, onLogs: ui.logs, onOpenHere: ui.openSession, onHide: s.hide });
 }
 
 // ---------------- 侧栏：项目和会话 ----------------

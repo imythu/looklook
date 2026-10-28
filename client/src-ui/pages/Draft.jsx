@@ -24,6 +24,7 @@ import { DiscoverCard } from './AddProject.jsx';
 import PromptsMenu from './PromptTemplates.jsx';
 import { AI_TOOLS, FULL_ACCESS, fullAccessFor, opensInPage, shortAgo, useSessionUi } from './Sessions.jsx';
 import { BackendNote, FolderPicker, InstallProgress, Promotions, RemoteCard, ShellPicker } from './Terminals.jsx';
+import { imeComposing } from '../shared/ime.js';
 
 // 留在草稿里的类型（写好第一句再开始）；终端、DSH 点了马上开
 const DRAFT_LAUNCHES = ['claude', 'codex', 'opencode'];
@@ -572,7 +573,7 @@ function DraftForm() {
             onPaste={(e) => willChat && addFiles(e.clipboardData.files) && e.preventDefault()}
             // 手机上没有 Shift+回车：回车换行，点“开始”发出去（同对话页的输入框）
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !isTouch()) {
+              if (e.key === 'Enter' && !e.shiftKey && !imeComposing(e) && !isTouch()) {
                 e.preventDefault();
                 go();
               }

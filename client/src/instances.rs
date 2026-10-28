@@ -32,6 +32,8 @@ pub const PORT_RANGE: (u16, u16) = (41000, 41999);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TMUX_SOCKET: &str = "looklook";
 const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "custom"];
+/// 多久扫一次游离的 tmux 会话（[`Instances::sweep_orphans`]）
+const ORPHAN_SWEEP: Duration = Duration::from_secs(60);
 /// 有对话界面的启动类型（Claude Code：docs/CLAUDE_UI.md；Codex：docs/CODEX_UI.md）；
 /// 前端 `src-ui/shared/chat.js` 的 `CHAT_LAUNCHES` 要一起改。
 pub const CHAT_LAUNCHES: &[&str] = &["claude", "codex"];
@@ -1028,7 +1030,11 @@ impl Instances {
         }
         let cmd = launch_command_line(row, self.opts(&row.id), crate::platform::is_root())?;
         match self.chat_settings(row) {
-            Some(settings) => Some(with_chat(row, &cmd, &settings, None)),
+            // 重启终端（含开机自动启动）时接着这个终端原来的对话，对话页才还是那一段；还没聊过（没有记录文件）时新开
+            Some(settings) => {
+                let session = crate::chat::binding(&self.store, &row.id).filter(|b| b.transcript_path.is_file()).map(|b| b.session_id);
+                Some(with_chat(row, &cmd, &settings, session.as_deref()))
+            }
             None => Some(self.with_terminal_settings(row, cmd)),
         }
     }
@@ -1220,6 +1226,13 @@ impl Instances {
         if self.tmux(&["has-session", "-t", &exact(&name)]).await?.status.success() {
             return Ok(());
         }
+        // 原来的会话不在了只能新建（终端里会是全新的）：记下当时 tmux 服务的情况，查“没停止却变成全新的”用
+        if row.want_running {
+            let sessions = self.tmux_sessions().await.map(|s| s.len());
+            let server = self.tmux(&["display-message", "-p", "#{pid} #{start_time} #{version}"]).await.ok().filter(|o| o.status.success());
+            let server = server.map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string());
+            tracing::warn!(id = %row.id, launch = %row.launch, ?sessions, ?server, "终端的 tmux 会话不在了，新建一个");
+        }
         // 第一句话只用一次：取出来，建会话失败也不再用（用户重新启动时就是普通启动）
         let prompt = lock(&self.first_prompt).remove(&row.id);
         let resume = lock(&self.first_resume).remove(&row.id);
@@ -1374,6 +1387,7 @@ impl Instances {
             if let Some(s) = &sessions {
                 // 电脑重启等原因会话已经不在：除非设置了“开机自动启动”，否则不擅自重新运行命令。
                 if !s.contains_key(&Self::session_name(&row.id)) && !row.auto_start {
+                    tracing::warn!(id = %row.id, launch = %row.launch, sessions = s.len(), "启动时终端的 tmux 会话已经不在，记成已停止");
                     let _ = self.store.set_want_running(&row.id, false);
                 }
             }
@@ -1383,7 +1397,13 @@ impl Instances {
     /// 后台看护：跟随账户状态停止/接回 ttyd；ttyd 意外退出时重启。
     pub async fn supervise(self: Arc<Self>, account: Arc<Account>) {
         let mut suspended = false;
+        let mut orphans = HashSet::new();
+        let mut swept = Instant::now();
         loop {
+            if swept.elapsed() >= ORPHAN_SWEEP {
+                swept = Instant::now();
+                orphans = self.sweep_orphans(orphans).await;
+            }
             let allowed = account.gate().allowed();
             if !allowed {
                 if !suspended && !lock(&self.procs).is_empty() {
@@ -1415,6 +1435,28 @@ impl Instances {
             }
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
+    }
+
+    /// 结束游离的 tmux 会话：终端已经删了、或者已经停止了，会话却还在（停止时 kill-session 没成功、客户端在中途被结束）。
+    /// 只看看看自己的 tmux 服务里 `ll_<终端 ID>` 这样的会话；连着两次（间隔 [`ORPHAN_SWEEP`]）都是游离的才结束，
+    /// 避免和正在新建、启动的终端撞上。返回这一次看到的游离会话，下一次用。
+    async fn sweep_orphans(&self, before: HashSet<String>) -> HashSet<String> {
+        let _g = self.op.lock().await;
+        let (Some(sessions), Ok(rows)) = (self.tmux_sessions().await, self.store.instances()) else { return before };
+        let live: HashSet<String> = rows.iter().filter(|r| r.want_running).map(|r| Self::session_name(&r.id)).collect();
+        let now: HashSet<String> = sessions.into_keys().filter(|n| n.starts_with("ll_") && !live.contains(n)).collect();
+        for name in now.intersection(&before) {
+            let id = &name["ll_".len()..];
+            let doomed = self.task_processes(id).await;
+            crate::proctree::signal(&doomed);
+            let ok = self.tmux(&["kill-session", "-t", &exact(name)]).await.is_ok_and(|o| o.status.success());
+            let known = rows.iter().any(|r| r.id == id);
+            tracing::info!(session = %name, deleted = !known, ok, "结束游离的终端会话");
+            if !doomed.is_empty() {
+                crate::proctree::reap(doomed).await;
+            }
+        }
+        now.difference(&before).cloned().collect()
     }
 
     /// 回收已退出的 ttyd，记录“刚启动就退出”的次数。

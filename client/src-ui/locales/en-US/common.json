@@ -232,7 +232,9 @@
     "history_started": "started {{when}}",
     "history_output": "Recent terminal output",
     "history_output_empty": "(No output yet, or this mode doesn't keep output)",
-    "history_service": "Terminal service log"
+    "history_service": "Terminal service log",
+    "duplicate_conv": "Duplicate with conversation",
+    "duplicated_conv": "Duplicated as “{{name}}”, including the conversation"
   },
   "form": {
     "new_title": "New session",
@@ -870,14 +872,26 @@
   },
   "dsh": {
     "output": "View DSH's output",
-    "starting": "DSH is still starting; open it again in a moment",
     "form_note": "DSH runs as a web page, one per computer. Opening it shows that page in a session tab; you can also open it on its own in a browser (the same address here or remotely).",
     "workdir_hint": "DSH's default project folder. Add other project folders inside DSH.",
     "connecting": "Opening DSH…",
     "starting_slow": "DSH is starting; the first run takes a while longer…",
     "open_failed": "DSH couldn't be opened",
     "open_browser": "Open in browser",
-    "retry": "Retry"
+    "retry": "Retry",
+    "step": {
+      "install": "Check that DSH is installed",
+      "start": "Start DSH",
+      "process": "dsh process running",
+      "listen": "Web port listening",
+      "token": "Got the startup token",
+      "login": "Sign in with the token",
+      "tunnel": "Prepare the web mapping",
+      "open": "Open the browser"
+    },
+    "failed_hint": "It stopped at the step marked in red. Copy the diagnostics and send them to us, or check DSH's full output in the terminal.",
+    "copy_diag": "Copy diagnostics",
+    "not_opened": "DSH didn't open. Open it in the session to see which step it stopped at"
   },
   "fb": {
     "tabs": "Terminal and files",
@@ -1823,7 +1837,13 @@
       "cancel_wait": "Don't continue automatically",
       "switch": "Continue with another account",
       "switch_hint": "Continue this conversation with another Claude Code account or API on this computer; it reopens and sends continue",
-      "switched": "Switching to {{name}}; it will send continue once it reopens"
+      "switched": "Switching to {{name}}; it will send continue once it reopens",
+      "fail_oauth_org_not_allowed": "This account's Claude subscription can't be used (likely expired or payment past due)",
+      "fail_billing_error": "This account has a billing or balance problem and can't continue",
+      "fail_authentication_failed": "This account's login has expired",
+      "fail_rate_limit": "Usage limit reached and this turn stopped",
+      "fail_hint": "You can continue this conversation with another Claude Code account or API on this computer.",
+      "add_account": "Add an account or API"
     },
     "shells_unlisted_one": "1 more background command is running but isn't in this conversation's record (a subagent or something before /clear may have started it). Press ↓ in the terminal to see it.",
     "shells_unlisted_other": "{{count}} more background commands are running but aren't in this conversation's record (a subagent or something before /clear may have started them). Press ↓ in the terminal to see them.",
@@ -1909,7 +1929,14 @@
     "wt_no_owner": "Not opened by looklook or Codex",
     "wt_no_repo": "This project isn't a Git repository, so worktrees aren't available",
     "wt_created": "Started in a new worktree: {{path}}",
-    "wt_chip": "Worktree"
+    "wt_chip": "Worktree",
+    "image_fit": "Fit to screen",
+    "image_actual": "Actual size",
+    "res_view": "View",
+    "read_show_read": "Show what was read",
+    "read_show_file": "Preview the whole file",
+    "read_full": "Full screen",
+    "read_image_gone": "The image is gone (it may have been deleted or moved)"
   },
   "board": {
     "title": "Tasks",
@@ -1982,7 +2009,9 @@
       "idle": "Running",
       "paused": "Running in background",
       "stopped": "Stopped",
-      "error": "Failed to start"
+      "error": "Failed to start",
+      "done": "Done",
+      "failed": "Stopped with an error"
     },
     "new_type": "New {{type}}",
     "remove_project": "Remove from list",
@@ -2429,7 +2458,8 @@
     "history_search": "Search what you typed before",
     "suggest": "Use the suggested reply",
     "mode": "Switch permission mode",
-    "stop": "Stop (when the box is empty)"
+    "stop": "Stop (when the box is empty)",
+    "settings": "Open settings"
   },
   "notify": {
     "hooks_title": "More notification channels",

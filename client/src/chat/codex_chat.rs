@@ -32,6 +32,11 @@ const ADOPT_POLL: Duration = Duration::from_secs(5);
 const ADOPT_WAIT: Duration = Duration::from_secs(30 * 60);
 /// TUI 不带会话号启动后，多久之内它开的对话算这个终端的
 const TUI_CLAIM: Duration = Duration::from_secs(120);
+/// 自动起名：一轮结束后等多久再看有没有名字（终端里的 TUI 也会起，先让它）、生成最多等多久
+const TITLE_DELAY: Duration = Duration::from_secs(3);
+const TITLE_WAIT: Duration = Duration::from_secs(30);
+/// 和 Codex TUI 起的名字一样长
+const TITLE_MAX: usize = 36;
 
 /// 这个终端的对话已经有记录文件（聊过至少一轮）：TUI 能接、app-server 能 resume
 fn has_rollout(st: &super::State) -> bool {
@@ -67,6 +72,11 @@ pub struct Hub {
     update: Mutex<Option<(Instant, Value)>>,
     /// 更新过 Codex：app-server 还是旧的，下次要用时（没有在跑的对话）换成新的
     stale: std::sync::atomic::AtomicBool,
+    /// 自动起名（见 [`Chat::codex_auto_title`]）：起名用的临时 thread → 收到的回答、答完时通知谁
+    titling: Mutex<HashMap<String, (String, Option<oneshot::Sender<String>>)>>,
+    /// 这些对话起过名或正在起（没拿到名字的会拿掉，下一轮再试）；还有每个对话等着起名用的那句话
+    titled: Mutex<HashSet<String>>,
+    title_prompts: Mutex<HashMap<String, String>>,
 }
 
 /// Codex 这边每个终端多记的状态
@@ -224,6 +234,32 @@ fn command_shown(item: &Value) -> Option<String> {
     } else {
         Some(parts.join(" && "))
     }
+}
+
+/// 不是用户自己的对话：临时的（起名用的）、子代理、Codex 自己内部用的（`threadSource` 不是 user）
+fn side_thread(t: &Value) -> bool {
+    t["ephemeral"] == true || t["parentThreadId"].is_string() || t["source"].get("subAgent").is_some() || t["threadSource"].as_str().is_some_and(|s| s != "user")
+}
+
+/// 起名的提示词，照 Codex TUI 的（`tui/src/app/thread_title.rs`），用户的话最多带 960 字节
+fn title_prompt(text: &str) -> String {
+    let head = format!(
+        "Generate a concise, single-line task title of at most {TITLE_MAX} characters and under five words where possible. \
+         Start with an imperative verb. Capitalize only the first word unless the user's language, proper nouns, acronyms, or code terms require otherwise. \
+         Preserve ticket references exactly. Write in the user's language. Do not use quotes, markdown, or trailing punctuation. Do not answer the request.\n\nUser prompt:\n"
+    );
+    let room = 960usize.saturating_sub(head.len());
+    let text: String = text.trim().char_indices().take_while(|(i, c)| i + c.len_utf8() <= room).map(|(_, c)| c).collect();
+    format!("{head}{text}")
+}
+
+/// 起名的回答（`{"title": "…"}`）→ 名字：去掉引号、多余的空白和结尾的标点
+fn parse_title(answer: &str) -> Option<String> {
+    let v: Value = serde_json::from_str(answer.trim()).ok()?;
+    let t = v["title"].as_str()?.trim().trim_matches(|c| matches!(c, '"' | '\'' | '`' | '“' | '”' | '‘' | '’'));
+    let t = t.split_whitespace().collect::<Vec<_>>().join(" ");
+    let t = t.trim_end_matches(['.', '?', '!', '。', '？', '！']).trim_end();
+    (!t.is_empty()).then(|| t.chars().take(TITLE_MAX).collect())
 }
 
 fn text_input(text: &str, images: &[String]) -> Value {
@@ -438,17 +474,22 @@ impl Chat {
         self.codex_attach(id).await?;
         *inst.tr.lock().await = None;
         let _ = inst.tx.send(super::Event::Reset);
-        if matches!(self.codex_terminal_kind(id).await, TermCodex::Remote) {
-            if let Some(me) = self.me.upgrade() {
-                let id = id.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = me.codex_reconnect_terminal(&id).await {
-                        tracing::warn!(id, error = ?e, "换了对话后没能让终端里的 Codex 跟过去");
-                    }
-                });
-            }
-        }
+        self.codex_follow_terminal(id).await;
         Ok(())
+    }
+
+    /// 对话页换了对话（接着以前的、新开、换到工作树）：终端里开着同步的 TUI 时让它跟到新对话上
+    async fn codex_follow_terminal(&self, id: &str) {
+        if !matches!(self.codex_terminal_kind(id).await, TermCodex::Remote) {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else { return };
+        let id = id.to_string();
+        tokio::spawn(async move {
+            if let Err(e) = me.codex_reconnect_terminal(&id).await {
+                tracing::warn!(id, error = ?e, "换了对话后没能让终端里的 Codex 跟过去");
+            }
+        });
     }
 
     /// 记录文件路径还没有时（新建的会话第一轮开始后才写文件）问一下 app-server
@@ -505,6 +546,9 @@ impl Chat {
     }
 
     async fn codex_note(&self, method: &str, p: &Value) {
+        if self.codex_title_note(method, p) {
+            return;
+        }
         match method {
             "account/rateLimits/updated" => {
                 *lock(&self.codex.limits) = None;
@@ -516,7 +560,11 @@ impl Chat {
                 }
             }
             "thread/started" => {
-                self.codex_claim_thread(p);
+                if !self.codex_claim_thread(p) {
+                    if let Some(me) = self.me.upgrade() {
+                        tokio::spawn(me.codex_tui_switched(p["thread"].clone()));
+                    }
+                }
                 return;
             }
             _ => {}
@@ -566,6 +614,13 @@ impl Chat {
                     Self::set_phase(&inst, &mut st, Phase::Idle, None);
                     Self::emit_status(&inst, &st);
                     poll = true;
+                    // 这一轮没跑成（比如连不上模型服务）就先不起名，那句话留到下一轮
+                    if let Some(tid) = p["threadId"].as_str().filter(|_| st.title.is_none() && p["turn"]["status"] == "completed") {
+                        let prompt = lock(&self.codex.title_prompts).remove(tid);
+                        if let (Some(me), Some(prompt)) = (self.me.upgrade(), prompt) {
+                            tokio::spawn(me.codex_auto_title(inst.id.clone(), tid.to_string(), prompt));
+                        }
+                    }
                 }
                 "item/started" => {
                     let item = &p["item"];
@@ -630,6 +685,9 @@ impl Chat {
                     // 对不上就拿最早的那条会误删另一条还在排队的
                     if p["item"]["type"] == "userMessage" {
                         let text = user_text(&p["item"]);
+                        if let Some(tid) = p["threadId"].as_str().filter(|_| st.title.is_none() && !text.trim().is_empty() && !text.starts_with('/')) {
+                            lock(&self.codex.title_prompts).entry(tid.to_string()).or_insert_with(|| text.clone());
+                        }
                         if let Some(at) = st.codex.steered.iter().position(|q| *q == text) {
                             st.codex.steered.remove(at);
                         }
@@ -775,13 +833,15 @@ impl Chat {
             let server = self.codex_ready(id).await?;
             self.codex_forget(thread).await;
             self.codex_new_thread(&server, &inst).await?;
+            self.codex_follow_terminal(id).await;
             return Ok(json!({ "delivered": true }));
         }
         let server = self.codex_attach(id).await?;
-        let (thread, turn, phase, model, effort) = {
+        let (thread, turn, phase, model, effort, current) = {
             let st = lock(&inst.st);
             let chosen = st.model_set_at.is_some();
-            (st.binding.as_ref().map(|b| b.session_id.clone()), st.codex.turn.clone(), st.phase, st.model.clone().filter(|_| chosen), st.effort.clone())
+            let current = st.model.clone().or(st.actual_model.clone());
+            (st.binding.as_ref().map(|b| b.session_id.clone()), st.codex.turn.clone(), st.phase, st.model.clone().filter(|_| chosen), st.effort.clone(), current)
         };
         if phase == Phase::Approval {
             return Err(LocalError::new("CHAT_BUSY"));
@@ -815,8 +875,16 @@ impl Chat {
             return Ok(json!({ "delivered": true }));
         }
         let mut params = json!({ "threadId": thread, "input": input });
-        if let Some(m) = model {
+        if let Some(m) = &model {
             params["model"] = json!(m);
+        }
+        // 默认模式自带的说明不让模型用提问工具（要用户回答时“用一句纯文字问”），对话页就没有选择框：换成允许它用的说明。
+        // collaborationMode 会盖过 model / effort，所以一起放进去；还不知道用的哪个模型时不换（照 Codex 默认的来）
+        if let Some(m) = model.or(current) {
+            params["collaborationMode"] = json!({
+                "mode": "default",
+                "settings": { "model": m, "reasoning_effort": effort, "developer_instructions": codex_app::DEFAULT_MODE },
+            });
         }
         if let Some(e) = effort {
             params["effort"] = json!(e);
@@ -935,16 +1003,7 @@ impl Chat {
             tracing::warn!(error = ?e, "没能记下托管工作树属于哪段对话");
         }
         // 终端里开着同步的 TUI：跟到新对话上
-        if matches!(self.codex_terminal_kind(id).await, TermCodex::Remote) {
-            if let Some(me) = self.me.upgrade() {
-                let id = id.to_string();
-                tokio::spawn(async move {
-                    if let Err(e) = me.codex_reconnect_terminal(&id).await {
-                        tracing::warn!(id, error = ?e, "换到工作树后没能让终端里的 Codex 跟过去");
-                    }
-                });
-            }
-        }
+        self.codex_follow_terminal(id).await;
         Ok(json!({ "cwd": cwd, "root": checkout.root, "thread": tid }))
     }
 
@@ -1333,11 +1392,16 @@ impl Chat {
 
     /// 不是看看开的对话开始了（终端里的 TUI 不带会话号启动后自己开的）：认领给在等它、同一个文件夹的终端；
     /// 没登记过时，同一个文件夹里只有一个还没聊过的对话模式终端也算它的。对话页和终端从此是同一段。
-    fn codex_claim_thread(&self, p: &Value) {
+    /// 认领了返回 true。
+    fn codex_claim_thread(&self, p: &Value) -> bool {
         let t = &p["thread"];
-        let (Some(tid), Some(cwd)) = (t["id"].as_str(), t["cwd"].as_str()) else { return };
+        let (Some(tid), Some(cwd)) = (t["id"].as_str(), t["cwd"].as_str()) else { return false };
         if lock(&self.codex.threads).contains_key(tid) {
-            return;
+            return true;
+        }
+        // 起名之类的临时对话、子代理：不是谁的会话，也别让对话页跟过去
+        if side_thread(t) {
+            return true;
         }
         let rows = self.store.instances().unwrap_or_default();
         let fits = |id: &str| {
@@ -1352,7 +1416,7 @@ impl Chat {
             let c: Vec<&str> = rows.iter().map(|r| r.id.as_str()).filter(|id| fits(id)).collect();
             (c.len() == 1).then(|| c[0].to_string())
         });
-        let Some(id) = pick else { return };
+        let Some(id) = pick else { return false };
         lock(&self.codex.tui_waiting).remove(&id);
         lock(&self.codex.threads).insert(tid.to_string(), id.clone());
         let inst = self.inst(&id);
@@ -1368,20 +1432,175 @@ impl Chat {
         Self::emit_status(&inst, &st);
         drop(st);
         let _ = inst.tx.send(super::Event::Reset);
-        // 全部权限的终端：TUI 不带 --yolo（见 instances 的 codex_tui_command），它新开的会话在这里设上。
-        // 认领前就发出的第一轮按 Codex 的默认权限跑（会来问），不会多给权限
-        if self.instances.opts(&id).full_access {
-            if let Some(me) = self.me.upgrade() {
-                let tid = tid.to_string();
-                tokio::spawn(async move {
-                    let Some(server) = me.codex.server.lock().await.clone() else { return };
-                    let params = json!({ "threadId": tid, "approvalPolicy": "never", "sandboxPolicy": { "type": "dangerFullAccess" } });
-                    if let Err(e) = server.call("thread/settings/update", params).await {
-                        tracing::warn!(id, error = ?e, "没能给终端里新开的 Codex 会话设上全部权限");
-                    }
-                });
+        self.codex_tui_full_access(&id, tid);
+        true
+    }
+
+    /// 全部权限的终端：TUI 不带 --yolo（见 instances 的 codex_tui_command），它新开的会话在这里设上。
+    /// 设上之前就发出的第一轮按 Codex 的默认权限跑（会来问），不会多给权限
+    fn codex_tui_full_access(&self, id: &str, tid: &str) {
+        if !self.instances.opts(id).full_access {
+            return;
+        }
+        let Some(me) = self.me.upgrade() else { return };
+        let (id, tid) = (id.to_string(), tid.to_string());
+        tokio::spawn(async move {
+            let Some(server) = me.codex.server.lock().await.clone() else { return };
+            let params = json!({ "threadId": tid, "approvalPolicy": "never", "sandboxPolicy": { "type": "dangerFullAccess" } });
+            if let Err(e) = server.call("thread/settings/update", params).await {
+                tracing::warn!(id, error = ?e, "没能给终端里新开的 Codex 会话设上全部权限");
+            }
+        });
+    }
+
+    /// 没人认领的新对话：多半是终端里接着 app-server 的 TUI 换了对话（`/new`、`/fork`）。
+    /// 同一个文件夹里只有一个终端开着同步的 TUI、它这会儿空闲时，对话页跟过去，两边还是同一段。
+    /// 子代理、临时的对话不算；看看自己开的（`thread/start` 的结果比通知晚到）等一会儿再看是不是已经记下了。
+    /// 起名用的临时对话发来的通知：记下回答、答完通知等着的那边。是它的就返回 true（不再往下分给终端）。
+    fn codex_title_note(&self, method: &str, p: &Value) -> bool {
+        let Some(tid) = p["threadId"].as_str() else { return false };
+        let mut titling = lock(&self.codex.titling);
+        let Some((text, done)) = titling.get_mut(tid) else { return false };
+        match method {
+            "item/completed" if p["item"]["type"] == "agentMessage" => *text = p["item"]["text"].as_str().unwrap_or_default().to_string(),
+            "turn/completed" => {
+                if let Some(tx) = done.take() {
+                    let _ = tx.send(std::mem::take(text));
+                }
+            }
+            _ => {}
+        }
+        true
+    }
+
+    /// 对话界面发的消息没经过 TUI，Codex 不会给对话起名（起名是 TUI 做的：看到第一句话就开一个临时对话让模型起，
+    /// 再 `thread/name/set`）。一轮结束后还没有名字就照着做一遍；TUI 也起了的话以先起好的为准。
+    async fn codex_auto_title(self: Arc<Self>, id: String, tid: String, prompt: String) {
+        if !lock(&self.codex.titled).insert(tid.clone()) {
+            return;
+        }
+        tokio::time::sleep(TITLE_DELAY).await;
+        let inst = self.inst(&id);
+        let model = {
+            let st = lock(&inst.st);
+            if st.title.is_some() || st.binding.as_ref().is_none_or(|b| b.session_id != tid) {
+                return;
+            }
+            st.actual_model.clone().or_else(|| st.model.clone())
+        };
+        let Some(server) = self.codex.server.lock().await.clone() else { return };
+        let named = |r: &Value| r["thread"]["name"].as_str().is_some_and(|n| !n.trim().is_empty());
+        match server.call("thread/read", json!({ "threadId": tid })).await {
+            Ok(r) if !named(&r) => {}
+            _ => return,
+        }
+        let cwd = self.codex_current_cwd(&id).ok();
+        // 和 TUI 一样：只读、不连 MCP、不用工具和技能，只要一句结构化的回答
+        let mut config = json!({
+            "features.apps": false, "features.code_mode": false, "features.goals": false, "features.hooks": false,
+            "features.image_generation": false, "features.memories": false, "features.multi_agent": false, "features.plugins": false,
+            "features.shell_snapshot": false, "features.shell_tool": false, "features.unified_exec": false, "features.view_image": false,
+            "skills.include_instructions": false, "tools.update_plan.enabled": false, "web_search": "disabled",
+        });
+        if let Ok(c) = server.call("config/read", json!({ "includeLayers": false, "cwd": cwd })).await {
+            if let Some(m) = c["config"]["mcp_servers"].as_object() {
+                config["mcp_servers"] = m.keys().map(|k| (k.clone(), json!({ "enabled": false }))).collect::<serde_json::Map<_, _>>().into();
             }
         }
+        let mut params = self.codex_thread_opts(&id);
+        merge(&mut params, json!({ "cwd": cwd, "ephemeral": true, "threadSource": "thread_title", "sandbox": "read-only", "approvalPolicy": "never", "config": config }));
+        if let Some(m) = model {
+            params["model"] = json!(m);
+        }
+        let tmp = match server.call("thread/start", params).await {
+            Ok(r) => r["thread"]["id"].as_str().map(String::from),
+            Err(e) => {
+                tracing::debug!(error = ?e, "起名用的临时对话没开起来");
+                None
+            }
+        };
+        let Some(tmp) = tmp else { return };
+        let (tx, rx) = oneshot::channel();
+        lock(&self.codex.titling).insert(tmp.clone(), (String::new(), Some(tx)));
+        let schema = json!({
+            "type": "object",
+            "properties": { "title": { "type": "string", "minLength": 1, "maxLength": TITLE_MAX } },
+            "required": ["title"],
+            "additionalProperties": false,
+        });
+        let started = server.call("turn/start", json!({ "threadId": tmp, "input": text_input(&title_prompt(&prompt), &[]), "outputSchema": schema })).await;
+        let answer = match started {
+            Ok(_) => tokio::time::timeout(TITLE_WAIT, rx).await.ok().and_then(|r| r.ok()),
+            Err(_) => None,
+        };
+        lock(&self.codex.titling).remove(&tmp);
+        let _ = server.call("thread/unsubscribe", json!({ "threadId": tmp })).await;
+        let Some(title) = answer.as_deref().and_then(parse_title) else {
+            tracing::debug!(thread = tid, "自动起名没拿到名字，下一轮再试");
+            lock(&self.codex.titled).remove(&tid);
+            return;
+        };
+        match server.call("thread/read", json!({ "threadId": tid })).await {
+            Ok(r) if !named(&r) => {}
+            _ => return,
+        }
+        // 设好之后 app-server 发 thread/name/updated，名字从那里进界面；Codex 自己也记进 session_index.jsonl
+        if let Err(e) = server.call("thread/name/set", json!({ "threadId": tid, "name": title })).await {
+            tracing::debug!(error = ?e, "自动起的名字没设上");
+        }
+    }
+
+    async fn codex_tui_switched(self: Arc<Self>, t: Value) {
+        let (Some(tid), Some(cwd)) = (t["id"].as_str(), t["cwd"].as_str()) else { return };
+        if side_thread(&t) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        if lock(&self.codex.threads).contains_key(tid) {
+            return;
+        }
+        let rows = self.store.instances().unwrap_or_default();
+        let mut found = Vec::new();
+        for r in rows.iter().filter(|r| self.instances.codex_app_mode(r)) {
+            let Ok(dir) = self.codex_current_cwd(&r.id) else { continue };
+            if !crate::history::same_dir(&dir, cwd) && !crate::history::same_dir(&r.workdir, cwd) {
+                continue;
+            }
+            let idle = {
+                let inst = self.inst(&r.id);
+                let st = lock(&inst.st);
+                st.codex.turn.is_none() && matches!(st.phase, Phase::Idle | Phase::Detached)
+            };
+            if idle && matches!(self.codex_terminal_kind(&r.id).await, TermCodex::Remote) {
+                found.push(r.id.clone());
+            }
+        }
+        let [id] = found.as_slice() else {
+            if found.len() > 1 {
+                tracing::info!(thread = tid, "终端里开了新的 Codex 对话，但同一个文件夹里有好几个终端，对话页不跟过去");
+            }
+            return;
+        };
+        let old = lock(&self.inst(id).st).binding.as_ref().map(|b| b.session_id.clone());
+        if old.as_deref() == Some(tid) {
+            return;
+        }
+        tracing::info!(id, thread = tid, "终端里的 Codex 换了对话，对话页跟过去");
+        // 和 codex_resume 一样换过去，只是不在这里加载：界面重新取的时候 codex_attach 会接上
+        // （这里调 codex_attach 会让 async 的类型绕回自己）
+        self.codex_forget(old).await;
+        self.codex_bind(id, tid);
+        let inst = self.inst(id);
+        {
+            let mut st = lock(&inst.st);
+            st.title = None;
+            st.context = None;
+            st.codex.cwd = None;
+            Self::emit_status(&inst, &st);
+        }
+        *inst.tr.lock().await = None;
+        let _ = inst.tx.send(super::Event::Reset);
+        self.codex_tui_full_access(id, tid);
     }
 
     // ---------------- 新版本 ----------------
@@ -1853,5 +2072,19 @@ mod tests {
         let v = text_input("hi", &["C:\\a.png".into()]);
         assert_eq!(v[0]["type"], "text");
         assert_eq!(v[1], json!({ "type": "localImage", "path": "C:\\a.png" }));
+    }
+
+    #[test]
+    fn auto_title() {
+        assert_eq!(parse_title(r#"{"title":"“修复登录页。”"}"#).as_deref(), Some("修复登录页"));
+        assert_eq!(parse_title(r#"{"title":"  Fix   login page! "}"#).as_deref(), Some("Fix login page"));
+        assert_eq!(parse_title(r#"{"title":"  "}"#), None);
+        assert_eq!(parse_title("Fix login"), None);
+        let long = "字".repeat(2000);
+        let p = title_prompt(&long);
+        assert!(p.len() <= 960 && p.ends_with('字'));
+        assert!(side_thread(&json!({ "ephemeral": true })));
+        assert!(side_thread(&json!({ "threadSource": "thread_title" })));
+        assert!(!side_thread(&json!({ "threadSource": "user", "source": "vscode" })));
     }
 }

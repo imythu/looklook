@@ -1,7 +1,7 @@
 // 网页类型的会话（DSH）：在会话标签里用 iframe 打开它的网页界面 /w/{id}/（和管理台同源，见 src/gateway/dsh.rs）。
 // 打开前先请电脑确保 DSH 在运行、网关已经用启动口令登录好；口令和 DSH 的 Cookie 都只在电脑上，浏览器拿不到。
 // 电脑上是会话页右边的一块（WebPane），手机上是整页（WebPage，/t/{id}?web）。
-import { ArrowLeft, Expand, ExternalLink, Globe, Maximize2, Minimize2, RefreshCw, Shrink } from 'lucide-react';
+import { ArrowLeft, Check, Circle, CircleX, Expand, ExternalLink, Globe, Maximize2, Minimize2, MinusCircle, RefreshCw, Shrink } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -10,7 +10,7 @@ import { errorText } from '../shared/i18n.js';
 import { useRouter } from '../shared/router.jsx';
 import { sessionTitle } from '../shared/sessions.jsx';
 import { APP_CHROME } from '../shared/termTheme.js';
-import { Button, Spinner, useToast } from '../shared/ui.jsx';
+import { Button, CopyButton, Spinner, useToast } from '../shared/ui.jsx';
 import { openDsh } from './Terminals.jsx';
 
 /** 网页界面的地址。多台电脑时带上它所在的电脑（__lldev，启动页 / 本机客户端按它转给那台电脑，之后的请求按会话 id 转）。 */
@@ -62,6 +62,70 @@ function useWebFrame(id, enabled) {
   return { state, error, retry };
 }
 
+/** DSH 启动 / 打开的步骤进度（GET /instances/{id}/dsh/progress，见 src/gateway/dsh.rs）：卡在哪一步、为什么；可以复制诊断信息反馈 */
+export function DshProgress({ id, poll = true }) {
+  const { t } = useTranslation();
+  const [p, setP] = useState(null);
+  useEffect(() => {
+    let gone = false;
+    let timer = 0;
+    const go = async () => {
+      try {
+        const r = await deviceApi(terminalDevice(id)).get(`/instances/${id}/dsh/progress`);
+        if (!gone) setP(r);
+      } catch {
+        // 旧版本客户端没有这个接口：不显示进度
+      }
+      if (!gone && poll) timer = setTimeout(go, 1000);
+    };
+    go();
+    return () => {
+      gone = true;
+      clearTimeout(timer);
+    };
+  }, [id, poll]);
+  if (!p?.started_at) return null;
+  const steps = p.steps.filter((s) => s.state !== 'wait' || p.flow === 'external' || !['tunnel', 'open'].includes(s.key));
+  const failed = p.steps.find((s) => s.state === 'fail');
+  const output = p.failed_output ?? p.output;
+  const report = [
+    `DSH ${p.flow} @ ${p.started_at} (${p.elapsed_ms ?? 0} ms)`,
+    ...p.steps.map((s) => `${s.key}: ${s.state}${s.ms != null ? ` (${s.ms} ms)` : ''}${s.detail ? ` — ${s.detail}` : ''}`),
+    '',
+    '--- log ---',
+    ...p.log,
+    '',
+    '--- output ---',
+    output ?? '(none)',
+  ].join('\n');
+  const icon = (s) =>
+    s.state === 'ok' ? <Check size={14} /> : s.state === 'fail' ? <CircleX size={14} /> : s.state === 'run' ? <Spinner size={14} /> : s.state === 'skip' ? <MinusCircle size={14} /> : <Circle size={14} />;
+  return (
+    <div className="dsh-progress">
+      <ol>
+        {steps.map((s) => (
+          <li key={s.key} data-state={s.state}>
+            {icon(s)}
+            <span>{t(`dsh.step.${s.key}`)}</span>
+            {s.ms != null && <span className="muted">{(s.ms / 1000).toFixed(1)} s</span>}
+            {s.detail && (s.state === 'fail' || s.state === 'run') && <small>{s.detail}</small>}
+          </li>
+        ))}
+      </ol>
+      {failed && <p className="dsh-progress-hint">{t('dsh.failed_hint')}</p>}
+      <div className="dsh-progress-acts">
+        <CopyButton text={report} label={t('dsh.copy_diag')} />
+      </div>
+      {output && (
+        <details>
+          <summary>{t('dsh.output')}</summary>
+          <pre>{output}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
 function WebBody({ id, inst, web, frame, reloadKey, active }) {
   const { t } = useTranslation();
   const [loaded, setLoaded] = useState(false);
@@ -79,6 +143,7 @@ function WebBody({ id, inst, web, frame, reloadKey, active }) {
           <Button icon={RefreshCw} onClick={web.retry}>
             {t('dsh.retry')}
           </Button>
+          <DshProgress id={id} poll={false} />
         </div>
       </div>
     );
@@ -87,7 +152,10 @@ function WebBody({ id, inst, web, frame, reloadKey, active }) {
     return (
       <div className="term-connecting" role="status" aria-live="polite">
         <div>
-          <Spinner size={16} /> {t(web.state === 'slow' ? 'dsh.starting_slow' : 'dsh.connecting')}
+          <div>
+            <Spinner size={16} /> {t(web.state === 'slow' ? 'dsh.starting_slow' : 'dsh.connecting')}
+          </div>
+          <DshProgress id={id} />
         </div>
       </div>
     );

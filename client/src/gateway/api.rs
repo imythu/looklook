@@ -68,6 +68,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/instances/{id}/checkpoints/{cp}/restore", post(restore_checkpoint))
         .route("/instances/{id}/page", post(instance_page))
         .route("/instances/{id}/web", post(instance_web))
+        .route("/instances/{id}/dsh/progress", get(dsh_progress))
         .route("/instances/{id}/chat", get(super::chat::snapshot))
         .route("/instances/{id}/chat/events", get(super::chat::events))
         .route("/chat/ws", get(super::chat_mux::ws))
@@ -542,28 +543,72 @@ struct PageQ {
 /// 打开 DSH：确保它在运行、映射还在（被删了就重建，被关了就打开），返回带口令的映射地址。
 /// `?open=1` 且是本机桌面时直接用系统浏览器打开，返回 `opened`。
 async fn instance_page(State(app): State<App>, Extension(access): Extension<Access>, Path(id): Path<String>, Query(q): Query<PageQ>) -> R<Json<Value>> {
+    use super::dsh::{note, step};
     require_allowed(&app)?;
     require_persistent(&app)?;
     let v = app.instances.get(&id).await?;
     let port = v.web_port.ok_or_else(LocalError::not_found)?;
+    super::dsh::begin(&id, "external");
+    dsh_installed(&app, &id).await?;
     // 已经在运行时什么也不做；任务退出了（例如 dsh 崩了）会重新运行
-    if !v.running || v.task_alive != Some(true) {
-        app.instances.start(&id).await?;
-    }
+    super::dsh::start(&app, &id, &v).await?;
     // 映射（要问平台）和口令（等 dsh 启动完）互不依赖，一起等
+    step(&id, "tunnel", "run", None);
     let (tunnel, login) = tokio::join!(dsh_tunnel(&app, &id, port), dsh_login(&app, &id, port));
-    let tunnel = tunnel?;
+    let tunnel = match tunnel {
+        Ok(t) => {
+            step(&id, "tunnel", "ok", Some(format!("{}（{}）", t.url, t.status)));
+            t
+        }
+        Err(e) => {
+            step(&id, "tunnel", "fail", Some(format!("{} {:?}", e.code, e.params)));
+            return Err(e);
+        }
+    };
     let token = login.map(|l| l.token);
     let url = match &token {
         Some(t) => with_query(&tunnel.url, "token", t),
         None => tunnel.url.clone(),
     };
     // 没拿到口令时不打开：打开了也只是 DSH 的“需要认证”页
-    let opened = q.open && token.is_some() && access.is_local() && crate::util::has_desktop() && {
+    let opened = if !q.open || token.is_none() {
+        false
+    } else if !access.is_local() || !crate::util::has_desktop() {
+        note(&id, &format!("不是本机桌面（local={}，desktop={}），由浏览器自己打开", access.is_local(), crate::util::has_desktop()));
+        false
+    } else {
+        step(&id, "open", "run", None);
         let u = url.clone();
-        tokio::task::spawn_blocking(move || crate::util::open_url(&u)).await.unwrap_or(false)
+        let ok = tokio::task::spawn_blocking(move || crate::util::open_url(&u)).await.unwrap_or(false);
+        step(&id, "open", if ok { "ok" } else { "fail" }, (!ok).then(|| "系统没能打开默认浏览器".to_string()));
+        ok
     };
+    if token.is_some() && !q.open {
+        step(&id, "open", "skip", Some("由页面在新标签里打开".into()));
+    }
     Ok(Json(json!({ "url": url, "ready": token.is_some(), "opened": opened })))
+}
+
+/// 检查安装这一步（查一次要起一个登录 shell）
+async fn dsh_installed(app: &App, id: &str) -> R<()> {
+    use super::dsh::step;
+    step(id, "install", "run", None);
+    match tools::detect(app.instances.shell()).await.dsh {
+        Some(p) => {
+            step(id, "install", "ok", Some(p));
+            Ok(())
+        }
+        None => {
+            step(id, "install", "fail", Some(format!("在 {} 的 PATH 里找不到 dsh", app.instances.shell())));
+            Err(LocalError::new("DSH_NOT_INSTALLED"))
+        }
+    }
+}
+
+/// `GET /instances/{id}/dsh/progress`：DSH 最近一次启动 / 打开的步骤和日志（界面显示进度、复制诊断信息）
+async fn dsh_progress(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
+    app.instances.get(&id).await?;
+    Ok(Json(super::dsh::progress_json(&app, &id).await))
 }
 
 // ---------------- macOS：文件夹访问权限 ----------------
@@ -636,7 +681,11 @@ async fn instance_web(State(app): State<App>, Path(id): Path<String>) -> R<Json<
     let port = v.web_port.ok_or_else(LocalError::not_found)?;
     // 已经登录好的不用再查（界面每 2 秒问一次，查一次要起一个登录 shell）
     if !super::dsh::logged_in(&id) {
-        require_dsh(&app).await?;
+        if let Err(e) = require_dsh(&app).await {
+            super::dsh::begin(&id, "tab");
+            super::dsh::step(&id, "install", "fail", Some(format!("在 {} 的 PATH 里找不到 dsh", app.instances.shell())));
+            return Err(e);
+        }
     }
     let ready = super::dsh::ensure(&app, &id, port).await?.is_some();
     Ok(Json(json!({ "ready": ready })))
@@ -668,14 +717,79 @@ async fn dsh_tunnel(app: &App, id: &str, port: u16) -> R<Tunnel> {
 /// 口令每次启动都换，而且 dsh 要等插件全部加载完才打印（第一次运行要初始化配置，会慢很多）。
 /// 输出里可能还留着上次运行的那一行，所以拿到口令后先向 dsh 换一次 Cookie，换到了才用；最多等 60 秒。
 pub(super) async fn dsh_login(app: &App, id: &str, port: u16) -> Option<DshLogin> {
+    use super::dsh::{fail_with_output, note, step};
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(60);
+    let (mut process, mut listening, mut token_seen, mut last_exchange) = (false, false, None::<String>, String::new());
+    let mut shell_since: Option<tokio::time::Instant> = None;
+    step(id, "process", "run", None);
     loop {
+        // dsh 退出了、终端里只剩 shell：再等也不会好，直接报错（带上它的输出）。刚启动时 shell 还没开始运行 dsh，宽限几秒
+        match app.instances.pane(id).await {
+            Some(pane) if crate::chat::is_shell(&pane.command) => {
+                let since = *shell_since.get_or_insert_with(tokio::time::Instant::now);
+                if since.elapsed() >= std::time::Duration::from_secs(5) {
+                    let what = if process { "dsh 运行后退出了" } else { "dsh 没有运行起来" };
+                    fail_with_output(app, id, if process { "listen" } else { "process" }, format!("{what}，终端前台是 {}", pane.command)).await;
+                    return None;
+                }
+            }
+            Some(pane) => {
+                shell_since = None;
+                if !process {
+                    process = true;
+                    step(id, "process", "ok", Some(format!("前台程序 {}，pid {}", pane.command, pane.pid)));
+                    step(id, "listen", "run", Some(format!("127.0.0.1:{port}")));
+                }
+            }
+            None => {
+                fail_with_output(app, id, "process", "终端会话不在了（tmux 会话已结束）".into()).await;
+                return None;
+            }
+        }
+        if !listening && tokio::net::TcpStream::connect(("127.0.0.1", port)).await.is_ok() {
+            listening = true;
+            if !process {
+                process = true;
+                step(id, "process", "ok", None);
+            }
+            step(id, "listen", "ok", Some(format!("127.0.0.1:{port}")));
+            step(id, "token", "run", None);
+        }
         if let Some(token) = app.instances.full_output(id).await.as_deref().and_then(parse_dsh_token) {
-            if let Some(cookie) = dsh_exchange(port, &token).await {
-                return Some(DshLogin { token, cookie });
+            if token_seen.as_deref() != Some(&token) {
+                step(id, "token", "ok", Some(format!("{}…（{} 位）", &token[..4], token.len())));
+                step(id, "login", "run", None);
+                token_seen = Some(token.clone());
+            }
+            match dsh_exchange(port, &token).await {
+                Ok(cookie) => {
+                    step(id, "login", "ok", None);
+                    return Some(DshLogin { token, cookie });
+                }
+                Err(e) if e != last_exchange => {
+                    note(id, &format!("用口令换 Cookie：{e}"));
+                    last_exchange = e;
+                }
+                Err(_) => {}
             }
         }
         if tokio::time::Instant::now() >= deadline {
+            let at = if !process {
+                "process"
+            } else if !listening {
+                "listen"
+            } else if token_seen.is_none() {
+                "token"
+            } else {
+                "login"
+            };
+            let why = match at {
+                "listen" => format!("60 秒内 127.0.0.1:{port} 没有开始监听"),
+                "token" => "60 秒内输出里没有出现 “dsh web: …?token=” 这一行".into(),
+                "login" => format!("60 秒内没能用口令登录：{last_exchange}"),
+                _ => "60 秒内 dsh 没有运行起来".into(),
+            };
+            fail_with_output(app, id, at, why).await;
             return None;
         }
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -688,14 +802,14 @@ pub(super) struct DshLogin {
     pub cookie: String,
 }
 
-/// 口令换 Cookie：有效时 dsh 返回 303 和 Set-Cookie，无效 401，还没监听时连不上。
-async fn dsh_exchange(port: u16, token: &str) -> Option<String> {
-    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(3)).no_proxy().build().ok()?;
-    let r = client.get(format!("http://127.0.0.1:{port}/?token={token}")).send().await.ok()?;
+/// 口令换 Cookie：有效时 dsh 返回 303 和 Set-Cookie，无效 401，还没监听时连不上。失败时给出原因（记进诊断信息）
+async fn dsh_exchange(port: u16, token: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(std::time::Duration::from_secs(3)).no_proxy().build().map_err(|e| e.to_string())?;
+    let r = client.get(format!("http://127.0.0.1:{port}/?token={token}")).send().await.map_err(|e| format!("连不上：{e}"))?;
     if r.status() != StatusCode::SEE_OTHER {
-        return None;
+        return Err(format!("dsh 回 {}（要的是 303）", r.status()));
     }
-    r.headers().get_all(reqwest::header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(cookie_pair)
+    r.headers().get_all(reqwest::header::SET_COOKIE).iter().filter_map(|v| v.to_str().ok()).find_map(cookie_pair).ok_or_else(|| "303 里没有 Set-Cookie".into())
 }
 
 /// `Set-Cookie` 里的 `名字=值`。

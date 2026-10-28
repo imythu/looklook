@@ -15,6 +15,7 @@ import { relativeTime } from '../shared/time.js';
 import { Modal, Spinner, useToast } from '../shared/ui.jsx';
 import { useSessionUi } from './Sessions.jsx';
 import { FolderPicker } from './Terminals.jsx';
+import { imeComposing } from '../shared/ime.js';
 
 // 看起来是路径（不是在搜名字）：~、/ 开头，或者 C:\ 这样的盘符
 const PATH_RE = /^(~|\/|[a-z]:[\\/])/i;
@@ -124,7 +125,7 @@ export function AddProjectDialog({ want, onClose }) {
             value={q}
             onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.nativeEvent.isComposing && withTyped.length) {
+              if (e.key === 'Enter' && !imeComposing(e) && withTyped.length) {
                 e.preventDefault();
                 add(withTyped);
               }

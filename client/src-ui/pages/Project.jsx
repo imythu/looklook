@@ -18,6 +18,7 @@ import { AGENTS, projectEntries, projectPath, sessionState, sessionTitle, useSes
 import { Spinner, useConfirm, useToast } from '../shared/ui.jsx';
 import { ConvRow, timeBucket } from './History.jsx';
 import { QUICK_LAUNCHES, shortAgo, useActions, useSessionUi } from './Sessions.jsx';
+import { imeComposing } from '../shared/ime.js';
 
 const PAGE = 50;
 const enc = encodeURIComponent;
@@ -274,7 +275,7 @@ function ProjectView({ p, group, focus }) {
             value={q}
             onChange={(ev) => setQ(ev.target.value)}
             onKeyDown={(ev) => {
-              if (ev.key === 'Enter' && !ev.nativeEvent.isComposing) runDeep();
+              if (ev.key === 'Enter' && !imeComposing(ev)) runDeep();
               if (ev.key === 'Escape') setQ('');
             }}
             placeholder={t('proj.search')}

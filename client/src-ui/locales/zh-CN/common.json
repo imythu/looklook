@@ -232,7 +232,9 @@
     "history_started": "启动于 {{when}}",
     "history_output": "终端最近输出",
     "history_output_empty": "（暂无输出，或此模式不保存输出）",
-    "history_service": "终端服务记录"
+    "history_service": "终端服务记录",
+    "duplicate_conv": "复制会话（连同对话）",
+    "duplicated_conv": "已复制为“{{name}}”，对话也一起复制了"
   },
   "form": {
     "new_title": "新建会话",
@@ -870,14 +872,26 @@
   },
   "dsh": {
     "output": "查看 DSH 的输出",
-    "starting": "DSH 还在启动，请稍后再打开",
     "form_note": "DSH 是网页界面，一台电脑一个。打开它就在会话标签里显示它的网页；也可以在浏览器中单独打开（本机或远程都是同一个地址）。",
     "workdir_hint": "DSH 的默认项目文件夹，别的项目文件夹在 DSH 里添加。",
     "connecting": "正在打开 DSH…",
     "starting_slow": "DSH 正在启动，第一次运行要多等一会儿…",
     "open_failed": "DSH 打不开",
     "open_browser": "在浏览器中打开",
-    "retry": "重试"
+    "retry": "重试",
+    "step": {
+      "install": "检查 DSH 是否已安装",
+      "start": "启动 DSH",
+      "process": "dsh 进程运行起来",
+      "listen": "网页端口开始监听",
+      "token": "拿到启动口令",
+      "login": "用口令登录",
+      "tunnel": "准备网页映射",
+      "open": "打开浏览器"
+    },
+    "failed_hint": "卡在上面标红的一步。可以复制诊断信息发给我们，或者到“终端”里看 DSH 的完整输出。",
+    "copy_diag": "复制诊断信息",
+    "not_opened": "DSH 没能打开，在会话里打开它可以看到卡在哪一步"
   },
   "fb": {
     "tabs": "终端与文件",
@@ -1823,7 +1837,13 @@
       "cancel_wait": "不自动继续",
       "switch": "换个账号继续",
       "switch_hint": "用这台电脑上另一个 Claude Code 账号或接口接着这段对话，重新打开后自动发 continue",
-      "switched": "正在换成 {{name}}，打开后会自动发 continue"
+      "switched": "正在换成 {{name}}，打开后会自动发 continue",
+      "fail_oauth_org_not_allowed": "这个账号的 Claude 订阅用不了了（多半是到期或欠费）",
+      "fail_billing_error": "这个账号的付款或余额有问题，没法继续",
+      "fail_authentication_failed": "这个账号的登录失效了",
+      "fail_rate_limit": "额度用完了，这一轮停下了",
+      "fail_hint": "可以换这台电脑上另一个 Claude Code 账号或接口，接着这段对话继续。",
+      "add_account": "添加账号或接口"
     },
     "shells_unlisted_one": "还有 {{count}} 个后台命令在运行，但不在这段对话记录里（可能是子代理或 /clear 之前启动的），可以在终端里按 ↓ 查看",
     "shells_unlisted_other": "还有 {{count}} 个后台命令在运行，但不在这段对话记录里（可能是子代理或 /clear 之前启动的），可以在终端里按 ↓ 查看",
@@ -1909,7 +1929,14 @@
     "wt_no_owner": "不是看看或 Codex 开的",
     "wt_no_repo": "这个项目不是 Git 仓库，用不了工作树",
     "wt_created": "已在新工作树里开始：{{path}}",
-    "wt_chip": "工作树"
+    "wt_chip": "工作树",
+    "image_fit": "适应屏幕",
+    "image_actual": "原始大小",
+    "res_view": "查看大图",
+    "read_show_read": "看读到的内容",
+    "read_show_file": "预览整个文件",
+    "read_full": "全屏查看",
+    "read_image_gone": "图片已经不在了（可能被删掉或移走了）"
   },
   "board": {
     "title": "任务",
@@ -1982,7 +2009,9 @@
       "idle": "运行中",
       "paused": "后台运行中",
       "stopped": "已停止",
-      "error": "启动失败"
+      "error": "启动失败",
+      "done": "做完了",
+      "failed": "出错停下了"
     },
     "new_type": "新建 {{type}}",
     "remove_project": "从列表移除",
@@ -2429,7 +2458,8 @@
     "history_search": "搜以前输入过的话",
     "suggest": "采用推荐的下一句",
     "mode": "切换权限模式",
-    "stop": "停止（输入框为空时）"
+    "stop": "停止（输入框为空时）",
+    "settings": "打开设置"
   },
   "notify": {
     "hooks_title": "更多通知渠道",

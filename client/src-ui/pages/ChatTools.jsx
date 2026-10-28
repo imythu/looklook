@@ -8,6 +8,7 @@ import { useTranslation } from 'react-i18next';
 import { chatToMarkdown, copyText, exportName } from '../shared/chatCopy.js';
 import { isMod } from '../shared/hotkeys.js';
 import { CopyButton, Modal, useToast } from '../shared/ui.jsx';
+import { imeComposing } from '../shared/ime.js';
 
 /** 把一句话填进这个对话的输入框（输入框听 `ll-chat-fill:{id}`） */
 export const fillInput = (id, text) => window.dispatchEvent(new CustomEvent(`ll-chat-fill:${id}`, { detail: text }));
@@ -252,7 +253,7 @@ export function FindBar({ list, inner, more, deps, onClose }) {
         aria-label={t('chat.find_ph')}
         data-empty={empty ? '' : undefined}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') {
+          if (e.key === 'Enter' && !imeComposing(e)) {
             e.preventDefault();
             go(e.shiftKey ? -1 : 1);
           } else if (e.key === 'Escape') {

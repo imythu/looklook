@@ -15,6 +15,7 @@ import { isMod, keyLabel } from './hotkeys.js';
 import { useRouter } from './router.jsx';
 import { projectPath, sessionDir, sessionState, sessionTitle, useSessions } from './sessions.jsx';
 import { useToast } from './ui.jsx';
+import { imeComposing } from './ime.js';
 
 const ACTIONS = [
   { key: 'new', icon: Plus, label: 'sess.new', hint: 'mod+shift+O', run: (c) => c.ui.newSession() },
@@ -136,7 +137,7 @@ export default function QuickSwitch() {
     } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault();
       if (results.length) setAt((x) => (x + (e.key === 'ArrowUp' ? -1 : 1) + results.length) % results.length);
-    } else if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+    } else if (e.key === 'Enter' && !imeComposing(e)) {
       e.preventDefault();
       if (results[at]) go(results[at]);
     }

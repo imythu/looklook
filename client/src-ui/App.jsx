@@ -33,7 +33,7 @@ import PopMenu from './shared/PopMenu.jsx';
 import { sessionState, SessionsProvider, useSessions } from './shared/sessions.jsx';
 import { daysLeft, formatTime } from './shared/time.js';
 import { BrandMark, Button, Drawer, FoldNote, LangSwitch, Note, Skeleton, useConfirm, useToast } from './shared/ui.jsx';
-import { keyLabel } from './shared/hotkeys.js';
+import { isMod, keyLabel } from './shared/hotkeys.js';
 import { setLocale } from './shared/i18n.js';
 import QuickSwitch from './shared/QuickSwitch.jsx';
 import ShortcutsHelp from './shared/Shortcuts.jsx';
@@ -437,6 +437,7 @@ function ConsoleLayout({ path, stale, children }) {
   const { status } = useStatus();
   const devices = useDevices();
   const ui = useSessionUi();
+  const { navigate } = useRouter();
   const switcher = (devices.multi || devices.localOnly) && DEVICE_PAGES.includes(path);
   const [paneOpen, setPaneState] = useState(() => !readFlag(RAIL_KEY, false));
   const setPane = (v) => {
@@ -472,8 +473,24 @@ function ConsoleLayout({ path, stale, children }) {
         setPane(!paneRef.current);
       }
     };
+    // ⌘, / Ctrl+, 打开设置（Mac 桌面版由原生菜单发 `ll-menu`，见 src/desktop.rs 的 page_command）
+    const onSettings = (e) => {
+      if (!isMod(e, ',')) return;
+      e.preventDefault();
+      navigate('/settings');
+    };
+    const onMenu = (e) => {
+      if (e.detail === 'settings') navigate('/settings');
+      else if (e.detail === 'new_session') ui.newSession();
+    };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    window.addEventListener('keydown', onSettings);
+    window.addEventListener('ll-menu', onMenu);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      window.removeEventListener('keydown', onSettings);
+      window.removeEventListener('ll-menu', onMenu);
+    };
   }, [ui]);
   const wide = isWide(path);
   const sess = path.match(SESS)?.[1] ?? null;

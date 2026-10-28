@@ -8,12 +8,14 @@
 //! 能打开管理台的人才能走到这里（本机入口的访问码、远程入口的网关令牌），远程经 WebRTC 时
 //! Service Worker 做出来的响应设不了 Cookie，也照样能用。来源检查在这里做完，再把 `Host`、`Origin` 改成本机地址交给 DSH。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
+use std::time::Instant;
 
 use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use serde_json::{json, Value};
 
 use super::{api, assets, origin_matches, proxy, Access, App};
 
@@ -35,22 +37,150 @@ fn forget(id: &str) {
     cookies().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
 }
 
+// ---------------- 启动进度和诊断记录 ----------------
+//
+// 打不开时用户只看到“正在启动”，不知道卡在哪：每次启动 / 打开都按步骤记下来（界面上显示进度，
+// 出错时可以一键复制诊断信息反馈），同时写进客户端日志。只在内存里，每个 DSH 留最近一次。
+
+/// 步骤：检查安装 → 启动 → dsh 进程 → 端口监听 → 启动口令 → 登录 → 网页映射（外部打开）→ 打开浏览器
+pub(super) const STEPS: [&str; 8] = ["install", "start", "process", "listen", "token", "login", "tunnel", "open"];
+const LOG_LINES: usize = 200;
+
+#[derive(Default)]
+struct Progress {
+    /// `tab`（在会话标签里打开）/ `external`（在浏览器中打开）
+    flow: &'static str,
+    started: Option<Instant>,
+    started_at: String,
+    /// 步骤 → (wait / run / ok / fail / skip, 细节, 从开始到这一步结束的毫秒数)
+    steps: HashMap<&'static str, (&'static str, Option<String>, Option<u128>)>,
+    log: VecDeque<String>,
+    /// 出错时 dsh 终端里最后的输出
+    output: Option<String>,
+}
+
+fn progress() -> &'static Mutex<HashMap<String, Progress>> {
+    static P: OnceLock<Mutex<HashMap<String, Progress>>> = OnceLock::new();
+    P.get_or_init(Default::default)
+}
+
+fn with_progress<T>(id: &str, f: impl FnOnce(&mut Progress) -> T) -> T {
+    let mut m = progress().lock().unwrap_or_else(|e| e.into_inner());
+    f(m.entry(id.to_string()).or_default())
+}
+
+/// 开始一次新的启动 / 打开，清掉上次的记录
+pub(super) fn begin(id: &str, flow: &'static str) {
+    with_progress(id, |p| {
+        *p = Progress { flow, started: Some(Instant::now()), started_at: crate::util::now_rfc3339(), ..Default::default() };
+    });
+    note(id, &format!("开始（{flow}），客户端 {}，{} {}", env!("CARGO_PKG_VERSION"), std::env::consts::OS, std::env::consts::ARCH));
+}
+
+/// 记一行日志（同时写进客户端日志）
+pub(super) fn note(id: &str, msg: &str) {
+    tracing::info!(id, "DSH：{msg}");
+    with_progress(id, |p| {
+        let ms = p.started.map_or(0, |t| t.elapsed().as_millis());
+        p.log.push_back(format!("+{:>6}ms {msg}", ms));
+        while p.log.len() > LOG_LINES {
+            p.log.pop_front();
+        }
+    });
+}
+
+/// 某一步的状态：`run` / `ok` / `fail` / `skip`
+pub(super) fn step(id: &str, key: &'static str, state: &'static str, detail: Option<String>) {
+    let line = format!("[{key}] {state}{}", detail.as_deref().map(|d| format!("：{d}")).unwrap_or_default());
+    if state == "fail" {
+        tracing::warn!(id, "DSH：{line}");
+    }
+    with_progress(id, |p| {
+        let ms = (state != "run").then(|| p.started.map_or(0, |t| t.elapsed().as_millis()));
+        p.steps.insert(key, (state, detail, ms));
+    });
+    if state != "fail" {
+        note(id, &line);
+    } else {
+        with_progress(id, |p| {
+            let ms = p.started.map_or(0, |t| t.elapsed().as_millis());
+            p.log.push_back(format!("+{:>6}ms {line}", ms));
+        });
+    }
+}
+
+/// 出错了：记下 dsh 终端里最后的输出
+pub(super) async fn fail_with_output(app: &App, id: &str, key: &'static str, detail: String) {
+    step(id, key, "fail", Some(detail));
+    let out = app.instances.full_output(id).await.map(|o| tail(&o, 60));
+    with_progress(id, |p| p.output = out);
+}
+
+fn tail(text: &str, lines: usize) -> String {
+    let v: Vec<&str> = text.lines().collect();
+    v[v.len().saturating_sub(lines)..].join("\n")
+}
+
+/// `GET /instances/{id}/dsh/progress`：这次启动 / 打开的步骤、日志；`output` 是 dsh 终端里现在最后的输出
+pub(super) async fn progress_json(app: &App, id: &str) -> Value {
+    let live = app.instances.full_output(id).await.map(|o| tail(&o, 60));
+    with_progress(id, |p| {
+        let steps: Vec<Value> = STEPS
+            .iter()
+            .map(|k| match p.steps.get(k) {
+                Some((state, detail, ms)) => json!({ "key": k, "state": state, "detail": detail, "ms": ms }),
+                None => json!({ "key": k, "state": "wait" }),
+            })
+            .collect();
+        json!({
+            "flow": p.flow,
+            "started_at": p.started_at,
+            "elapsed_ms": p.started.map(|t| t.elapsed().as_millis()),
+            "steps": steps,
+            "log": p.log,
+            "failed_output": p.output,
+            "output": live,
+        })
+    })
+}
+
 /// 确保 DSH 在运行，拿到能用的 Cookie（等 dsh 启动完，最多 60 秒）。
 pub(super) async fn ensure(app: &App, id: &str, port: u16) -> Result<Option<String>, crate::error::LocalError> {
     let v = app.instances.get(id).await?;
-    // 任务退出了（例如 dsh 崩了）会重新运行
-    if !v.running || v.task_alive != Some(true) {
-        forget(id);
-        app.instances.start(id).await?;
+    let alive = v.running && v.task_alive == Some(true);
+    if alive {
+        if let Some(c) = cached(id) {
+            return Ok(Some(c));
+        }
     }
-    if let Some(c) = cached(id) {
-        return Ok(Some(c));
-    }
+    begin(id, "tab");
+    step(id, "install", "skip", None);
+    start(app, id, &v).await?;
     let login = api::dsh_login(app, id, port).await;
     if let Some(l) = &login {
         cookies().lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), l.cookie.clone());
     }
     Ok(login.map(|l| l.cookie))
+}
+
+/// 启动这一步：没在运行（或任务退出了，例如 dsh 崩了）就重新运行
+pub(super) async fn start(app: &App, id: &str, v: &crate::instances::View) -> Result<(), crate::error::LocalError> {
+    if v.running && v.task_alive == Some(true) {
+        step(id, "start", "ok", Some(format!("已在运行，端口 {}", v.web_port.unwrap_or(0))));
+        return Ok(());
+    }
+    forget(id);
+    step(id, "start", "run", Some(format!("running={} task_alive={:?}", v.running, v.task_alive)));
+    match app.instances.start(id).await {
+        Ok(_) => {
+            step(id, "start", "ok", Some(format!("已启动，端口 {}", v.web_port.unwrap_or(0))));
+            Ok(())
+        }
+        Err(e) => {
+            fail_with_output(app, id, "start", format!("{} {:?}", e.code, e.params)).await;
+            Err(e)
+        }
+    }
 }
 
 /// `/w/{id}/…`

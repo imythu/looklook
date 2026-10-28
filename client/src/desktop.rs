@@ -19,7 +19,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc as std_mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -337,6 +337,35 @@ fn on_menu(app: &AppHandle, event: MenuEvent) {
             }
         }
         "exit" | "quit" => app.exit(0),
+        id => page_command(app, id),
+    }
+}
+
+/// macOS 菜单里的常用快捷键（⌘, 设置、⌘N 新会话、⌘R 重新载入、⌘+ / ⌘- / ⌘0 缩放），作用在当前窗口上。
+/// 设置、新会话交给页面（`ll-menu` 事件，见 App.jsx）；页面载入、缩放在这里做。
+fn page_command(app: &AppHandle, id: &str) {
+    static ZOOM: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
+    let windows = app.webview_windows();
+    let Some((label, w)) = windows.iter().find(|(_, w)| w.is_focused().unwrap_or(false)).or_else(|| windows.iter().find(|(l, _)| l.as_str() == MAIN)) else { return };
+    let zoom = |f: &dyn Fn(f64) -> f64| {
+        let mut z = ZOOM.lock().unwrap_or_else(|e| e.into_inner());
+        let cur = z.iter().find(|(l, _)| l == label).map_or(1.0, |(_, v)| *v);
+        let next = (f(cur) * 10.0).round() / 10.0;
+        let next = next.clamp(0.5, 3.0);
+        z.retain(|(l, _)| l != label);
+        z.push((label.clone(), next));
+        let _ = w.set_zoom(next);
+    };
+    match id {
+        "settings" | "new_session" => {
+            let _ = w.eval(format!("window.dispatchEvent(new CustomEvent('ll-menu', {{ detail: '{id}' }}))"));
+        }
+        "reload" => {
+            let _ = w.eval("location.reload()");
+        }
+        "zoom_in" => zoom(&|z| z + 0.1),
+        "zoom_out" => zoom(&|z| z - 0.1),
+        "zoom_reset" => zoom(&|_| 1.0),
         _ => {}
     }
 }
@@ -390,10 +419,29 @@ fn mac_menu(app: &AppHandle) -> tauri::Result<Menu<Wry>> {
     use tauri::menu::SubmenuBuilder;
     // 自己的“退出”：走 app.exit 先停服务。编辑菜单不能省，否则网页里 ⌘C / ⌘V 不起作用。
     let quit = MenuItem::with_id(app, "quit", tr("退出看看", "Quit Looklook"), true, Some("CmdOrCtrl+Q"))?;
-    let main = SubmenuBuilder::new(app, tr("看看", "Looklook")).about(None).separator().hide().hide_others().show_all().separator().item(&quit).build()?;
+    // 常用快捷键（见 page_command）
+    let settings = MenuItem::with_id(app, "settings", tr("设置…", "Settings…"), true, Some("CmdOrCtrl+,"))?;
+    let new_session = MenuItem::with_id(app, "new_session", tr("新会话", "New Session"), true, Some("CmdOrCtrl+N"))?;
+    let reload = MenuItem::with_id(app, "reload", tr("重新载入", "Reload"), true, Some("CmdOrCtrl+R"))?;
+    let zoom_in = MenuItem::with_id(app, "zoom_in", tr("放大", "Zoom In"), true, Some("CmdOrCtrl+="))?;
+    let zoom_out = MenuItem::with_id(app, "zoom_out", tr("缩小", "Zoom Out"), true, Some("CmdOrCtrl+-"))?;
+    let zoom_reset = MenuItem::with_id(app, "zoom_reset", tr("实际大小", "Actual Size"), true, Some("CmdOrCtrl+0"))?;
+    let main = SubmenuBuilder::new(app, tr("看看", "Looklook"))
+        .about(None)
+        .separator()
+        .item(&settings)
+        .separator()
+        .hide()
+        .hide_others()
+        .show_all()
+        .separator()
+        .item(&quit)
+        .build()?;
+    let file = SubmenuBuilder::new(app, tr("文件", "File")).item(&new_session).separator().close_window().build()?;
     let edit = SubmenuBuilder::new(app, tr("编辑", "Edit")).undo().redo().separator().cut().copy().paste().select_all().build()?;
-    let view = SubmenuBuilder::new(app, tr("窗口", "Window")).minimize().maximize().separator().close_window().build()?;
-    Menu::with_items(app, &[&main, &edit, &view])
+    let view = SubmenuBuilder::new(app, tr("显示", "View")).item(&reload).separator().item(&zoom_reset).item(&zoom_in).item(&zoom_out).separator().fullscreen().build()?;
+    let window = SubmenuBuilder::new(app, tr("窗口", "Window")).minimize().maximize().build()?;
+    Menu::with_items(app, &[&main, &file, &edit, &view, &window])
 }
 
 /// 托盘事件桥到 tokio：管理“当前是否在跑服务”，Start/Stop 只是创建/取消一个

@@ -239,7 +239,7 @@ export async function openDsh(inst, t, toast) {
   if (window.__LOOKLOOK_DESKTOP__) {
     try {
       const r = await api.post(`/instances/${inst.id}/page?open=1`);
-      if (!r.opened) toast(t("dsh.starting"));
+      if (!r.opened) toast(t("dsh.not_opened"), "error");
     } catch (e) {
       toast(errorText(t, e), "error");
     }
@@ -251,7 +251,7 @@ export async function openDsh(inst, t, toast) {
     // 没有口令打开了也只是 DSH 的“需要认证”页
     if (!r.ready) {
       w?.close();
-      toast(t("dsh.starting"));
+      toast(t("dsh.not_opened"), "error");
     } else if (w) w.location.href = r.url;
     else window.open(r.url, "_blank", "noopener");
   } catch (e) {
@@ -263,8 +263,9 @@ export async function openDsh(inst, t, toast) {
 /**
  * 一个终端的各种操作（卡片、列表行、工作台侧栏共用）：打开、新窗口、停止、重启、删除……
  * onOpenHere(id)：在本页打开（电脑上进工作台，手机上整页打开）。
+ * onHide(id, on)：删除时先从列表里拿掉（不给时等删完再刷新）。
  */
-export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere }) {
+export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere, onHide }) {
   const { t } = useTranslation();
   const { status } = useStatus();
   const confirm = useConfirm();
@@ -351,10 +352,27 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
       confirm: t("action.delete"),
       danger: true,
     });
-    if (ok) act(() => api.del(`/instances/${inst.id}`), t("instance.deleted"));
+    if (!ok) return;
+    // 停掉程序、清理要几秒：先从列表里拿掉，不用看着它转圈；失败再放回来
+    if (!onHide) {
+      act(() => api.del(`/instances/${inst.id}`), t("instance.deleted"));
+      return;
+    }
+    onHide(inst.id, true);
+    try {
+      await api.del(`/instances/${inst.id}`);
+      toast(t("instance.deleted"));
+    } catch (e) {
+      onHide(inst.id, false);
+      toast(errorText(t, e), "error");
+    } finally {
+      onChanged();
+    }
   };
   // 复制终端：同一台电脑上照原样（启动方式、文件夹、shell、权限）新建一个并启动，然后在本页打开。
+  // 聊过的 Claude Code / Codex 会话连同对话一起复制（复制一份接着聊，原来的不动）。
   // 不复制开机自动运行，免得重启后一下子多跑一份；DSH 一台电脑只有一个，不能复制。
+  const conv = ["claude", "codex"].includes(inst.launch) && inst.chat?.turn && inst.chat?.session_id;
   const duplicate = async () => {
     const dev = terminalDevice(inst.id);
     const client = deviceApi(dev);
@@ -370,11 +388,14 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
         full_access: inst.full_access,
         root_confirmed: inst.root_confirmed,
         chat_ui: inst.chat_ui,
+        ...(conv ? { resume: { id: inst.chat.session_id, fork: true } } : {}),
         start: true,
       });
       if (dev && r.id) rememberTerminals(dev, [r]);
-      toast(t("instance.duplicated", { name: r.name }));
+      // 先刷新列表再打开：不然新会话还没在列表里，标签会先显示“会话不在了”
+      await onChanged();
       onOpenHere(r.id);
+      toast(t(conv ? "instance.duplicated_conv" : "instance.duplicated", { name: r.name }), "ok");
     } catch (e) {
       toast(errorText(t, e), "error");
     } finally {
@@ -387,7 +408,7 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
     full && dsh && { icon: ExternalLink, label: t("dsh.open_browser"), onClick: openPage, disabled: busy || !allowed },
     full && !dsh && { icon: ExternalLink, label: t("instance.new_window"), onClick: openTab, disabled: busy || !allowed },
     { icon: Pencil, label: t("instance.edit"), onClick: () => onEdit(inst) },
-    !dsh && { icon: CopyPlus, label: t("instance.duplicate"), onClick: duplicate, disabled: busy || !allowed },
+    !dsh && { icon: CopyPlus, label: t(conv ? "instance.duplicate_conv" : "instance.duplicate"), onClick: duplicate, disabled: busy || !allowed },
     inst.running && { icon: RotateCcw, label: t("instance.restart"), onClick: restart },
     full && live && { icon: Square, label: t("instance.stop"), onClick: stop, disabled: busy },
     { icon: FileText, label: t("instance.logs"), onClick: () => onLogs(inst) },

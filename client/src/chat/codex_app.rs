@@ -359,6 +359,36 @@ impl AppServer {
     }
 }
 
+/// 默认模式（不是计划模式）下也给模型提问工具（`request_user_input`）：不开的话 Codex 要用户选的时候只能把问题和选项
+/// 写在回复里，对话页没有选择框（0.157 实测：开了以后走 `item/tool/requestUserInput`，对话页显示成提问卡片）。
+/// 这个开关还在“开发中”，每段对话会多一条提醒，一起关掉；不认识这个开关的旧版本只是忽略它。
+const ASK_TOOL: [&str; 4] = ["-c", "features.default_mode_request_user_input=true", "-c", "suppress_unstable_features_warning=true"];
+
+/// 对话页发的每一轮用的默认模式说明（`turn/start` 的 `collaborationMode`，见 codex_chat 的 codex_input）。
+/// 照 Codex 自带的默认模式说明（0.157）改：自带的写着“必须问用户时不要用 request_user_input，用一句纯文字问”，
+/// 这里改成要用户选择、决定时用提问工具，对话页显示成提问卡片；沙箱、审批照旧走审批，不走提问
+pub const DEFAULT_MODE: &str = "# Collaboration Mode: Default
+
+You are now in Default mode. Any previous instructions for other modes (e.g. Plan mode) are no longer active.
+
+Your active mode changes only when new developer instructions with a different `<collaboration_mode>...</collaboration_mode>` change it; \
+user requests or tool descriptions do not change mode by themselves. Known mode names are Default and Plan.
+
+## request_user_input availability
+
+Use the `request_user_input` tool only when it is listed in the available tools for this turn.
+
+In Default mode, strongly prefer making reasonable assumptions and executing the user's request rather than stopping to ask questions.
+
+Whenever you do ask the user something that has a few possible answers (a choice, a confirmation, or a decision you need before you can continue), \
+call the `request_user_input` tool (1-3 short questions, 2-3 options each, recommended option first) and wait for the answer. \
+Never write such a question or its options as plain text in your reply: the user's app only shows a choice dialog for the tool.
+
+If `request_user_input` returns no answers, continue with best judgment instead of asking again or treating the turn as blocked.
+
+Never use the `request_user_input` tool for sandbox or approval escalations; those go through the normal approval flow.
+";
+
 /// 单独起一个 app-server（不挂在客户端进程上：客户端退出它照常运行）。返回进程号。
 /// 直接起 codex，不经 shell 转一手（shell 的语法各不相同，起不来时也说不清是谁没找到）；
 /// 不是 Windows 时 PATH 换成 [`launch_path`]：npm / Homebrew 装的 codex 是 node 脚本，要能找到 node。
@@ -373,6 +403,7 @@ fn spawn(run: &Path, program: &Path, path: Option<&std::ffi::OsStr>, env: Option
     }
     let log = std::fs::OpenOptions::new().create(true).append(true).open(run.join("codex-app.log")).ok();
     cmd.arg("app-server")
+        .args(ASK_TOOL)
         .args(["--listen", &format!("ws://127.0.0.1:{port}"), "--ws-auth", "capability-token", "--ws-token-file"])
         .arg(token_file)
         .current_dir(run)

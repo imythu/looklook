@@ -32,6 +32,10 @@ import {
   History,
   Hourglass,
   Image as ImageIcon,
+  Download,
+  Expand,
+  ZoomIn,
+  ZoomOut,
   Layers,
   ListTodo,
   LoaderCircle,
@@ -105,6 +109,8 @@ import { Button, CopyButton, useConfirm, useLoad, useToast } from '../shared/ui.
 import { KindIcon, profileName } from './ClaudeProfiles.jsx';
 import { FindBar, MessageSheet, OutlineTab, UserActs, fillInput, useChatKeys, useLongPress } from './ChatTools.jsx';
 import { LaunchIcon } from '../shared/brands.jsx';
+import { endpoints as fileEndpoints, Preview as FilePreview } from './FileBrowser.jsx';
+import { imeComposing } from '../shared/ime.js';
 
 // ---------------- 数据 ----------------
 
@@ -530,8 +536,7 @@ function ToolBody({ id, block, result }) {
         </>
       );
     case 'Read':
-      // 文件名在标题上（完整路径在提示里），这里只放读到的内容
-      return <ResultText id={id} result={result} />;
+      return <ReadBody id={id} block={block} result={result} />;
     case 'Edit':
     case 'MultiEdit':
     case 'Write':
@@ -570,6 +575,67 @@ function ToolBody({ id, block, result }) {
   }
 }
 
+const IMAGE_FILE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
+
+/**
+ * 读文件（Claude 的 Read；Codex 看图片也记成 Read）展开后：图片直接显示，点开看大图；
+ * 别的文件没有读到的文字时（Codex）直接内嵌预览，有的时候（Claude）先显示读到的那段，可以切到预览整个文件。
+ * 下面一行可以全屏查看（页面里的文件预览）。
+ */
+function ReadBody({ id, block, result }) {
+  const { t } = useT();
+  const { open: openFile, cwd } = useContext(PreviewCtx);
+  const path = block.input?.file_path && absPath(block.input.file_path, cwd);
+  const text = Boolean(result?.content?.trim());
+  const [whole, setWhole] = useState(!text);
+  if (!path) return <ResultText id={id} result={result} />;
+  const ep = fileEndpoints(id);
+  const image = IMAGE_FILE.test(path);
+  return (
+    <>
+      {image ? (
+        <ReadImage id={id} path={path} />
+      ) : whole ? (
+        <div className="chat-read-preview">
+          <FilePreview ep={ep} entry={{ name: fileName(path), path }} sep={pathSep(path)} onClose={() => (text ? setWhole(false) : openFile?.({ ep, path }))} />
+        </div>
+      ) : (
+        <ResultText id={id} result={result} />
+      )}
+      <div className="chat-read-acts">
+        {!image && text && (
+          <button type="button" className="chat-more" onClick={() => setWhole(!whole)}>
+            {whole ? t('chat.read_show_read') : t('chat.read_show_file')}
+          </button>
+        )}
+        {openFile && (
+          <button type="button" className="chat-more" onClick={() => openFile({ ep, path })}>
+            <Expand size={13} aria-hidden="true" /> {t('chat.read_full')}
+          </button>
+        )}
+      </div>
+    </>
+  );
+}
+
+/** 读到的图片：缩略图，点开看大图（能缩放、下载） */
+function ReadImage({ id, path }) {
+  const { t } = useT();
+  const url = `/instances/${id}/download?path=${encodeURIComponent(path)}`;
+  const src = useGenSrc(url);
+  const [big, setBig] = useState(false);
+  const [broken, setBroken] = useState(false);
+  if (broken) return <p className="chat-note">{t('chat.read_image_gone')}</p>;
+  return (
+    <>
+      <button type="button" className="chat-read-img" onClick={() => setBig(true)} disabled={!src} aria-label={t('chat.res_view')} title={path}>
+        {src ? <img src={src} alt={fileName(path)} loading="lazy" decoding="async" onError={() => setBroken(true)} /> : <LoaderCircle size={16} className="spin" aria-hidden="true" />}
+      </button>
+      {big && <Lightbox urls={[url]} names={[fileName(path)]} index={0} onIndex={() => {}} onClose={() => setBig(false)} />}
+    </>
+  );
+}
+
 /** 认不出的工具：参数一项一行（JSON 格式化、网址可点），被截断的参数可以取完整的；结果同样认出 JSON 和网址 */
 function OtherToolBody({ id, block, result }) {
   const { t } = useT();
@@ -599,17 +665,21 @@ const genFileUrl = (id, name, download) => `/instances/${id}/chat/file?name=${en
 function GenFigure({ id, name, caption }) {
   const { t } = useT();
   const src = useGenSrc(genFileUrl(id, name));
+  const [big, setBig] = useState(false);
   return (
     <figure className="chat-gen-fig">
-      <GenImage src={src} name={name} />
+      <button type="button" className="chat-gen-zoom" onClick={() => setBig(true)} disabled={!src} aria-label={t('chat.res_view')} title={t('chat.res_view')}>
+        <GenImage src={src} name={name} />
+      </button>
+      {big && <Lightbox urls={[genFileUrl(id, name)]} names={[name]} index={0} onIndex={() => {}} onClose={() => setBig(false)} />}
       <figcaption className="chat-gen-acts">
         <span className="chat-note ellipsis" title={caption || name}>
           {caption || name}
         </span>
         {src && (
-          <a className="btn btn-plain btn-sm" href={src} target="_blank" rel="noopener noreferrer">
-            {t('chat.res_open')}
-          </a>
+          <button type="button" className="btn btn-plain btn-sm" onClick={() => setBig(true)}>
+            {t('chat.res_view')}
+          </button>
         )}
         {plainLinksWork() && (
           <a className="btn btn-plain btn-sm" href={`/api${genFileUrl(id, name, true)}`} download={name}>
@@ -877,11 +947,15 @@ function UserThumb({ url, label, onOpen }) {
   );
 }
 
-/** 全屏看大图：点空白处、Esc 关闭；多张时左右切换（按钮、方向键、手机上左右滑） */
-function Lightbox({ urls, index, onIndex, onClose }) {
+/** 全屏看大图：点空白处、Esc 关闭；多张时左右切换（按钮、方向键、手机上左右滑）。
+ *  点图片放大到原始大小（可以拖动滚动看细节），再点回到适应屏幕；`names` 给了就显示文件名、能下载 */
+function Lightbox({ urls, names, index, onIndex, onClose }) {
   const { t } = useT();
   const src = useGenSrc(urls[index]);
+  const name = names?.[index];
   const many = urls.length > 1;
+  const [zoom, setZoom] = useState(false);
+  useEffect(() => setZoom(false), [index]);
   const go = (d) => onIndex((index + d + urls.length) % urls.length);
   const touch = useRef(null);
   useEffect(() => {
@@ -889,6 +963,7 @@ function Lightbox({ urls, index, onIndex, onClose }) {
       if (e.key === 'Escape') onClose();
       else if (many && e.key === 'ArrowLeft') go(-1);
       else if (many && e.key === 'ArrowRight') go(1);
+      else if (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '0') setZoom(e.key === '+' || e.key === '=');
       else return;
       e.preventDefault();
       e.stopPropagation();
@@ -898,20 +973,31 @@ function Lightbox({ urls, index, onIndex, onClose }) {
   });
   return createPortal(
     <div
-      className="chat-lightbox"
+      className={`chat-lightbox ${zoom ? 'zoomed' : ''}`}
       role="dialog"
       aria-modal="true"
-      aria-label={t('chat.image_n', { n: index + 1, total: urls.length })}
+      aria-label={name ?? t('chat.image_n', { n: index + 1, total: urls.length })}
       onClick={(e) => e.target === e.currentTarget && onClose()}
       onTouchStart={(e) => (touch.current = e.touches[0].clientX)}
       onTouchEnd={(e) => {
         const dx = e.changedTouches[0].clientX - (touch.current ?? 0);
-        if (many && Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
+        if (many && !zoom && Math.abs(dx) > 50) go(dx < 0 ? 1 : -1);
       }}
     >
       <div className="chat-lightbox-bar">
         {many && <span className="chat-lightbox-count">{index + 1} / {urls.length}</span>}
+        {name && <span className="chat-lightbox-name ellipsis" title={name}>{name}</span>}
         <span className="grow" />
+        {src && (
+          <button type="button" className="chat-lightbox-btn" onClick={() => setZoom(!zoom)} aria-pressed={zoom} aria-label={t(zoom ? 'chat.image_fit' : 'chat.image_actual')} title={t(zoom ? 'chat.image_fit' : 'chat.image_actual')}>
+            {zoom ? <ZoomOut size={18} /> : <ZoomIn size={18} />}
+          </button>
+        )}
+        {src && name && (
+          <a className="chat-lightbox-btn" href={src} download={name} aria-label={t('chat.res_download')} title={t('chat.res_download')}>
+            <Download size={18} />
+          </a>
+        )}
         {src && (
           <a className="chat-lightbox-btn" href={src} target="_blank" rel="noopener noreferrer" aria-label={t('chat.res_open')} title={t('chat.res_open')}>
             <ExternalLink size={18} />
@@ -921,7 +1007,13 @@ function Lightbox({ urls, index, onIndex, onClose }) {
           <X size={20} />
         </button>
       </div>
-      {src ? <img key={src} className="chat-lightbox-img" src={src} alt="" onClick={onClose} /> : <LoaderCircle size={28} className="spin chat-lightbox-wait" aria-hidden="true" />}
+      {src ? (
+        <div className="chat-lightbox-stage" onClick={(e) => e.target === e.currentTarget && onClose()}>
+          <img key={src} className="chat-lightbox-img" src={src} alt={name ?? ''} onClick={() => setZoom(!zoom)} />
+        </div>
+      ) : (
+        <LoaderCircle size={28} className="spin chat-lightbox-wait" aria-hidden="true" />
+      )}
       {many && (
         <>
           <button type="button" className="chat-lightbox-btn chat-lightbox-nav prev" onClick={() => go(-1)} aria-label={t('chat.image_prev')}>
@@ -935,6 +1027,79 @@ function Lightbox({ urls, index, onIndex, onClose }) {
     </div>,
     document.body,
   );
+}
+
+/** 链接地址 → 预览用的接口和文件路径：`/api/instances/{id}/preview|download?path=`（对话里提到的文件）、
+ *  `/api/instances/{id}/chat/artifact?path=`（Codex 产出的文件） */
+function previewTarget(href) {
+  let u;
+  try {
+    u = new URL(href, window.location.origin);
+  } catch {
+    return null;
+  }
+  if (u.origin !== window.location.origin) return null;
+  const m = u.pathname.match(/^\/api\/instances\/([^/]+)\/(preview|download|chat\/artifact)$/);
+  const path = u.searchParams.get('path');
+  if (!m || !path) return null;
+  const id = decodeURIComponent(m[1]);
+  if (m[2] !== 'chat/artifact') return { ep: fileEndpoints(id), path };
+  const art = (p, dl) => `/instances/${id}/chat/artifact?path=${encodeURIComponent(p)}${dl ? '&download=1' : ''}`;
+  return { ep: { preview: (p) => art(p), download: (p) => art(p, true), plain: plainLinksWork() }, path };
+}
+
+/** 路径用的分隔符、文件名（Windows 路径里只有反斜杠） */
+const pathSep = (path) => (path.includes('\\') && !path.includes('/') ? '\\' : '/');
+const fileName = (path) => path.split(/[\\/]/).pop() || path;
+
+/** 打开页面里的文件预览：`open({ ep, path })`；`cwd` 是对话所在的目录，补全相对路径（ChatView 提供，读文件的卡片用） */
+const PreviewCtx = createContext({ open: null, cwd: null });
+
+/** 相对路径按对话所在的目录补全 */
+function absPath(path, cwd) {
+  if (!cwd || /^([\\/]|[A-Za-z]:[\\/]|~)/.test(path)) return path;
+  const sep = pathSep(cwd);
+  return `${cwd.replace(/[\\/]+$/, '')}${sep}${path.replace(/^\.[\\/]/, '')}`;
+}
+
+function FileViewer({ target, onClose }) {
+  const { path, ep } = target;
+  const sep = pathSep(path);
+  const name = fileName(path);
+  useEffect(() => {
+    const key = (e) => {
+      if (e.key !== 'Escape') return;
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    };
+    window.addEventListener('keydown', key, true);
+    return () => window.removeEventListener('keydown', key, true);
+  }, [onClose]);
+  return createPortal(
+    <div className="chat-file-viewer" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.target === e.currentTarget && onClose()}>
+      <FilePreview key={path} ep={ep} entry={{ name, path }} sep={sep} onClose={onClose} />
+    </div>,
+    document.body,
+  );
+}
+
+/** 对话里点到的这台电脑上的文件：在页面里预览（和“文件”页同一个预览），不用跳到新标签页或者直接下载。
+ *  按着 Ctrl / ⌘ / Shift 点、或者中键点，照旧按链接本来的方式打开 */
+function usePreviewLinks() {
+  const [target, setTarget] = useState(null);
+  const onClick = useCallback((e) => {
+    if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    const a = e.target.closest?.('a[href]');
+    if (!a) return;
+    const tgt = previewTarget(a.getAttribute('href'));
+    if (!tgt) return;
+    e.preventDefault();
+    setTarget(tgt);
+  }, []);
+  const close = useCallback(() => setTarget(null), []);
+  const viewer = target && <FileViewer target={target} onClose={close} />;
+  return { onClick, open: setTarget, viewer };
 }
 
 /** 不是 assistant 回复的条目（用户消息、单独的工具结果、分隔线、提示……） */
@@ -995,7 +1160,7 @@ function useEnterKey(active, onEnter) {
   useEffect(() => {
     if (!active) return undefined;
     const on = (e) => {
-      if (e.key !== 'Enter' || e.shiftKey || e.isComposing) return;
+      if (e.key !== 'Enter' || e.shiftKey || imeComposing(e)) return;
       const el = document.activeElement;
       if (el && (el.closest('input, textarea, select, button, [contenteditable="true"]') || el.isContentEditable)) return;
       e.preventDefault();
@@ -1443,8 +1608,29 @@ function LimitWait({ id, waiting }) {
   );
 }
 
-/** 额度用完时“换个账号继续”：这台电脑上另外的 Claude Code 账号 / 接口，选了就用它接着同一段对话、发 continue */
-function SwitchProfile({ id }) {
+/** 这一轮因为账号的问题停了（StopFailure 的 error）：订阅到期 / 欠费、登录失效、余额不足、额度用完后没在等 */
+const ACCOUNT_ERRORS = ['oauth_org_not_allowed', 'billing_error', 'authentication_failed', 'rate_limit'];
+
+/** 账号用不了、这一轮停下了：输入框上面一张卡片，可以换个账号接着这段对话 */
+function AccountFail({ id, error }) {
+  const { t } = useT();
+  return (
+    <div className="chat-limit is-stopped" role="status">
+      <span className="chat-limit-head">
+        <TriangleAlert size={15} aria-hidden="true" />
+        {t(`chat.limit.fail_${error}`)}
+      </span>
+      <p className="chat-note">{t('chat.limit.fail_hint')}</p>
+      <div className="chat-acts">
+        <SwitchProfile id={id} manage />
+      </div>
+    </div>
+  );
+}
+
+/** 额度用完时“换个账号继续”：这台电脑上另外的 Claude Code 账号 / 接口，选了就用它接着同一段对话、发 continue。
+ *  `manage`：没有别的账号时也给一个去添加账号的按钮 */
+function SwitchProfile({ id, manage }) {
   const { t } = useT();
   const { navigate } = useRouter();
   const toast = useToast();
@@ -1456,7 +1642,13 @@ function SwitchProfile({ id }) {
   if (inst.container) return null;
   const cur = inst.claude_profile ?? def;
   const others = profiles.filter((p) => p.id !== cur);
-  if (!others.length) return null;
+  if (!others.length) {
+    return manage ? (
+      <Button variant="ghost" onClick={() => navigate('/settings#claude-accounts')}>
+        <UserRound size={15} aria-hidden="true" /> {t('chat.limit.add_account')}
+      </Button>
+    ) : null;
+  }
   const pick = async (p) => {
     setBusy(true);
     try {
@@ -1757,7 +1949,7 @@ function InputsMenu({ all, onPick, onClose }) {
     box.current?.querySelector('[aria-selected="true"]')?.scrollIntoView({ block: 'nearest' });
   }, [pick]);
   const onKey = (e) => {
-    if (e.nativeEvent.isComposing) return;
+    if (imeComposing(e)) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (e.key === 'r' && e.ctrlKey)) {
       // Ctrl+R 再按一下：往更早的找（像命令行）
       e.preventDefault();
@@ -2283,13 +2475,13 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
       // 像命令行：Ctrl+R 搜以前说过的话
       e.preventDefault();
       setMenu('inputs');
-    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !slash.length && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !e.nativeEvent.isComposing && recall(e.key === 'ArrowUp' ? 1 : -1, e.currentTarget)) {
+    } else if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && !slash.length && !e.shiftKey && !e.altKey && !e.ctrlKey && !e.metaKey && !imeComposing(e) && recall(e.key === 'ArrowUp' ? 1 : -1, e.currentTarget)) {
       e.preventDefault();
-    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.nativeEvent.isComposing && canNow) {
+    } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !imeComposing(e) && canNow) {
       // 和 Claude Code 一样：Ctrl+Enter 立即发送
       e.preventDefault();
       send(true);
-    } else if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && !touch) {
+    } else if (e.key === 'Enter' && !e.shiftKey && !imeComposing(e) && !touch) {
       e.preventDefault();
       if (slash.length && slashPick != null) {
         pickSlash(slash[slashPick]);
@@ -3562,6 +3754,11 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   const { data: usage } = usePoll(`/instances/${id}/chat/usage`, { enabled: caps?.usage !== false && status != null, deps: [status?.actual_model, status?.context] });
   // 产出的文件：对话有新条目时重新取（只有 Codex 有）
   const { data: arts } = usePoll(`/instances/${id}/chat/artifacts`, { enabled: agentId === 'codex' && status != null, deps: [items.length] });
+  // 对话里、资源栏里点到的文件在页面里预览
+  const files = usePreviewLinks();
+  const knownDir = useSessions()?.known(id)?.workdir;
+  const cwd = status?.cwd ?? knownDir ?? null;
+  const previewCtx = useMemo(() => ({ open: files.open, cwd }), [files.open, cwd]);
   const artifactCtx = useMemo(() => {
     const list = arts?.items ?? [];
     const links = {};
@@ -3630,7 +3827,9 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   return (
     <AgentCtx.Provider value={agentCtx}>
       <ArtifactCtx.Provider value={artifactCtx}>
-    <div className="chat-view" data-side={side ? '' : undefined} data-agent={agentId}>
+      <PreviewCtx.Provider value={previewCtx}>
+    <div className="chat-view" data-side={side ? '' : undefined} data-agent={agentId} onClick={files.onClick}>
+      {files.viewer}
       <div className="chat-col">
         <div className="chat-main">
           {finding && <FindBar list={list} inner={inner} more={chat.start > 0} deps={[items, side]} onClose={() => setFinding(false)} />}
@@ -3705,6 +3904,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           {/* 第一句在等它起来：上面已经写着“正在启动”，这里不再说一遍 */}
           {phase === 'detached' && !first && <Detached id={id} status={status} />}
           {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
+          {agentId === 'claude' && phase === 'idle' && !status?.limit?.waiting && ACCOUNT_ERRORS.includes(status?.error) && <AccountFail id={id} error={status.error} />}
           {agentId === 'codex' && status != null && <CodexSetup id={id} phase={phase} onTab={onTab} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
           <Composer id={id} active={active} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
@@ -3712,6 +3912,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
       </div>
       {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} outline={{ list, inner, agent: agentName, title, more: chat.start > 0 }} />}
     </div>
+      </PreviewCtx.Provider>
       </ArtifactCtx.Provider>
     </AgentCtx.Provider>
   );

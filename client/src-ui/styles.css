@@ -14,6 +14,7 @@
   --danger: #d9364f;
   --danger-soft: #fdecef;
   --ok: #12a150;
+  --info: #2f7bea;
   --ok-soft: #e6f6ed;
   --warn: #b7791f;
   --warn-soft: #fdf4e3;
@@ -39,6 +40,7 @@
     --danger: #f06a7e;
     --danger-soft: #3a1c23;
     --ok: #3ccf7c;
+    --info: #5ea2ff;
     --ok-soft: #173024;
     --warn: #e0a846;
     --warn-soft: #362a15;
@@ -1848,6 +1850,8 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .sdot { flex: none; width: 8px; height: 8px; border-radius: 50%; }
 .sdot-idle { background: var(--ok); }
 .sdot-error { background: var(--danger); }
+.sdot-done { background: var(--info); }
+.sdot-failed { background: var(--danger); }
 .sdot-paused { background: var(--warn); opacity: .6; }
 .sdot-stopped { box-shadow: inset 0 0 0 1.5px var(--muted); opacity: .55; }
 .sdot-attn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
@@ -2506,6 +2510,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-limit { display: flex; flex-direction: column; gap: 4px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line)); border-radius: 14px; background: color-mix(in srgb, var(--warn) 9%, var(--panel)); animation: rise .3s cubic-bezier(.2, .8, .2, 1) both; }
 .chat-limit-head { display: flex; align-items: center; gap: 6px; font-weight: 600; color: var(--text); }
 .chat-limit-head svg { flex: none; color: var(--warn); animation: chat-hourglass 2.4s ease-in-out infinite; }
+.chat-limit.is-stopped .chat-limit-head svg { animation: none; }
 @keyframes chat-hourglass { 0%, 40% { transform: rotate(0); } 60%, 100% { transform: rotate(180deg); } }
 .chat-limit-when { display: flex; flex-direction: column; gap: 2px; font-size: 13px; color: var(--muted); }
 .chat-limit .chat-acts { justify-content: flex-end; }
@@ -2970,3 +2975,39 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .macf-list li { display: flex; align-items: center; gap: 8px; font-size: 14px; }
 .macf-list .ok { color: var(--ok, #16a34a); }
 .macf-list .bad { color: var(--danger); }
+
+/* DSH 启动进度（WebPane 的 DshProgress） */
+.dsh-progress { margin-top: 14px; display: grid; gap: 8px; text-align: left; max-width: min(520px, 92vw); font-size: 13px; }
+.dsh-progress ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.dsh-progress li { display: grid; grid-template-columns: 16px 1fr auto; align-items: center; column-gap: 8px; color: var(--term-muted, #8a91a3); }
+.dsh-progress li[data-state="ok"], .dsh-progress li[data-state="run"] { color: var(--term-fg, #c5cad6); }
+.dsh-progress li[data-state="ok"] svg { color: var(--ok, #3fb37f); }
+.dsh-progress li[data-state="fail"] { color: var(--danger, #e5484d); }
+.dsh-progress li small { grid-column: 2 / -1; overflow-wrap: anywhere; opacity: .85; }
+.dsh-progress-hint { margin: 0; color: var(--term-muted, #8a91a3); }
+.dsh-progress-acts { display: flex; justify-content: flex-start; }
+.dsh-progress details summary { cursor: pointer; color: var(--term-muted, #8a91a3); }
+.dsh-progress pre { margin: 6px 0 0; max-height: 220px; overflow: auto; padding: 8px; border-radius: 8px; background: rgba(127,127,127,.12); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 对话里点到的文件：页面里预览（ChatView 的 FileViewer，里面是“文件”页的预览） */
+.chat-file-viewer { position: fixed; inset: 0; z-index: 95; display: grid; place-items: center; padding: max(16px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(16px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); background: rgba(8, 10, 16, .55); animation: fade .15s; }
+.chat-file-viewer .fb-preview { width: min(960px, 100%); height: min(86vh, 100%); flex: none; border: 1px solid var(--line); border-radius: 14px; overflow: hidden; box-shadow: 0 24px 70px rgba(0, 0, 0, .35); animation: lightbox-in .18s ease-out; }
+@media (max-width: 640px) { .chat-file-viewer { padding: 0; } .chat-file-viewer .fb-preview { width: 100%; height: 100%; border-radius: 0; border: 0; } }
+/* 大图：适应屏幕 / 原始大小（可以滚动） */
+.chat-lightbox-name { min-width: 0; font-size: 14px; color: rgba(255, 255, 255, .85); }
+.chat-lightbox-stage { position: absolute; inset: calc(56px + env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); display: grid; place-items: center; overflow: hidden; }
+.chat-lightbox-stage .chat-lightbox-img { cursor: zoom-in; }
+.chat-lightbox.zoomed .chat-lightbox-stage { overflow: auto; place-items: start center; touch-action: pan-x pan-y; }
+.chat-lightbox.zoomed .chat-lightbox-img { max-width: none; max-height: none; cursor: zoom-out; }
+.chat-gen-zoom { display: block; width: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.chat-gen-zoom:disabled { cursor: default; }
+
+/* 读文件的工具卡片展开后：图片缩略图、内嵌的文件预览（ChatView 的 ReadBody） */
+.chat-read-img { display: block; max-width: 100%; padding: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: repeating-conic-gradient(var(--panel-2) 0 25%, transparent 0 50%) 0 0 / 16px 16px; cursor: zoom-in; min-width: 64px; min-height: 48px; }
+.chat-read-img img { display: block; max-width: 100%; max-height: 260px; object-fit: contain; }
+.chat-read-img:disabled { cursor: default; display: grid; place-items: center; color: var(--muted); }
+.chat-read-preview { display: flex; height: min(420px, 60vh); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.chat-read-preview .fb-preview { flex: 1; border-left: 0; }
+.chat-read-preview .fb-preview-body img { max-height: 360px; object-fit: contain; }
+.chat-read-acts { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
+.chat-read-acts .chat-more { display: inline-flex; align-items: center; gap: 4px; }

@@ -21,7 +21,7 @@ const PREVIEW_MAX = 1024 * 1024; // 与 transfer::PREVIEW_MAX 一致
 const ACTIVE = ['queued', 'uploading', 'retrying'];
 
 /** 终端标签（id）或“文件”页（无 id）用的接口地址。 */
-function endpoints(id) {
+export function endpoints(id) {
   const q = (path) => `?path=${encodeURIComponent(path)}`;
   return id
     ? { list: (path, hidden) => `/instances/${id}/fs${q(path)}&hidden=${hidden ? 1 : 0}`, preview: (p) => `/instances/${id}/preview${q(p)}`, download: (p) => `/instances/${id}/download${q(p)}`, plain: true }
@@ -93,7 +93,8 @@ function DownloadLink({ ep, entry, size = 15 }) {
   );
 }
 
-function Preview({ ep, entry, onClose, onInsert, sep }) {
+/** 一个文件的预览（“文件”页右边；对话页里点到的文件也用它，见 ChatView 的 FileViewer） */
+export function Preview({ ep, entry, onClose, onInsert, sep }) {
   const { t } = useTranslation();
   const [state, setState] = useState({ loading: true });
   const [wrap, setWrap] = useState(true);

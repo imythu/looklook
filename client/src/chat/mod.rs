@@ -1125,6 +1125,8 @@ impl Chat {
             "turn": turn,
             "limit": (st.limit_wait.is_some() || st.limit_auto_at.is_some()).then(|| json!({ "waiting": st.limit_wait, "auto_at": st.limit_auto_at })),
             "seen_at": st.board.seen_at,
+            // 复制会话时复制这段对话（`resume.fork`）
+            "session_id": st.binding.as_ref().map(|b| &b.session_id),
             // 有人正开着这个会话（会话页可见且有焦点）：不发通知
             "watched": st.active_until > crate::util::system_ms(),
         }))
@@ -2557,7 +2559,7 @@ fn exe_stem(name: &str) -> &str {
 }
 
 /// 面板前台是 shell：claude 没在运行。
-fn is_shell(command: &str) -> bool {
+pub(crate) fn is_shell(command: &str) -> bool {
     let name = command.rsplit(['/', '\\']).next().unwrap_or("").trim_start_matches('-').to_ascii_lowercase();
     let name = name.strip_suffix(".exe").unwrap_or(&name);
     matches!(name, "bash" | "zsh" | "fish" | "sh" | "dash" | "ksh" | "mksh" | "tcsh" | "csh" | "nu" | "pwsh" | "powershell" | "cmd" | "login" | "")
