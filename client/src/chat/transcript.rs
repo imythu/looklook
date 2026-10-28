@@ -543,13 +543,24 @@ impl Transcript {
             }
             Some("popAll" | "clear") => self.queue.clear(),
             _ => {
-                if let Some(n) = text.and_then(|t| self.queue.iter().position(|q| q == t)) {
+                if let Some(n) = text.and_then(|t| self.queue.iter().position(|q| same_queued(q, t))) {
                     self.queue.remove(n);
                 }
             }
         }
-        self.queued = self.queue.iter().filter(|s| !s.contains("<task-notification>") && !s.trim().is_empty()).cloned().collect();
+        // 后台任务通知、别的会话发来的消息（`<cross-session-message>`）不是用户发的，并进对话时也不显示
+        self.queued = self.queue.iter().filter(|s| !s.contains("<task-notification>") && !s.starts_with("<cross-session-message") && !s.trim().is_empty()).cloned().collect();
     }
+}
+
+/// 队列里的同一条消息：别的会话发来的，`enqueue` 时开头标签带 `hop-chain="…"`，`remove` 时不带（Claude Code 2.1.3xx 实测），去掉再比
+fn same_queued(a: &str, b: &str) -> bool {
+    fn strip(s: &str) -> std::borrow::Cow<'_, str> {
+        let Some(i) = s.starts_with("<cross-session-message").then(|| s.find(" hop-chain=\"")).flatten() else { return s.into() };
+        let Some(j) = s[i + 12..].find('"').map(|j| i + 12 + j + 1) else { return s.into() };
+        format!("{}{}", &s[..i], &s[j..]).into()
+    }
+    a == b || strip(a) == strip(b)
 }
 
 /// 运行中发的消息并进对话时的附件（`attachment.type = queued_command`）：显示成用户消息。
@@ -875,6 +886,13 @@ mod tests {
         assert_eq!(t.queued, ["马上看这个"], "先取走的是通知");
         t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
         assert!(t.queued.is_empty());
+        // 别的会话发来的消息不显示；enqueue 带 hop-chain、remove 不带，也要删掉，不然一直占着队列
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"uds:/tmp/a.sock\" hop-chain=\"7a98\" from-name=\"x\">\nhi\n</cross-session-message>"})).as_bytes());
+        t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"再看看"})).as_bytes());
+        assert_eq!(t.queued, ["再看看"]);
+        t.feed(line(json!({"type":"queue-operation","operation":"remove","content":"<cross-session-message from=\"uds:/tmp/a.sock\" from-name=\"x\">\nhi\n</cross-session-message>"})).as_bytes());
+        t.feed(line(json!({"type":"queue-operation","operation":"dequeue"})).as_bytes());
+        assert!(t.queued.is_empty(), "取走的是“再看看”，不是没删掉的跨会话消息");
         // 按上键拿回去编辑：队列清空
         t.feed(line(json!({"type":"queue-operation","operation":"enqueue","content":"x"})).as_bytes());
         t.feed(line(json!({"type":"queue-operation","operation":"popAll"})).as_bytes());
