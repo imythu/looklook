@@ -1061,6 +1061,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 /* 跳到页面里的卡片（#relays）时不被吸顶的顶栏挡住 */
 .anchor { scroll-margin-top: 76px; }
 .relay-hint .btn-ghost { white-space: nowrap; }
+.relay-rules { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0 8px; }
+.relay-rules pre { flex: 1; min-width: 0; margin: 0; }
 .latency { font-size: 13px; font-weight: 600; white-space: nowrap; }
 .latency-fast { color: var(--ok); }
 .latency-ok { color: var(--warn); }

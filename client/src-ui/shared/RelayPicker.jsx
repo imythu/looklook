@@ -1,14 +1,14 @@
 // 远程线路（在“设置”里）：默认自动选——这台电脑在后台定期测速，自动用延迟最低的一条；
 // 列出每条线路测到的延迟，用户可以自己选一条，平台记住选择。
 // RelayHint：后台测到当前线路偏慢、有快得多的线路时，在页面顶部给一条可关掉的提示，告诉用户去哪里换。
-import { Gauge, RefreshCw, X } from 'lucide-react';
+import { Gauge, RefreshCw, Route, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { api } from './api.js';
 import { Link, useRouter } from './router.jsx';
-import { Button, Card, ErrorNote, Note, Skeleton, useAction, useLoad, useToast } from './ui.jsx';
+import { Button, Card, CopyButton, ErrorNote, FoldNote, Note, Skeleton, useAction, useLoad, useToast } from './ui.jsx';
 
 export const RELAYS_ANCHOR = 'relays';
 const HINT_KEY = 'looklook.relay-hint';
@@ -19,6 +19,42 @@ const AUTO = '';
 function speed(ms) {
   if (ms == null) return null;
   return ms < 80 ? 'fast' : ms < 200 ? 'ok' : 'slow';
+}
+
+/** 让线路直连的代理规则（Clash / mihomo 格式）：线路是域名就放行它的上级域名（r3.looklook.dev → looklook.dev），是 IP 就放行这个 IP。 */
+export function directRules(items) {
+  const rules = new Set();
+  for (const i of items) {
+    const host = i.stun?.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
+    if (!host) continue;
+    if (/^[\d.]+$/.test(host)) rules.add(`IP-CIDR,${host}/32,DIRECT,no-resolve`);
+    else if (host.includes(':')) rules.add(`IP-CIDR6,${host}/128,DIRECT,no-resolve`);
+    else {
+      const parent = host.split('.').slice(1).join('.');
+      rules.add(`DOMAIN-SUFFIX,${parent.includes('.') ? parent : host},DIRECT`);
+    }
+  }
+  return [...rules];
+}
+
+/** 开着代理软件（TUN / 全局）时线路的 UDP 会被代理接走，远程变慢或连不上：折叠成一行，点开才看怎么配。 */
+function ProxyTip({ items }) {
+  const { t } = useTranslation();
+  const rules = directRules(items);
+  if (rules.length === 0) return null;
+  const text = rules.map((r) => `- ${r}`).join('\n');
+  return (
+    <FoldNote icon={Route} summary={t('relays.proxy.summary')}>
+      <p>{t('relays.proxy.why')}</p>
+      <p>{t('relays.proxy.clash')}</p>
+      <div className="relay-rules">
+        <pre className="relay-detail mono small">{text}</pre>
+        <CopyButton text={text} />
+      </div>
+      <p>{t('relays.proxy.others')}</p>
+      <p className="muted">{t('relays.proxy.reload')}</p>
+    </FoldNote>
+  );
 }
 
 function Latency({ item }) {
@@ -102,6 +138,7 @@ export default function RelayPicker() {
           {data.items.length === 0 && <p className="muted small">{t('relays.none')}</p>}
         </div>
       )}
+      {data && <ProxyTip items={data.items} />}
       <p className="muted small">{t('relays.latency_explain')}</p>
       <p className="muted small">{t('relays.switch_note')}</p>
     </Card>

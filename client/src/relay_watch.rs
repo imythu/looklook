@@ -31,6 +31,8 @@ pub const SLOW_MS: u32 = 150;
 pub struct Item {
     pub name: String,
     pub address: Option<String>,
+    /// 测速用的 STUN 地址（`主机:端口`）：界面据此告诉开着代理软件的用户该让哪些地址直连
+    pub stun: Option<String>,
     pub latency_ms: Option<u32>,
     pub error: Option<String>,
 }
@@ -76,7 +78,7 @@ pub async fn measure(account: &Account) -> crate::platform::PResult<Check> {
                 Ok(ms) => (Some(ms), None),
                 Err(e) => (None, Some(e)),
             };
-            Item { name: i.name.clone(), address: i.address.clone(), latency_ms, error }
+            Item { name: i.name.clone(), address: i.address.clone(), stun: i.stun.clone(), latency_ms, error }
         })
         .collect();
     Ok(conclude(items, list.preferred, list.current, list.auto_picked, crate::util::system_ms()))
@@ -231,7 +233,7 @@ mod tests {
     use super::*;
 
     fn item(name: &str, ms: Option<u32>) -> Item {
-        Item { name: name.into(), address: None, latency_ms: ms, error: ms.is_none().then(|| "timeout".into()) }
+        Item { name: name.into(), address: None, stun: None, latency_ms: ms, error: ms.is_none().then(|| "timeout".into()) }
     }
 
     #[test]
