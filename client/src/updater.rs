@@ -641,17 +641,22 @@ fn replace_bundle(app: &Path, root: &Path) -> std::io::Result<()> {
     let _ = remove_any(&tmp);
     let _ = remove_any(&backup);
     // 下载目录和应用程序文件夹一般在同一个卷上，直接挪；不在时复制
-    if std::fs::rename(app, &tmp).is_err() {
+    let moved = std::fs::rename(app, &tmp).is_ok();
+    if !moved {
         copy_tree(app, &tmp).inspect_err(|_| {
             let _ = remove_any(&tmp);
         })?;
     }
-    std::fs::rename(root, &backup).inspect_err(|_| {
-        let _ = remove_any(&tmp);
-    })?;
+    // 失败时挪走的新包放回原处：压缩包里 looklook/ 的随包文件是指向它的链接，退回替换文件时还要用
+    let undo = || {
+        if !moved || std::fs::rename(&tmp, app).is_err() {
+            let _ = remove_any(&tmp);
+        }
+    };
+    std::fs::rename(root, &backup).inspect_err(|_| undo())?;
     if let Err(e) = std::fs::rename(&tmp, root) {
         let _ = std::fs::rename(&backup, root);
-        let _ = remove_any(&tmp);
+        undo();
         return Err(e);
     }
     let _ = remove_any(&backup);
@@ -975,5 +980,45 @@ mod tests {
         assert!(ok);
         extract(&archive, &tmp.path().join("out")).unwrap();
         assert_eq!(std::fs::read_to_string(tmp.path().join("out/looklook/looklook")).unwrap(), "bin");
+    }
+
+    /// macOS 压缩包里 looklook/ 的随包文件是指向 Looklook.app 的链接（scripts/package.sh）：替换文件时复制真文件。
+    #[cfg(unix)]
+    #[test]
+    fn apply_follows_links_into_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let res = tmp.path().join("pkg/Looklook.app/Contents/Resources");
+        std::fs::create_dir_all(res.join("fonts")).unwrap();
+        std::fs::write(res.join("fonts/a.woff2"), "font").unwrap();
+        std::fs::write(res.join(crate::paths::TERM_EXE), "term").unwrap();
+        let src = tmp.path().join("pkg/looklook");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("looklook"), "bin").unwrap();
+        for n in ["fonts", crate::paths::TERM_EXE] {
+            std::os::unix::fs::symlink(format!("../Looklook.app/Contents/Resources/{n}"), src.join(n)).unwrap();
+        }
+        assert!(src.join(crate::paths::TERM_EXE).is_file());
+        let dir = tmp.path().join("app");
+        std::fs::create_dir_all(&dir).unwrap();
+        apply(&src, &dir).unwrap();
+        for (p, want) in [("fonts/a.woff2", "font"), (crate::paths::TERM_EXE, "term"), ("looklook", "bin")] {
+            assert!(!std::fs::symlink_metadata(dir.join(p)).unwrap().is_symlink(), "{p}");
+            assert_eq!(std::fs::read_to_string(dir.join(p)).unwrap(), want);
+        }
+    }
+
+    /// 整个替换应用包失败时，新包放回原处（退回替换文件时还要用到它）
+    #[test]
+    fn replace_bundle_failure_keeps_new_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("staged/Looklook.app");
+        std::fs::create_dir_all(app.join("Contents")).unwrap();
+        std::fs::write(app.join("Contents/x"), "new").unwrap();
+        // 旧应用包不存在：把它改名备份这一步失败
+        let root = tmp.path().join("Applications/Looklook.app");
+        std::fs::create_dir_all(root.parent().unwrap()).unwrap();
+        assert!(replace_bundle(&app, &root).is_err());
+        assert_eq!(std::fs::read_to_string(app.join("Contents/x")).unwrap(), "new");
+        assert!(!tmp.path().join("Applications/.Looklook.app.new").exists());
     }
 }

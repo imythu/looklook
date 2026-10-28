@@ -19,11 +19,12 @@ mkdir -p "$APP" "$HOME/Library/LaunchAgents"
 rm -rf "$APP/fonts"
 # 终端服务以前叫 ttyd，现在是 looklook-term：删掉旧文件（还在运行的旧进程由新版启动时清理）
 rm -f "$APP/ttyd"
-cp -R "$SRC/looklook" "$SRC/looklook-term" "$SRC/fonts" "$SRC/LICENSES" "$APP/"
+# 压缩包里这些可能是指向 Looklook.app 的符号链接（scripts/package.sh）：-L 复制真文件
+cp -RL "$SRC/looklook" "$SRC/looklook-term" "$SRC/fonts" "$SRC/LICENSES" "$APP/"
 # 会话保持程序可能正被后台任务使用：先写临时文件再改名替换，不打断正在运行的任务。
 cp "$SRC/looklook-mux" "$APP/looklook-mux.new" && chmod 0755 "$APP/looklook-mux.new" && mv -f "$APP/looklook-mux.new" "$APP/looklook-mux"
 # trz / tsz 可能正在运行：删掉再复制（不覆盖运行中的文件）
-rm -rf "$APP/trzsz" && { cp -R "$SRC/trzsz" "$APP/" 2>/dev/null || true; }
+rm -rf "$APP/trzsz" && { cp -RL "$SRC/trzsz" "$APP/" 2>/dev/null || true; }
 cp "$SRC/uninstall.sh" "$APP/uninstall.sh" 2>/dev/null || true
 chmod 0755 "$APP/looklook" "$APP/looklook-term"
 xattr -dr com.apple.quarantine "$APP" 2>/dev/null || true

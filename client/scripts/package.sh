@@ -165,6 +165,17 @@ PY
     # 只换包里的文件会破坏签名，macOS 升级后又会询问文件夹访问权限
     rm -rf "$DIST/stage/$t"/*.app
     cp -R "$out"/macos/*.app "$DIST/stage/$t/"
+    # looklook/ 里的随包资源和 .app 的 Contents/Resources 一模一样：换成指过去的符号链接，压缩包不用装两份（74 MB → 约 49 MB）。
+    # 各版本的更新程序（copy_tree / is_file）和 install.sh（cp -RL）都跟着链接走，拿到的是真文件。
+    # 主程序不换：在应用包外单独运行的（install.sh 装的）用自己单独签的那份
+    local app n
+    app=$(cd "$DIST/stage/$t" && ls -d -- *.app | head -1)
+    for n in $(ls "$stage"); do
+      [[ $n == looklook || $n == *.sh ]] && continue
+      [[ -e $DIST/stage/$t/$app/Contents/Resources/$n ]] || { echo "应用包里缺少 $n" >&2; return 1; }
+      rm -rf "${stage:?}/$n"
+      ln -s "../$app/Contents/Resources/$n" "$stage/$n"
+    done
     # 打开 .dmg 看到 Looklook.app 和“应用程序”快捷方式，拖过去即可安装
     local dmgdir i
     dmgdir=$(mktemp -d)
