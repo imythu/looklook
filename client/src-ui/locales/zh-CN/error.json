@@ -259,5 +259,6 @@
   "CODEX_WORKTREE_FAILED": "没能建好 Git 工作树：{{detail}}",
   "CODEX_WORKTREE_NO_REPO": "这个项目不是 Git 仓库，用不了工作树",
   "CODEX_WORKTREE_NO_OWNER": "这个工作树里没有记录对应的对话",
-  "CODEX_WORKTREE_NO_THREAD": "还没有对话，先说一句再接到新工作树里"
+  "CODEX_WORKTREE_NO_THREAD": "还没有对话，先说一句再接到新工作树里",
+  "DSH_NOT_INSTALLED": "这台电脑上没装 DSH。在“新建会话”里选 DSH 可以一键安装，装好后再打开"
 }

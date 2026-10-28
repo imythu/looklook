@@ -27,6 +27,10 @@ fn cached(id: &str) -> Option<String> {
     cookies().lock().unwrap_or_else(|e| e.into_inner()).get(id).cloned()
 }
 
+pub(super) fn logged_in(id: &str) -> bool {
+    cached(id).is_some()
+}
+
 fn forget(id: &str) {
     cookies().lock().unwrap_or_else(|e| e.into_inner()).remove(id);
 }

@@ -76,6 +76,15 @@ pub fn managed_root(codex_home: &Path) -> PathBuf {
     configured.unwrap_or_else(|| codex_home.join("worktrees"))
 }
 
+/// 工作树里对应的目录。`rel` 为空时 `join` 会多出结尾的 `/`，和 Codex 记下的 cwd 对不上
+fn under(root: &Path, rel: &Path) -> PathBuf {
+    if rel.as_os_str().is_empty() {
+        root.to_path_buf()
+    } else {
+        root.join(rel)
+    }
+}
+
 /// `cwd` 所在仓库的根目录；不是仓库（或没装 git）时 `None`。
 pub fn repo_root(cwd: &Path) -> Option<PathBuf> {
     crate::git::toplevel(cwd).ok().flatten().map(|p| canon(&p))
@@ -134,7 +143,7 @@ pub fn create(root: &Path, source_cwd: &Path) -> R<Checkout> {
         let _ = checkout.parent().map(std::fs::remove_dir);
         return Err(e);
     }
-    let cwd = checkout.join(&rel);
+    let cwd = under(&checkout, &rel);
     if !cwd.is_dir() {
         let _ = git(&source_root, &["worktree", "remove", "--force", &checkout_s]);
         let _ = checkout.parent().map(std::fs::remove_dir);
@@ -191,7 +200,7 @@ pub fn list(root: &Path, source_cwd: &Path) -> R<Vec<Checkout>> {
         if !managed_layout(&managed, &checkout) || !checkout.join(".git").is_file() {
             continue;
         }
-        let cwd = path.join(&rel);
+        let cwd = under(&path, &rel);
         if !cwd.is_dir() {
             continue;
         }
@@ -259,5 +268,12 @@ mod tests {
         std::fs::create_dir_all(&plain).unwrap();
         assert!(repo_root(&plain).is_none());
         assert!(list(&root, &plain).unwrap().is_empty());
+    }
+
+    #[test]
+    fn cwd_at_root_has_no_trailing_slash() {
+        let root = Path::new("/w/e910/repo");
+        assert_eq!(under(root, Path::new("")).to_string_lossy(), "/w/e910/repo");
+        assert_eq!(under(root, Path::new("app")), root.join("app"));
     }
 }

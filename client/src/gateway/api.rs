@@ -503,8 +503,17 @@ fn require_persistent(app: &App) -> R<()> {
     }
 }
 
+/// 没装 DSH 时 `dsh web` 一启动就退出，等它登录只会一直等下去：先查一下，让界面提示去安装
+async fn require_dsh(app: &App) -> R<()> {
+    match tools::detect(app.instances.shell()).await.dsh {
+        Some(_) => Ok(()),
+        None => Err(LocalError::new("DSH_NOT_INSTALLED")),
+    }
+}
+
 async fn create_dsh(app: &App, mut input: Input) -> R<crate::instances::View> {
     require_persistent(app)?;
+    require_dsh(app).await?;
     if app.instances.dsh()?.is_some() {
         return Err(LocalError::new("DSH_EXISTS"));
     }
@@ -625,6 +634,10 @@ async fn instance_web(State(app): State<App>, Path(id): Path<String>) -> R<Json<
     require_persistent(&app)?;
     let v = app.instances.get(&id).await?;
     let port = v.web_port.ok_or_else(LocalError::not_found)?;
+    // 已经登录好的不用再查（界面每 2 秒问一次，查一次要起一个登录 shell）
+    if !super::dsh::logged_in(&id) {
+        require_dsh(&app).await?;
+    }
     let ready = super::dsh::ensure(&app, &id, port).await?.is_some();
     Ok(Json(json!({ "ready": ready })))
 }

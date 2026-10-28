@@ -259,5 +259,6 @@
   "CODEX_WORKTREE_FAILED": "Couldn't create the Git worktree: {{detail}}",
   "CODEX_WORKTREE_NO_REPO": "This project isn't a Git repository, so worktrees aren't available",
   "CODEX_WORKTREE_NO_OWNER": "No conversation is recorded for this worktree",
-  "CODEX_WORKTREE_NO_THREAD": "There's no conversation yet. Send a message first, then continue it in a new worktree"
+  "CODEX_WORKTREE_NO_THREAD": "There's no conversation yet. Send a message first, then continue it in a new worktree",
+  "DSH_NOT_INSTALLED": "DSH isn't installed on this computer. Choose DSH in New session to install it in one step, then open this again"
 }
