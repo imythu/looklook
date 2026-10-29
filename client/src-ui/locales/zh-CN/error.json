@@ -99,8 +99,8 @@
     "jump_depth": "跳板机嵌套太多层了",
     "rtc_ports": "端口要在 1025–65535 之间，起始不大于结束",
     "rtc_ports_span": "至少要 8 个端口",
-    "ipv4": "不是 IPv4 地址",
-    "ipv6": "不是 IPv6 地址"
+    "ipv4": "不是 IPv4 地址或域名",
+    "ipv6": "不是 IPv6 地址或域名"
   },
   "DEVICE_TIMEOUT": "这台电脑没有及时响应，正在重试",
   "CLIENT_UNREACHABLE": "连不上这台电脑上的看看，它可能已经退出",

@@ -2,10 +2,12 @@
 //!
 //! - 端口范围：每条 PeerConnection 在范围里绑一个 UDP 端口，用完了改用随机端口（[`super::peer::Pc`]）；
 //! - 公网地址：等候选收集完，在签名前写进本机 SDP（[`add_public`]），对端连得进来就直连，连不进来 ICE 照常走中转；
+//!   也可以填域名（DDNS），后台定时解析（[`resolve_loop`]），写 SDP 时用最近一次的结果，不在建连时等 DNS；
 //! - 检测（[`detect`]）：电脑自己去问中转的 STUN 和 cip.cc、ip.me 等服务，只用来辅助填写，不自动保存。
 //!
 //! 存在本机数据库（`kv.rtc_net`），不在电脑之间同步；改了只对新建的连接生效。
 
+use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::RwLock;
 use std::time::Duration;
@@ -17,6 +19,7 @@ use serde_json::{json, Value};
 
 use crate::error::LocalError;
 use crate::gateway::App;
+use crate::settings::{parse_open_host, OpenHost};
 use crate::store::Store;
 
 const KEY: &str = "rtc_net";
@@ -31,8 +34,10 @@ const MIN_SPAN: u16 = 8;
 pub struct NetConfig {
     pub port_begin: u16,
     pub port_end: u16,
-    pub public_v4: Option<Ipv4Addr>,
-    pub public_v6: Option<Ipv6Addr>,
+    /// IPv4 或域名（规范写法：域名小写、IPv6 不带方括号）。早先只存 IP，存的也是这样的字符串。
+    pub public_v4: Option<String>,
+    /// IPv6 或域名。
+    pub public_v6: Option<String>,
     /// 关掉时只绑 IPv4（`0.0.0.0`），也不写公网 IPv6。
     pub ipv6: bool,
 }
@@ -61,11 +66,11 @@ impl NetConfig {
         if self.port_end - self.port_begin + 1 < MIN_SPAN {
             return Err(("rtc_ports", "rtc_ports_span"));
         }
-        if let Some(ip) = self.public_v4 {
-            check_public(IpAddr::V4(ip)).map_err(|r| ("public_v4", r))?;
+        if let Some(s) = &self.public_v4 {
+            parse_addr(s, false).map_err(|r| ("public_v4", r))?;
         }
-        if let Some(ip) = self.public_v6 {
-            check_public(IpAddr::V6(ip)).map_err(|r| ("public_v6", r))?;
+        if let Some(s) = &self.public_v6 {
+            parse_addr(s, true).map_err(|r| ("public_v6", r))?;
         }
         Ok(())
     }
@@ -82,13 +87,13 @@ impl NetConfig {
         if let Some(s) = &u.public_v4 {
             c.public_v4 = match s.trim() {
                 "" => None,
-                s => Some(s.parse().map_err(|_| ("public_v4", "ipv4"))?),
+                s => Some(parse_addr(s, false).map_err(|r| ("public_v4", r))?.to_string()),
             };
         }
         if let Some(s) = &u.public_v6 {
-            c.public_v6 = match s.trim().trim_matches(['[', ']']) {
+            c.public_v6 = match s.trim() {
                 "" => None,
-                s => Some(s.parse().map_err(|_| ("public_v6", "ipv6"))?),
+                s => Some(parse_addr(s, true).map_err(|r| ("public_v6", r))?.to_string()),
             };
         }
         if let Some(v) = u.ipv6 {
@@ -107,6 +112,42 @@ impl Default for NetConfig {
     fn default() -> Self {
         Self::DEFAULT
     }
+}
+
+/// 填的公网地址：IP，或者按域名解析。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Addr {
+    Ip(IpAddr),
+    Name(String),
+}
+
+impl std::fmt::Display for Addr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Addr::Ip(ip) => ip.fmt(f),
+            Addr::Name(n) => f.write_str(n),
+        }
+    }
+}
+
+/// 解析填的地址：这一族的 IP（IPv6 可带方括号），或者域名。有字母、没有冒号的才当域名，
+/// `1.2.3` 之类的笔误仍然报格式不对。错误是界面 `error:rule.*` 的规则名。
+pub fn parse_addr(input: &str, v6: bool) -> Result<Addr, &'static str> {
+    let s = input.trim();
+    let format = if v6 { "ipv6" } else { "ipv4" };
+    if s.chars().any(|c| c.is_ascii_alphabetic()) && !s.contains(':') {
+        return match parse_open_host(s) {
+            Ok(OpenHost::Name(n)) if n == "localhost" || n.ends_with(".localhost") => Err("host_unusable"),
+            Ok(OpenHost::Name(n)) => Ok(Addr::Name(n)),
+            _ => Err(format),
+        };
+    }
+    let ip: IpAddr = match v6 {
+        false => IpAddr::V4(s.parse().map_err(|_| format)?),
+        true => IpAddr::V6(s.trim_matches(['[', ']']).parse().map_err(|_| format)?),
+    };
+    check_public(ip)?;
+    Ok(Addr::Ip(ip))
 }
 
 /// 回环、未指定、组播、链路本地、广播地址填了也连不到。私有地址和 CGNAT 允许（Tailscale、ZeroTier 这类组网）。
@@ -171,11 +212,11 @@ pub fn add_public(sdp: &str, c: &NetConfig) -> String {
         return sdp.to_string();
     }
     let mut want: Vec<IpAddr> = Vec::new();
-    if let Some(v4) = c.public_v4 {
-        want.push(IpAddr::V4(v4));
+    if let Some(v4) = c.public_v4.as_deref().and_then(|s| public_ip(s, false)) {
+        want.push(v4);
     }
-    if let (true, Some(v6)) = (c.ipv6, c.public_v6) {
-        want.push(IpAddr::V6(v6));
+    if let (true, Some(v6)) = (c.ipv6, c.public_v6.as_deref().and_then(|s| public_ip(s, true))) {
+        want.push(v6);
     }
     let present = |ip: &IpAddr| cands.iter().any(|t| t.get(4).and_then(|a| a.parse::<IpAddr>().ok()).as_ref() == Some(ip) && t.get(5) == Some(&port.to_string().as_str()));
     let mut extra = String::new();
@@ -203,6 +244,68 @@ pub fn add_public(sdp: &str, c: &NetConfig) -> String {
         }
     }
     out
+}
+
+// ---------- 域名解析 ----------
+
+/// 填的域名最近一次解析出来的地址：(域名, 是否 IPv6) → 地址。
+static RESOLVED: RwLock<Option<HashMap<(String, bool), IpAddr>>> = RwLock::new(None);
+
+const RESOLVE_EVERY: Duration = Duration::from_secs(60);
+const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 填的地址现在对应的 IP：IP 直接用；域名用最近一次解析的结果，还没解析出来时为 None（不写公网候选）。
+/// 设置里存的都是规范写法，IP 保存时已经校验过，这里不再检查。
+pub fn public_ip(s: &str, v6: bool) -> Option<IpAddr> {
+    match s.parse::<IpAddr>() {
+        Ok(ip) => (ip.is_ipv6() == v6).then_some(ip),
+        Err(_) => RESOLVED.read().unwrap_or_else(|e| e.into_inner()).as_ref()?.get(&(s.to_string(), v6)).copied(),
+    }
+}
+
+/// 解析结果里能用的地址：这一族、能当公网地址。代理软件 fake-ip 模式给的 198.18.0.0/15 不是真实地址，也不要。
+fn usable(ip: IpAddr, v6: bool) -> bool {
+    ip.is_ipv6() == v6 && check_public(ip).is_ok() && !matches!(ip, IpAddr::V4(v) if v.octets()[0] == 198 && (v.octets()[1] & 0xfe) == 18)
+}
+
+/// 重新解析设置里的域名。解析失败时保留上次的结果（DNS 偶尔出错不至于丢掉直连）。
+pub async fn resolve(c: &NetConfig) {
+    let mut names: Vec<(String, bool)> = Vec::new();
+    for (s, v6) in [(&c.public_v4, false), (&c.public_v6, true)] {
+        if let Some(Ok(Addr::Name(n))) = s.as_deref().map(|s| parse_addr(s, v6)) {
+            names.push((n, v6));
+        }
+    }
+    let lookups = names.iter().map(|(n, v6)| async move {
+        let r = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((n.as_str(), 0))).await;
+        let ip = match r {
+            Ok(Ok(addrs)) => addrs.map(|a| a.ip().to_canonical()).find(|ip| usable(*ip, *v6)),
+            _ => None,
+        };
+        if ip.is_none() {
+            tracing::debug!(domain = %n, v6, "直连公网地址的域名没解析出可用地址");
+        }
+        ((n.clone(), *v6), ip)
+    });
+    let results = futures_util::future::join_all(lookups).await;
+    let mut m = RESOLVED.write().unwrap_or_else(|e| e.into_inner());
+    let m = m.get_or_insert_with(HashMap::new);
+    m.retain(|k, _| names.contains(k));
+    for (k, ip) in results {
+        if let Some(ip) = ip {
+            if m.insert(k.clone(), ip) != Some(ip) {
+                tracing::info!(domain = %k.0, %ip, "直连公网地址的域名解析结果");
+            }
+        }
+    }
+}
+
+/// 后台每分钟解析一次当前设置里的域名（没有域名时什么也不做）。
+pub async fn resolve_loop() {
+    loop {
+        resolve(&current()).await;
+        tokio::time::sleep(RESOLVE_EVERY).await;
+    }
 }
 
 // ---------- 检测公网地址 ----------
@@ -328,15 +431,22 @@ fn nic_v6() -> Vec<Ipv6Addr> {
 
 /// 接口与命令行显示的样子。
 pub fn view(c: &NetConfig) -> Value {
-    json!({
+    let mut v = json!({
         "port_begin": c.port_begin,
         "port_end": c.port_end,
-        "public_v4": c.public_v4.map(|i| i.to_string()).unwrap_or_default(),
-        "public_v6": c.public_v6.map(|i| i.to_string()).unwrap_or_default(),
+        "public_v4": c.public_v4.clone().unwrap_or_default(),
+        "public_v6": c.public_v6.clone().unwrap_or_default(),
         "ipv6": c.ipv6,
         "default_ports": [DEFAULT_PORTS.0, DEFAULT_PORTS.1],
         "nic_v6": nic_v6(),
-    })
+    });
+    // 填的是域名时加上它现在解析出的地址（还没解析出来是 null）；填的是 IP 或没填时没有这一项
+    for (k, s, v6) in [("resolved_v4", &c.public_v4, false), ("resolved_v6", &c.public_v6, true)] {
+        if let Some(s) = s.as_deref().filter(|s| matches!(parse_addr(s, v6), Ok(Addr::Name(_)))) {
+            v[k] = json!(public_ip(s, v6));
+        }
+    }
+    v
 }
 
 /// `GET /api/rtc/net`
@@ -349,6 +459,8 @@ pub async fn put_net(State(app): State<App>, Json(u): Json<NetUpdate>) -> Result
     let c = NetConfig::load(&app.store).updated(&u).map_err(|(f, r)| LocalError::invalid(f, r))?;
     c.save(&app.store)?;
     set_current(c.clone());
+    // 新填的域名马上解析一次，界面能立刻显示解析结果
+    resolve(&c).await;
     tracing::info!(ports = %format!("{}-{}", c.port_begin, c.port_end), public_v4 = ?c.public_v4, public_v6 = ?c.public_v6, ipv6 = c.ipv6, "WebRTC 网络设置已修改");
     Ok(Json(view(&c)))
 }
@@ -376,7 +488,7 @@ mod tests {
         a=end-of-candidates\r\na=sctp-port:5000\r\n";
 
     fn cfg(v4: Option<&str>, v6: Option<&str>) -> NetConfig {
-        NetConfig { public_v4: v4.map(|s| s.parse().unwrap()), public_v6: v6.map(|s| s.parse().unwrap()), ..NetConfig::DEFAULT }
+        NetConfig { public_v4: v4.map(str::to_string), public_v6: v6.map(str::to_string), ..NetConfig::DEFAULT }
     }
 
     #[test]
@@ -406,13 +518,35 @@ mod tests {
     }
 
     #[test]
+    fn domains_use_the_last_resolved_address() {
+        let c = cfg(Some("ddns-test.example.com"), Some("ddns-test.example.com"));
+        // 还没解析出来：不写
+        assert_eq!(add_public(SDP, &c), SDP);
+        assert_eq!(view(&c)["resolved_v4"], Value::Null);
+        assert!(view(&cfg(Some("203.0.113.7"), None)).get("resolved_v4").is_none(), "填的是 IP 时没有这一项");
+        RESOLVED.write().unwrap().get_or_insert_with(HashMap::new).extend([
+            (("ddns-test.example.com".to_string(), false), "203.0.113.9".parse().unwrap()),
+            (("ddns-test.example.com".to_string(), true), "2001:db8:1::9".parse().unwrap()),
+        ]);
+        let out = add_public(SDP, &c);
+        assert!(out.contains("llpub4 1 UDP 1694498559 203.0.113.9 50003 typ srflx") && out.contains(" 2001:db8:1::9 50003 typ srflx"), "{out}");
+        assert_eq!(view(&c)["resolved_v4"], "203.0.113.9");
+        // fake-ip、回环这类解析结果不用
+        assert!(!usable("198.18.0.5".parse().unwrap(), false) && !usable("127.0.0.1".parse().unwrap(), false));
+        assert!(usable("198.20.0.5".parse().unwrap(), false) && !usable("2001:db8::1".parse().unwrap(), false));
+    }
+
+    #[test]
     fn updates_are_validated() {
         let c = NetConfig::DEFAULT;
         let u = |j: Value| serde_json::from_value::<NetUpdate>(j).unwrap();
         let ok = c.updated(&u(json!({"port_begin": 40000, "port_end": 40015, "public_v4": " 203.0.113.7 ", "public_v6": "[2001:db8::7]"}))).unwrap();
         assert_eq!((ok.port_begin, ok.port_end), (40000, 40015));
-        assert_eq!(ok.public_v4, Some("203.0.113.7".parse().unwrap()));
-        assert_eq!(ok.public_v6, Some("2001:db8::7".parse().unwrap()));
+        assert_eq!(ok.public_v4.as_deref(), Some("203.0.113.7"));
+        assert_eq!(ok.public_v6.as_deref(), Some("2001:db8::7"), "去掉方括号");
+        // 域名（DDNS）：存小写、去掉末尾的点；两个框都能填
+        let d = c.updated(&u(json!({"public_v4": " Home.Example.com. ", "public_v6": "v6.example.com"}))).unwrap();
+        assert_eq!((d.public_v4.as_deref(), d.public_v6.as_deref()), (Some("home.example.com"), Some("v6.example.com")));
         assert_eq!(ok.updated(&u(json!({"public_v4": ""}))).unwrap().public_v4, None, "空字符串清除");
         assert_eq!(ok.updated(&u(json!({"ipv6": false}))).unwrap().public_v6, ok.public_v6, "没给的项不变");
         // 共享的 100.64/10、Tailscale 这类地址允许
@@ -428,6 +562,10 @@ mod tests {
             (json!({"public_v4": "169.254.1.1"}), ("public_v4", "host_unusable")),
             (json!({"public_v6": "fe80::1"}), ("public_v6", "host_unusable")),
             (json!({"public_v6": "::ffff:1.2.3.4"}), ("public_v6", "host_unusable")),
+            (json!({"public_v4": "localhost"}), ("public_v4", "host_unusable")),
+            (json!({"public_v4": "http://home.example.com"}), ("public_v4", "ipv4")),
+            (json!({"public_v4": "home.example.com:50000"}), ("public_v4", "ipv4")),
+            (json!({"public_v6": "bad_name.example.com"}), ("public_v6", "ipv6")),
         ] {
             assert_eq!(c.updated(&u(j.clone())).unwrap_err(), want, "{j}");
         }
@@ -440,7 +578,7 @@ mod tests {
         store.set(KEY, &json!({"port_begin": 80, "port_end": 90, "public_v4": "203.0.113.7"})).unwrap();
         let c = NetConfig::load(&store);
         assert_eq!((c.port_begin, c.port_end), DEFAULT_PORTS);
-        assert_eq!(c.public_v4, Some("203.0.113.7".parse().unwrap()), "别的项保留");
+        assert_eq!(c.public_v4.as_deref(), Some("203.0.113.7"), "别的项保留");
     }
 
     #[test]

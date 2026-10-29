@@ -215,9 +215,10 @@ enum AccessCmd {
 enum RtcCmd {
     /// 传输端口范围（UDP），如 50000-50031；default 恢复默认 / UDP port range, e.g. 50000-50031; `default` to reset
     Ports { range: String },
-    /// 公网 IPv4（完全锥形 NAT、同号端口转发时填）；off 清除 / Public IPv4 (full-cone NAT or same-port forwarding); `off` to clear
+    /// 公网 IPv4 或域名（完全锥形 NAT、同号端口转发时填；动态 IP 填 DDNS 域名）；off 清除
+    /// Public IPv4 or domain (full-cone NAT or same-port forwarding; DDNS domain for a dynamic IP); `off` to clear
     Ipv4 { addr: String },
-    /// 公网 IPv6；off 清除 / Public IPv6; `off` to clear
+    /// 公网 IPv6 或域名；off 清除 / Public IPv6 or domain; `off` to clear
     Ipv6 { addr: String },
     /// 使用 IPv6 / Use IPv6
     Ipv6Enabled { state: OnOff },
@@ -605,6 +606,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
         tokio::spawn(app.sync.clone().run(app.clone(), shutdown.clone())),
         tokio::spawn(chat.clone().background()),
         tokio::spawn(pricing::run(paths.home.clone())),
+        tokio::spawn(rtc::net::resolve_loop()),
         tokio::spawn({
             usage_stats::preload(&paths.home);
             usage_stats::run(paths.home.clone())
@@ -948,6 +950,7 @@ async fn cli_rtc(home: &Option<PathBuf>, listen: SocketAddr, action: Option<RtcC
                 c.save(&store)?;
                 println!("客户端没在运行，设置已保存，下次启动生效 / The client isn't running; saved for its next start");
             }
+            rtc::net::resolve(&c).await;
             rtc::net::view(&c)
         }
         Err(e) => return Err(e),
@@ -959,8 +962,14 @@ async fn cli_rtc(home: &Option<PathBuf>, listen: SocketAddr, action: Option<RtcC
 fn print_rtc(v: &Value) {
     let addr = |k: &str| v[k].as_str().filter(|s| !s.is_empty()).unwrap_or("（未填 / not set）").to_string();
     println!("传输端口 / Ports: UDP {}-{}", v["port_begin"], v["port_end"]);
-    println!("公网 IPv4 / Public IPv4: {}", addr("public_v4"));
-    println!("公网 IPv6 / Public IPv6: {}", addr("public_v6"));
+    // 填的是域名时带上现在的解析结果
+    let addr = |k: &str, r: &str| match v.get(r) {
+        Some(Value::String(ip)) => format!("{} → {ip}", addr(k)),
+        Some(_) => format!("{}（还没解析出地址 / not resolved yet）", addr(k)),
+        None => addr(k),
+    };
+    println!("公网 IPv4 / Public IPv4: {}", addr("public_v4", "resolved_v4"));
+    println!("公网 IPv6 / Public IPv6: {}", addr("public_v6", "resolved_v6"));
     println!("使用 IPv6 / Use IPv6: {}", if v["ipv6"].as_bool() == Some(true) { "开启 / on" } else { "关闭 / off" });
     let nic: Vec<&str> = v["nic_v6"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
     if !nic.is_empty() {

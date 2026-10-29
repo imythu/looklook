@@ -99,8 +99,8 @@
     "jump_depth": "nests too many jump hosts",
     "rtc_ports": "must be within 1025–65535, first ≤ last",
     "rtc_ports_span": "needs at least 8 ports",
-    "ipv4": "is not an IPv4 address",
-    "ipv6": "is not an IPv6 address"
+    "ipv4": "is not an IPv4 address or domain",
+    "ipv6": "is not an IPv6 address or domain"
   },
   "DEVICE_TIMEOUT": "This computer didn't answer in time; retrying",
   "CLIENT_UNREACHABLE": "Can't reach Looklook on this computer; it may have quit",

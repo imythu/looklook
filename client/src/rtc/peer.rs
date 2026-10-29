@@ -699,7 +699,7 @@ mod tests {
     /// 端口范围里的端口都被占了：改用随机端口，照样生成 offer；这时不写公网地址（随机端口没有放行）。
     #[tokio::test]
     async fn exhausted_port_range_falls_back_to_random_ports() {
-        let net = NetConfig { port_begin: 50100, port_end: 50107, public_v4: Some("203.0.113.7".parse().unwrap()), ..NetConfig::DEFAULT };
+        let net = NetConfig { port_begin: 50100, port_end: 50107, public_v4: Some("203.0.113.7".into()), ..NetConfig::DEFAULT };
         let ok = |(mut pc, ch): (Pc, Channel)| async move {
             let sdp = pc.local_offer(Duration::from_secs(3)).await.unwrap();
             drop(ch);
@@ -725,7 +725,7 @@ mod tests {
     async fn connects_through_the_public_candidate_alone() {
         let strip = |sdp: &str| sdp.split_inclusive('\n').filter(|l| !l.contains(" typ host")).collect::<String>();
         // 不用默认范围（50000-50031）：本机正在运行的看看占着那些端口时这里会失败
-        let net = NetConfig { port_begin: 50140, port_end: 50147, public_v4: Some(std::net::Ipv4Addr::LOCALHOST), ..NetConfig::DEFAULT };
+        let net = NetConfig { port_begin: 50140, port_end: 50147, public_v4: Some("127.0.0.1".into()), ..NetConfig::DEFAULT };
         let (mut a, mut ctl) = Pc::offer_in(&[], &net, true).unwrap();
         let offer = strip(&a.local_offer(Duration::from_secs(3)).await.unwrap());
         assert!(offer.contains("a=candidate:llpub4 ") && !offer.contains(" typ host"), "{offer}");

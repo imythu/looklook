@@ -1,4 +1,5 @@
 // 设置 → 网络与访问 → 直连：远程打开这台电脑时 WebRTC 用的传输端口范围、公网 IPv4 / IPv6（服务端 docs/07）。
+// 公网地址也可以填域名（DDNS），客户端定时解析，保存后在输入框下显示当前解析结果。
 // 端口范围和地址一起点保存；IPv6 开关点一下就保存。改了只对新建的连接生效；远程打开时也能改（改错了还有中转）。
 // “检测”由这台电脑去问中转的 STUN 和 cip.cc、ip.me 等服务，结果只填进输入框，不自动保存。
 import { Search } from 'lucide-react';
@@ -7,6 +8,9 @@ import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
 import { Button, Card, ErrorNote, Field, Note, Skeleton, Switch, useAction, useToast } from '../shared/ui.jsx';
+
+/** 填的是域名（有字母、没有冒号）：检测不覆盖它。 */
+const isName = (s) => /[a-z]/i.test(s) && !s.includes(':');
 
 const form = (d) => ({ port_begin: String(d.port_begin), port_end: String(d.port_end), public_v4: d.public_v4, public_v6: d.public_v6 });
 
@@ -58,13 +62,20 @@ export default function DirectCard() {
   const changed = Object.keys(f).some((k) => f[k] !== form(data)[k]);
   const [defBegin, defEnd] = data.default_ports;
   const isDefault = f.port_begin === String(defBegin) && f.port_end === String(defEnd);
+  // 保存的是域名时显示它现在解析出的地址（输入框改动后不显示）
+  const addrHint = (k, fallback) => {
+    const r = data[`resolved_${k}`];
+    if (r === undefined || f[`public_${k}`] !== data[`public_${k}`]) return fallback;
+    return r ? t('direct.resolved', { ip: r }) : t('direct.unresolved');
+  };
   const fieldError = (name) => (error?.params?.field === name ? t(`error:rule.${error.params.rule}`) : undefined);
 
   const runDetect = async () => {
     const r = await detect.run(() => api.post('/rtc/net/detect', {}));
     if (!r) return;
     setDetected(r);
-    setF((cur) => ({ ...cur, public_v4: r.suggest_v4 || cur.public_v4, public_v6: r.suggest_v6 || cur.public_v6 }));
+    const pick = (cur, ip) => (isName(cur) ? cur : ip || cur);
+    setF((cur) => ({ ...cur, public_v4: pick(cur.public_v4, r.suggest_v4), public_v6: pick(cur.public_v6, r.suggest_v6) }));
   };
 
   return (
@@ -90,13 +101,13 @@ export default function DirectCard() {
             )}
           </span>
         </Field>
-        <Field label={t('direct.public_v4')} hint={t('direct.public_v4_hint')} error={fieldError('public_v4')}>
-          <input value={f.public_v4} onChange={set('public_v4')} className="mono" placeholder={t('direct.not_set')} inputMode="decimal" autoComplete="off" spellCheck={false} />
+        <Field label={t('direct.public_v4')} hint={addrHint('v4', t('direct.public_v4_hint'))} error={fieldError('public_v4')}>
+          <input value={f.public_v4} onChange={set('public_v4')} className="mono" placeholder={t('direct.not_set')} autoComplete="off" autoCapitalize="off" spellCheck={false} />
         </Field>
         {detected && <Probes items={detected.v4} />}
         <Field
           label={t('direct.public_v6')}
-          hint={data.nic_v6.length ? t('direct.public_v6_nic', { ips: data.nic_v6.join(', ') }) : t('direct.public_v6_hint')}
+          hint={addrHint('v6', data.nic_v6.length ? t('direct.public_v6_nic', { ips: data.nic_v6.join(', ') }) : t('direct.public_v6_hint'))}
           error={fieldError('public_v6')}
         >
           <input value={f.public_v6} onChange={set('public_v6')} className="mono" placeholder={t('direct.not_set')} autoComplete="off" autoCapitalize="off" spellCheck={false} />
