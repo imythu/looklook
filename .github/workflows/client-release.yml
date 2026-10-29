@@ -317,7 +317,7 @@ jobs:
           git push origin "client-v$VERSION"
           dir="dist/release/$VERSION"
           python3 -c 'import json,sys; i=json.load(open(sys.argv[1])); print("### 中文\n\n" + i["notes_zh"] + "\n\n### English\n\n" + i["notes_en"])' "$dir/release.json" > /tmp/notes.md
-          flags=(--title "Looklook client $VERSION" --notes-file /tmp/notes.md --verify-tag)
+          flags=(--title "看看电脑端 $VERSION · Looklook desktop" --notes-file /tmp/notes.md --verify-tag)
           # beta 通道或带预发布后缀的版本号（如 1.0.1-beta）标为 Pre-release
           [[ $CHANNEL == stable && $VERSION != *-* ]] || flags+=(--prerelease)
           gh release create "client-v$VERSION" "$dir"/* "${flags[@]}"
