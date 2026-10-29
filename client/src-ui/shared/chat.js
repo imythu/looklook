@@ -520,3 +520,49 @@ export function conversationResources(items) {
   }
   return out;
 }
+
+/** 邮箱打码：`jo***@ex***.com`，名字留前两个字、域名留第一段的前两个字和后缀（短的少留一个） */
+export function maskEmail(email) {
+  const keep = (x) => x.slice(0, Math.min(2, Math.max(1, x.length - 1)));
+  const at = email.lastIndexOf('@');
+  if (at < 0) return `${keep(email)}***`;
+  const domain = email.slice(at + 1);
+  const dot = domain.indexOf('.');
+  return `${keep(email.slice(0, at))}***@${keep(dot < 0 ? domain : domain.slice(0, dot))}***${dot < 0 ? '' : domain.slice(dot)}`;
+}
+
+/**
+ * 对话里派出的子代理（Agent / Task 工具调用），从已经载入的条目里找，先派的在前。
+ * 同一个子代理（Codex 的子会话 id）再次交回答复会另起一张卡片：合成一个，状态按最后一张。
+ * state：running（还没交回结果、这一轮还在跑）、done、failed、ended（没结果、已经不跑了）。
+ * Claude 后台运行的子代理一启动就有结果，这里看不出是不是还在跑，以服务端的任务列表为准（/chat/tasks）。
+ */
+export function conversationAgents(items, live) {
+  const results = resultsById(items);
+  const out = new Map();
+  for (const it of items) {
+    if (it.k !== 'assistant') continue;
+    for (const b of it.blocks ?? []) {
+      if (b.t !== 'tool_use' || (b.name !== 'Agent' && b.name !== 'Task')) continue;
+      const input = b.input ?? {};
+      const r = results.get(b.id);
+      const id = r?.extra?.agentId ?? input.agent_thread_id ?? null;
+      const key = id ?? b.id;
+      const prev = out.get(key);
+      out.delete(key);
+      out.set(key, {
+        id,
+        tool_use_id: prev?.tool_use_id ?? b.id,
+        description: input.description ?? prev?.description ?? '',
+        type: input.subagent_type ?? prev?.type ?? null,
+        model: input.model ?? prev?.model ?? null,
+        prompt: input.prompt ?? prev?.prompt ?? null,
+        background: input.run_in_background === true || Boolean(r?.extra?.backgroundTaskId),
+        started: prev?.started ?? it.ts ?? null,
+        runs: (prev?.runs ?? 0) + 1,
+        state: r ? (r.is_error ? 'failed' : 'done') : live ? 'running' : 'ended',
+      });
+    }
+  }
+  return [...out.values()];
+}

@@ -222,3 +222,25 @@ test('links to files on this computer', () => {
   assert.equal(localFilePath('file:///home/a/x.txt'), '/home/a/x.txt');
   for (const h of ['https://x.com/a', '//cdn/x.js', 'docs/a.md', '#top', 'mailto:a@b.c', '', null]) assert.equal(localFilePath(h), null, String(h));
 });
+
+test('emails are masked', async () => {
+  const { maskEmail } = await import('./chat.js');
+  assert.equal(maskEmail('john@example.com'), 'jo***@ex***.com');
+  assert.equal(maskEmail('a@b.co'), 'a***@b***.co');
+  assert.equal(maskEmail('ab@host'), 'a***@ho***');
+});
+
+test('sub-agents from the conversation', async () => {
+  const { conversationAgents } = await import('./chat.js');
+  const items = [
+    { k: 'assistant', ts: 't0', blocks: [{ t: 'tool_use', id: 'a1', name: 'Agent', input: { description: 'helper', agent_thread_id: 'th1' } }] },
+    { k: 'tool_result', tool_use_id: 'a1', content: 'ok', extra: { agentId: 'th1' } },
+    { k: 'assistant', blocks: [{ t: 'tool_use', id: 'a1#9', name: 'Agent', input: { description: 'helper', agent_thread_id: 'th1' } }] },
+    { k: 'assistant', blocks: [{ t: 'tool_use', id: 't2', name: 'Task', input: { description: 'search', subagent_type: 'Explore', prompt: 'find x' } }] },
+  ];
+  const a = conversationAgents(items, true);
+  assert.equal(a.length, 2);
+  assert.deepEqual([a[0].id, a[0].tool_use_id, a[0].runs, a[0].state, a[0].started], ['th1', 'a1', 2, 'running', 't0']);
+  assert.deepEqual([a[1].type, a[1].prompt, a[1].state], ['Explore', 'find x', 'running']);
+  assert.equal(conversationAgents(items, false)[1].state, 'ended');
+});

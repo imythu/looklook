@@ -93,16 +93,53 @@ function DownloadLink({ ep, entry, size = 15 }) {
   );
 }
 
-/** 一个文件的预览（“文件”页右边；对话页里点到的文件也用它，见 ChatView 的 FileViewer） */
-export function Preview({ ep, entry, onClose, onInsert, sep }) {
+/** 带行号显示的最多这么多行（再多一行一个元素太慢，照旧整段显示） */
+const NUMBER_MAX = 20000;
+
+/** 带行号的文字：`focus`（{ from, to }，从 1 开始）那几行标出来，打开时滚到那里 */
+function NumberedText({ text, wrap, focus }) {
+  const box = useRef(null);
+  const lines = useMemo(() => {
+    const l = text.split('\n');
+    if (l.length > 1 && l[l.length - 1] === '') l.pop();
+    return l;
+  }, [text]);
+  const from = focus?.from ?? 0;
+  const to = focus?.to ?? from;
+  useEffect(() => {
+    if (!from) return;
+    const el = box.current?.children[from - 1];
+    // 标出的几行放在上面三分之一，前面留几行看上下文
+    el?.scrollIntoView({ block: 'start' });
+    const body = box.current?.closest('.fb-preview-body');
+    if (el && body) body.scrollTop = Math.max(0, body.scrollTop - body.clientHeight / 4);
+  }, [text, from]);
+  return (
+    <div ref={box} className={`fb-text fb-lines ${wrap ? 'fb-wrap' : ''}`}>
+      {lines.map((l, n) => (
+        // eslint-disable-next-line react/no-array-index-key -- 行没有别的标识
+        <div key={n} className={from && n + 1 >= from && n + 1 <= to ? 'on' : undefined}>
+          <span className="fb-no" aria-hidden="true">{n + 1}</span>
+          <span>{l || ' '}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * 一个文件的预览（“文件”页右边；对话页里点到的文件也用它，见 ChatView 的 FileViewer）。
+ * 对话页另外传：numbered（文字带行号）、focus（{ from, to }：标出这几行并滚过去）、extra（标题栏关闭按钮前的按钮）。
+ */
+export function Preview({ ep, entry, onClose, onInsert, sep, numbered = false, focus = null, extra = null }) {
   const { t } = useTranslation();
   const [state, setState] = useState({ loading: true });
   const [wrap, setWrap] = useState(true);
   const md = isMarkdown(entry.name);
   const office = officeKind(entry.name);
   const csv = office === 'csv';
-  // Markdown 看排版效果 / 源码，CSV 看表格 / 源码
-  const [rendered, setRendered] = useState(true);
+  // Markdown 看排版效果 / 源码，CSV 看表格 / 源码；要标出某几行时先看源码
+  const [rendered, setRendered] = useState(!focus?.from);
   const image = IMAGE.test(entry.name);
   const whole = WHOLE.includes(office);
   useEffect(() => {
@@ -171,6 +208,7 @@ export function Preview({ ep, entry, onClose, onInsert, sep }) {
             <TextCursorInput size={16} />
           </button>
         )}
+        {extra}
         <DownloadLink ep={ep} entry={entry} size={16} />
         <button type="button" className="btn btn-plain btn-icon" onClick={onClose} aria-label={t('fb.close_preview')} title={t('fb.close_preview')}>
           <X size={17} />
@@ -203,6 +241,8 @@ export function Preview({ ep, entry, onClose, onInsert, sep }) {
               <SheetView sheets={csvSheets} />
             ) : showMd ? (
               <Markdown text={state.text} imageUrl={ep.plain ? (src) => `/api${ep.preview(resolve(dir, src, sep))}` : null} />
+            ) : numbered && state.text && state.text.length < NUMBER_MAX * 200 && state.text.split('\n', NUMBER_MAX + 1).length <= NUMBER_MAX ? (
+              <NumberedText text={state.text} wrap={wrap} focus={focus} />
             ) : (
               <pre className={`fb-text ${wrap ? 'fb-wrap' : ''}`}>{state.text || t('fb.empty_file')}</pre>
             )}

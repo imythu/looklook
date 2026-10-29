@@ -1972,7 +1972,9 @@ impl Chat {
                 }
             }
         }
-        Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version }))
+        // 订阅账号的邮箱（界面默认打码显示）；第三方接口没有
+        let account = if profile.kind == crate::claude_profiles::Kind::Official { tokio::task::block_in_place(|| models::account(&ctx)) } else { Value::Null };
+        Ok(json!({ "model": model, "context": context, "window": window, "totals": totals, "limits": limits, "version": version, "account": account }))
     }
 
     /// 对话生成的文件（目前只有 Codex 生成的图片）

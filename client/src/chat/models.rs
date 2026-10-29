@@ -302,6 +302,16 @@ pub fn limits(ctx: &Ctx) -> Value {
     serde_json::json!({ "five_hour": pick(five), "seven_day": pick(seven), "fetched_at": fetched })
 }
 
+/// 订阅账号（claude.ai 登录）的邮箱和组织：`.claude.json` 里的 `oauthAccount`；没登录、用 API 时没有
+pub fn account(ctx: &Ctx) -> Value {
+    let state = read_json(&ctx.state_file).unwrap_or(Value::Null);
+    let a = &state["oauthAccount"];
+    match a["emailAddress"].as_str() {
+        Some(email) if !email.is_empty() => serde_json::json!({ "email": email, "org": a["organizationName"] }),
+        _ => Value::Null,
+    }
+}
+
 /// 一个窗口：用了百分之几、什么时候重置
 type Window = (Value, Value);
 
@@ -563,6 +573,18 @@ mod tests {
         write(&state, &json!({ "oauthAccount": { "accountUuid": "a" }, "cachedUsageUtilization": { "accountUuid": "a", "fetchedAtMs": 200, "utilization": { "five_hour": win(40), "seven_day": win(80) } } }));
         let v = limits(&ctx);
         assert_eq!((v["five_hour"]["used"].clone(), v["seven_day"]["used"].clone(), v["fetched_at"].clone()), (json!(40), json!(80), json!(200)));
+    }
+
+    #[test]
+    fn account_email_only_when_logged_in() {
+        let tmp = tempfile::tempdir().unwrap();
+        let state = tmp.path().join(".claude.json");
+        let ctx = Ctx { config_dir: tmp.path().join(".claude"), state_file: state.clone(), workdir: tmp.path(), env: HashMap::new() };
+        assert!(account(&ctx).is_null());
+        write(&state, &json!({ "oauthAccount": { "emailAddress": "a@b.c", "organizationName": "Org" } }));
+        assert_eq!(account(&ctx), json!({ "email": "a@b.c", "org": "Org" }));
+        write(&state, &json!({ "oauthAccount": { "emailAddress": "" } }));
+        assert!(account(&ctx).is_null());
     }
 
     #[test]

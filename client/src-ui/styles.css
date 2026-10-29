@@ -3014,3 +3014,44 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-read-preview .fb-preview-body img { max-height: 360px; object-fit: contain; }
 .chat-read-acts { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }
 .chat-read-acts .chat-more { display: inline-flex; align-items: center; gap: 4px; }
+
+/* 带行号的文件预览（对话里打开的文件）：行号一栏不随文字选中，标出的几行高亮 */
+.fb-lines { padding: 8px 0; }
+.fb-lines > div { display: grid; grid-template-columns: minmax(3.2em, max-content) 1fr; padding-right: 14px; }
+.fb-lines > div.on { background: color-mix(in srgb, var(--brand) 14%, transparent); box-shadow: inset 3px 0 0 var(--brand); }
+.fb-no { padding: 0 12px 0 8px; text-align: right; color: var(--muted); opacity: .7; user-select: none; -webkit-user-select: none; }
+.fb-lines.fb-wrap > div > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.fb-lines:not(.fb-wrap) { width: max-content; min-width: 100%; }
+
+/* 子代理：对话里卡片下面的两个按钮、加宽的右侧面板、输入框上面运行中的子代理条 */
+.chat-sub-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 14px; }
+.chat-side[data-wide] { width: min(720px, 100%); }
+@container (min-width: 1040px) { .chat-side[data-wide] { width: min(640px, 50%); } }
+.chat-agent-prompt .chat-pre { max-height: 240px; overflow: auto; }
+.chat-agent-strip { display: flex; align-items: center; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.chat-agent-strip-icon { flex: none; color: var(--muted); }
+.chat-agent-chip { flex: 0 1 auto; min-width: 0; max-width: 280px; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid color-mix(in srgb, var(--claude) 40%, var(--line)); border-radius: 999px; background: var(--panel); color: var(--text); font: 12.5px var(--font); cursor: pointer; }
+.chat-agent-chip:hover { background: var(--panel-2); }
+.chat-agent-chip > svg { flex: none; color: var(--claude); }
+.chat-agent-chip b { font-weight: 600; min-width: 0; }
+.chat-agent-chip .mono { font-size: 11.5px; color: var(--muted); min-width: 0; }
+.chat-agent-more { flex: none; color: var(--muted); }
+
+/* 文件：读到的那段带行号（点行号在大窗里打开到那一行），改动列表的文件可以点开，查看器的前后翻 */
+.chat-read-lines { padding: 6px 0; }
+.chat-read-lines > div { display: grid; grid-template-columns: minmax(2.8em, max-content) 1fr; padding-right: 10px; }
+.chat-read-lines > div > span:last-child { white-space: pre-wrap; overflow-wrap: anywhere; }
+.chat-read-no { padding: 0 10px 0 6px; border: 0; background: none; font: inherit; text-align: right; color: var(--muted); opacity: .7; user-select: none; -webkit-user-select: none; }
+button.chat-read-no { cursor: pointer; }
+button.chat-read-no:hover { color: var(--brand); opacity: 1; }
+.chat-file-row { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.chat-files-list li:has(.chat-file-row) { padding: 0; }
+.chat-file-row { padding: 6px 8px; border-radius: 8px; }
+.chat-file-row > svg { flex: none; color: var(--muted); }
+.chat-file-row:hover b { color: var(--brand); }
+.chat-file-row b { font-weight: 600; }
+.chat-file-dir { margin-left: 6px; color: var(--muted); }
+.chat-fv-nav { display: inline-flex; align-items: center; gap: 0; font-variant-numeric: tabular-nums; }
+.chat-fv-nav .chat-note { margin: 0; min-width: 3.2em; text-align: center; }
+.chat-account { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; }
+.chat-account .btn-icon { width: 26px; height: 26px; min-height: 26px; color: var(--muted); }

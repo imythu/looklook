@@ -19,6 +19,11 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  Copy,
+  Eye,
+  EyeOff,
+  Maximize2,
+  Minimize2,
   CircleDashed,
   CircleStop,
   CornerDownRight,
@@ -74,6 +79,7 @@ import {
   applyEvent,
   backgroundCounts,
   chatRows,
+  conversationAgents,
   conversationResources,
   contentText,
   diffLines,
@@ -84,6 +90,7 @@ import {
   KNOWN_DIALOGS,
   knownDialog,
   latestTodos,
+  maskEmail,
   modelLabel,
   modelView,
   parseJson,
@@ -96,6 +103,7 @@ import {
   toolSummary,
   toolUseIds,
 } from '../shared/chat.js';
+import { copyText } from '../shared/chatCopy.js';
 import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -120,6 +128,9 @@ const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
 const AgentCtx = createContext({ id: 'claude', name: AGENT_NAMES.claude, caps: {} });
 /** 这段对话产出的文件（Codex）：list 给资源栏，links（文字里的写法 → 地址）给回复里的路径变成链接 */
 const ArtifactCtx = createContext({ list: [], links: null, fileUrl: null });
+
+/** 在右侧面板里打开一个子代理的步骤：`openAgent({ id, tool_use_id, … })`（ChatView 提供；对话里的子代理卡片、运行中的子代理条用） */
+const SideCtx = createContext({ openAgent: null });
 
 /** 产出的文件的地址：图片、PDF、音视频、文本直接在浏览器里看，其余下载 */
 const artifactUrl = (id, path, download) => `/api/instances/${id}/chat/artifact?path=${encodeURIComponent(path)}${download ? '&download=1' : ''}`;
@@ -501,15 +512,24 @@ const SUB_STEPS = 25;
  */
 function SubAgent({ id, block, result }) {
   const { t } = useT();
+  const { openAgent } = useContext(SideCtx);
   const [open, setOpen] = useState(true);
   // Codex 的子代理：子会话 id 在参数里，还没交回结果时也能看步骤
-  const { data, items, error, done } = useAgentSteps(id, { agent: result?.extra?.agentId ?? block.input?.agent_thread_id, tool: block.id, enabled: open });
+  const agent = result?.extra?.agentId ?? block.input?.agent_thread_id;
+  const { data, items, error, done } = useAgentSteps(id, { agent, tool: block.id, enabled: open });
   return (
     <div className="chat-sub">
-      <button type="button" className="chat-more" onClick={() => setOpen(!open)} aria-expanded={open}>
-        {open ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />} {t('chat.sub_steps')}
-        {open && !done && <LoaderCircle size={13} className="spin" aria-hidden="true" />}
-      </button>
+      <div className="chat-sub-acts">
+        <button type="button" className="chat-more" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {open ? <ChevronDown size={13} aria-hidden="true" /> : <ChevronRight size={13} aria-hidden="true" />} {t('chat.sub_steps')}
+          {open && !done && <LoaderCircle size={13} className="spin" aria-hidden="true" />}
+        </button>
+        {openAgent && (
+          <button type="button" className="chat-more" onClick={() => openAgent({ id: agent ?? null, tool_use_id: block.id, description: block.input?.description, type: block.input?.subagent_type, model: block.input?.model, prompt: block.input?.prompt })}>
+            <PanelRight size={13} aria-hidden="true" /> {t('chat.agent_open')}
+          </button>
+        )}
+      </div>
       {open && (
         <div className="chat-sub-body">
           {error && !data && <p className="chat-note">{t('chat.sub_waiting')}</p>}
@@ -540,12 +560,7 @@ function ToolBody({ id, block, result }) {
     case 'Edit':
     case 'MultiEdit':
     case 'Write':
-      return (
-        <>
-          <DiffView lines={diffLines(block.name, input, result?.extra)} />
-          {result?.is_error && <ResultText id={id} result={result} />}
-        </>
-      );
+      return <EditBody id={id} block={block} result={result} />;
     case 'TodoWrite':
       return <TodoList todos={input.todos ?? []} />;
     case 'Task':
@@ -575,6 +590,35 @@ function ToolBody({ id, block, result }) {
   }
 }
 
+/** 改动：diff，下面可以打开改后的文件（停在第一处改动） */
+function EditBody({ id, block, result }) {
+  const { t } = useT();
+  const { open: openFile, cwd } = useContext(PreviewCtx);
+  const lines = diffLines(block.name, block.input ?? {}, result?.extra);
+  const path = block.input?.file_path && absPath(block.input.file_path, cwd);
+  // 第一段里改后的行：有行号才知道在哪
+  let focus = null;
+  if (block.name !== 'Write') {
+    for (const l of lines) {
+      if (l.t === '@' && focus) break;
+      if (l.t === '+' && l.no) focus = { from: focus?.from ?? l.no, to: l.no };
+    }
+  }
+  return (
+    <>
+      <DiffView lines={lines} />
+      {result?.is_error && <ResultText id={id} result={result} />}
+      {openFile && path && result && !result.is_error && (
+        <div className="chat-read-acts">
+          <button type="button" className="chat-more" onClick={() => openFile({ ep: fileEndpoints(id), path, focus })}>
+            <Expand size={13} aria-hidden="true" /> {t('chat.edit_open')}
+          </button>
+        </div>
+      )}
+    </>
+  );
+}
+
 const IMAGE_FILE = /\.(png|jpe?g|gif|webp|bmp|svg|avif|ico)$/i;
 
 /**
@@ -588,17 +632,25 @@ function ReadBody({ id, block, result }) {
   const path = block.input?.file_path && absPath(block.input.file_path, cwd);
   const text = Boolean(result?.content?.trim());
   const [whole, setWhole] = useState(!text);
+  const numbered = useMemo(() => (text && !result.is_error ? readLines(result.content) : null), [text, result]);
   if (!path) return <ResultText id={id} result={result} />;
   const ep = fileEndpoints(id);
   const image = IMAGE_FILE.test(path);
+  // 读的是哪几行：参数里的 offset、limit，没有时按读到的行号
+  const from = Number(block.input?.offset) || numbered?.lines[0]?.no || 0;
+  const to = block.input?.limit ? from + Number(block.input.limit) - 1 : numbered?.lines[numbered.lines.length - 1]?.no ?? from;
+  const focus = from > 1 || block.input?.limit ? { from: Math.max(1, from), to } : null;
+  const open = (line) => openFile?.({ ep, path, focus: line ? { from: line, to: line } : focus });
   return (
     <>
       {image ? (
         <ReadImage id={id} path={path} />
       ) : whole ? (
         <div className="chat-read-preview">
-          <FilePreview ep={ep} entry={{ name: fileName(path), path }} sep={pathSep(path)} onClose={() => (text ? setWhole(false) : openFile?.({ ep, path }))} />
+          <FilePreview ep={ep} entry={{ name: fileName(path), path }} sep={pathSep(path)} numbered focus={focus} onClose={() => (text ? setWhole(false) : open())} />
         </div>
+      ) : numbered ? (
+        <ReadLines id={id} result={result} read={numbered} onLine={openFile ? open : null} />
       ) : (
         <ResultText id={id} result={result} />
       )}
@@ -609,11 +661,60 @@ function ReadBody({ id, block, result }) {
           </button>
         )}
         {openFile && (
-          <button type="button" className="chat-more" onClick={() => openFile({ ep, path })}>
+          <button type="button" className="chat-more" onClick={() => open()}>
             <Expand size={13} aria-hidden="true" /> {t('chat.read_full')}
           </button>
         )}
       </div>
+    </>
+  );
+}
+
+/** Claude 读文件的结果是带行号的（`     1→…` 或 `1\t…`）：拆成行号和文字，后面不是这种格式的（提醒之类）单独留着 */
+const READ_LINE = /^\s*(\d+)(?:→|\t)(.*)$/;
+function readLines(content) {
+  const all = content.split('\n');
+  const lines = [];
+  let n = 0;
+  for (; n < all.length; n++) {
+    const m = all[n].match(READ_LINE);
+    if (!m) break;
+    lines.push({ no: Number(m[1]), text: m[2] });
+  }
+  if (lines.length < 2) return null;
+  return { lines, rest: all.slice(n).join('\n').trim() };
+}
+
+/** 读到的那段：带行号的代码块，点行号在大窗里打开、停在那一行 */
+function ReadLines({ id, result, read, onLine }) {
+  const { t } = useT();
+  const text = read.lines.map((l) => l.text).join('\n');
+  const [all, setAll] = useState(false);
+  const shown = all ? read.lines : read.lines.slice(0, DIFF_LIMIT);
+  return (
+    <>
+      <Copyable text={text}>
+        <div className="chat-pre chat-read-lines">
+          {shown.map((l) => (
+            <div key={l.no}>
+              {onLine ? (
+                <button type="button" className="chat-read-no" onClick={() => onLine(l.no)} title={t('chat.read_open_line', { n: l.no })}>
+                  {l.no}
+                </button>
+              ) : (
+                <span className="chat-read-no">{l.no}</span>
+              )}
+              <span>{l.text || ' '}</span>
+            </div>
+          ))}
+        </div>
+      </Copyable>
+      {!all && read.lines.length > DIFF_LIMIT && (
+        <button type="button" className="chat-more" onClick={() => setAll(true)}>
+          {t('chat.show_all_lines', { n: read.lines.length })}
+        </button>
+      )}
+      {result.truncated && <ResultText id={id} result={{ ...result, content: '' }} />}
     </>
   );
 }
@@ -1052,8 +1153,11 @@ function previewTarget(href) {
 const pathSep = (path) => (path.includes('\\') && !path.includes('/') ? '\\' : '/');
 const fileName = (path) => path.split(/[\\/]/).pop() || path;
 
-/** 打开页面里的文件预览：`open({ ep, path })`；`cwd` 是对话所在的目录，补全相对路径（ChatView 提供，读文件的卡片用） */
-const PreviewCtx = createContext({ open: null, cwd: null });
+/**
+ * 打开页面里的文件预览：`open({ ep, path, focus?, list? })`（focus：标出的行 { from, to }；list：前后翻的那组文件）；
+ * `cwd` 是对话所在的目录，补全相对路径；`files`：对话里读过、改过的文件（ChatView 提供）
+ */
+const PreviewCtx = createContext({ open: null, cwd: null, files: null });
 
 /** 相对路径按对话所在的目录补全 */
 function absPath(path, cwd) {
@@ -1062,25 +1166,103 @@ function absPath(path, cwd) {
   return `${cwd.replace(/[\\/]+$/, '')}${sep}${path.replace(/^\.[\\/]/, '')}`;
 }
 
-function FileViewer({ target, onClose }) {
-  const { path, ep } = target;
+/** 对话里读过、改过的文件（按最后一次碰到的先后，最近的在后），文件查看器里前后翻用 */
+function conversationFiles(items, cwd) {
+  const out = new Map();
+  for (const it of items) {
+    if (it.k !== 'assistant') continue;
+    for (const b of it.blocks ?? []) {
+      const p = b.t === 'tool_use' && FILE_TOOLS.has(b.name) && (b.input?.file_path ?? b.input?.notebook_path);
+      if (!p || typeof p !== 'string') continue;
+      const abs = absPath(p, cwd);
+      out.delete(abs);
+      out.set(abs, true);
+    }
+  }
+  return [...out.keys()];
+}
+const FILE_TOOLS = new Set(['Read', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit']);
+
+/**
+ * 对话里点开的文件：全屏（手机）/ 居中大窗（电脑）。文字带行号，`focus` 那几行标出来并滚过去（读的那段、改的地方）；
+ * 能复制路径；`list`（同一组文件：改动列表，或者对话里读过、改过的文件）里有它时，标题栏和 ← → 前后翻。
+ */
+function FileViewer({ target, onTarget, onClose }) {
+  const { t } = useT();
+  const { files } = useContext(PreviewCtx);
+  const { path, ep, focus } = target;
   const sep = pathSep(path);
   const name = fileName(path);
+  const list = (target.list ?? files ?? []).includes(path) ? target.list ?? files : null;
+  const at = list ? list.indexOf(path) : -1;
+  const go = useCallback(
+    (d) => {
+      const next = list?.[at + d];
+      if (next) onTarget({ ep, path: next, list: target.list });
+    },
+    [list, at, ep, target.list, onTarget],
+  );
   useEffect(() => {
     const key = (e) => {
-      if (e.key !== 'Escape') return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        onClose();
+        return;
+      }
+      // ← →：前后翻（在输入框里、按着修饰键时不管）
+      if ((e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') || e.altKey || e.ctrlKey || e.metaKey || e.shiftKey || e.target.closest?.('input, textarea')) return;
+      if (!list || list.length < 2) return;
       e.preventDefault();
       e.stopPropagation();
-      onClose();
+      go(e.key === 'ArrowLeft' ? -1 : 1);
     };
     window.addEventListener('keydown', key, true);
     return () => window.removeEventListener('keydown', key, true);
-  }, [onClose]);
+  }, [onClose, go, list]);
+  const extra = (
+    <>
+      {list && list.length > 1 && (
+        <span className="chat-fv-nav">
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => go(-1)} disabled={at <= 0} aria-label={t('chat.file_prev')} title={`${t('chat.file_prev')} (←)`}>
+            <ChevronLeft size={17} />
+          </button>
+          <span className="chat-note">
+            {at + 1}/{list.length}
+          </span>
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => go(1)} disabled={at >= list.length - 1} aria-label={t('chat.file_next')} title={`${t('chat.file_next')} (→)`}>
+            <ChevronRight size={17} />
+          </button>
+        </span>
+      )}
+      <CopyPath path={path} />
+    </>
+  );
   return createPortal(
     <div className="chat-file-viewer" role="dialog" aria-modal="true" aria-label={name} onClick={(e) => e.target === e.currentTarget && onClose()}>
-      <FilePreview key={path} ep={ep} entry={{ name, path }} sep={sep} onClose={onClose} />
+      <FilePreview key={`${path}:${focus?.from ?? ''}`} ep={ep} entry={{ name, path }} sep={sep} onClose={onClose} numbered focus={focus} extra={extra} />
     </div>,
     document.body,
+  );
+}
+
+/** 复制文件的完整路径（图标按钮，复制好了打个勾） */
+function CopyPath({ path }) {
+  const { t } = useT();
+  const [done, setDone] = useState(false);
+  useEffect(() => {
+    if (!done) return undefined;
+    const timer = setTimeout(() => setDone(false), 1500);
+    return () => clearTimeout(timer);
+  }, [done]);
+  const copy = async () => {
+    if (await copyText(path)) setDone(true);
+    else window.prompt('', path);
+  };
+  return (
+    <button type="button" className="btn btn-plain btn-icon" onClick={copy} aria-label={t('chat.copy_path')} title={`${t('chat.copy_path')}\n${path}`}>
+      {done ? <Check size={16} /> : <Copy size={16} />}
+    </button>
   );
 }
 
@@ -1098,7 +1280,7 @@ function usePreviewLinks() {
     setTarget(tgt);
   }, []);
   const close = useCallback(() => setTarget(null), []);
-  const viewer = target && <FileViewer target={target} onClose={close} />;
+  const viewer = target && <FileViewer target={target} onTarget={setTarget} onClose={close} />;
   return { onClick, open: setTarget, viewer };
 }
 
@@ -3027,6 +3209,10 @@ function ShellTask({ id, shell }) {
       </div>
       {open && (
         <div className="chat-task-body">
+          {/* 上面一行放不下完整的命令：展开后完整显示，可以复制 */}
+          <Copyable text={shell.command}>
+            <Pre text={`$ ${shell.command}`} className="cmd" />
+          </Copyable>
           {out == null ? <LoaderCircle size={14} className="spin" /> : out.missing ? <p className="chat-note">{t('chat.task_no_output')}</p> : <Pre text={out.text || t('chat.task_empty_output')} />}
           {out?.truncated && <p className="chat-note">{t('chat.task_output_tail')}</p>}
           {shell.summary && <p className="chat-note">{shell.summary}</p>}
@@ -3039,8 +3225,9 @@ function ShellTask({ id, shell }) {
 /** 一个子代理的步骤（“任务”面板里点开） */
 function AgentDetail({ id, agent, onBack }) {
   const { t } = useT();
+  const { wide, onWide } = useContext(SideCtx);
   const { data, items, error, done } = useAgentSteps(id, { agent: agent.id, tool: agent.tool_use_id, enabled: true });
-  const live = agent.state === 'running' && !done;
+  const live = (agent.state ?? 'running') === 'running' && !done;
   const body = useRef(null);
   const steps = useRef(null);
   // 跟着最新的步骤走（停在底部时）
@@ -3051,16 +3238,69 @@ function AgentDetail({ id, agent, onBack }) {
         <button type="button" className="btn btn-plain btn-icon" onClick={onBack} aria-label={t('chat.back')} title={t('chat.back')}>
           <ArrowLeft size={18} />
         </button>
-        <TaskState state={live ? 'running' : agent.state} />
-        <b className="grow ellipsis">{agent.description || agent.type}</b>
+        <TaskState state={live ? 'running' : done ? 'done' : agent.state ?? 'ended'} />
+        <b className="grow ellipsis" title={agent.description || agent.type || ''}>
+          {agent.description || agent.type || t('chat.agents_title')}
+        </b>
+        {onWide && (
+          <button type="button" className="btn btn-plain btn-icon" onClick={() => onWide(!wide)} aria-pressed={wide} aria-label={t(wide ? 'chat.side_narrow' : 'chat.side_wide')} title={t(wide ? 'chat.side_narrow' : 'chat.side_wide')}>
+            {wide ? <Minimize2 size={16} /> : <Maximize2 size={16} />}
+          </button>
+        )}
       </header>
       <div className="chat-side-body" ref={body}>
-        <p className="chat-note">{[agent.type, agent.model && modelLabel(agent.model), agent.background ? t('chat.agent_background') : null, agent.worktree ? t('chat.agent_worktree') : null].filter(Boolean).join(' · ')}</p>
+        <p className="chat-note">
+          {[agent.type, agent.model && modelLabel(agent.model), agent.background ? t('chat.agent_background') : null, agent.worktree ? t('chat.agent_worktree') : null, t('chat.agent_steps', { count: stepCount(items) })].filter(Boolean).join(' · ')}
+        </p>
+        {/* 派给它的任务说明（Codex 的是加密的，没有） */}
+        {agent.prompt && (
+          <details className="chat-thinking chat-agent-prompt">
+            <summary>{t('chat.agent_prompt')}</summary>
+            <Pre text={agent.prompt} />
+          </details>
+        )}
         {error && !data && <p className="chat-note">{t('chat.sub_waiting')}</p>}
         <div className="chat-items" ref={steps}>
           <Rows id={id} items={items} live={live} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * 输入框上面一条：正在跑的子代理（每个一枚，显示名字和正在做的那一步），点了在右侧面板里看它的步骤。
+ * Claude 按服务端的任务列表（后台运行的子代理只有它知道还在不在跑），Codex 按对话条目。
+ */
+function AgentStrip({ id, items, live, bg, onOpen }) {
+  const { t } = useT();
+  const { id: agent } = useContext(AgentCtx);
+  const fromItems = useMemo(() => conversationAgents(items, live).filter((a) => a.state === 'running'), [items, live]);
+  const claude = agent === 'claude';
+  const { data } = usePoll(`/instances/${id}/chat/tasks`, { enabled: claude && (bg.subagent > 0 || fromItems.length > 0), every: 3000 });
+  const running = claude ? (data?.agents ?? []).filter((a) => a.state === 'running') : fromItems;
+  // 服务端还没列出来（刚派出去）时先按对话条目
+  const list = running.length || !claude ? running : fromItems;
+  if (!list.length) return null;
+  const shown = list.slice(0, 3);
+  return (
+    <div className="chat-agent-strip" role="group" aria-label={t('chat.agents_running', { count: list.length })}>
+      <Bot size={14} aria-hidden="true" className="chat-agent-strip-icon" />
+      {shown.map((a) => {
+        const step = a.last_tool ? `${a.last_tool.name} ${toolSummary(a.last_tool.name, a.last_tool.input)}` : null;
+        return (
+          <button key={a.id ?? a.tool_use_id} type="button" className="chat-agent-chip" onClick={() => onOpen(a)} title={[a.description, step].filter(Boolean).join('\n')}>
+            <LoaderCircle size={12} className="spin" aria-hidden="true" />
+            <b className="ellipsis">{a.description || a.type || t('chat.agents_title')}</b>
+            {step && <span className="ellipsis mono">{step}</span>}
+          </button>
+        );
+      })}
+      {list.length > shown.length && (
+        <button type="button" className="chat-agent-chip chat-agent-more" onClick={() => onOpen(null)}>
+          +{list.length - shown.length}
+        </button>
+      )}
     </div>
   );
 }
@@ -3106,6 +3346,7 @@ function usePoll(url, { enabled = true, every = 0, deps = [] } = {}) {
 
 function ChangesTab({ id, items, onTab }) {
   const { t } = useT();
+  const { open: openFile, cwd } = useContext(PreviewCtx);
   // 对话有新内容时重新取（改动只会在工具调用之后出现）
   const n = items.length;
   const [tick, setTick] = useState(0);
@@ -3128,13 +3369,23 @@ function ChangesTab({ id, items, onTab }) {
             <DiffStat stat={sum} />
           </p>
           <ul className="chat-files-list">
-            {files.map((f) => (
-              <li key={f.path} title={f.path}>
-                <FilePen size={14} aria-hidden="true" />
-                <span className="ellipsis mono">{f.path.split(/[\\/]/).slice(-2).join('/')}</span>
-                <DiffStat stat={f} />
-              </li>
-            ))}
+            {files.map((f) => {
+              const abs = absPath(f.path, cwd);
+              const open = () => openFile?.({ ep: fileEndpoints(id), path: abs, list: files.map((x) => absPath(x.path, cwd)) });
+              return (
+                <li key={f.path} title={f.path}>
+                  <button type="button" className="chat-file-row" onClick={open} disabled={!openFile} aria-label={`${t('chat.file_open')} ${f.path}`}>
+                    <FilePen size={14} aria-hidden="true" />
+                    <span className="ellipsis mono">
+                      {/* 文件名突出，目录淡一点 */}
+                      <b>{fileName(f.path)}</b>
+                      <span className="chat-file-dir">{relDir(abs, cwd)}</span>
+                    </span>
+                    <DiffStat stat={f} />
+                  </button>
+                </li>
+              );
+            })}
           </ul>
           <Button variant="secondary" icon={GitBranch} onClick={() => onTab('git')}>
             {t('chat.changes_git')}
@@ -3145,20 +3396,97 @@ function ChangesTab({ id, items, onTab }) {
   );
 }
 
-/** 子代理和后台命令。打开时每 2 秒刷新；点子代理看它的每一步，后台命令可以看输出、停止。 */
-function TasksTab({ id }) {
+/** 文件所在的目录，相对对话所在的目录写（在里面时） */
+function relDir(abs, cwd) {
+  const dir = abs.slice(0, Math.max(0, abs.search(/[\\/][^\\/]*$/)));
+  const base = cwd?.replace(/[\\/]+$/, '');
+  if (base && dir === base) return '';
+  if (base && dir.startsWith(base) && /[\\/]/.test(dir[base.length])) return dir.slice(base.length + 1);
+  return dir.replace(/^\/(home|Users)\/[^/]+/, '~');
+}
+
+/** 子代理的步骤数（工具调用次数） */
+const stepCount = (items) => items.reduce((n, it) => n + (it.k === 'assistant' ? (it.blocks ?? []).filter((b) => b.t === 'tool_use').length : 0), 0);
+
+/** 选中的子代理：按 id 找，没有 id（还没交回结果）时按启动它的工具调用 */
+const sameAgent = (a, sel) => Boolean(sel && ((sel.id && a.id === sel.id) || (sel.tool_use_id && a.tool_use_id === sel.tool_use_id)));
+
+/** 子代理列表里的一行：状态、名字、类型 · 模型 · 步数 · 用时，运行中的显示正在做的那一步 */
+function AgentRow({ a, onOpen }) {
   const { t } = useT();
-  const [agentId, setAgentId] = useState(null);
+  const last = a.last_tool ? `${a.last_tool.name} ${toolSummary(a.last_tool.name, a.last_tool.input)}` : a.last_text;
+  const started = a.started ? Date.parse(a.started) : null;
+  const end = a.state === 'running' ? Date.now() : a.updated;
+  return (
+    <li className="chat-task" data-state={a.state}>
+      <button type="button" className="chat-task-head chat-task-main" onClick={() => onOpen(a)}>
+        <TaskState state={a.state} />
+        <span className="chat-task-text">
+          <b className="ellipsis">{a.description || a.type || t('chat.agents_title')}</b>
+          <span className="chat-note ellipsis">
+            {[a.type, a.model && modelLabel(a.model), a.steps != null ? t('chat.agent_steps', { count: a.steps }) : null, a.runs > 1 ? t('chat.agent_runs', { count: a.runs }) : null, started && end ? duration(end - started) : null, a.background ? t('chat.agent_background') : null].filter(Boolean).join(' · ')}
+          </span>
+          {last && (
+            <span className="chat-note ellipsis mono">
+              {a.state === 'running' ? '▸ ' : ''}
+              {last}
+            </span>
+          )}
+        </span>
+        <ChevronRight size={15} aria-hidden="true" />
+      </button>
+    </li>
+  );
+}
+
+/** 用一秒一跳的时钟刷新用时 */
+function useTick(on = true) {
   const [, tick] = useReducer((n) => n + 1, 0);
-  const { data, error } = usePoll(`/instances/${id}/chat/tasks`, { every: 2000 });
   useEffect(() => {
+    if (!on) return undefined;
     const iv = setInterval(tick, 1000);
     return () => clearInterval(iv);
-  }, []);
+  }, [on]);
+}
+
+/**
+ * Codex 的子代理（从对话条目里找，没有服务端的任务列表）：点开看它的每一步。
+ * sel / onSel：选中的子代理（ChatView 管，对话里的卡片也能直接打开到这里）。
+ */
+function AgentsTab({ id, items, live, sel, onSel }) {
+  const { t } = useT();
+  const agents = useMemo(() => conversationAgents(items, live).reverse(), [items, live]);
+  useTick(agents.some((a) => a.state === 'running'));
+  if (sel) return <AgentDetail id={id} agent={agents.find((a) => sameAgent(a, sel)) ?? sel} onBack={() => onSel(null)} />;
+  const running = agents.filter((a) => a.state === 'running').length;
+  return (
+    <>
+      <h4 className="chat-side-title">
+        <Bot size={15} aria-hidden="true" /> {t('chat.agents_title')}
+        <span className="chat-note">{running ? t('chat.n_running', { count: running }) : agents.length || ''}</span>
+      </h4>
+      {agents.length === 0 ? (
+        <p className="chat-note">{t('chat.agents_empty')}</p>
+      ) : (
+        <ul className="chat-tasks">
+          {agents.map((a) => (
+            <AgentRow key={a.id ?? a.tool_use_id} a={a} onOpen={onSel} />
+          ))}
+        </ul>
+      )}
+    </>
+  );
+}
+
+/** 子代理和后台命令。打开时每 2 秒刷新；点子代理看它的每一步，后台命令可以看输出、停止。sel / onSel 同 AgentsTab */
+function TasksTab({ id, sel, onSel }) {
+  const { t } = useT();
+  const { data, error } = usePoll(`/instances/${id}/chat/tasks`, { every: 2000 });
+  useTick();
   const agents = data?.agents ?? [];
   const shells = [...(data?.shells ?? [])].reverse();
-  const agent = agents.find((a) => a.id === agentId);
-  if (agent) return <AgentDetail id={id} agent={agent} onBack={() => setAgentId(null)} />;
+  // 对话里的卡片打开的、任务列表里还没有的（刚派出去）：先按卡片上的显示
+  if (sel) return <AgentDetail id={id} agent={agents.find((a) => sameAgent(a, sel)) ?? sel} onBack={() => onSel(null)} />;
   const runningAgents = agents.filter((a) => a.state === 'running').length;
   const runningShells = shells.filter((s) => s.state === 'running').length + (data?.unlisted_shells ?? 0);
   return (
@@ -3175,31 +3503,9 @@ function TasksTab({ id }) {
             <p className="chat-note">{t('chat.agents_empty')}</p>
           ) : (
             <ul className="chat-tasks">
-              {agents.map((a) => {
-                const last = a.last_tool ? `${a.last_tool.name} ${toolSummary(a.last_tool.name, a.last_tool.input)}` : a.last_text;
-                const started = a.started ? Date.parse(a.started) : null;
-                const end = a.state === 'running' ? Date.now() : a.updated;
-                return (
-                  <li key={a.id} className="chat-task" data-state={a.state}>
-                    <button type="button" className="chat-task-head chat-task-main" onClick={() => setAgentId(a.id)}>
-                      <TaskState state={a.state} />
-                      <span className="chat-task-text">
-                        <b className="ellipsis">{a.description || a.type}</b>
-                        <span className="chat-note ellipsis">
-                          {[a.type, a.model && modelLabel(a.model), t('chat.agent_steps', { count: a.steps }), started && end ? duration(end - started) : null, a.background ? t('chat.agent_background') : null].filter(Boolean).join(' · ')}
-                        </span>
-                        {last && (
-                          <span className="chat-note ellipsis mono">
-                            {a.state === 'running' ? '▸ ' : ''}
-                            {last}
-                          </span>
-                        )}
-                      </span>
-                      <ChevronRight size={15} aria-hidden="true" />
-                    </button>
-                  </li>
-                );
-              })}
+              {agents.map((a) => (
+                <AgentRow key={a.id} a={a} onOpen={onSel} />
+              ))}
             </ul>
           )}
           <h4 className="chat-side-title">
@@ -3260,6 +3566,23 @@ function ResetAt({ at }) {
 }
 const resetText = (_t, iso) => (iso ? <ResetAt at={iso} /> : '');
 
+/** 账号邮箱：默认打码，点眼睛显示完整的（截屏、共享屏幕时不露出来） */
+function MaskedEmail({ email }) {
+  const { t } = useT();
+  const [show, setShow] = useState(false);
+  const label = t(show ? 'chat.email_hide' : 'chat.email_show');
+  return (
+    <>
+      <span className="ellipsis mono" title={show ? email : undefined}>
+        {show ? email : maskEmail(email)}
+      </span>
+      <button type="button" className="btn btn-plain btn-icon" onClick={() => setShow(!show)} aria-pressed={show} aria-label={label} title={label}>
+        {show ? <EyeOff size={15} /> : <Eye size={15} />}
+      </button>
+    </>
+  );
+}
+
 function UsageTab({ id, status, onCompact }) {
   const { t } = useT();
   const { id: agentId, name: agentName } = useContext(AgentCtx);
@@ -3287,12 +3610,19 @@ function UsageTab({ id, status, onCompact }) {
           </>
         )}
       </dl>
-      {lim?.account && (
+      {/* Claude：订阅账号（data.account）；Codex：登录的账号（limits.account，ChatGPT 登录才有邮箱） */}
+      {(data.account?.email || lim?.account) && (
         <dl className="chat-kv">
           <dt>{t('chat.usage_account')}</dt>
-          <dd className="ellipsis" title={lim.account.email ?? ''}>
-            {lim.account.email ?? lim.account.type ?? '—'}
-          </dd>
+          <dd className="chat-account">{data.account?.email || lim?.account?.email ? <MaskedEmail email={data.account?.email || lim.account.email} /> : lim.account.type ?? '—'}</dd>
+          {data.account?.org && (
+            <>
+              <dt>{t('chat.usage_org')}</dt>
+              <dd className="ellipsis" title={data.account.org}>
+                {data.account.org}
+              </dd>
+            </>
+          )}
           {(lim.account.plan || lim.plan) && (
             <>
               <dt>{t('chat.usage_plan')}</dt>
@@ -3367,7 +3697,7 @@ function ConfigTab({ id }) {
 }
 
 const SIDE_TABS = ['changes', 'outline', 'tasks', 'usage', 'config'];
-const CODEX_TABS = ['changes', 'outline', 'resources', 'usage'];
+const CODEX_TABS = ['changes', 'outline', 'agents', 'resources', 'usage'];
 
 const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
 const ART_ICONS = { image: ImageIcon, pdf: FileText, video: FileText, audio: FileText, text: FileText, file: FileText };
@@ -3485,20 +3815,28 @@ function ResourcesTab({ id, items }) {
   );
 }
 
-function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact, outline }) {
+function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact, outline, agentSel, onAgentSel, wide }) {
   const { t } = useT();
-  // 资源栏先只给 Codex
+  // 资源栏、子代理栏先只给 Codex（Claude 的子代理在“任务”里，和后台命令一起）
   const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : CODEX_TABS;
   const bg = backgroundCounts(status);
   const running = (bg.subagent ?? 0) + (bg.shell ?? 0);
+  const live = status?.phase === 'running' || status?.phase === 'approval';
+  const codexRunning = useMemo(() => (tabs === CODEX_TABS ? conversationAgents(items, live).filter((a) => a.state === 'running').length : 0), [tabs, items, live]);
+  // 换栏时回到列表
+  const pick = (k) => {
+    onAgentSel(null);
+    onTab(k);
+  };
   return (
-    <aside className="chat-side" aria-label={t('chat.side_toggle')}>
+    <aside className="chat-side" data-wide={wide && agentSel ? '' : undefined} aria-label={t('chat.side_toggle')}>
       <header className="chat-side-head">
         <nav className="chat-side-tabs" role="tablist">
           {tabs.map((k) => (
-            <button key={k} type="button" role="tab" aria-selected={tab === k} onClick={() => onTab(k)}>
+            <button key={k} type="button" role="tab" aria-selected={tab === k} onClick={() => pick(k)}>
               {t(`chat.side_${k}`)}
               {k === 'tasks' && running > 0 && <span className="chat-side-count">{running}</span>}
+              {k === 'agents' && codexRunning > 0 && <span className="chat-side-count">{codexRunning}</span>}
             </button>
           ))}
         </nav>
@@ -3508,7 +3846,8 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
       </header>
       <div className="chat-side-body">
         {tab === 'changes' && <ChangesTab id={id} items={items} onTab={onTermTab} />}
-        {tab === 'tasks' && <TasksTab id={id} />}
+        {tab === 'tasks' && <TasksTab id={id} sel={agentSel} onSel={onAgentSel} />}
+        {tab === 'agents' && <AgentsTab id={id} items={items} live={live} sel={agentSel} onSel={onAgentSel} />}
         {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
         {tab === 'config' && <ConfigTab id={id} />}
         {tab === 'resources' && <ResourcesTab id={id} items={items} />}
@@ -3764,7 +4103,19 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   const files = usePreviewLinks();
   const knownDir = useSessions()?.known(id)?.workdir;
   const cwd = status?.cwd ?? knownDir ?? null;
-  const previewCtx = useMemo(() => ({ open: files.open, cwd }), [files.open, cwd]);
+  const convFiles = useMemo(() => conversationFiles(items, cwd), [items, cwd]);
+  const previewCtx = useMemo(() => ({ open: files.open, cwd, files: convFiles }), [files.open, cwd, convFiles]);
+  // 右侧面板里打开着的子代理（对话里的卡片、运行中的子代理条、面板里的列表都能打开）；看步骤时面板可以加宽
+  const [agentSel, setAgentSel] = useState(null);
+  const [wide, setWide] = useState(false);
+  const openAgent = useCallback(
+    (a) => {
+      setAgentSel(a);
+      setSide(agentId === 'claude' ? 'tasks' : 'agents');
+    },
+    [agentId, setSide],
+  );
+  const sideCtx = useMemo(() => ({ openAgent, wide, onWide: setWide }), [openAgent, wide]);
   const artifactCtx = useMemo(() => {
     const list = arts?.items ?? [];
     const links = {};
@@ -3800,7 +4151,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   const title = known?.agent_title || known?.name || '';
   const toast = useToast();
   const onAction = (a) => {
-    if (SIDE_TABS.includes(a)) setSide(a);
+    if (SIDE_TABS.includes(a) || CODEX_TABS.includes(a)) setSide(a);
   };
   const compact = () => api.post(`/instances/${id}/chat/input`, { text: '/compact', images: [] }).catch((e) => toast(errorText(t, e), 'error'));
   const loading = useRef(false);
@@ -3834,6 +4185,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
     <AgentCtx.Provider value={agentCtx}>
       <ArtifactCtx.Provider value={artifactCtx}>
       <PreviewCtx.Provider value={previewCtx}>
+      <SideCtx.Provider value={sideCtx}>
     <div className="chat-view" data-side={side ? '' : undefined} data-agent={agentId} onClick={files.onClick}>
       {files.viewer}
       <div className="chat-col">
@@ -3876,7 +4228,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
               {status?.pending && <PendingCard id={id} pending={status.pending} active={active} />}
               {/* 这一轮做完了，后台还有命令、子代理在跑 */}
               {phase === 'idle' && (bg.shell > 0 || bg.subagent > 0) && (
-                <button type="button" className="chat-event chat-bg-note" onClick={() => setSide('tasks')}>
+                <button type="button" className="chat-event chat-bg-note" onClick={() => openAgent(null)}>
                   <LoaderCircle size={13} className="spin" aria-hidden="true" />
                   {[bg.subagent > 0 && t('chat.bg_agents_still', { count: bg.subagent }), bg.shell > 0 && t('chat.bg_shells_still', { count: bg.shell })].filter(Boolean).join(t('chat.and'))}
                   <span className="chat-more">{t('chat.view')}</span>
@@ -3912,12 +4264,32 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           {status?.limit?.waiting && phase !== 'tui' && <LimitWait id={id} waiting={status.limit.waiting} />}
           {agentId === 'claude' && phase === 'idle' && !status?.limit?.waiting && ACCOUNT_ERRORS.includes(status?.error) && <AccountFail id={id} error={status.error} />}
           {agentId === 'codex' && status != null && <CodexSetup id={id} phase={phase} onTab={onTab} />}
+          {phase !== 'detached' && <AgentStrip id={id} items={items} live={live} bg={bg} onOpen={openAgent} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
           <Composer id={id} active={active} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
       </div>
-      {side && <SidePanel id={id} tab={side} onTab={setSide} onClose={() => setSide(null)} status={status} items={items} onTermTab={(tab) => onTab?.(tab)} onCompact={compact} outline={{ list, inner, agent: agentName, title, more: chat.start > 0 }} />}
+      {side && (
+        <SidePanel
+          id={id}
+          tab={side}
+          onTab={setSide}
+          onClose={() => {
+            setSide(null);
+            setAgentSel(null);
+          }}
+          status={status}
+          items={items}
+          onTermTab={(tab) => onTab?.(tab)}
+          onCompact={compact}
+          outline={{ list, inner, agent: agentName, title, more: chat.start > 0 }}
+          agentSel={agentSel}
+          onAgentSel={setAgentSel}
+          wide={wide}
+        />
+      )}
     </div>
+      </SideCtx.Provider>
       </PreviewCtx.Provider>
       </ArtifactCtx.Provider>
     </AgentCtx.Provider>
