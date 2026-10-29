@@ -255,17 +255,24 @@
         try { typeof fn === 'function' ? fn.call(self, ev) : fn.handleEvent(ev); } catch (e) { setTimeout(function () { throw e; }); }
       });
     },
+    // Blob 要异步读出来：它后面发的消息排在它后面（否则会插队），没有排着的就直接发
     send: function (data) {
       if (this.readyState === 0) throw new DOMException('Still in CONNECTING state.', 'InvalidStateError');
       if (this.readyState !== 1) return;
       var self = this;
-      if (typeof data === 'string') return void self._h.send(true, new TextEncoder().encode(data));
-      if (data instanceof Blob) {
-        data.arrayBuffer().then(function (b) { if (self.readyState === 1) self._h.send(false, new Uint8Array(b)); });
-        return;
-      }
-      var bytes = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
-      self._h.send(false, bytes);
+      var text = typeof data === 'string';
+      var body;
+      if (text) body = new TextEncoder().encode(data);
+      else if (data instanceof Blob) body = data.arrayBuffer().then(function (b) { return new Uint8Array(b); });
+      else body = ArrayBuffer.isView(data) ? new Uint8Array(data.buffer, data.byteOffset, data.byteLength) : new Uint8Array(data);
+      if (!self._q && !(body instanceof Promise)) return void self._h.send(text, body);
+      // 排队时先复制一份：WebSocket.send 之后调用方可以改它的缓冲区
+      if (!(body instanceof Promise) && !text) body = body.slice();
+      var q = (self._q || Promise.resolve()).then(function () { return body; }).then(function (b) {
+        if (self.readyState === 1) self._h.send(text, b);
+      }, function () {});
+      self._q = q;
+      q.then(function () { if (self._q === q) self._q = null; });
     },
     close: function () {
       if (this.readyState >= 2) return;

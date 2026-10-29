@@ -584,6 +584,12 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     if let Err(e) = chat.publish(ui_addr) {
         tracing::warn!(error = %e, "无法写入对话界面的 hook 配置");
     }
+    // 用过 DSH 的电脑装好看看的 DSH 插件（见 agents.rs），用户自己运行的 DSH 也能直接在看看里打开
+    tokio::task::spawn_blocking(|| {
+        if let Err(e) = agents::ensure_dsh_web_plugin(false) {
+            tracing::warn!(error = %e, "无法安装 DSH 插件");
+        }
+    });
     let open_base = app.write_open_file()?;
 
     // `shutdown` 现在是调用者传进来的（不再在这里创建）：托盘的“停止”菜单（任务 7b，

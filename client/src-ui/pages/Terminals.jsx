@@ -28,7 +28,7 @@ import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useStatus } from "../App.jsx";
-import { api, deviceApi, rememberTerminals, terminalDevice } from "../shared/api.js";
+import { api, deviceApi, rememberTerminals, selectedDevice, terminalDevice } from "../shared/api.js";
 import { deviceName, osLabel, useDevices } from "../shared/devices.jsx";
 import { urlHost } from "../shared/host.js";
 import { LaunchIcon } from "../shared/brands.jsx";
@@ -234,13 +234,21 @@ function stateOf(i) {
 // 新窗口打开管理台的终端页（带文件面板、粘贴、拖放），不再直接打开裸 /i/{id}/。
 const tabUrl = (inst) => `/t/${inst.id}`;
 
-// 在浏览器中单独打开 DSH（平时在会话标签里打开，见 WebPane.jsx）：打开它的本机网页映射（本机、外面都是同一个地址），带着这次启动的口令。
-// 桌面应用里交给看看用系统浏览器打开（应用窗口里登录不上 DSH）；
-// 浏览器里先在点击里同步开一个空白窗口（不会被当作弹窗拦截），后台确保 DSH 在运行、映射可用后再跳过去。
+/** DSH 网页界面的地址 /w/{id}/（见 src/gateway/dsh.rs）。多台电脑时带上它所在的电脑（__lldev，启动页 / 本机客户端按它转给那台电脑，之后的请求按会话 id 转）。 */
+export function webSrc(id) {
+  const device = terminalDevice(id) ?? selectedDevice();
+  return device ? `/w/${id}/?__lldev=${encodeURIComponent(device)}` : `/w/${id}/`;
+}
+
+// 在浏览器中单独打开 DSH（平时在会话标签里打开，见 WebPane.jsx）。
+// 桌面应用里交给看看用系统浏览器直接打开 DSH 自己的本机地址（带口令；应用窗口里登录不上 DSH）；
+// 浏览器里打开网关的 /w/{id}/（本机、局域网、远程都能用，远程经管理台的通道）：先在点击里同步开一个空白窗口
+// （不会被当作弹窗拦截），后台确保 DSH 能登录上再跳过去。
 export async function openDsh(inst, t, toast) {
+  const dev = deviceApi(terminalDevice(inst.id));
   if (window.__LOOKLOOK_DESKTOP__) {
     try {
-      const r = await api.post(`/instances/${inst.id}/page?open=1`);
+      const r = await dev.post(`/instances/${inst.id}/page?open=1`);
       if (!r.opened) toast(t("dsh.not_opened"), "error");
     } catch (e) {
       toast(errorText(t, e), "error");
@@ -249,13 +257,13 @@ export async function openDsh(inst, t, toast) {
   }
   const w = window.open("about:blank", "_blank");
   try {
-    const r = await api.post(`/instances/${inst.id}/page`);
-    // 没有口令打开了也只是 DSH 的“需要认证”页
+    const r = await dev.post(`/instances/${inst.id}/page`);
+    // 没登录上时打开了也只是 DSH 的“需要认证”页
     if (!r.ready) {
       w?.close();
       toast(t("dsh.not_opened"), "error");
-    } else if (w) w.location.href = r.url;
-    else window.open(r.url, "_blank", "noopener");
+    } else if (w) w.location.href = webSrc(inst.id);
+    else window.open(webSrc(inst.id), "_blank", "noopener");
   } catch (e) {
     w?.close();
     toast(errorText(t, e), "error");

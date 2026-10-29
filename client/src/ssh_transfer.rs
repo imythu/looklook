@@ -1100,7 +1100,9 @@ pub(crate) mod e2e {
 
     pub(crate) fn app(home: &Path, server: &str, dev: &str, key: SigningKey) -> App {
         let store = Arc::new(Store::memory().unwrap());
-        let paths = Paths { home: home.into(), ttyd: None, mux: None, fonts: None, trzsz: None };
+        // 要真的打开终端的测试用 LOOKLOOK_TEST_TTYD 给出 ttyd
+        let ttyd = std::env::var_os("LOOKLOOK_TEST_TTYD").map(std::path::PathBuf::from);
+        let paths = Paths { home: home.into(), ttyd, mux: None, fonts: None, trzsz: None };
         let account = test_support::logged_in(store.clone(), paths.clone(), server, dev, key);
         let instances = crate::instances::Instances::new(store.clone(), paths.clone());
         Arc::new(Inner {

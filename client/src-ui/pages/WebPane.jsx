@@ -5,19 +5,13 @@ import { ArrowLeft, Check, Circle, CircleX, Expand, ExternalLink, Globe, Maximiz
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { deviceApi, selectedDevice, terminalDevice } from '../shared/api.js';
+import { deviceApi, terminalDevice } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { useRouter } from '../shared/router.jsx';
 import { sessionTitle } from '../shared/sessions.jsx';
 import { APP_CHROME } from '../shared/termTheme.js';
 import { Button, CopyButton, Spinner, useToast } from '../shared/ui.jsx';
-import { openDsh } from './Terminals.jsx';
-
-/** 网页界面的地址。多台电脑时带上它所在的电脑（__lldev，启动页 / 本机客户端按它转给那台电脑，之后的请求按会话 id 转）。 */
-export function webSrc(id) {
-  const device = terminalDevice(id) ?? selectedDevice();
-  return device ? `/w/${id}/?__lldev=${encodeURIComponent(device)}` : `/w/${id}/`;
-}
+import { openDsh, webSrc } from './Terminals.jsx';
 
 /**
  * 准备好再显示 iframe：`state` 是 starting（等电脑把 DSH 启动、登录好）/ ready / slow（还没好，等着重试）/ error。
@@ -85,7 +79,7 @@ export function DshProgress({ id, poll = true }) {
     };
   }, [id, poll]);
   if (!p?.started_at) return null;
-  const steps = p.steps.filter((s) => s.state !== 'wait' || p.flow === 'external' || !['tunnel', 'open'].includes(s.key));
+  const steps = p.steps.filter((s) => s.state !== 'wait' || p.flow === 'external' || s.key !== 'open');
   const failed = p.steps.find((s) => s.state === 'fail');
   const output = p.failed_output ?? p.output;
   const report = [

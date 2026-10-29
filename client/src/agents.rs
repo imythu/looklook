@@ -482,26 +482,27 @@ fn opencode_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Optio
 const DSH_BEGIN: &str = "# >>> looklook (managed by Looklook; changes inside are overwritten) >>>";
 const DSH_END: &str = "# <<< looklook <<<";
 
-/// 找到我们写的那一段（含首尾标记行）。
-fn dsh_block_range(raw: &str) -> Option<std::ops::Range<usize>> {
-    let start = raw.find(DSH_BEGIN)?;
-    let end = start + raw[start..].find(DSH_END)? + DSH_END.len();
+/// 找到我们写的一段（含首尾标记行）。
+fn marked_range(raw: &str, begin: &str, end_mark: &str) -> Option<std::ops::Range<usize>> {
+    let start = raw.find(begin)?;
+    let end = start + raw[start..].find(end_mark)? + end_mark.len();
     let end = if raw[end..].starts_with("\r\n") { end + 2 } else if raw[end..].starts_with('\n') { end + 1 } else { end };
     Some(start..end)
 }
 
 fn dsh_block(raw: &str) -> Option<&str> {
-    dsh_block_range(raw).map(|r| &raw[r])
+    marked_range(raw, DSH_BEGIN, DSH_END).map(|r| &raw[r])
 }
 
-/// 改 DSH 的 profile 补丁文件（YAML 列表）：只增删我们自己那一段；返回新的文件内容，没有要改的返回 `None`。
-fn dsh_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Option<String>> {
-    let mut out = match dsh_block_range(raw) {
+/// 把 DSH 补丁文件里 `begin`…`end` 那一段换成 `body`（不含标记行；`None` 删掉这一段），其余原样保留。
+/// 返回新的文件内容；没有这一段、也不用加时返回 `None`。
+fn dsh_put_block(raw: &str, begin: &str, end: &str, body: Option<&str>) -> Option<String> {
+    let mut out = match marked_range(raw, begin, end) {
         Some(r) => format!("{}{}", &raw[..r.start], &raw[r.end..]),
-        None if entry.is_none() => return Ok(None),
+        None if body.is_none() => return None,
         None => raw.to_string(),
     };
-    if let Some((url, token)) = entry {
+    if let Some(body) = body {
         // 空列表 `[]` 不能再接 `- ` 行
         if out.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).eq(["[]"]) {
             out = out.lines().filter(|l| l.trim() != "[]").map(|l| format!("{l}\n")).collect();
@@ -509,15 +510,138 @@ fn dsh_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Option<Str
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
-        // JSON 字符串同时是合法的 YAML 双引号字符串
-        let q = |s: &str| serde_json::to_string(s).expect("string");
-        out.push_str(&format!(
-            "{DSH_BEGIN}\n- insert:\n    - id: mcp-{SERVER_NAME}\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: {SERVER_NAME}\n        transport: streamable-http\n        url: {}\n        headers:\n          Authorization: {}\n{DSH_END}\n",
-            q(url),
-            q(&format!("Bearer {token}")),
-        ));
+        out.push_str(&format!("{begin}\n{body}{end}\n"));
     }
-    Ok(Some(out))
+    Some(out)
+}
+
+/// JSON 字符串同时是合法的 YAML 双引号字符串
+fn yaml_str(s: &str) -> String {
+    serde_json::to_string(s).expect("string")
+}
+
+/// 改 DSH 的 profile 补丁文件（YAML 列表）：只增删我们自己那一段；返回新的文件内容，没有要改的返回 `None`。
+fn dsh_edit(raw: &str, entry: Option<(&str, &str)>) -> anyhow::Result<Option<String>> {
+    let body = entry.map(|(url, token)| {
+        format!(
+            "- insert:\n    - id: mcp-{SERVER_NAME}\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: {SERVER_NAME}\n        transport: streamable-http\n        url: {}\n        headers:\n          Authorization: {}\n",
+            yaml_str(url),
+            yaml_str(&format!("Bearer {token}")),
+        )
+    });
+    Ok(dsh_put_block(raw, DSH_BEGIN, DSH_END, body.as_deref()))
+}
+
+// ---------------- DSH 网页界面插件 ----------------
+//
+// DSH 的网页界面要用启动口令登录，口令每个进程一个、只打印在启动它的终端里（DSH 桌面版连打印都不打印）。
+// 看看自带一个很小的 DSH 插件（src/dsh-web-url.mjs）：它在 DSH 进程里调用官方的 `connection.authenticatedUrl()`，
+// 把带口令的地址写到 `$DSH_HOME/looklook/web-{pid}.json`。这样不管 DSH 是谁启动的、在哪个端口上，看看都能登录，
+// 不用自己再起一个。插件放在 `$DSH_HOME/looklook/`，home 层补丁里另有一段（和 MCP 那一段分开）引用它的 file:// 地址，
+// 不用 pnpm 安装；DSH 会监视补丁文件，正在运行的 DSH 几秒内就会加载。用户看不到这些，坏了也只是退回旧办法。
+
+const DSH_WEB_PLUGIN: &str = include_str!("dsh-web-url.mjs");
+const DSH_WEB_PLUGIN_FILE: &str = "web-url.mjs";
+const DSH_WEB_BEGIN: &str = "# >>> looklook web (managed by Looklook; changes inside are overwritten) >>>";
+const DSH_WEB_END: &str = "# <<< looklook web <<<";
+
+/// `$DSH_HOME/looklook`：插件和它写的地址文件都在这里
+fn dsh_web_dir() -> PathBuf {
+    Agent::Dsh.dir().join("looklook")
+}
+
+/// 装好插件（新版看看带来的插件内容不同时更新）。`create` 为假且 DSH 从没运行过（没有 `$DSH_HOME`）时不装。
+/// 返回有没有改动。
+pub fn ensure_dsh_web_plugin(create: bool) -> anyhow::Result<bool> {
+    if !create && !Agent::Dsh.dir().is_dir() {
+        return Ok(false);
+    }
+    let dir = dsh_web_dir();
+    let file = dir.join(DSH_WEB_PLUGIN_FILE);
+    let mut changed = false;
+    if std::fs::read_to_string(&file).ok().as_deref() != Some(DSH_WEB_PLUGIN) {
+        std::fs::create_dir_all(&dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+        write_atomic(&file, DSH_WEB_PLUGIN.as_bytes())?;
+        changed = true;
+    }
+    let url = reqwest::Url::from_file_path(&file).map_err(|_| anyhow::anyhow!("插件路径不能转成 file:// 地址：{}", file.display()))?;
+    let path = dsh_patch();
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    if let Some(out) = dsh_web_edit(&raw, Some(url.as_str())).filter(|out| *out != raw) {
+        write_atomic(&path, out.as_bytes())?;
+        changed = true;
+    }
+    Ok(changed)
+}
+
+fn dsh_web_edit(raw: &str, plugin_url: Option<&str>) -> Option<String> {
+    let body = plugin_url.map(|u| format!("- insert:\n    - id: looklook-web-url\n      name: {}\n", yaml_str(u)));
+    dsh_put_block(raw, DSH_WEB_BEGIN, DSH_WEB_END, body.as_deref())
+}
+
+/// 插件写的一个正在运行的 DSH 网页界面
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DshWeb {
+    pub pid: u32,
+    pub port: u16,
+    pub token: String,
+}
+
+/// 插件报上来的、进程还活着的 DSH 网页界面，最近启动的在前。进程已经不在的（被强制结束时插件来不及删）顺手删掉。
+pub fn dsh_web_running() -> Vec<DshWeb> {
+    let Ok(dir) = std::fs::read_dir(dsh_web_dir()) else { return vec![] };
+    let mut found: Vec<(i64, DshWeb, PathBuf)> = dir
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("web-") && n.ends_with(".json")))
+        .filter_map(|p| {
+            let (at, web) = parse_dsh_web(&std::fs::read_to_string(&p).ok()?)?;
+            Some((at, web, p))
+        })
+        .collect();
+    found.sort_by_key(|(at, ..)| std::cmp::Reverse(*at));
+    let alive = alive_pids(&found.iter().map(|(_, w, _)| w.pid).collect::<Vec<_>>());
+    found
+        .into_iter()
+        .filter_map(|(_, w, p)| {
+            if alive.contains(&w.pid) {
+                Some(w)
+            } else {
+                let _ = std::fs::remove_file(p);
+                None
+            }
+        })
+        .collect()
+}
+
+/// `{"v":1,"pid":…,"port":…,"url":"http://127.0.0.1:P/?token=…","at":…}` → (at, 地址)
+fn parse_dsh_web(text: &str) -> Option<(i64, DshWeb)> {
+    let v: Value = serde_json::from_str(text).ok()?;
+    let pid = u32::try_from(v["pid"].as_u64()?).ok()?;
+    let port = u16::try_from(v["port"].as_u64()?).ok().filter(|p| *p != 0)?;
+    let url = reqwest::Url::parse(v["url"].as_str()?).ok()?;
+    let token = url.query_pairs().find(|(k, _)| k == "token").map(|(_, t)| t.into_owned()).filter(|t| !t.is_empty())?;
+    Some((v["at"].as_i64().unwrap_or(0), DshWeb { pid, port, token }))
+}
+
+fn alive_pids(pids: &[u32]) -> Vec<u32> {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+    if pids.is_empty() {
+        return vec![];
+    }
+    let list: Vec<Pid> = pids.iter().map(|p| Pid::from_u32(*p)).collect();
+    let mut sys = System::new();
+    sys.refresh_processes_specifics(ProcessesToUpdate::Some(&list), true, ProcessRefreshKind::nothing());
+    pids.iter().copied().filter(|p| sys.process(Pid::from_u32(*p)).is_some()).collect()
 }
 
 /// 先写临时文件再改名，写到一半退出也不会留下半个配置文件。
@@ -587,6 +711,31 @@ mod tests {
         assert!(dsh_edit(&removed, None).unwrap().is_none());
         let empty = dsh_edit("# x\n[]\n", Some(("u", "t"))).unwrap().unwrap();
         assert!(empty.starts_with("# x\n# >>> looklook"));
+    }
+
+    #[test]
+    fn dsh_web_plugin_block() {
+        // 和 MCP 那一段互不影响
+        let mcp = dsh_edit("# mine\n", Some(("http://127.0.0.1:1234/mcp", "llmcp_a"))).unwrap().unwrap();
+        let out = dsh_web_edit(&mcp, Some("file:///home/a/.dsh/looklook/web-url.mjs")).unwrap();
+        assert!(out.starts_with(&mcp), "{out}");
+        assert!(out.ends_with(&format!("{DSH_WEB_BEGIN}\n- insert:\n    - id: looklook-web-url\n      name: \"file:///home/a/.dsh/looklook/web-url.mjs\"\n{DSH_WEB_END}\n")));
+        // 再写一次内容不变（ensure_dsh_web_plugin 据此不重写文件）
+        assert_eq!(dsh_web_edit(&out, Some("file:///home/a/.dsh/looklook/web-url.mjs")).unwrap(), out);
+        let removed_mcp = dsh_edit(&out, None).unwrap().unwrap();
+        assert!(removed_mcp.starts_with("# mine\n# >>> looklook web") && dsh_block(&removed_mcp).is_none());
+        assert_eq!(dsh_web_edit(&out, None).unwrap(), mcp);
+        assert!(dsh_web_edit("# mine\n", None).is_none());
+        assert!(dsh_web_edit("[]\n", Some("file:///x.mjs")).unwrap().starts_with(DSH_WEB_BEGIN));
+    }
+
+    #[test]
+    fn dsh_web_file() {
+        let (at, w) = parse_dsh_web(r#"{"v":1,"pid":42,"port":3080,"url":"http://127.0.0.1:3080/?token=abc-DEF_123","at":7}"#).unwrap();
+        assert_eq!((at, w), (7, DshWeb { pid: 42, port: 3080, token: "abc-DEF_123".into() }));
+        assert!(parse_dsh_web(r#"{"pid":42,"port":3080,"url":"http://127.0.0.1:3080/"}"#).is_none(), "没有口令");
+        assert!(parse_dsh_web(r#"{"pid":42,"port":0,"url":"http://127.0.0.1:3080/?token=a"}"#).is_none());
+        assert!(parse_dsh_web("not json").is_none());
     }
 
     #[test]
