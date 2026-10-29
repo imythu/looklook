@@ -360,6 +360,7 @@ pub fn digest(en: bool, n: usize, url: &str) -> Value {
 /// 流式卡片里正文、状态行的组件 id
 pub const STREAM_BODY: &str = "body";
 pub const STREAM_STATUS: &str = "status";
+pub const STREAM_TOOLS: &str = "tools";
 
 fn select(name: &str, placeholder: &str, options: &[(String, String)], initial: &str) -> Value {
     let opts: Vec<Value> = options.iter().map(|(label, value)| json!({ "text": plain(label), "value": value })).collect();
@@ -405,55 +406,136 @@ pub fn body_markdown(text: &str) -> String {
     text.replace("<at", "‹at")
 }
 
-/// 一轮的流式卡片：正文边写边出，状态行写正在做什么
+/// 回答卡片：没有卡片头，看起来像一条消息，不像一条通知（docs/FEISHU_AGENT.md §9）
+fn answer(summary: &str, elements: Vec<Value>, streaming: bool) -> Value {
+    let mut config = json!({ "update_multi": true, "summary": { "content": summary } });
+    if streaming {
+        config["streaming_mode"] = json!(true);
+    }
+    json!({ "schema": "2.0", "config": config, "body": { "elements": elements } })
+}
+
+/// 折叠面板（默认收起）
+fn panel(title: &str, elements: Vec<Value>) -> Value {
+    json!({
+        "tag": "collapsible_panel",
+        "expanded": false,
+        "header": {
+            "title": { "tag": "markdown", "content": title, "text_size": "notation" },
+            "icon": { "tag": "standard_icon", "token": "down-small-ccm_outlined", "size": "16px 16px" },
+            "icon_position": "right",
+            "icon_expanded_angle": -180,
+        },
+        "border": { "color": "grey", "corner_radius": "5px" },
+        "vertical_spacing": "4px",
+        "padding": "4px 8px 4px 8px",
+        "elements": elements,
+    })
+}
+
+/// 小字的一行（页脚、状态行）
+fn small(id: Option<&str>, s: &str) -> Value {
+    let mut v = json!({ "tag": "markdown", "content": s, "text_size": "notation" });
+    if let Some(id) = id {
+        v["element_id"] = json!(id);
+    }
+    v
+}
+
+/// “Claude · 项目 · 电脑”：每张回答卡片都写，知道在跟哪个会话说
+pub fn whose(i: &Info) -> String {
+    let mut s = format!("{} · {}", i.agent, i.project);
+    if !i.device.is_empty() {
+        s.push_str(" · ");
+        s.push_str(i.device);
+    }
+    s
+}
+
+/// 一轮里 AI 用的一个工具
+#[derive(Debug, Clone, PartialEq)]
+pub struct Step {
+    pub name: String,
+    /// 命令、文件名、搜的词…（一行，已截短）
+    pub detail: String,
+    pub done: bool,
+    pub failed: bool,
+}
+
+/// 工具步骤：每步一行；太多只留最后的
+pub fn steps_markdown(steps: &[Step], en: bool) -> String {
+    const MAX: usize = 30;
+    let mut lines = Vec::new();
+    if steps.len() > MAX {
+        lines.push(tr(en, &format!("…前面还有 {} 步", steps.len() - MAX), &format!("…{} earlier steps", steps.len() - MAX)));
+    }
+    for s in steps.iter().skip(steps.len().saturating_sub(MAX)) {
+        let mark = if s.failed { "✗" } else if s.done { "✓" } else { "…" };
+        let name = body_markdown(&s.name.replace(['*', '`'], ""));
+        if s.detail.is_empty() {
+            lines.push(format!("{mark} **{name}**"));
+        } else {
+            lines.push(format!("{mark} **{name}** `{}`", body_markdown(&s.detail.replace('`', "'"))));
+        }
+    }
+    lines.join("\n")
+}
+
+fn steps_title(n: usize, en: bool) -> String {
+    tr(en, &format!("过程 · {n} 步"), &format!("Steps · {n}"))
+}
+
+/// 一轮的流式卡片：上面是工具步骤（折叠），正文边写边出，下面一行小字写正在做什么
 pub fn stream(i: &Info, stop: &Act) -> Value {
-    let title = format!("{} · {}", i.agent, if i.title.is_empty() { i.project } else { i.title });
     let mut buttons = vec![];
     if i.actions {
-        buttons.push(button(&tr(i.en, "停止", "Stop"), "danger", stop, None));
+        buttons.push(button(&tr(i.en, "停止", "Stop"), "default", stop, None));
     }
     buttons.push(open(i));
-    let mut c = card(
-        header(&title, &subtitle(i), "blue", None),
-        &title,
+    // 流式接口只能改 markdown / plain_text 组件的文字：面板标题定死，里面的步骤边跑边推
+    answer(
+        &tr(i.en, "处理中…", "Working…"),
         vec![
+            panel(&tr(i.en, "过程", "Steps"), vec![small(Some(STREAM_TOOLS), "…")]),
             json!({ "tag": "markdown", "element_id": STREAM_BODY, "content": "…" }),
-            // 状态行也要能流式更新：流式接口只认 markdown 和 plain_text 组件
-            json!({ "tag": "markdown", "element_id": STREAM_STATUS, "content": tr(i.en, "正在思考…", "Thinking…"), "text_size": "notation" }),
+            small(Some(STREAM_STATUS), &tr(i.en, "正在思考…", "Thinking…")),
             row(buttons),
         ],
-    );
-    c["config"]["streaming_mode"] = json!(true);
-    c
+        true,
+    )
 }
 
 /// 一轮结束：整卡换成结果。`outcome`：done / failed / stopped。
-/// `new`：卡片底下“新会话”（同一台电脑、同一个项目、同一个助手）的按钮
-pub fn stream_done(i: &Info, outcome: &str, text: &str, took_ms: i64, new: &Act) -> Value {
-    let (title, template) = match outcome {
-        "done" => (tr(i.en, "做完了", "Done"), "green"),
-        "failed" => (tr(i.en, "出错了", "Something went wrong"), "red"),
-        _ => (tr(i.en, "已停止", "Stopped"), "grey"),
+/// `new`：“新会话”按钮（下一句话开新会话，还在同一个地方）
+pub fn stream_done(i: &Info, outcome: &str, text: &str, steps: &[Step], thinking: &str, took_ms: i64, new: &Act) -> Value {
+    let status = match outcome {
+        "done" => tr(i.en, "已完成", "Done"),
+        "failed" => tr(i.en, "<font color='red'>出错了</font>", "<font color='red'>Failed</font>"),
+        _ => tr(i.en, "已停止", "Stopped"),
     };
-    let mut els = vec![json!({ "tag": "markdown", "element_id": STREAM_BODY, "content": if text.is_empty() { "…" } else { text } })];
-    let mut foot = tr(i.en, "在这条消息的话题里回复，接着跟 AI 说", "Reply in this thread to keep talking to the AI");
+    let mut els = vec![];
+    if !steps.is_empty() {
+        els.push(panel(&steps_title(steps.len(), i.en), vec![small(None, &steps_markdown(steps, i.en))]));
+    }
+    if !thinking.is_empty() {
+        els.push(panel(&tr(i.en, "💭 思考", "💭 Thinking"), vec![small(None, &body_markdown(thinking))]));
+    }
+    els.push(json!({ "tag": "markdown", "element_id": STREAM_BODY, "content": if text.is_empty() { "…" } else { text } }));
+    let mut foot = vec![status];
     if took_ms > 0 {
-        foot = format!("{} · {foot}", tr(i.en, &format!("用时 {}", duration(took_ms, false)), &format!("Took {}", duration(took_ms, true))));
+        foot.push(tr(i.en, &format!("用时 {}", duration(took_ms, false)), &format!("took {}", duration(took_ms, true))));
     }
-    els.push(note(&foot));
-    els.push(row(vec![open(i)]));
+    foot.push(body_markdown(&whose(i)));
+    els.push(small(None, &foot.join(" · ")));
+    let mut buttons = vec![open(i)];
     if i.actions {
-        els.push(json!({
-            "tag": "form",
-            "name": "new",
-            "elements": [
-                { "tag": "input", "name": "text", "placeholder": plain(&tr(i.en, &format!("在 {} 里开新会话，第一句话…", i.project), &format!("New session in {}: first message…", i.project))), "max_length": 4000, "width": "fill" },
-                { "tag": "button", "name": "new", "text": plain(&tr(i.en, "新会话", "New session")), "type": "default", "form_action_type": "submit", "behaviors": [{ "type": "callback", "value": new }] },
-            ],
-        }));
+        buttons.push(button(&tr(i.en, "新会话", "New session"), "default", new, None));
     }
-    let head = format!("{title} · {}", if i.title.is_empty() { i.project } else { i.title });
-    card(header(&head, &subtitle(i), template, None), &head, els)
+    els.push(row(buttons));
+    // 会话列表里的预览：回答的开头
+    let preview: String = text.chars().filter(|c| !matches!(c, '*' | '_' | '`' | '#' | '>' | '[' | ']')).take(100).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ");
+    let summary = if preview.is_empty() { whose(i) } else { preview };
+    answer(&summary, els, false)
 }
 
 /// 一个话题的第一条：新会话（`text` 是第一句话），或者“在飞书里接着”一个已有的会话（`text` 为空）
@@ -467,7 +549,7 @@ pub fn root(i: &Info, text: &str) -> Value {
     if !text.is_empty() {
         els.push(div(&text.chars().take(500).collect::<String>()));
     }
-    els.push(note(&tr(i.en, "在这条消息的话题里回复，就是跟这个会话说。", "Reply in this message’s thread to talk to this session.")));
+    els.push(note(&tr(i.en, "现在直接在这里发消息，就是跟这个会话说。发 /new 开新会话。", "Messages you send here now go to this session. Send /new to start a new one.")));
     els.push(row(vec![open(i)]));
     card(header(&title, &subtitle(i), "blue", None), &title, els)
 }
@@ -516,6 +598,105 @@ pub fn sessions(en: bool, rows: &[SessionRow], url: &str) -> Value {
 pub fn tasks_link(en: bool, url: &str) -> Value {
     let title = tr(en, "看看的任务页", "LookLook Tasks");
     card(header(&title, "", "blue", None), &title, vec![row(vec![link(&tr(en, "打开任务", "Open Tasks"), url)])])
+}
+
+/// 缺权限：在飞书里点链接确认就补上（`register::begin` 带着 App ID），补好后换成 [`granted`]
+pub fn grant(en: bool, why: &str, url: &str) -> Value {
+    let title = tr(en, "看看需要再开通一点权限", "LookLook needs a few more permissions");
+    card(
+        header(&title, "", "orange", None),
+        &title,
+        vec![div(why), note(&tr(en, "点下面的按钮，在飞书里确认就开通了（1 小时内有效）。", "Tap the button and confirm in Feishu (valid for 1 hour).")), row(vec![link(&tr(en, "去开通", "Grant"), url)])],
+    )
+}
+
+pub fn granted(en: bool) -> Value {
+    let title = tr(en, "权限已开通", "Permissions granted");
+    card(header(&title, "", "green", None), &title, vec![note(&tr(en, "可以接着用了。", "You can continue now."))])
+}
+
+/// AI 工具要用你的身份读飞书：点链接在飞书里同意（feishu_tools.rs）
+pub fn user_auth(en: bool, url: &str, minutes: u64) -> Value {
+    let title = tr(en, "AI 助手想用你的身份读飞书", "The AI assistant wants to use Feishu as you");
+    card(
+        header(&title, "", "blue", None),
+        &title,
+        vec![
+            div(&tr(
+                en,
+                "电脑上的 AI 助手（Claude Code、Codex 等）要读群聊和单聊消息、下载里面的文件、找人、读云文档。以你的身份发消息时，每条都会先发卡片问你。",
+                "An AI assistant on your computer (Claude Code, Codex…) wants to read your group and direct messages, download their files, look people up and read docs. Every message it wants to send as you is confirmed with a card first.",
+            )),
+            note(&tr(en, &format!("点“授权”，在飞书里同意（{minutes} 分钟内有效）。令牌只存在这台电脑上，可以在看看的设置 → 通知里撤销。"), &format!("Tap “Authorize” and approve in Feishu (valid for {minutes} minutes). The token stays on this computer; revoke it in LookLook Settings → Notifications."))),
+            row(vec![link(&tr(en, "授权", "Authorize"), url)]),
+        ],
+    )
+}
+
+/// 授权结束：`ok` 成功（`name` 授权的人）；不然 `why` 是原因
+pub fn user_auth_done(en: bool, ok: bool, why: &str) -> Value {
+    let (title, color) = if ok { (tr(en, "已授权", "Authorized"), "green") } else { (tr(en, "没有授权", "Not authorized"), "grey") };
+    card(header(&title, "", color, None), &title, vec![note(why)])
+}
+
+/// AI 想以你的身份发一条消息：发 / 不发
+pub fn send_ask(en: bool, dev: &str, n: &str, to: &str, text: &str, device: &str) -> Value {
+    let title = tr(en, "AI 想以你的身份发一条消息", "The AI wants to send a message as you");
+    let act = |a: &str| Act { a: a.into(), dev: dev.into(), n: n.into(), ..Default::default() };
+    card(
+        header(&title, device, "orange", None),
+        &title,
+        vec![
+            div(&tr(en, &format!("发给：{to}"), &format!("To: {to}"))),
+            quote(text),
+            note(&tr(en, "30 分钟内不点就不发。", "Not sent unless you tap within 30 minutes.")),
+            row(vec![button(&tr(en, "发送", "Send"), "primary", &act(crate::feishu_tools::SEND), None), button(&tr(en, "不发", "Don't send"), "default", &act(crate::feishu_tools::SKIP), None)]),
+        ],
+    )
+}
+
+/// 发 / 不发之后：`state` 是结果（已发送、没发、过期、出错）
+pub fn send_done(en: bool, to: &str, text: &str, state: &str, ok: bool) -> Value {
+    let title = tr(en, &format!("以你的身份发消息 · {state}"), &format!("Message as you · {state}"));
+    card(header(&title, "", if ok { "green" } else { "grey" }, None), &title, vec![div(&tr(en, &format!("发给：{to}"), &format!("To: {to}"))), quote(text)])
+}
+
+/// AI 写的一段话：不当 markdown 解析，最多 1500 字
+fn quote(s: &str) -> Value {
+    let mut t: String = s.chars().take(1500).collect();
+    if s.chars().count() > 1500 {
+        t.push('…');
+    }
+    div(&t)
+}
+
+/// 项目群建好后发在群里的第一条
+pub fn project_hello(en: bool, project: &str, device: &str, agent: &str, grant_url: Option<&str>) -> Value {
+    let title = tr(en, &format!("项目群 · {project}"), &format!("Project group · {project}"));
+    let mut els = vec![
+        div(&tr(en, &format!("这个群对应「{project} · {device}」上的 {agent}。"), &format!("This group is {agent} on “{project} · {device}”."))),
+        note(&tr(
+            en,
+            "在群里每发一条消息就开一个新会话（一个话题），在话题里回复就是接着跟这个会话说。",
+            "Each new message in this group starts a new session (a topic). Reply in the topic to keep talking to that session.",
+        )),
+    ];
+    if let Some(url) = grant_url {
+        els.push(note(&tr(en, "现在要 @ 我才收得到。想不 @ 也能用：点“开通”，在飞书里确认（权限：获取群组中所有消息）。", "Right now you need to @ me. To skip the @, tap “Grant” and confirm in Feishu (scope: read all group messages).")));
+        els.push(row(vec![link(&tr(en, "开通", "Grant"), url)]));
+    }
+    card(header(&title, device, "blue", None), &title, els)
+}
+
+/// `/help`
+pub fn help(en: bool) -> Value {
+    let title = tr(en, "怎么用", "How to use");
+    let lines = tr(
+        en,
+        "**直接发消息**：跟当前会话说（第一次会开一个新会话）\n**/new 第一句话**：开新会话，还在同一个项目\n**/new**：选在哪个项目、哪台电脑、用哪个助手开\n**停止**：停下正在跑的这一轮\n**/group**：给当前项目建一个群，群里一个话题一个会话\n**回复某张卡片**：跟那张卡片的会话说\n图片、文件、合并转发的聊天记录都可以直接发，会一起交给 AI",
+        "**Send a message**: talk to the current session (the first one starts a session)\n**/new first message**: start a new session in the same project\n**/new**: pick the project, computer and assistant\n**stop**: stop the running turn\n**/group**: create a group for the current project; each topic is a session\n**Reply to a card**: talk to that card’s session\nImages, files and forwarded chat history are passed to the AI as well",
+    );
+    card(header(&title, "", "blue", None), &title, vec![json!({ "tag": "markdown", "content": lines })])
 }
 
 /// 用时：12 秒、3 分、1 小时 5 分
@@ -632,19 +813,36 @@ mod tests {
         let c = stream(&info(true), &Act { a: "ag_stop".into(), n: "n".into(), ..Default::default() });
         assert_eq!(c["config"]["streaming_mode"], true);
         assert_eq!(c["config"]["update_multi"], true);
-        assert_eq!(c["body"]["elements"][0]["element_id"], STREAM_BODY);
-        assert_eq!(c["body"]["elements"][1]["element_id"], STREAM_STATUS);
+        assert!(c.get("header").is_none(), "回答卡片没有卡片头");
+        assert_eq!(c["body"]["elements"][0]["elements"][0]["element_id"], STREAM_TOOLS);
+        assert_eq!(c["body"]["elements"][1]["element_id"], STREAM_BODY);
+        assert_eq!(c["body"]["elements"][2]["element_id"], STREAM_STATUS);
         assert_eq!(buttons(&c), ["停止", "打开"]);
         assert_eq!(buttons(&stream(&info(false), &Act::default())), ["打开"]);
 
         let new = Act { a: "ag_new".into(), n: "n".into(), ..Default::default() };
-        let c = stream_done(&info(true), "done", "改好了", 65_000, &new);
-        assert_eq!(c["header"]["template"], "green");
+        let steps = [Step { name: "Bash".into(), detail: "cargo `test`".into(), done: true, failed: false }, Step { name: "Edit".into(), detail: String::new(), done: true, failed: true }];
+        let c = stream_done(&info(true), "done", "**改好了**，跑过测试。", &steps, "先看看", 65_000, &new);
+        assert!(c.get("header").is_none());
         assert!(c["config"].get("streaming_mode").is_none());
-        assert!(c.to_string().contains("用时 1 分"));
+        assert_eq!(c["config"]["summary"]["content"], "改好了，跑过测试。");
+        let s = c.to_string();
+        assert!(s.contains("过程 · 2 步") && s.contains("✓ **Bash** `cargo 'test'`") && s.contains("✗ **Edit**"), "{s}");
+        assert!(s.contains("💭 思考"));
+        assert!(s.contains("已完成 · 用时 1 分 · Claude · looklook · 工作站"), "{s}");
         assert_eq!(buttons(&c), ["打开", "新会话"]);
-        assert_eq!(buttons(&stream_done(&info(false), "done", "", 0, &new)), ["打开"]);
-        assert_eq!(stream_done(&info(true), "stopped", "", 0, &new)["header"]["template"], "grey");
+        assert_eq!(buttons(&stream_done(&info(false), "done", "", &[], "", 0, &new)), ["打开"]);
+        let stopped = stream_done(&info(true), "stopped", "", &[], "", 0, &new).to_string();
+        assert!(stopped.contains("已停止") && !stopped.contains("过程") && !stopped.contains("思考"));
+        assert!(stream_done(&info(true), "failed", "x", &[], "", 0, &new).to_string().contains("出错了"));
+        let many: Vec<Step> = (0..35).map(|n| Step { name: format!("T{n}"), detail: String::new(), done: false, failed: false }).collect();
+        let md = steps_markdown(&many, false);
+        assert!(md.starts_with("…前面还有 5 步") && md.contains("… **T34**") && !md.contains("**T4**"));
+
+        assert!(grant(false, "缺表情权限", "https://open.feishu.cn/page/launcher?x").to_string().contains("去开通"));
+        assert!(project_hello(false, "api", "笔记本", "Claude", Some("u")).to_string().contains("开通"));
+        assert!(!project_hello(false, "api", "笔记本", "Claude", None).to_string().contains("开通"));
+        assert!(help(true).to_string().contains("/group"));
 
         assert!(root(&info(true), "修登录页").to_string().contains("新会话 · Claude"));
         assert!(root(&info(true), "").to_string().contains("接着 Claude 的会话"));

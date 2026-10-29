@@ -8,6 +8,8 @@
 pub mod card;
 #[cfg(test)]
 pub(crate) mod fake;
+pub mod register;
+pub mod user;
 pub mod ws;
 
 use std::sync::Mutex;
@@ -24,6 +26,9 @@ pub struct Resource {
     pub key: String,
     #[serde(default)]
     pub name: String,
+    /// 在哪条消息里（合并转发里的子消息、连发合并的前几条）；空 = 下载时给的那条
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub msg: String,
 }
 
 /// 测试里换成本机的假飞书（[`fake`]）
@@ -201,8 +206,32 @@ impl Api {
         d["message_id"].as_str().map(String::from).ok_or_else(|| anyhow!("没有 message_id"))
     }
 
+    /// 回复一句文字（普通引用回复；回复的是话题里的消息时飞书会留在话题里）
     pub async fn reply_text(&self, to: &str, text: &str) -> Result<String> {
-        self.reply(to, "text", &json!({ "text": text }), true).await
+        self.reply(to, "text", &json!({ "text": text }), false).await
+    }
+
+    /// 给消息加一个表情（当“正在输入”用），返回 reaction_id
+    pub async fn add_reaction(&self, message_id: &str, emoji: &str) -> Result<String> {
+        let d = self.call(reqwest::Method::POST, &format!("/open-apis/im/v1/messages/{message_id}/reactions"), &json!({ "reaction_type": { "emoji_type": emoji } })).await?;
+        d["reaction_id"].as_str().map(String::from).ok_or_else(|| anyhow!("没有 reaction_id"))
+    }
+
+    pub async fn remove_reaction(&self, message_id: &str, reaction_id: &str) -> Result<()> {
+        self.call(reqwest::Method::DELETE, &format!("/open-apis/im/v1/messages/{message_id}/reactions/{reaction_id}"), &Value::Null).await.map(drop)
+    }
+
+    /// 取一条消息；合并转发的消息连同子消息一起返回（子消息带 `upper_message_id`）
+    pub async fn get_message(&self, message_id: &str) -> Result<Vec<Value>> {
+        let mut d = self.call(reqwest::Method::GET, &format!("/open-apis/im/v1/messages/{message_id}"), &Value::Null).await?;
+        Ok(d["items"].as_array_mut().map(std::mem::take).unwrap_or_default())
+    }
+
+    /// 建一个话题模式的群，群主是 `owner`（机器人当管理员），返回 chat_id
+    pub async fn create_group(&self, name: &str, desc: &str, owner: &str) -> Result<String> {
+        let body = json!({ "name": name, "description": desc, "owner_id": owner, "user_id_list": [owner], "group_message_type": "thread", "chat_type": "private" });
+        let d = self.call(reqwest::Method::POST, "/open-apis/im/v1/chats?user_id_type=open_id&set_bot_manager=true", &body).await?;
+        d["chat_id"].as_str().map(String::from).ok_or_else(|| anyhow!("没有 chat_id"))
     }
 
     /// 发一条消息到一个会话（私聊或群），返回消息 id
@@ -273,9 +302,9 @@ impl Api {
         d["card_id"].as_str().map(String::from).ok_or_else(|| anyhow!("没有 card_id"))
     }
 
-    /// 把卡片实体回复到一条消息下面
-    pub async fn reply_card_entity(&self, to: &str, card_id: &str) -> Result<String> {
-        self.reply(to, "interactive", &json!({ "type": "card", "data": { "card_id": card_id } }), true).await
+    /// 把卡片实体回复到一条消息下面。`thread`：开成话题（项目群里）
+    pub async fn reply_card_entity(&self, to: &str, card_id: &str, thread: bool) -> Result<String> {
+        self.reply(to, "interactive", &json!({ "type": "card", "data": { "card_id": card_id } }), thread).await
     }
 
     /// 推一个文本组件的全量内容（旧内容是前缀时飞书以打字机效果续写）。`seq` 对同一张卡片严格递增

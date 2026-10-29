@@ -1,5 +1,7 @@
 // 设置页“通知”分区（docs/TASK_BOARD.md §6.1、§6.5）：
-// - FeishuCard：没配时是一步步的向导（建应用 → 权限 → 填 App ID / Secret → 长连接和回调 → 发布 → 绑定），配好后显示连接状态、绑定、测试；
+// - FeishuCard：没配时用飞书扫码一键建应用（权限、事件、回调、长连接都带上，扫码的人自动绑定，src/feishu/register.rs）；
+//   公司不让建、或者已有应用的，展开手动配置的向导（建应用 → 权限 → 填 App ID / Secret → 长连接和回调 → 发布 → 绑定）；
+//   配好后显示连接状态、绑定、测试，以及“扫码补全权限”；
 // - HooksCard：只通知的渠道（企业微信、钉钉、Server酱、PushPlus、Bark、ntfy），和飞书同时发，只带“打开”的链接；
 // - RulesCard：发哪些通知、能不能在飞书里处理、卡片里显示不显示内容、静音的项目。
 // 配置经“设置同步”在用户自己的电脑之间传；连接状态是当前这台电脑的。
@@ -8,11 +10,25 @@ import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { api } from '../shared/api.js';
+import { isTouch } from '../shared/KeyBar.jsx';
 import { useSessions } from '../shared/sessions.jsx';
-import { Button, Card, CopyButton, ErrorNote, Field, Note, PasswordInput, Switch, useAction, useLoad } from '../shared/ui.jsx';
+import { Button, Card, CopyButton, ErrorNote, Field, Note, PasswordInput, QrCode, Switch, useAction, useLoad } from '../shared/ui.jsx';
 
-const CONSOLE = { feishu: 'https://open.feishu.cn/app', lark: 'https://open.larksuite.com/app' };
-const SCOPES = ['im:message:send_as_bot', 'im:message.p2p_msg:readonly', 'cardkit:card:write', 'im:resource', 'im:message.group_at_msg:readonly'];
+const CONSOLE = {
+  feishu: 'https://open.feishu.cn/app',
+  lark: 'https://open.larksuite.com/app',
+};
+// 和 src/feishu/register.rs 里扫码时带上的一致
+const SCOPES = [
+  'im:message:send_as_bot',
+  'im:message.p2p_msg:readonly',
+  'cardkit:card:write',
+  'im:resource',
+  'im:message.group_at_msg:readonly',
+  'im:message.reactions:write_only',
+  'im:message:readonly',
+  'im:chat:create',
+];
 const EVENTS = ['im.message.receive_v1', 'application.bot.menu_v6'];
 // 机器人菜单（推送事件）的 key：新会话、正在跑的会话、任务页（src/feishu_agent.rs on_menu）
 const MENU_KEYS = ['new', 'sessions', 'tasks'];
@@ -21,10 +37,16 @@ const CALLBACK = 'card.action.trigger';
 const HINTS = [10003, 10014, 230013, 99991672, 1000040346, 1000040350];
 // 只通知的渠道：有没有第二个输入框（钉钉加签、ntfy 令牌）、在哪拿地址
 const KINDS = {
-  wecom: { secret: false, help: 'https://developer.work.weixin.qq.com/document/path/91770' },
+  wecom: {
+    secret: false,
+    help: 'https://developer.work.weixin.qq.com/document/path/91770',
+  },
   serverchan: { secret: false, help: 'https://sct.ftqq.com/sendkey' },
   pushplus: { secret: false, help: 'https://www.pushplus.plus/push1.html' },
-  dingtalk: { secret: true, help: 'https://open.dingtalk.com/document/robots/custom-robot-access' },
+  dingtalk: {
+    secret: true,
+    help: 'https://open.dingtalk.com/document/robots/custom-robot-access',
+  },
   bark: { secret: false, help: 'https://bark.day.app/' },
   ntfy: { secret: true, help: 'https://docs.ntfy.sh/' },
 };
@@ -46,7 +68,10 @@ function FeishuError({ error }) {
     const hint = HINTS.includes(code) ? t(`notify.feishu_hint_${code}`) : '';
     return (
       <Note kind="error">
-        {t('notify.feishu_error', { code, msg: error.params?.msg ?? error.msg ?? '' })}
+        {t('notify.feishu_error', {
+          code,
+          msg: error.params?.msg ?? error.msg ?? '',
+        })}
         {hint && <span style={{ display: 'block' }}>{hint}</span>}
       </Note>
     );
@@ -64,7 +89,13 @@ function CredsForm({ data, onSaved, onCancel }) {
   const { busy, error, run } = useAction();
   const save = async (e) => {
     e.preventDefault();
-    const r = await run(() => api.put('/notify/feishu', { app_id: appId.trim(), app_secret: secret.trim() || undefined, domain }));
+    const r = await run(() =>
+      api.put('/notify/feishu', {
+        app_id: appId.trim(),
+        app_secret: secret.trim() || undefined,
+        domain,
+      }),
+    );
     if (r) onSaved(r);
   };
   return (
@@ -129,6 +160,68 @@ function PairCode({ pair }) {
   );
 }
 
+/** 扫码建应用（或给已有的应用补权限）：二维码 + 在飞书里打开的链接，结果由设置页轮询 `register` */
+function ScanSetup({ data, reload, update = false }) {
+  const { t } = useTranslation();
+  const { busy, error, run } = useAction();
+  const [now, setNow] = useState(Date.now());
+  const reg = data?.register?.update === update ? data.register : null;
+  const pending = reg?.state === 'pending' && reg.expires_at > now;
+  useEffect(() => {
+    if (!pending) return undefined;
+    const iv = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(iv);
+  }, [pending]);
+  const start = async () => {
+    if (await run(() => api.post('/notify/feishu/register', { update }))) reload();
+  };
+  const cancel = async () => {
+    if (await run(() => api.delete('/notify/feishu/register'))) reload();
+  };
+  // 还是 pending 但已过期：当成过期
+  const state = reg?.state === 'pending' ? 'expired_token' : reg?.state;
+  const failed = !reg || pending || state === 'done' ? '' : ['access_denied', 'expired_token'].includes(state) ? t(`notify.scan_${state}`) : t('notify.scan_failed', { code: state });
+  if (pending) {
+    // 手机上扫不了自己屏幕上的码：只给链接
+    const touch = isTouch();
+    return (
+      <div className="nt-scan">
+        {!touch && <QrCode text={reg.url} size={168} label={t('notify.scan_qr')} />}
+        <div className="stack" style={{ gap: 8 }}>
+          <b>{t(update ? 'notify.scan_update_title' : touch ? 'notify.link_title' : 'notify.scan_title')}</b>
+          <span className="small muted">{t(update ? 'notify.scan_update_body' : 'notify.scan_body')}</span>
+          <span className="small muted">{t(touch ? 'notify.link_hint_touch' : 'notify.link_hint')}</span>
+          <div className="nt-actions">
+            <a className={`btn btn-sm${touch ? ' btn-primary' : ' btn-ghost'}`} href={reg.url} target="_blank" rel="noopener noreferrer">
+              {t('notify.link_open')} <ExternalLink size={12} aria-hidden="true" />
+            </a>
+            <CopyButton text={reg.url} label={t('notify.link_copy')} />
+          </div>
+          <span className="small muted">{t('notify.scan_waiting', { n: Math.max(1, Math.ceil((reg.expires_at - now) / 60000)) })}</span>
+          <div className="nt-actions">
+            <Button variant="ghost" className="btn-sm" disabled={busy} onClick={cancel}>
+              {t('action.cancel')}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="stack" style={{ gap: 8 }}>
+      {failed && <Note kind="warn">{failed}</Note>}
+      {update && reg?.state === 'done' && <Note kind="ok">{t('notify.scan_update_done')}</Note>}
+      <div className="nt-actions">
+        <Button variant={update ? 'ghost' : 'primary'} className={update ? 'btn-sm' : undefined} busy={busy} onClick={start}>
+          {t(update ? 'notify.scan_update' : 'notify.scan_start')}
+        </Button>
+      </div>
+      {update ? <span className="small muted">{t('notify.scan_update_hint')}</span> : null}
+      <FeishuError error={error} />
+    </div>
+  );
+}
+
 export function FeishuCard({ data, reload }) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
@@ -138,12 +231,13 @@ export function FeishuCard({ data, reload }) {
   const st = data?.status ?? {};
   const consoleUrl = CONSOLE[f?.domain ?? 'feishu'];
 
-  // 等绑定、等回调验证时勾得快一点
+  const scanning = data?.register?.state === 'pending';
+  // 等扫码、等绑定、等回调验证时勾得快一点
   useEffect(() => {
-    if (!f || (f.bound && f.callback_ok)) return undefined;
-    const iv = setInterval(reload, 3000);
+    if (!scanning && f && f.bound && f.callback_ok) return undefined;
+    const iv = setInterval(reload, scanning ? 2000 : 3000);
     return () => clearInterval(iv);
-  }, [f?.bound, f?.callback_ok, Boolean(f)]);
+  }, [f?.bound, f?.callback_ok, Boolean(f), scanning]);
 
   const saved = () => {
     setEditing(false);
@@ -240,7 +334,8 @@ export function FeishuCard({ data, reload }) {
           </span>
         </div>
       )}
-      {tested && !f.callback_ok && <Note>{t('notify.test_sent')}</Note>}
+      {f.bound && !f.callback_ok && <Note>{t(tested ? 'notify.test_sent' : 'notify.callback_pending')}</Note>}
+      {!editing && <ScanSetup data={data} reload={reload} update />}
       <ErrorNote error={error && error.code !== 'NOTIFY_FEISHU' ? error : null} />
       {error?.code === 'NOTIFY_FEISHU' && <FeishuError error={error} />}
     </div>
@@ -252,7 +347,14 @@ export function FeishuCard({ data, reload }) {
         {t('notify.feishu_lead')}
       </p>
       {connection}
-      {(!f || !f.bound || !f.callback_ok) && steps}
+      {!f && <ScanSetup data={data} reload={reload} />}
+      {/* 手动配置：公司不让建个人应用、或者想用已有的应用；手动连上后还要发绑定码，所以没绑定时展开 */}
+      {(!f || !f.bound) && (
+        <details className="nt-manual" open={Boolean(f && !f.bound)}>
+          <summary className="small">{t('notify.manual')}</summary>
+          {steps}
+        </details>
+      )}
     </Card>
   );
 }
@@ -269,7 +371,13 @@ function HookForm({ hook, onSaved, onCancel }) {
   const keep = editing && hook.kind === kind;
   const save = async (e) => {
     e.preventDefault();
-    const body = { id: hook?.id, kind, name: name.trim(), target: target.trim() || undefined, secret: KINDS[kind].secret && (secret.trim() || !keep) ? secret.trim() : undefined };
+    const body = {
+      id: hook?.id,
+      kind,
+      name: name.trim(),
+      target: target.trim() || undefined,
+      secret: KINDS[kind].secret && (secret.trim() || !keep) ? secret.trim() : undefined,
+    };
     const r = await run(() => api.put('/notify/hooks', body));
     if (r) onSaved(r);
   };
@@ -470,7 +578,6 @@ export function RulesCard({ data, reload }) {
         {r.actions && r.agent && (
           <>
             <Note>{t('notify.rule_agent_note')}</Note>
-            {toggle('agent_direct', t('notify.rule_agent_direct'), t('notify.rule_agent_direct_hint'))}
             {toggle('agent_groups', t('notify.rule_agent_groups'), t('notify.rule_agent_groups_hint'))}
             <div className="stack" style={{ gap: 6 }}>
               <span className="small muted">{t('notify.agent_menu')}</span>

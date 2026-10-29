@@ -10,6 +10,7 @@
 //! `list_ssh_hosts`、`ssh_run`：在用户标了“允许 AI 使用”的 SSH 主机上运行命令（ssh.rs）。AI 只给出主机名，
 //! 登录用的密码 / 私钥由看看在本机提供，不经过 AI；返回的输出去掉已存密码、私钥块和常见令牌。
 //! 返回里附带端口探测结果：本机网页只转发到 127.0.0.1，开发服务器只监听 `::1` 时要提醒改监听地址。
+//! `feishu_*`：以你本人的身份读群聊和单聊、下载文件、找人、读云文档、发消息（发之前在飞书里问你），见 feishu_tools.rs。
 
 use std::time::Duration;
 
@@ -43,6 +44,8 @@ pub struct McpConfig {
     pub token: String,
     /// 关掉 SSH 工具（`list_ssh_hosts`、`ssh_run`）：不出现在工具列表里，调用也拒绝。默认开着，但只能用标了“允许 AI 使用”的主机
     pub ssh_disabled: bool,
+    /// 关掉飞书工具（`feishu_*`，以你的身份读、发飞书消息）。默认开着，但要设置好飞书、本人在飞书里授权过才能用
+    pub feishu_disabled: bool,
 }
 
 impl McpConfig {
@@ -141,11 +144,14 @@ async fn dispatch(app: &App, msg: Value) -> Option<Value> {
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false } },
                 "serverInfo": { "name": SERVER_NAME, "title": "Looklook local pages", "version": VERSION },
-                "instructions": INSTRUCTIONS,
+                "instructions": if feishu_on(app, &McpConfig::load(&app.store)) { format!("{INSTRUCTIONS}{}", crate::feishu_tools::INSTRUCTIONS) } else { INSTRUCTIONS.to_string() },
             })
         }
         "ping" => json!({}),
-        "tools/list" => json!({ "tools": tool_defs(!McpConfig::load(&app.store).ssh_disabled) }),
+        "tools/list" => {
+            let c = McpConfig::load(&app.store);
+            json!({ "tools": tool_defs(!c.ssh_disabled, feishu_on(app, &c)) })
+        }
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
@@ -175,24 +181,27 @@ Looklook logs in for you, so never ask for passwords or keys. Some hosts run Win
 /// SSH 工具的名字（总开关关掉时从工具列表里拿掉）
 const SSH_TOOLS: [&str; 2] = ["list_ssh_hosts", "ssh_run"];
 
-/// 给管理台“AI 助手”页列出的工具：名字和分组（`pages` / `ssh`），说明由界面翻译。
-pub fn tool_names() -> Value {
-    let all = tool_defs(true);
-    let items = all.as_array().map(Vec::as_slice).unwrap_or_default();
-    Value::Array(
-        items
-            .iter()
-            .filter_map(|t| t["name"].as_str())
-            .map(|n| json!({ "name": n, "group": if SSH_TOOLS.contains(&n) { "ssh" } else { "pages" } }))
-            .collect(),
-    )
+/// 飞书工具出不出现：没关掉，并且设置好了飞书、绑定了人（授权等第一次用到时再做）
+fn feishu_on(app: &App, c: &McpConfig) -> bool {
+    !c.feishu_disabled && crate::notify::load_feishu(&app.store).is_some_and(|f| f.open_id.is_some())
 }
 
-fn tool_defs(ssh: bool) -> Value {
+/// 给管理台“AI 助手”页列出的工具：名字和分组（`pages` / `ssh` / `feishu`），说明由界面翻译。
+pub fn tool_names() -> Value {
+    let all = tool_defs(true, true);
+    let items = all.as_array().map(Vec::as_slice).unwrap_or_default();
+    let group = |n: &str| if SSH_TOOLS.contains(&n) { "ssh" } else if crate::feishu_tools::TOOLS.contains(&n) { "feishu" } else { "pages" };
+    Value::Array(items.iter().filter_map(|t| t["name"].as_str()).map(|n| json!({ "name": n, "group": group(n) })).collect())
+}
+
+fn tool_defs(ssh: bool, feishu: bool) -> Value {
     let mut defs = all_tool_defs();
-    if !ssh {
-        if let Some(a) = defs.as_array_mut() {
+    if let Some(a) = defs.as_array_mut() {
+        if !ssh {
             a.retain(|t| !t["name"].as_str().is_some_and(|n| SSH_TOOLS.contains(&n)));
+        }
+        if feishu {
+            a.extend(crate::feishu_tools::defs());
         }
     }
     defs
@@ -281,6 +290,7 @@ fn explain(code: &str) -> &'static str {
         "SSH_HOST_NOT_ALLOWED" => "No SSH host with that name is available to AI assistants. Call list_ssh_hosts; the user can allow more hosts in the Looklook console (SSH hosts).",
         "SSH_MISSING" => "The OpenSSH client (ssh) is not installed on this computer.",
         "SSH_FAILED" => "Looklook could not start the SSH connection.",
+        "FEISHU_AI_DISABLED" => "The user has turned off Feishu tools for AI assistants in the Looklook console (AI assistants page). Do not retry; tell the user if they need it.",
         _ => "The Looklook operation failed.",
     }
 }
@@ -304,6 +314,17 @@ async fn call_tool(app: &App, name: &str, args: &Value) -> Result<Value, ToolErr
             Ok(json!({ "port": port, "mapping": view(&t), "created": created, "reused": !created, "re_enabled": reenabled, "local": probe(port).await }))
         }
         n if SSH_TOOLS.contains(&n) && McpConfig::load(&app.store).ssh_disabled => Err(LocalError::new("SSH_AI_DISABLED").into()),
+        n if crate::feishu_tools::TOOLS.contains(&n) => {
+            if McpConfig::load(&app.store).feishu_disabled {
+                return Err(LocalError::new("FEISHU_AI_DISABLED").into());
+            }
+            tracing::info!(tool = n, "MCP 调飞书工具");
+            match crate::feishu_tools::call(app, n, args).await {
+                Some(Ok(v)) => Ok(v),
+                Some(Err(v)) => Err(ToolError::Failed(v)),
+                None => Err(ToolError::Unknown),
+            }
+        }
         "list_ssh_hosts" => {
             let all = crate::ssh::list(&app.store);
             let via = |h: &crate::ssh::SshHost| all.iter().find(|j| j.id == h.jump).map(|j| j.name.clone());
@@ -431,10 +452,12 @@ mod tests {
     #[test]
     fn ssh_switch_hides_ssh_tools() {
         let names = |v: Value| v.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert!(names(tool_defs(true)).contains(&"ssh_run".to_string()));
-        let off = names(tool_defs(false));
+        assert!(names(tool_defs(true, false)).contains(&"ssh_run".to_string()));
+        let off = names(tool_defs(false, false));
         assert!(!off.iter().any(|n| SSH_TOOLS.contains(&n.as_str())) && off.contains(&"ensure_mapping".to_string()));
         assert_eq!(tool_names().as_array().unwrap().iter().filter(|t| t["group"] == "ssh").count(), 2);
+        assert_eq!(tool_names().as_array().unwrap().iter().filter(|t| t["group"] == "feishu").count(), crate::feishu_tools::TOOLS.len());
+        assert!(!off.iter().any(|n| n.starts_with("feishu_")) && names(tool_defs(true, true)).contains(&"feishu_send_message".to_string()));
         // 旧版本存的配置没有这个字段：SSH 工具照旧可用
         let old: McpConfig = serde_json::from_str(r#"{"enabled":true,"token":"x"}"#).unwrap();
         assert!(!old.ssh_disabled);

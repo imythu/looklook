@@ -2942,6 +2942,11 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .nt-step-body form { align-self: stretch; }
 .nt-code { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; background: var(--panel-2); border-radius: var(--radius-sm); padding: 2px 4px 2px 10px; }
 .nt-code code { font-family: var(--mono); font-size: 13px; word-break: break-all; }
+.nt-scan { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.nt-scan > .qr { flex: none; background: #fff; padding: 8px; border-radius: 10px; border: 1px solid var(--line); }
+.nt-scan > .stack { flex: 1; min-width: 200px; }
+.nt-manual { margin-top: 14px; }
+.nt-manual > summary { cursor: pointer; color: var(--muted); margin-bottom: 12px; }
 .nt-pair { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .nt-pair-code { font-size: 28px; font-weight: 700; letter-spacing: 6px; color: var(--brand-ink); }
 .nt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: middle; background: var(--muted); }

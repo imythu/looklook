@@ -91,6 +91,14 @@ impl Fake {
                         }
                         ok(json!({}))
                     }
+                    ("POST", p) if p.ends_with("/reactions") => ok(json!({ "reaction_id": format!("r{n}") })),
+                    ("POST", "/open-apis/im/v1/chats") => ok(json!({ "chat_id": "oc_proj" })),
+                    // 合并转发：一条转发 + 两条子消息
+                    ("GET", "/open-apis/im/v1/messages/om_fwd") => ok(json!({ "items": [
+                        { "message_id": "om_fwd", "msg_type": "merge_forward", "body": { "content": "Merged and Forwarded Message" } },
+                        { "message_id": "om_fwd1", "upper_message_id": "om_fwd", "msg_type": "text", "body": { "content": "{\"text\":\"线上登录 500\"}" } },
+                        { "message_id": "om_fwd2", "upper_message_id": "om_fwd", "msg_type": "text", "body": { "content": "{\"text\":\"暗号是 ZEBRA\"}" } },
+                    ] })),
                     ("POST", "/open-apis/im/v1/images") => ok(json!({ "image_key": format!("img_up{n}") })),
                     ("POST", "/open-apis/im/v1/files") => ok(json!({ "file_key": format!("file_up{n}") })),
                     ("POST", p) if p.starts_with("/open-apis/im/v1/messages") => ok(json!({ "message_id": format!("om_b{n}") })),

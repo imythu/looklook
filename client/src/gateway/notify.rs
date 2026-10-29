@@ -40,6 +40,10 @@ fn view(app: &App) -> Value {
         // 没绑定时才显示绑定码（绑定后换人也可以再发一次码）
         "pair": f.as_ref().map(|f| json!({ "code": notify::pair_code(f, now), "expires_at": notify::pair_expires(now) })),
         "sync_enabled": crate::settings_sync::enabled(&app.store),
+        // 扫码建应用的进度（这台电脑上的）
+        "register": app.notify.reg(),
+        // AI 工具用你本人的身份调飞书：这台电脑上授权了没有（令牌不同步）
+        "user": crate::feishu_tools::view(app),
     })
 }
 
@@ -80,6 +84,40 @@ pub async fn put_feishu(State(app): State<App>, Json(req): Json<FeishuReq>) -> R
     };
     notify::save_feishu(&app, Some(&f))?;
     app.notify.reset();
+    Ok(Json(view(&app)))
+}
+
+#[derive(Deserialize)]
+pub struct RegisterReq {
+    /// 给现在配的应用补权限，而不是建新的
+    #[serde(default)]
+    update: bool,
+}
+
+/// 扫码建应用：拿一个给飞书扫的链接，之后设置页轮询 `register.state`
+pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    app.notify.reg_start(&app, req.update).await?;
+    Ok(Json(view(&app)))
+}
+
+pub async fn register_cancel(State(app): State<App>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    app.notify.reg_cancel();
+    Ok(Json(view(&app)))
+}
+
+/// 让 AI 工具用你的身份调飞书：开始授权（飞书私聊里也会收到一张授权卡片）
+pub async fn user_auth(State(app): State<App>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    crate::feishu_tools::start(&app).await?;
+    Ok(Json(view(&app)))
+}
+
+/// 撤销：删掉这台电脑上的用户令牌
+pub async fn user_revoke(State(app): State<App>) -> R<Json<Value>> {
+    require_allowed(&app)?;
+    crate::feishu_tools::revoke(&app);
     Ok(Json(view(&app)))
 }
 

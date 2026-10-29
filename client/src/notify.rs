@@ -356,6 +356,24 @@ pub struct Notifier {
     hooks: Arc<Mutex<HashMap<String, HookStatus>>>,
     /// 在飞书里和 AI 对话（src/feishu_agent.rs）
     pub agent: crate::feishu_agent::Agent,
+    /// 正在进行的扫码建应用（一台电脑同时只有一个）
+    reg: Mutex<Option<Reg>>,
+    /// AI 助手的飞书工具（src/feishu_tools.rs）：用户令牌、等确认的消息
+    pub tools: crate::feishu_tools::Tools,
+}
+
+/// 扫码建应用（[`feishu::register`]）在这台电脑上的进度，给设置页看
+#[derive(Debug, Clone, Serialize)]
+pub struct Reg {
+    pub id: String,
+    pub url: String,
+    pub expires_at: i64,
+    /// 给已有的应用补权限（不是建新的）
+    pub update: bool,
+    /// pending / done / 飞书的错误（access_denied、expired_token…）
+    pub state: String,
+    #[serde(skip)]
+    task: Option<Arc<tokio::task::JoinHandle<()>>>,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -383,7 +401,7 @@ pub(crate) fn with_card(mut v: Value, card: Value) -> Value {
 }
 
 impl Notifier {
-    fn http(&self) -> reqwest::Client {
+    pub(crate) fn http(&self) -> reqwest::Client {
         self.http.get_or_init(|| reqwest::Client::builder().connect_timeout(Duration::from_secs(10)).timeout(Duration::from_secs(20)).build().unwrap_or_default()).clone()
     }
 
@@ -674,7 +692,7 @@ impl Notifier {
     }
 
     /// 发一条：飞书发卡片，只通知的渠道各发一条消息（后台发，不等）。超出每分钟上限时不发、记一笔（之后合并成一条）。返回飞书的消息 id。
-    /// `anchor`：飞书卡片回复到这条消息的话题里（在飞书里对话过的会话）
+    /// `anchor`：飞书卡片回复到这条消息（在飞书里对话过的会话）
     async fn send(&self, out: &Out, c: &Value, m: &Msg, anchor: Option<&str>) -> Option<String> {
         if !self.budget() {
             self.dropped.fetch_add(1, Ordering::SeqCst);
@@ -688,7 +706,8 @@ impl Notifier {
         // 发给同一个人每秒最多 5 条
         tokio::time::sleep(Duration::from_millis(220)).await;
         let r = match anchor {
-            Some(m) => api.reply(m, "interactive", c, true).await,
+            // 普通引用回复：私聊里跟着“当前会话”出在主界面；锚点在话题里（项目群）时飞书会留在话题里
+            Some(m) => api.reply(m, "interactive", c, false).await,
             None => api.send_card(open_id, c).await,
         };
         match r {
@@ -851,6 +870,9 @@ impl Notifier {
             tracing::warn!(operator, "飞书：不是绑定的人点了卡片");
             return Some(toast("error", &tr(en, "不是绑定的飞书账号", "Not the bound Feishu account")));
         }
+        if crate::feishu_tools::handles(&act.a) {
+            return Some(crate::feishu_tools::on_card(app, &act, operator).await);
+        }
         if !load_rules(&app.store).actions {
             return Some(toast("info", &tr(en, "已设置为只通知，打开看看处理", "Notify-only mode. Open LookLook to respond.")));
         }
@@ -903,8 +925,9 @@ impl Notifier {
         let msg = &ev["message"];
         let Some(open_id) = ev["sender"]["sender_id"]["open_id"].as_str() else { return };
         // 群里：只有绑定的人 @ 机器人才算（docs/FEISHU_AGENT.md §2.5），别人的一律不理
+        // 群里：只认绑定的人；普通群要开了“群里 @ 机器人也能用”并 @ 了，项目群不用 @（feishu_agent 里判断）
         if msg["chat_type"] == "group" {
-            if f.open_id.as_deref() == Some(open_id) && load_rules(&app.store).agent_groups {
+            if f.open_id.as_deref() == Some(open_id) {
                 crate::feishu_agent::on_message(app, &f, ev).await;
             }
             return;
@@ -990,6 +1013,108 @@ impl Notifier {
                 Err(LocalError::new("NOTIFY_HOOK").with("msg", e.to_string()))
             }
         }
+    }
+
+    /// 扫码建应用的进度（设置页轮询）
+    pub fn reg(&self) -> Option<Reg> {
+        lock(&self.reg).clone()
+    }
+
+    /// 开始扫码建应用：`update` = 给现在配的应用补权限、事件和回调。换掉之前没扫完的
+    pub async fn reg_start(self: &Arc<Self>, app: &App, update: bool) -> Result<Reg, LocalError> {
+        self.reg_start_with(app, update, &[]).await
+    }
+
+    /// 同 [`Self::reg_start`]，`extra`：再多要的权限（项目群要 `im:message.group_msg`）
+    pub async fn reg_start_with(self: &Arc<Self>, app: &App, update: bool, extra: &[&str]) -> Result<Reg, LocalError> {
+        let old = load_feishu(&app.store);
+        let app_id = old.as_ref().filter(|_| update).map(|f| f.app_id.clone());
+        if update && app_id.is_none() {
+            return Err(LocalError::new("NOTIFY_NOT_CONFIGURED"));
+        }
+        let en = load_rules(&app.store).lang.starts_with("en");
+        let http = self.http();
+        let b = feishu::register::begin(&http, app_id.as_deref(), extra, en).await.map_err(|e| LocalError::new("NOTIFY_FEISHU").with("code", -1).with("msg", e.to_string()))?;
+        let id = nonce();
+        let expires_at = crate::util::system_ms() + b.expires_in as i64 * 1000;
+        let me = self.clone();
+        let (app2, rid) = (app.clone(), id.clone());
+        let task = tokio::spawn(async move { me.reg_poll(&app2, &rid, &b.device_code, b.interval, expires_at).await });
+        let reg = Reg { id, url: b.url, expires_at, update, state: "pending".into(), task: Some(Arc::new(task)) };
+        if let Some(Reg { task: Some(t), .. }) = lock(&self.reg).replace(reg.clone()) {
+            t.abort();
+        }
+        Ok(reg)
+    }
+
+    pub fn reg_cancel(&self) {
+        if let Some(Reg { task: Some(t), .. }) = lock(&self.reg).take() {
+            t.abort();
+        }
+    }
+
+    fn reg_set(&self, id: &str, state: &str) {
+        if let Some(r) = lock(&self.reg).as_mut().filter(|r| r.id == id) {
+            r.state = state.into();
+            r.task = None;
+        }
+    }
+
+    async fn reg_poll(&self, app: &App, id: &str, code: &str, mut interval: u64, expires_at: i64) {
+        let http = self.http();
+        let mut lark = false;
+        let mut errors = 0;
+        loop {
+            tokio::time::sleep(Duration::from_secs(interval)).await;
+            if crate::util::system_ms() > expires_at {
+                return self.reg_set(id, "expired_token");
+            }
+            match feishu::register::poll(&http, code, &mut lark).await {
+                Ok(feishu::register::Poll::Pending) => errors = 0,
+                Ok(feishu::register::Poll::SlowDown) => interval += 5,
+                Ok(feishu::register::Poll::Failed(e)) => return self.reg_set(id, &e),
+                Ok(feishu::register::Poll::Done { app_id, app_secret, open_id, lark }) => {
+                    let state = match self.reg_done(app, app_id, app_secret, open_id, lark).await {
+                        Ok(()) => "done",
+                        Err(e) => {
+                            tracing::warn!(error = ?e, "飞书：扫码建的应用没存上");
+                            "save_failed"
+                        }
+                    };
+                    return self.reg_set(id, state);
+                }
+                // 网络抖一下不算失败，连着错几次才放弃
+                Err(e) => {
+                    errors += 1;
+                    tracing::warn!(error = %e, "飞书：问扫码结果");
+                    if errors >= 5 {
+                        return self.reg_set(id, "network");
+                    }
+                }
+            }
+        }
+    }
+
+    /// 扫完了：存凭证，扫码的人就是绑定的人，再发一张测试卡片验证按钮回调
+    async fn reg_done(&self, app: &App, app_id: String, app_secret: String, open_id: Option<String>, lark: bool) -> Result<(), LocalError> {
+        let domain = if lark { "lark" } else { "feishu" }.to_string();
+        let old = load_feishu(&app.store).filter(|o| o.app_id == app_id && o.domain == domain);
+        let f = match (old, open_id) {
+            (Some(o), None) => Feishu { app_secret, ..o },
+            (Some(o), Some(id)) if o.open_id.as_deref() == Some(&id) => Feishu { app_secret, ..o },
+            (_, id) => Feishu { app_id, app_secret, domain, bound_at: id.as_ref().map(|_| crate::util::system_ms()), open_id: id, callback_ok: false },
+        };
+        save_feishu(app, Some(&f))?;
+        self.reset();
+        tracing::info!(bound = f.open_id.is_some(), "飞书：扫码建好了应用");
+        if f.open_id.is_some() && !f.callback_ok {
+            // 长连接还没连上时点按钮会失败；稍等一下它连上（run() 每 6 秒看一次）
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if let Err(e) = self.test(app).await {
+                tracing::warn!(error = ?e, "飞书：扫码后的测试卡片没发出去");
+            }
+        }
+        Ok(())
     }
 
     /// 设置页“发一条测试”
