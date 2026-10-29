@@ -11,7 +11,7 @@ Thanks for helping out. Bug reports, feature ideas and pull requests are all wel
 ## Pull requests
 
 1. Open an issue first for anything bigger than a small fix, so we can agree on the approach.
-2. Build and check locally (see [Build](README.md#build)):
+2. Build and check locally (see [Build](README.en.md#build)):
    ```bash
    cd client
    npm ci && npm run build
