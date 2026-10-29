@@ -1560,7 +1560,8 @@ pub fn ttyd_args(row: &InstanceRow, secret: &str, s: &Settings, command: &[Strin
         format!("fontFamily={}", js(&s.font_family())),
         format!("fontSize={}", s.font_size),
         "lineHeight=1.15".into(),
-        "rendererType=dom".into(),
+        // WebGL 绘制（终端页 src-term/ 画不了时自动退回 DOM）
+        "rendererType=webgl".into(),
         "disableLeaveAlert=true".into(),
         "disableResizeOverlay=true".into(),
         "cursorBlink=true".into(),
@@ -1814,6 +1815,8 @@ fn exact(name: &str) -> String {
 
 fn write_tmux_conf(path: &Path) -> std::io::Result<()> {
     // 鼠标滚轮翻看历史；拖选复制经 OSC 52 交给浏览器剪贴板（终端页注入的脚本处理）。
+    // 外层终端（浏览器里的 xterm.js 6，TERM=xterm-256color）支持的特性告诉 tmux：sync——重画包在同步输出（DEC 2026）里，
+    // 一帧画完再显示，整屏重画不闪；hyperlinks——转发 OSC 8 超链接；progressbar——转发程序报告的进度（OSC 9;4）。
     let term = if Path::new("/usr/share/terminfo/t/tmux-256color").exists() || Path::new("/lib/terminfo/t/tmux-256color").exists() {
         "tmux-256color"
     } else {
@@ -1828,6 +1831,7 @@ fn write_tmux_conf(path: &Path) -> std::io::Result<()> {
          set -g mouse on\nset -g status off\nset -g history-limit 50000\nset -g escape-time 10\n\
          set -g focus-events on\nset -g set-clipboard on\nset -g default-terminal \"{term}\"\n\
          set -ga terminal-overrides \",xterm-256color:RGB\"\nsetw -g aggressive-resize on\n\
+         set -as terminal-features \"xterm*:sync:hyperlinks:progressbar\"\n\
          set -g detach-on-destroy off\n"
         )
     };

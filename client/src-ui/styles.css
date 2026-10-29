@@ -1096,7 +1096,14 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
   margin: 0; padding: 10px 12px 24px; font: 13px/1.45 "JetBrains Mono", "LXGW WenKai Mono", ui-monospace, monospace;
   white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; -webkit-touch-callout: default; cursor: text;
 }
-.text-select pre::selection { background: var(--term-accent, #a5b4fc); color: var(--term-bg, #11131a); }
+.text-select pre::selection, .text-select pre *::selection { background: var(--term-accent, #a5b4fc); color: var(--term-bg, #11131a); }
+/* 长按打开时按住的那一行：撑满一行宽，亮一下再淡掉，不挡选择 */
+.text-select-at {
+  display: inline-block; box-sizing: border-box; width: calc(100% + 24px); min-height: 1lh; margin: 0 -12px; padding: 0 12px; vertical-align: top;
+  color: inherit; font: inherit; background: transparent; border-radius: 3px; animation: text-select-at 2.4s ease-out;
+}
+@keyframes text-select-at { 0%, 40% { background: color-mix(in srgb, var(--term-accent, #a5b4fc) 32%, transparent); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { .text-select-at { animation: none; background: color-mix(in srgb, var(--term-accent, #a5b4fc) 18%, transparent); } }
 .text-select-empty { margin: 0; padding: 32px 16px; text-align: center; color: var(--term-muted, #8a91a3); }
 @media (max-width: 719px) {
   .text-select-hint { display: none; }

@@ -28,6 +28,14 @@ pub async fn ui(uri: Uri) -> Response {
     }
 }
 
+/// 终端页（`/i/{id}/` 的首页）：看看自己的前端（term.html，src-term/），代替 ttyd 内嵌的页面，同样插入终端字体与辅助脚本。
+/// 构建产物里没有时（没执行过 npm run build）返回 None，仍用 ttyd 的页面。
+pub fn term_page() -> Option<Response> {
+    let f = Ui::get("term.html")?;
+    let html = super::proxy::inject(&String::from_utf8_lossy(&f.data), super::proxy::TERM_TAGS);
+    Some(([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CACHE_CONTROL, "no-store")], html).into_response())
+}
+
 pub async fn web_js() -> Response {
     ([(header::CONTENT_TYPE, "text/javascript; charset=utf-8"), (header::CACHE_CONTROL, "no-cache")], WEB_JS).into_response()
 }

@@ -157,7 +157,7 @@ pub async fn forward(client: &HttpClient, mut req: Request, port: u16, opts: Opt
     Response::from_parts(parts, Body::new(body.map_err(axum::Error::new)))
 }
 
-/// ttyd 首页：终端字体与辅助脚本。
+/// 终端页（term.html，见 assets::term_page；没有构建产物时是 ttyd 的首页）：终端字体与辅助脚本。
 pub const TERM_TAGS: &str = concat!(
     r#"<link rel="preload" href="/fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin>"#,
     r#"<link rel="stylesheet" href="/fonts/fonts.css">"#,

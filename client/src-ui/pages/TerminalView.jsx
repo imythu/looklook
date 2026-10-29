@@ -365,7 +365,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   const files = useTermFiles({ id, inst, frame, enabled: running && active && tab !== 'chat', touch: false, hostOs: status.capabilities.os, keybar: false });
   useRefitOnReturn(frame, running && active);
   useFocusWhenReady(frame, running && active && tab === 'term');
-  const [selecting, setSelecting] = useTextSelect(frame, running && active && tab === 'term');
+  const [selecting, setSelecting, selectAt] = useTextSelect(frame, running && active && tab === 'term');
   const reconnect = useCodexReconnect(id, inst, frame);
   useEffect(() => {
     if (!active) return undefined;
@@ -510,7 +510,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
         {body}
         {cut && tab !== 'chat' && <OfflineNote />}
         {tab !== 'chat' && files.layer}
-        {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); termFocus(frame); }} />}
+        {selecting && <TextSelect id={id} frame={frame} at={selectAt} onClose={() => { setSelecting(false); termFocus(frame); }} />}
         <TermThemeModal open={picking} onClose={() => { setPicking(false); termFocus(frame); }} />
         {running && tab === 'git' && (
           <div className="term-files-tab">
@@ -591,7 +591,7 @@ function TermPage({ id }) {
   useTermTheme(frame, status.settings.theme, loaded);
   useRefitOnReturn(frame, live);
   useFocusWhenReady(frame, live && tab === 'term' && !touch);
-  const [selecting, setSelecting] = useTextSelect(frame, live && tab === 'term');
+  const [selecting, setSelecting, selectAt] = useTextSelect(frame, live && tab === 'term');
   const reconnect = useCodexReconnect(id, inst, frame);
   // 选择文字时收起手机键盘，屏幕留给文字
   useEffect(() => {
@@ -780,7 +780,7 @@ function TermPage({ id }) {
             <FileBrowser id={id} active={tab === 'files'} onInsert={insertPath} />
           </div>
         )}
-        {selecting && <TextSelect id={id} frame={frame} onClose={() => { setSelecting(false); if (!touch) termFocus(frame); }} />}
+        {selecting && <TextSelect id={id} frame={frame} at={selectAt} onClose={() => { setSelecting(false); if (!touch) termFocus(frame); }} />}
         <TermThemeModal open={picking} onClose={() => { setPicking(false); if (!touch) termFocus(frame); }} />
         {live && tab === 'git' && (
           <div className="term-files-tab">

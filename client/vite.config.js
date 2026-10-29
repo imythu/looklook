@@ -32,7 +32,8 @@ const sharedIcons = {
 export default defineConfig({
   publicDir: false,
   plugins: [react(), sharedIcons],
-  build: { outDir: 'static', emptyOutDir: true },
+  // term.html：终端页（src-term/），网关在 /i/{id}/ 返回它（gateway::terminal）
+  build: { outDir: 'static', emptyOutDir: true, rollupOptions: { input: { index: 'index.html', term: 'term.html' } } },
   server: {
     proxy: Object.fromEntries(['/api', '/i', '/fonts', '/static'].map((p) => [p, { target, ws: true, changeOrigin: false }])),
   },

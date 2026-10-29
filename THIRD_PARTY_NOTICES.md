@@ -15,6 +15,8 @@ Release packages bundle these programs and fonts. They are downloaded or built b
 
 The Rust crate rathole 0.5.0 (Apache-2.0, https://github.com/rapiz1/rathole) is vendored with small patches in `client/third_party/rathole/`; its license is in that directory and the changes are listed in `README.looklook.md` there.
 
+The terminal page (`client/src-term/`) is adapted from ttyd's web frontend (`html/src` in ttyd 1.7.7, https://github.com/tsl0922/ttyd), Copyright (c) 2016-2022 Shuanglei Tao, licensed under MIT, and moved onto xterm.js 6 (MIT, https://github.com/xtermjs/xterm.js).
+
 Parts of the chat view (`client/src-ui/pages/ChatView.jsx`) are adapted from CloudCLI UI (https://github.com/siteboon/claudecodeui), Copyright Siteboon AI B.V. and contributors, licensed under AGPL-3.0-or-later with additional terms under section 7. The adapted parts are marked at the top of the file. This is a modified version and is not the original CloudCLI UI.
 
 Each upstream project's own license text and the libraries they bundle apply to those components. Rust and npm dependencies are listed in `client/Cargo.lock` and `client/package-lock.json` and keep their own licenses.

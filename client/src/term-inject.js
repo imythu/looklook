@@ -17,7 +17,7 @@
 //     管理台说终端所在的电脑离线了（looklook:offline）：连接断着时终端只能看、不能输入，提示由管理台显示；
 //     电脑回来后马上重连。见 setOffline。
 // 11. 切到别的窗口再回来时重新适配、整屏重画，免得只画了一部分。见 refitOnReturn。
-// 12. 选择文字：手机上长按终端时通知管理台打开“选择文字”（用浏览器自己的选择，见 src-ui/shared/TextSelect.jsx）；
+// 12. 选择文字：手机上长按终端（满 0.5 秒那一行亮起，松手）时通知管理台打开“选择文字”并定位到按住的那一行（用浏览器自己的选择，见 src-ui/shared/TextSelect.jsx）；
 //     提供 window.looklookText() 读出终端缓冲区的文字（没有 tmux 时用）。tmux 里拖选后浏览器不让直接写剪贴板时给一个“复制”按钮。
 // 13. 同一个终端在几处打开（电脑和手机）：tmux 窗口按最近有输入的那一处的尺寸排版，另一处看到的是按别的屏幕排的画面。
 //     页面回到前台、拿到焦点、手指/鼠标按到终端上时重新报一次尺寸，让 tmux 按这一处排版。见 claimSize。
@@ -606,7 +606,41 @@
     }, { capture: true, passive: true });
     // 长按（不动 0.5 秒）：嵌在管理台里时打开“选择文字”。xterm.js 在手机上选不了字。
     // 滑动中途按住不动（让惯性停下来、或停一下再接着滑）不算长按，否则一滑就弹出“选择文字”。
-    function cancelHold() { clearTimeout(hold); hold = 0; }
+    // 满 0.5 秒时只把手指下的那一行亮起来（不振动），松手才打开；亮起后又滑动了就是在翻看，取消，
+    // 免得“按住看一会儿再滑”被当成长按。打开时带上按住的那一行和上下几行的文字，管理台据此定位（TextSelect.jsx）。
+    var armed = null, cue = null;
+    function cancelHold() {
+      clearTimeout(hold); hold = 0;
+      armed = null;
+      if (cue) cue.style.opacity = '0';
+    }
+    function pressedAt(py) {
+      var b = term.buffer && term.buffer.active;
+      if (!b) return null;
+      var r = screen.getBoundingClientRect();
+      var row = Math.max(0, Math.min(term.rows - 1, Math.floor((py - r.top) / rowHeight())));
+      var lines = [], from = Math.max(0, row - 3), to = Math.min(term.rows - 1, row + 3);
+      for (var i = from; i <= to; i++) {
+        var l = b.getLine(b.viewportY + i);
+        // tmux 翻看模式右上角的位置提示 [12/300] 不是输出
+        lines.push(l ? l.translateToString(true).replace(/\s*\[\d+\/\d+\]\s*$/, '') : '');
+      }
+      return { row: row - from, lines: lines, top: r.top + row * rowHeight(), left: r.left, width: r.width };
+    }
+    function showCue(at) {
+      if (!cue) {
+        cue = document.createElement('div');
+        cue.style.cssText = 'position:fixed;z-index:5;pointer-events:none;border-radius:3px;opacity:0;transition:opacity .15s';
+        document.body.appendChild(cue);
+      }
+      var th = term.options && term.options.theme;
+      cue.style.background = (th && (th.selectionBackground || th.cursor)) || '#3b3f63';
+      cue.style.top = at.top + 'px';
+      cue.style.left = at.left + 'px';
+      cue.style.width = at.width + 'px';
+      cue.style.height = rowHeight() + 'px';
+      cue.style.opacity = '0.7';
+    }
     function rowHeight() { return Math.max(8, screen.clientHeight / (term.rows || 24)); }
     // 开了鼠标上报时每个滚轮事件只上报一次（tmux 一次滚 5 行），攒够约 2.5 行的滑动距离再发一次，滚动速度跟手。
     function mouseMode() { return Boolean(term.modes && term.modes.mouseTrackingMode && term.modes.mouseTrackingMode !== 'none'); }
@@ -657,9 +691,9 @@
       if (window.parent !== window && !wasScrolling) {
         hold = setTimeout(function () {
           hold = 0;
-          longPressAt = Date.now();
-          try { navigator.vibrate && navigator.vibrate(10); } catch (err) { /* 不支持振动 */ }
-          toParent({ type: 'looklook:select' });
+          longPressAt = Date.now(); // 松手时不算点按（不弹键盘）
+          armed = pressedAt(start ? start.y : y) || { row: 0, lines: [] };
+          if (armed.lines.length) showCue(armed);
         }, 500);
       }
     }, { capture: true, passive: true });
@@ -685,8 +719,17 @@
       if (d) scrollBy(d);
     }, { capture: true, passive: false });
     function end(e) {
+      var at = armed;
       cancelHold();
       if (!start) return;
+      if (at) {
+        // 长按松手：打开“选择文字”。不让浏览器再补发点击（tmux 里会变成一次鼠标点击）。
+        start = null; scrolling = false; pdown = null;
+        if (e.cancelable) e.preventDefault();
+        e.stopPropagation();
+        toParent({ type: 'looklook:select', at: { row: at.row, lines: at.lines } });
+        return;
+      }
       var was = scrolling;
       start = null; scrolling = false;
       // 手指动过（哪怕没够滑动的距离）就不算点击：不让浏览器再补发 mousedown / mouseup / click。

@@ -1,0 +1,65 @@
+html,
+body {
+  height: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+#terminal-container {
+  position: relative;
+  width: auto;
+  height: 100%;
+  margin: 0 auto;
+  padding: 0;
+}
+
+#terminal-container .terminal {
+  padding: 5px;
+  height: calc(100% - 10px);
+}
+
+/* 进度条（src-term/progress.js） */
+.ll-progress {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  z-index: 10;
+  overflow: hidden;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+
+.ll-progress.on {
+  opacity: 1;
+}
+
+.ll-progress i {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 0 2px 2px 0;
+  transition: width 0.25s ease-out;
+}
+
+.ll-progress.busy i {
+  width: 30%;
+  border-radius: 2px;
+  animation: ll-progress-busy 1.4s ease-in-out infinite;
+}
+
+@keyframes ll-progress-busy {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(340%); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ll-progress.busy i {
+    animation: none;
+    width: 100%;
+    opacity: 0.6;
+  }
+}

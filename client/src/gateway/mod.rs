@@ -283,6 +283,9 @@ async fn terminal(State(app): State<App>, req: Request) -> Response {
         tokio::spawn(app.chat.clone().codex_terminal_attached(id.clone()));
     }
     let index = req.method() == Method::GET && req.uri().path() == format!("/i/{id}/");
+    if let Some(page) = index.then(assets::term_page).flatten() {
+        return page;
+    }
     let opts = proxy::Opts { auth: Some(auth), host: None, inject: index.then_some(proxy::TERM_TAGS), rewrite_location: None, terminal: true };
     proxy::forward(&app.http, req, port, opts).await
 }
