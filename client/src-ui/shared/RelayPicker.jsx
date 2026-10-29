@@ -21,9 +21,14 @@ function speed(ms) {
   return ms < 80 ? 'fast' : ms < 200 ? 'ok' : 'slow';
 }
 
-/** 让线路直连的代理规则（Clash / mihomo 格式）：线路是域名就放行它的上级域名（r3.looklook.dev → looklook.dev），是 IP 就放行这个 IP。 */
-export function directRules(items) {
+/**
+ * 让远程直连的代理规则（Clash / mihomo 格式）：先放行看看进程的全部 UDP（WebRTC 直连、STUN / TURN，发往对端的地址
+ * 事先不知道，只能按进程放行；只放 UDP，连看看服务器的 HTTPS 照旧），再放行线路（UDP 不通时经 TCP 连）：
+ * 线路是域名就放行它的上级域名（r3.looklook.dev → looklook.dev），是 IP 就放行这个 IP。`os` 是这台电脑的系统。
+ */
+export function directRules(items, os) {
   const rules = new Set();
+  if (items.some((i) => i.stun)) rules.add(`AND,((PROCESS-NAME,${os === 'windows' ? 'looklook.exe' : 'looklook'}),(NETWORK,UDP)),DIRECT`);
   for (const i of items) {
     const host = i.stun?.replace(/:\d+$/, '').replace(/^\[|\]$/g, '');
     if (!host) continue;
@@ -38,14 +43,15 @@ export function directRules(items) {
 }
 
 /** 开着代理软件（TUN / 全局）时线路的 UDP 会被代理接走，远程变慢或连不上：折叠成一行，点开才看怎么配。 */
-function ProxyTip({ items }) {
+function ProxyTip({ items, os }) {
   const { t } = useTranslation();
-  const rules = directRules(items);
+  const rules = directRules(items, os);
   if (rules.length === 0) return null;
   const text = rules.map((r) => `- ${r}`).join('\n');
   return (
     <FoldNote icon={Route} summary={t('relays.proxy.summary')}>
       <p>{t('relays.proxy.why')}</p>
+      <p>{t('relays.proxy.when')}</p>
       <p>{t('relays.proxy.clash')}</p>
       <div className="relay-rules">
         <pre className="relay-detail mono small">{text}</pre>
@@ -139,7 +145,7 @@ export default function RelayPicker() {
           {data.items.length === 0 && <p className="muted small">{t('relays.none')}</p>}
         </div>
       )}
-      {data && <ProxyTip items={data.items} />}
+      {data && <ProxyTip items={data.items} os={data.os} />}
       <p className="muted small">{t('relays.latency_explain')}</p>
       <p className="muted small">{t('relays.switch_note')}</p>
     </Card>

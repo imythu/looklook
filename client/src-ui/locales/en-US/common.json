@@ -875,9 +875,10 @@
     "hint_dismiss": "Got it, don't remind me for now",
     "proxy": {
       "summary": "Using Clash or another proxy app? Let routes go direct for faster, steadier remote access",
-      "why": "With TUN (virtual network adapter) or global mode on, a proxy app may also send this computer's UDP traffic to the route through a proxy server. Remote access then gets laggy, drops often, or can't connect at all. Letting the route go direct fixes it.",
+      "why": "With TUN (virtual network adapter) or global mode on, a proxy app may also send the UDP traffic LookLook uses for remote access (to the route and directly to the other side) through a proxy server. Remote access then gets laggy, drops often, or can't connect at all. Letting LookLook's UDP and the route go direct fixes it; LookLook's web requests to its server still use the proxy.",
+      "when": "When to add them: this computer runs a proxy app in TUN or global mode, and opening it remotely is laggy, drops often, or fails. No need if no proxy app is running, the proxy is only set as the system proxy (it doesn't take over UDP), or remote access already works well. Don't add them if this computer can only reach the internet through the proxy (e.g. its network only allows proxied traffic); they would break the connection. If a route shows “unreachable” after adding them, just remove the rules.",
       "clash": "Clash Verge, mihomo, Clash Meta and similar: add the rules below to the very top of your rule list (in Clash Verge: right-click the profile → Edit rules → Prepend rules, so profile updates don't overwrite them).",
-      "others": "Other proxy apps (Surge, Shadowrocket, v2rayN, etc.): add the same domains to the “direct” or “bypass” list.",
+      "others": "Other proxy apps (Surge, Shadowrocket, v2rayN, etc.): add the LookLook program to the per-process direct list (if supported), and the same domains to the “direct” or “bypass” list.",
       "reload": "After the change, connections the proxy app already set up keep using the old rules: close all connections on its Connections page or restart its core, then reload the remote page. In Connections, check that the route address (port 3478) shows DIRECT."
     }
   },

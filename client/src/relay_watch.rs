@@ -65,6 +65,8 @@ pub struct Check {
     pub tcp: bool,
     /// 建议换到的线路：当前偏慢、且这条明显更快，但没有自动换（手动模式，或者有终端开着）
     pub suggest: Option<String>,
+    /// 这台电脑的系统（`std::env::consts::OS`）：界面给代理软件写按进程名放行的规则，Windows 的进程名带 .exe
+    pub os: &'static str,
 }
 
 /// 测一遍所有线路（并发，最多几秒）：UDP 测不通的再经 TCP 测，并据此决定远程控制台是否经 TCP 用 TURN。
@@ -104,7 +106,7 @@ fn conclude(items: Vec<Item>, preferred: Option<String>, current: Option<String>
     let slow = current_testable && current_ms.is_none_or(|ms| ms >= SLOW_MS);
     let blocked = current_testable && current_ms.is_none();
     let tcp = current.as_ref().and_then(|c| items.iter().find(|i| &i.name == c)).is_some_and(|i| i.tcp);
-    Check { checked_at: now, items, preferred, current, auto, current_ms, best, best_ms, slow, blocked, tcp, suggest: None }
+    Check { checked_at: now, items, preferred, current, auto, current_ms, best, best_ms, slow, blocked, tcp, suggest: None, os: std::env::consts::OS }
 }
 
 /// `best` 是否明显比当前线路快。
