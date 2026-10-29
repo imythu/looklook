@@ -4,7 +4,7 @@
 //   本机：“本机 · 远程在线”，点开是远程通道的详情、“立即重连”和换线路；
 //   远程（浏览器，或 App 里选中了别的电脑）：“远程 · 86 ms”，点开是连着哪台电脑、端到端加密、延迟和线路；
 //   局域网：“局域网”，点开说明是直接连到这台电脑。
-import { Lock, RefreshCw } from 'lucide-react';
+import { Globe, Lock, RefreshCw } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -242,6 +242,15 @@ export function ConnChip() {
   const path = mode === 'remote' ? (devices.selected ? paths[devices.selected] : Object.values(paths)[0]) ?? null : null;
   const ms = useRemoteLatency(mode === 'remote');
   const r = status.relay;
+  // 没登录：这里就是开通远程访问的入口
+  if (mode === 'local' && !status.account.logged_in) {
+    return (
+      <Link to="/account" className="conn-chip conn-off" title={t('upsell.chip_title')}>
+        <Globe size={15} aria-hidden="true" />
+        <span>{t('upsell.chip')}</span>
+      </Link>
+    );
+  }
   if (mode === 'local' && (!r || r.state === 'off')) return null;
   const name = devices.multi ? deviceName(t, devices.byId(devices.selected)) : status.settings?.device_name || deviceName(t, null);
   let kind = 'ok';

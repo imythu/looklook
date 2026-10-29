@@ -217,11 +217,11 @@ pub fn routes(app: App) -> Router<App> {
         .route("/restart", post(restart))
         .route("/update/seen", post(update_seen))
         .fallback(|| async { LocalError::not_found() })
-        .layer(middleware::from_fn_with_state(app.clone(), guard))
+        .layer(middleware::from_fn(guard))
         .with_state(app)
 }
 
-async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
+async fn guard(req: Request, next: Next) -> Response {
     let access = req.extensions().get::<Access>().cloned().unwrap_or(Access::Local);
     if !matches!(*req.method(), Method::GET | Method::HEAD) {
         let marked = req.headers().get(CLIENT_HEADER).and_then(|v| v.to_str().ok()) == Some("1")
@@ -231,18 +231,13 @@ async fn guard(State(app): State<App>, req: Request, next: Next) -> Response {
             return LocalError::new("CSRF_FAILED").into_response();
         }
     }
-    // The UI login screen alone cannot protect these APIs. Keep bootstrap,
-    // status and local access configuration available before account login.
-    let group = req.uri().path().trim_start_matches('/').split('/').next().unwrap_or("");
-    if matches!(group, "instances" | "uploads" | "attachments" | "ssh" | "fs" | "settings" | "sync" | "notify" | "tools" | "tunnels" | "metrics" | "model-providers" | "model-presets" | "claude-profiles" | "codex-profiles" | "usage-stats" | "platform") && app.account.session().is_none() {
-        return LocalError::new("NOT_LOGGED_IN").into_response();
-    }
     let mut r = next.run(req).await;
     r.headers_mut().insert(axum::http::header::CACHE_CONTROL, axum::http::HeaderValue::from_static("no-store"));
     r
 }
 
-pub(super) fn require_allowed(app: &App) -> R<()> {
+/// 远程访问的功能（本机网页、分享）：要登录且会员有效。本机使用的功能不需要账户，远程打开时由 `gateway::remote_gate` 统一把关。
+pub(super) fn require_remote(app: &App) -> R<()> {
     let gate = app.account.gate();
     if gate.allowed() {
         Ok(())
@@ -266,7 +261,7 @@ async fn status(State(app): State<App>, Extension(access): Extension<Access>) ->
         "version": VERSION,
         "target": crate::paths::target(),
         "access": if access.is_local() { "local" } else { "remote" },
-        "account": app.account.status(),
+        "account": app.account.status(access.is_local()),
         "relay": crate::relay::status(),
         "capabilities": app.instances.capabilities(),
         "settings": Settings::load(&app.store),
@@ -318,10 +313,10 @@ struct LogoutReq {
     force: bool,
 }
 
-async fn logout(State(app): State<App>, body: Option<Json<LogoutReq>>) -> R<Json<Value>> {
+async fn logout(State(app): State<App>, Extension(access): Extension<Access>, body: Option<Json<LogoutReq>>) -> R<Json<Value>> {
     let force = body.map(|b| b.0.force).unwrap_or(false);
     app.account.logout(force).await?;
-    Ok(Json(app.account.status()))
+    Ok(Json(app.account.status(access.is_local())))
 }
 
 /// 管理台右上角的“立即重连”：重建远程访问通道（不影响本机、局域网打开）。
@@ -343,7 +338,7 @@ struct ServerReq {
 async fn set_server(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<ServerReq>) -> R<Json<Value>> {
     require_local(&access)?;
     app.account.set_server(&req.url).map_err(|e| LocalError::new("SERVER_INVALID").with("detail", e.to_string()))?;
-    Ok(Json(app.account.status()))
+    Ok(Json(app.account.status(true)))
 }
 
 async fn account(State(app): State<App>) -> R<Json<Value>> {
@@ -463,7 +458,6 @@ struct CreateReq {
 }
 
 async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     let v = create_session(&app, req.input, req.start).await?;
     Ok((StatusCode::CREATED, Json(v)))
 }
@@ -552,7 +546,6 @@ struct PageQ {
 /// - 其他情况返回 `url`：网关的 `/w/{id}/`（本机、局域网、远程都能打开，远程经管理台的通道），由页面在新标签里打开。
 async fn instance_page(State(app): State<App>, Extension(access): Extension<Access>, Path(id): Path<String>, Query(q): Query<PageQ>) -> R<Json<Value>> {
     use super::dsh::{note, step};
-    require_allowed(&app)?;
     require_persistent(&app)?;
     app.instances.get(&id).await?.web_port.ok_or_else(LocalError::not_found)?;
     super::dsh::begin(&id, "external");
@@ -671,7 +664,6 @@ async fn mac_privacy(Extension(access): Extension<Access>, Json(q): Json<Privacy
 
 /// 在会话标签里打开 DSH（`/w/{id}/`，见 dsh.rs）：确保它在运行、网关已经登录好。`ready` 为假时 dsh 还在启动。
 async fn instance_web(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     require_persistent(&app)?;
     app.instances.get(&id).await?.web_port.ok_or_else(LocalError::not_found)?;
     // 已经登录好的不用再查（界面每 2 秒问一次，查一次要起一个登录 shell）
@@ -884,7 +876,6 @@ async fn delete_instance(State(app): State<App>, Path(id): Path<String>) -> R<St
 }
 
 async fn start_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     warm_codex(&app, &id).await;
     Ok(Json(app.instances.start(&id).await?))
 }
@@ -902,7 +893,6 @@ async fn warm_codex(app: &App, id: &str) {
 }
 
 async fn restart_instance(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     warm_codex(&app, &id).await;
     Ok(Json(app.instances.restart(&id).await?))
 }
@@ -947,7 +937,6 @@ struct UploadReq {
 }
 
 async fn create_upload(State(app): State<App>, Path(id): Path<String>, Json(req): Json<UploadReq>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     let dest = transfer::Dest::parse(&req.dest).ok_or_else(|| LocalError::invalid("dest", "enum"))?;
     let c = app.transfers.create(&app.instances, &id, &req.name, req.size, dest).await?;
     Ok((StatusCode::CREATED, Json(c)))
@@ -1298,7 +1287,7 @@ fn approver(app: &App, access: &Access) -> R<bool> {
 
 /// 新电脑这边要连另一台电脑：“只看本机”时不连。
 fn can_dial(app: &App) -> R<()> {
-    require_allowed(app)?;
+    require_remote(app)?;
     if local_only(app) {
         return Err(LocalError::new("SSH_TRANSFER_LOCAL_ONLY"));
     }
@@ -1307,13 +1296,13 @@ fn can_dial(app: &App) -> R<()> {
 
 async fn xfer_list(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
     rtc_only(&access)?;
-    require_allowed(&app)?;
+    require_remote(&app)?;
     Ok(Json(xfer::list(&app).await?))
 }
 
 async fn xfer_start(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<xfer::StartReq>) -> R<Json<xfer::StartResp>> {
     rtc_only(&access)?;
-    require_allowed(&app)?;
+    require_remote(&app)?;
     Ok(Json(xfer::start(&app, req).await?))
 }
 
@@ -1467,7 +1456,6 @@ fn ssh_launch_line(exe: &str, id: &str, family: crate::shells::Family) -> String
 
 /// 新建一个 SSH 终端并启动：终端里的 shell 运行 `looklook ssh <id>`，ssh 退出后回到 shell（按 ↑ 回车即可重连）。
 async fn ssh_open(State(app): State<App>, Path(id): Path<String>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     let h = crate::ssh::list(&app.store).into_iter().find(|h| h.id == id).ok_or_else(LocalError::not_found)?;
     // 稳定入口（Linux 的 bin/looklook）：命令留在终端里、shell 历史里，版本目录被清理后按 ↑ 回车也要能重连
     let exe = crate::versions::stable_exe(&app.paths.home).ok_or_else(|| LocalError::new("SSH_FAILED").with("detail", "exe"))?.display().to_string();
@@ -1562,7 +1550,6 @@ struct FsUploadReq {
 
 /// 上传到指定文件夹；之后的分块、完成、取消与终端上传相同（`/api/uploads/{uid}…`）。
 async fn fs_upload(State(app): State<App>, Json(req): Json<FsUploadReq>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     let c = app.transfers.create_in_dir(&req.dir, &req.name, req.size)?;
     Ok((StatusCode::CREATED, Json(c)))
 }
@@ -1726,7 +1713,7 @@ async fn list_tunnels(State(app): State<App>) -> R<Json<Value>> {
 }
 
 async fn create_tunnel(State(app): State<App>, Json(req): Json<CreateTunnel>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
+    require_remote(&app)?;
     check_tunnel_port(&app, Some(req.target_port))?;
     Ok((StatusCode::CREATED, Json(app.account.create_tunnel(&req).await?)))
 }
@@ -1748,7 +1735,7 @@ async fn list_page_shares(State(app): State<App>, Path(id): Path<String>) -> R<J
 }
 
 async fn create_page_share(State(app): State<App>, Path(id): Path<String>, Json(req): Json<CreatePageShare>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
+    require_remote(&app)?;
     Ok((StatusCode::CREATED, Json(app.account.create_page_share(&id, &req).await?)))
 }
 
@@ -2049,7 +2036,7 @@ async fn sync_exchange(State(app): State<App>, Extension(access): Extension<Acce
     if !matches!(access, Access::Rtc { .. }) {
         return Err(LocalError::new("SYNC_NEED_RTC"));
     }
-    require_allowed(&app)?;
+    require_remote(&app)?;
     Ok(Json(crate::settings_sync::exchange(&app, req).await?))
 }
 
@@ -2275,7 +2262,6 @@ struct InstallReq {
 
 /// 在后台装（不建终端）；界面用 `GET /tools/install/{tool}` 看进度。
 async fn install_tool(State(app): State<App>, Json(req): Json<InstallReq>) -> R<impl IntoResponse> {
-    require_allowed(&app)?;
     let job = tools::start_install(app.instances.shell(), &req.tool, &req.mirror).ok_or_else(|| LocalError::invalid("tool", "invalid"))?;
     Ok((StatusCode::ACCEPTED, Json(job)))
 }

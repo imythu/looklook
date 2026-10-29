@@ -56,6 +56,7 @@ import {
   useToast,
 } from "../shared/ui.jsx";
 import { CHAT_LAUNCHES } from "../shared/chat.js";
+import { RemoteUpsell, remoteAllowed } from "../shared/Remote.jsx";
 
 const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
 // 能一键安装的 AI 工具（没装时提示安装）；能以全部权限启动的
@@ -90,8 +91,10 @@ export function RemoteCard({ initialOpen = false }) {
     ? `http://${urlHost(ips[Math.min(lanIdx, ips.length - 1)])}:${c.port}/`
     : null;
   // 局域网：没开放或没找到地址时没有可扫的地址，卡片改为说明怎么开启
+  // 没登录时“随处可用”这一栏讲远程访问、引导开通；局域网不用登录
+  const upsell = !lan && !status.account.logged_in;
   const lanReady = !lan || (c.allow_lan && lanUrl);
-  const url = lan ? lanUrl : status.account.session.user_host_url;
+  const url = lan ? lanUrl : status.account.session?.user_host_url;
   const host = url?.replace(/^https?:\/\//, "").replace(/\/$/, "");
   const body = lan
     ? !c.allow_lan
@@ -101,7 +104,7 @@ export function RemoteCard({ initialOpen = false }) {
         : c.code_enabled
           ? "terminals.lan_body_code"
           : "terminals.lan_body"
-    : status.account.allowed
+    : remoteAllowed(status)
       ? "terminals.remote_body"
       : "terminals.remote_paused";
   return (
@@ -142,8 +145,9 @@ export function RemoteCard({ initialOpen = false }) {
               <Wifi size={15} aria-hidden="true" /> {t("terminals.route_lan")}
             </button>
           </div>
-          <p className="muted small remote-body">{t(body)}</p>
-          {!lan && <RelayStatus />}
+          {upsell && <RemoteUpsell compact />}
+          {!upsell && <p className="muted small remote-body">{t(body)}</p>}
+          {!lan && !upsell && <RelayStatus />}
           {lan && ips.length > 1 && lanReady && (
             <select
               className="remote-ips"
@@ -158,7 +162,7 @@ export function RemoteCard({ initialOpen = false }) {
               ))}
             </select>
           )}
-          {lanReady ? (
+          {upsell ? null : lanReady ? (
             <div className="remote-address">
               <span className="address-pill">
                 <span>{host}</span>
@@ -194,7 +198,7 @@ export function RemoteCard({ initialOpen = false }) {
           )}
         </div>
       )}
-      {open && lanReady && (
+      {open && lanReady && !upsell && (
         <div className={`remote-qr ${qr ? "show" : ""}`}>
           <QrCode
             text={url}

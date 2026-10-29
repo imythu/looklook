@@ -602,7 +602,7 @@ async fn run(home: Option<PathBuf>, listen: Option<SocketAddr>, server: Option<S
     let background = [
         tokio::spawn(account.clone().heartbeat_loop()),
         tokio::spawn(account.clone().report_terminals_loop(instances.subscribe())),
-        tokio::spawn(instances.clone().supervise(account.clone())),
+        tokio::spawn(instances.clone().supervise()),
         tokio::spawn(updater.clone().run()),
         tokio::spawn(updater.clone().keep_versions()),
         tokio::spawn(metrics.run()),
@@ -1095,15 +1095,19 @@ fn device_limit_text(params: &Value) -> String {
 fn print_status(v: &Value) {
     let v = if v.get("account").is_some() { &v["account"] } else { v };
     if v["logged_in"].as_bool() != Some(true) {
-        println!("未登录 / Not signed in（服务端 / server: {}）", v["server"].as_str().unwrap_or("-"));
-        println!("登录 / Sign in: looklook login");
+        println!("未登录：这台电脑上和同一 Wi‑Fi 里照常使用 / Not signed in: works on this computer and the same Wi‑Fi（服务端 / server: {}）", v["server"].as_str().unwrap_or("-"));
+        println!("开通远程访问，出门在外也能用手机打开：looklook login（Beta 期间注册送一年）");
+        println!("Turn on remote access to open it from your phone anywhere: looklook login (1 year free during the beta)");
         return;
     }
     let s = &v["session"];
     println!("已登录 / Signed in: {}（{}）", s["user"]["nickname"].as_str().unwrap_or(""), s["user"]["username"].as_str().unwrap_or(""));
     println!("专属地址 / Your address: {}", s["user_host_url"].as_str().unwrap_or("-"));
     println!("可以使用到 / Membership until: {}", s["membership_expires_at"].as_str().unwrap_or("-"));
-    if v["allowed"].as_bool() != Some(true) {
-        println!("当前不可用 / Unavailable: {}", v["reason"].as_str().unwrap_or("-"));
+    if v["remote_allowed"].as_bool() == Some(false) {
+        println!("远程访问暂停了，这台电脑上照常使用 / Remote access is paused; it keeps working here: {}", v["reason"].as_str().unwrap_or("-"));
+        if v["reason"].as_str() == Some("MEMBERSHIP_EXPIRED") {
+            println!("延长会员后马上恢复：管理台 → 会员与邀请，兑换续期码或邀请朋友注册 / Extend your membership to resume: console → Membership, redeem a renewal code or invite friends");
+        }
     }
 }

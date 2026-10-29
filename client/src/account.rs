@@ -221,6 +221,12 @@ impl Account {
         *lock_mut(&self.revoked) = revoked.iter().map(|r| r.to_string()).collect();
     }
 
+    /// 测试用：退出登录（只清本机）。
+    #[cfg(test)]
+    pub(crate) fn clear_for_test(&self) {
+        self.clear_local(None);
+    }
+
     /// 测试用：放入设备私钥（需要真正发签名请求的测试）。
     #[cfg(test)]
     pub(crate) fn set_key_for_test(&self, key: SigningKey) {
@@ -259,15 +265,17 @@ impl Account {
         Gate::Allowed
     }
 
-    /// 给界面的状态摘要。
-    pub fn status(&self) -> Value {
+    /// 给界面的状态摘要。`local`：请求来自本机或局域网——不登录、会员到期也能用终端，账户只管远程访问；
+    /// 远程打开（专属地址、WebRTC）时 `allowed` 就是账户能不能用。
+    pub fn status(&self, local: bool) -> Value {
         let s = self.session();
         let gate = self.gate();
         let now = self.clock.now_ms();
         json!({
             "server": self.platform().base,
             "logged_in": s.is_some(),
-            "allowed": gate.allowed(),
+            "allowed": local || gate.allowed(),
+            "remote_allowed": gate.allowed(),
             "reason": gate.reason(),
             "notice": *lock(&self.notice),
             "server_time": fmt_ms(now),

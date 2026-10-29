@@ -61,9 +61,6 @@ pub async fn ws(State(app): State<App>, Extension(access): Extension<Access>, pe
     if !origin_matches(req.headers(), &access) {
         return (StatusCode::FORBIDDEN, "origin").into_response();
     }
-    if let Err(e) = super::api::require_allowed(&app) {
-        return e.into_response();
-    }
     let Some(key) = req.headers().get(header::SEC_WEBSOCKET_KEY).cloned() else { return StatusCode::BAD_REQUEST.into_response() };
     let forward = peer.is_some_and(|p| p.0 == Peer::Local);
     let upgrade = hyper::upgrade::on(&mut req);

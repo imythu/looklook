@@ -334,9 +334,6 @@ pub async fn web(State(app): State<App>, mut req: Request) -> Response {
     let rest = path.strip_prefix("/w/").unwrap_or("");
     let (id, sub) = rest.split_once('/').map_or((rest, ""), |(id, sub)| (id, sub));
     let id = id.to_string();
-    if !app.account.gate().allowed() {
-        return assets::message_page(StatusCode::FORBIDDEN, "locked");
-    }
     // 写请求、WebSocket 都会带 Origin：必须是管理台自己（DSH 那边只会看到改过的本机地址）
     if req.headers().contains_key(header::ORIGIN) && !origin_matches(req.headers(), &access) {
         return (StatusCode::FORBIDDEN, "origin").into_response();

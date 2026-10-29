@@ -191,6 +191,21 @@ body.resizing iframe { pointer-events: none; }
   background: var(--brand-soft); color: var(--brand); font-weight: 700;
 }
 .avatar-lg { width: 64px; height: 64px; font-size: 26px; }
+.avatar-guest { background: var(--panel-2, var(--line)); color: var(--muted); }
+
+/* 远程访问的引导（shared/Remote.jsx）：没登录时开通、到期时续费 */
+.upsell { display: grid; gap: 10px; padding: 16px; margin: 0 0 16px; border-radius: 14px; border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--line)); background: var(--brand-soft); }
+.upsell-compact { padding: 12px 14px; margin: 0; }
+.upsell-paused { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
+.upsell-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.upsell-head > svg { color: var(--brand); flex: none; }
+.upsell p { margin: 0; }
+.upsell-points { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; font-size: 14px; }
+.upsell-points li { display: flex; gap: 8px; align-items: flex-start; }
+.upsell-points svg { color: var(--ok); flex: none; margin-top: 3px; }
+.upsell-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.auth .upsell-points { margin: 0 0 10px; }
+.auth-price { margin: 0 0 16px; }
 
 /* ---------- 卡片 ---------- */
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; margin-bottom: 16px; box-shadow: var(--shadow); }
@@ -393,6 +408,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .conn-sub { color: var(--muted); font-weight: 500; }
 .conn-warn { border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); background: var(--warn-soft); }
 .conn-bad { border-color: color-mix(in srgb, var(--danger) 40%, var(--line)); background: var(--danger-soft); }
+/* 没登录：开通远程访问的入口 */
+.conn-off { color: var(--brand); border-color: color-mix(in srgb, var(--brand) 35%, var(--line)); background: var(--brand-soft); text-decoration: none; }
+.conn-off:hover { border-color: var(--brand); }
 .conn-chip .dot.wait { background: var(--warn); animation: blink 1.2s infinite ease-in-out; }
 @keyframes blink { 50% { opacity: .35; } }
 .conn-pop-title { font-size: 14px; }

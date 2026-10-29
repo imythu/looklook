@@ -1,4 +1,5 @@
-// 登录：用看看账户登录这台电脑。每个账户同时登录的电脑数有上限（平台判定，默认 7 台）。
+// 登录：用看看账户登录这台电脑，开通远程访问（本机、局域网不登录也能用）。每个账户同时登录的电脑数有上限（平台判定，默认 7 台）。
+// `drawer`：在本机管理台的抽屉里（标题由抽屉显示）；否则是远程打开时的整页登录。
 import { LogIn } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +9,7 @@ import { api } from '../shared/api.js';
 import { osLabel } from '../shared/devices.jsx';
 import { errorText } from '../shared/i18n.js';
 import { Button, ErrorNote, Field, Note, Spinner, Time, useAction } from '../shared/ui.jsx';
+import { RemotePoints } from '../shared/Remote.jsx';
 
 function AlreadyLoggedIn({ params }) {
   const { t } = useTranslation();
@@ -129,7 +131,7 @@ function ServerSetting() {
   );
 }
 
-export default function Login() {
+export default function Login({ drawer = false }) {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
   const notice = status.account.notice;
@@ -173,9 +175,11 @@ export default function Login() {
   return (
     <div className="auth">
       <div className="auth-head">
-        <h1>{t('login.title')}</h1>
+        {!drawer && <h1>{t('login.title')}</h1>}
         <p className="muted">{t('login.sub')}</p>
       </div>
+      {drawer && !pending && <RemotePoints />}
+      {!pending && <p className="small muted auth-price">{t('upsell.price')}</p>}
       {notice && <Note kind="warn">{t(`login.notice.${notice.code}`, { defaultValue: t('login.notice.other') })}</Note>}
       <div className="card">
         {pending && (

@@ -34,10 +34,28 @@ Looklook puts every terminal on your laptop, Linux server or homelab behind one 
 
 ```bash
 curl -fsSL https://looklook.dev/install.sh | sh   # Linux / macOS: installs a background service, verifies SHA-256
-looklook login                                    # approve the sign-in from your phone
+looklook login                                    # optional: turn on remote access, approve from your phone
 ```
 
-Then open your personal address (shown after you sign in) on your phone. On Windows and macOS you can use the [desktop installer](https://looklook.dev/download) instead.
+It works right away, no account needed: open `http://127.0.0.1:1234` on that machine, or turn on LAN access to reach it from phones on the same Wi‑Fi. To use it from anywhere, run `looklook login` to turn on remote access; your personal address is shown after you sign in. On Windows and macOS you can use the [desktop installer](https://looklook.dev/download) instead.
+
+## Free and Remote
+
+|  | Free | Remote |
+| --- | --- | --- |
+| Price | Free, no account | Free for a year if you sign up during the beta, then tentatively $7.77/month (¥9.99 in China) |
+| Terminals and AI sessions that keep running | ✓ | ✓ |
+| Claude Code, Codex, OpenCode or any CLI | ✓ | ✓ |
+| Chat view, task board, files, Git, SSH hosts, MCP | ✓ | ✓ |
+| Notifications (Feishu / Lark, WeCom, DingTalk, Bark, ntfy) | ✓ | ✓ |
+| Open it from phones on the same Wi‑Fi | ✓ | ✓ |
+| Open it from anywhere in any browser (personal https address) | — | ✓ |
+| Direct connection first, automatic relay fallback | — | ✓ |
+| Up to 7 machines on one page | — | ✓ |
+| Preview and share local pages from anywhere | — | ✓ |
+| Settings synced between machines | — | ✓ |
+
+Prices are tentative and may go up or down with server costs when paid plans open; payment isn't open yet.
 
 ## What it does
 
@@ -90,7 +108,7 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## What's open and what's hosted
 
-This repository is the **desktop app / client** (`client/`) and the **client ↔ server protocol** (`protocol/`). The client is under AGPL-3.0-or-later and the protocol under MIT (see [License](#license)). Remote access goes through the hosted Looklook service (accounts, relays, personal addresses) and needs a Looklook account. The first year is currently free.
+This repository is the **desktop app / client** (`client/`) and the **client ↔ server protocol** (`protocol/`). The client is under AGPL-3.0-or-later and the protocol under MIT (see [License](#license)). The client works fully on your machine and LAN without signing in. Remote access goes through the hosted Looklook service (accounts, relays, personal addresses) and needs a Looklook account: free for a year if you sign up during the beta; see [Free and Remote](#free-and-remote) for pricing after that.
 
 ## Platforms
 

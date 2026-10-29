@@ -326,6 +326,8 @@ pub struct HookStatus {
 struct Out {
     feishu: Option<(Arc<Api>, String)>,
     hooks: Vec<Hook>,
+    /// 没登录：`(英文, 注册页)`，通知里加一句开通远程访问
+    guest: Option<(bool, String)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -460,7 +462,7 @@ impl Notifier {
                 self.keep_connected(&app, f.as_ref());
             }
             let feishu = f.filter(|f| f.open_id.is_some() && !self.auth_failed.load(Ordering::SeqCst)).map(|f| (self.api(&f), f.open_id.clone().unwrap_or_default()));
-            let out = Out { feishu, hooks: load_hooks(&app.store) };
+            let out = Out { feishu, hooks: load_hooks(&app.store), guest: guest(&app) };
             if out.feishu.is_none() && out.hooks.is_empty() {
                 continue;
             }
@@ -699,6 +701,14 @@ impl Notifier {
             return None;
         }
         lock(&self.sent).push_back(Instant::now());
+        let hinted;
+        let (c, m) = match &out.guest {
+            Some((en, url)) => {
+                hinted = (card::remote_hint(c.clone(), *en, url), push::remote_hint(m.clone(), *en, url));
+                (&hinted.0, &hinted.1)
+            }
+            None => (c, m),
+        };
         for h in &out.hooks {
             self.push(h.clone(), m.clone());
         }
@@ -999,7 +1009,11 @@ impl Notifier {
     pub async fn test_hook(&self, app: &App, id: &str) -> Result<(), LocalError> {
         let h = load_hooks(&app.store).into_iter().find(|h| h.id == id).ok_or_else(|| LocalError::new("NOT_FOUND"))?;
         let en = load_rules(&app.store).lang.starts_with("en");
-        let r = push::send(&self.http(), &h, &push::test(en, &page_url(app, "tasks"))).await;
+        let mut m = push::test(en, &page_url(app, "tasks"));
+        if let Some((_, url)) = guest(app) {
+            m = push::remote_hint(m, en, &url);
+        }
+        let r = push::send(&self.http(), &h, &m).await;
         let mut g = lock(&self.hooks);
         let s = g.entry(h.id.clone()).or_default();
         match r {
@@ -1123,7 +1137,11 @@ impl Notifier {
         let open_id = f.open_id.clone().ok_or_else(|| LocalError::new("NOTIFY_NOT_BOUND"))?;
         let en = load_rules(&app.store).lang.starts_with("en");
         let act = Act { a: "test".into(), n: nonce(), ..Default::default() };
-        self.api(&f).send_card(&open_id, &card::test(en, &act, false)).await.map_err(|e| feishu_error(&e))?;
+        let mut c = card::test(en, &act, false);
+        if let Some((_, url)) = guest(app) {
+            c = card::remote_hint(c, en, &url);
+        }
+        self.api(&f).send_card(&open_id, &c).await.map_err(|e| feishu_error(&e))?;
         Ok(())
     }
 }
@@ -1139,6 +1157,15 @@ pub(crate) fn page_url(app: &App, path: &str) -> String {
         Some(u) => format!("{}/{path}", u.trim_end_matches('/')),
         None => format!("http://{}/{path}", app.ui_addr),
     }
+}
+
+/// 没登录时通知里的“开通远程访问”：`(英文, 注册页)`
+fn guest(app: &App) -> Option<(bool, String)> {
+    if app.account.session().is_some() {
+        return None;
+    }
+    let en = load_rules(&app.store).lang.starts_with("en");
+    Some((en, format!("{}/register", app.account.platform().base.trim_end_matches('/'))))
 }
 
 struct Callbacks {

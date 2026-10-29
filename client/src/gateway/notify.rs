@@ -6,7 +6,6 @@ use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use super::api::require_allowed;
 use super::{Access, App};
 use crate::error::LocalError;
 use crate::notify::{self, Feishu, Rules};
@@ -63,7 +62,6 @@ pub struct FeishuReq {
 
 /// 填好 App ID / Secret：先换一次令牌，对了才存
 pub async fn put_feishu(State(app): State<App>, Json(req): Json<FeishuReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     let old = notify::load_feishu(&app.store);
     let app_id = req.app_id.trim().to_string();
     let secret = req.app_secret.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).or_else(|| old.as_ref().map(|o| o.app_secret.clone())).unwrap_or_default();
@@ -96,41 +94,35 @@ pub struct RegisterReq {
 
 /// 扫码建应用：拿一个给飞书扫的链接，之后设置页轮询 `register.state`
 pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     app.notify.reg_start(&app, req.update).await?;
     Ok(Json(view(&app)))
 }
 
 pub async fn register_cancel(State(app): State<App>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     app.notify.reg_cancel();
     Ok(Json(view(&app)))
 }
 
 /// 让 AI 工具用你的身份调飞书：开始授权（飞书私聊里也会收到一张授权卡片）
 pub async fn user_auth(State(app): State<App>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     crate::feishu_tools::start(&app).await?;
     Ok(Json(view(&app)))
 }
 
 /// 撤销：删掉这台电脑上的用户令牌
 pub async fn user_revoke(State(app): State<App>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     crate::feishu_tools::revoke(&app);
     Ok(Json(view(&app)))
 }
 
 /// 断开飞书（所有电脑上都清掉）
 pub async fn delete_feishu(State(app): State<App>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     notify::save_feishu(&app, None)?;
     app.notify.reset();
     Ok(Json(view(&app)))
 }
 
 pub async fn unbind(State(app): State<App>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     if let Some(f) = notify::load_feishu(&app.store) {
         notify::save_feishu(&app, Some(&Feishu { open_id: None, bound_at: None, callback_ok: false, ..f }))?;
     }
@@ -138,7 +130,6 @@ pub async fn unbind(State(app): State<App>) -> R<Json<Value>> {
 }
 
 pub async fn put_rules(State(app): State<App>, Json(mut r): Json<Rules>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     r.muted.retain(|m| !m.is_empty() && m.len() <= 1024);
     r.muted.sort();
     r.muted.dedup();
@@ -174,7 +165,6 @@ pub struct HookReq {
 
 /// 加一个只通知的渠道，或者改名字、换地址
 pub async fn put_hook(State(app): State<App>, Json(req): Json<HookReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     let mut hooks = notify::load_hooks(&app.store);
     let old = req.id.as_ref().and_then(|id| hooks.iter().find(|h| &h.id == id).cloned());
     if req.id.is_some() && old.is_none() {
@@ -200,7 +190,6 @@ pub async fn put_hook(State(app): State<App>, Json(req): Json<HookReq>) -> R<Jso
 }
 
 pub async fn delete_hook(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     let mut hooks = notify::load_hooks(&app.store);
     hooks.retain(|h| h.id != id);
     notify::save_hooks(&app, &hooks)?;
@@ -208,13 +197,11 @@ pub async fn delete_hook(State(app): State<App>, Path(id): Path<String>) -> R<Js
 }
 
 pub async fn test_hook(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.notify.test_hook(&app, &id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn test(State(app): State<App>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.notify.test(&app).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -224,7 +211,6 @@ pub async fn action(State(app): State<App>, Extension(access): Extension<Access>
     if !matches!(access, Access::Rtc { .. }) {
         return Err(LocalError::new("SYNC_NEED_RTC"));
     }
-    require_allowed(&app)?;
     Ok(Json(notify::receive(&app, req).await?))
 }
 
@@ -233,6 +219,5 @@ pub async fn agent(State(app): State<App>, Extension(access): Extension<Access>,
     if !matches!(access, Access::Rtc { .. }) {
         return Err(LocalError::new("SYNC_NEED_RTC"));
     }
-    require_allowed(&app)?;
     Ok(Json(crate::feishu_agent::receive(&app, req).await?))
 }

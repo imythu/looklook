@@ -1317,11 +1317,6 @@ async fn send_root(app: &App, inst: &str, chat: &str, text: &str) -> Result<Stri
 #[allow(clippy::too_many_arguments)]
 async fn start_session(app: &App, agent: String, dir: String, text: String, anchor: Anchor, files: Vec<Resource>, src: Option<String>, typing: Vec<(String, String)>) -> Result<String, LocalError> {
     let me = &app.notify.agent;
-    // 跟会话页“新建”一样：账户被锁定时不能开
-    let gate = app.account.gate();
-    if !gate.allowed() {
-        return Err(LocalError::locked(gate.reason()));
-    }
     // 同一条消息只开一次
     let key = match &anchor {
         Anchor::Reply { m, .. } => {

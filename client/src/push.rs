@@ -232,6 +232,18 @@ pub fn test(en: bool, url: &str) -> Msg {
     }
 }
 
+/// 没登录的电脑：这台电脑的地址在手机上打不开，链接换成开通远程访问
+pub fn remote_hint(mut m: Msg, en: bool, url: &str) -> Msg {
+    m.lines.push(tr(
+        en,
+        "这台电脑还没开通远程访问，离开它就打不开看看。开通后出门在外用手机一点就能接着处理（Beta 期间注册送一年）。",
+        "Remote access isn't on for this computer, so Looklook only opens on it. Turn it on to pick things up from your phone anywhere, free for a year if you sign up during the beta.",
+    ));
+    m.url = url.into();
+    m.link = tr(en, "开通远程访问", "Turn on remote access");
+    m
+}
+
 /// markdown 转义：会话里来的文字不能变成链接、标题、加粗
 fn md_escape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -467,5 +479,12 @@ mod tests {
         let m = Msg { title: "t".into(), lines: vec!["很长".repeat(2000)], url: String::new(), link: String::new() };
         let (_, b, _) = request(&hook(Kind::Wecom, "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=a"), &m, 0).unwrap();
         assert!(b["markdown"]["content"].as_str().unwrap().len() <= 4000);
+    }
+
+    #[test]
+    fn guest_link_goes_to_register() {
+        let m = remote_hint(test(false, "http://127.0.0.1:1234/tasks"), false, "https://looklook.test/register");
+        assert_eq!((m.url.as_str(), m.link.as_str()), ("https://looklook.test/register", "开通远程访问"));
+        assert!(m.lines.last().unwrap().contains("注册送一年"));
     }
 }

@@ -12,6 +12,7 @@ import { Link } from '../shared/router.jsx';
 import { formatTime, relativeTime } from '../shared/time.js';
 import { Button, Card, CopyButton, Empty, ErrorNote, Field, Modal, Note, Skeleton, Switch, useAction, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { HelpLink } from '../shared/help.jsx';
+import { RemoteUpsell, remoteAllowed } from '../shared/Remote.jsx';
 
 // 分享有效期可选项（小时），服务端上限 7 天
 const SHARE_HOURS = [1, 24, 72, 168];
@@ -318,9 +319,12 @@ function PageRow({ p, onChanged, onShare }) {
 export default function Pages() {
   const { t } = useTranslation();
   const { status } = useStatus();
-  const [data, error, reload] = useLoad(() => api.get('/tunnels'));
+  const guest = !status.account.logged_in;
+  // 本机网页是远程访问的功能：没登录时不去取列表，只介绍、引导开通
+  const [data, error, reload] = useLoad(() => (guest ? Promise.resolve(null) : api.get('/tunnels')), [guest]);
   const [sharing, setSharing] = useState(null);
   const items = data?.items ?? [];
+  const allowed = remoteAllowed(status);
   return (
     <>
       <div className="page-head">
@@ -329,9 +333,10 @@ export default function Pages() {
         </h1>
       </div>
       <p className="muted">{t('pages.intro')}</p>
-      {!status.account.allowed && <Note kind="warn">{t('pages.paused')}</Note>}
+      {guest && <RemoteUpsell />}
+      {!guest && !allowed && <Note kind="warn">{t('pages.paused')}</Note>}
       <ErrorNote error={error} />
-      {!data && !error ? (
+      {guest ? null : !data && !error ? (
         <Skeleton height={140} />
       ) : (
         data && (
@@ -344,13 +349,13 @@ export default function Pages() {
               ) : (
                 <ul className="list">
                   {items.map((p) => (
-                    <PageRow key={p.id} p={p} onChanged={reload} onShare={status.account.allowed ? setSharing : () => {}} />
+                    <PageRow key={p.id} p={p} onChanged={reload} onShare={allowed ? setSharing : () => {}} />
                   ))}
                 </ul>
               )}
             </Card>
-            <PortsCard pages={items} max={data.max} allowed={status.account.allowed} onAdded={reload} />
-            {status.account.allowed && <AddForm count={items.length} max={data.max} onAdded={reload} />}
+            <PortsCard pages={items} max={data.max} allowed={allowed} onAdded={reload} />
+            {allowed && <AddForm count={items.length} max={data.max} onAdded={reload} />}
             <Note kind="info" icon={Bot}>
               {t('pages.mcp_moved')} <Link to="/ai">{t('nav.ai')}</Link>
             </Note>

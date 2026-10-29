@@ -279,8 +279,8 @@ impl From<LocalError> for ToolError {
 /// 给 AI 助手看的错误说明（它会转述给用户）
 fn explain(code: &str) -> &'static str {
     match code {
-        "NOT_LOGGED_IN" => "Looklook on this computer is not signed in. Ask the user to sign in from the Looklook console.",
-        "LOCKED" => "The Looklook account cannot be used right now (membership expired, disabled or offline too long). Ask the user to check the Looklook console.",
+        "NOT_LOGGED_IN" => "Opening local pages from outside is part of Looklook remote access, which needs a Looklook account (new accounts get a year free during the beta). Tell the user they can turn it on from the Looklook console; everything else keeps working without signing in.",
+        "LOCKED" => "Looklook remote access is paused (membership expired, account disabled, or offline too long). Tell the user they can extend their membership in the Looklook console (Membership: redeem a renewal code or invite friends). Everything on this computer keeps working.",
         "NETWORK" => "Looklook cannot reach its server right now. Try again later.",
         "PORT_RESERVED" => "This port belongs to Looklook itself and cannot be published.",
         "TUNNEL_LIMIT_REACHED" => "The account already has the maximum number of mappings. Ask the user which one to delete in the Looklook console (Local pages).",
@@ -355,7 +355,7 @@ async fn tunnels(app: &App) -> Result<looklook_protocol::dto::TunnelList, LocalE
 }
 
 async fn ensure(app: &App, port: u16, name: &str) -> Result<(Tunnel, bool, bool), LocalError> {
-    super::api::require_allowed(app)?;
+    super::api::require_remote(app)?;
     super::api::check_tunnel_port(app, Some(i64::from(port)))?;
     let existing = |list: &looklook_protocol::dto::TunnelList| list.items.iter().find(|t| t.target_port == i32::from(port)).cloned();
     let list = tunnels(app).await?;

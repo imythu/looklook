@@ -68,11 +68,11 @@
     "reload": "Reload page"
   },
   "gate": {
-    "MEMBERSHIP_EXPIRED": "Your membership has expired, so terminals are paused. Running tasks are not affected and resume after you renew.",
-    "ACCOUNT_DISABLED": "Your account is disabled, so terminals are paused. Running tasks are not affected.",
-    "OFFLINE_TOO_LONG": "Haven't reached the Looklook server for a long time, so terminals are paused. Running tasks are not affected and resume once reconnected.",
-    "other": "Terminals are temporarily unavailable.",
-    "renew": "Renew",
+    "MEMBERSHIP_EXPIRED": "Your membership has expired, so remote access is paused and this computer can't be opened from outside for now. It keeps working here. Extend your membership with a renewal code or by inviting friends, and remote access comes right back.",
+    "ACCOUNT_DISABLED": "Your account is disabled, so remote access is paused. It keeps working on this computer.",
+    "OFFLINE_TOO_LONG": "This computer hasn't reached the Looklook server for too long, so remote access is paused. It keeps working here and resumes once reconnected.",
+    "other": "Remote access isn't available right now. It keeps working on this computer.",
+    "renew": "Extend membership",
     "reconnect": "Reconnect",
     "unstable": "Can't reach the Looklook server right now; retrying automatically. Reconnect before {{deadline}} to avoid interruption.",
     "unstable_sync": "Remote access is working, but account status couldn't sync with the Looklook server; retrying automatically. Sync before {{deadline}} to avoid interruption.",
@@ -90,12 +90,12 @@
     "offline_confirm": "Sign out anyway"
   },
   "login": {
-    "title": "Sign in to Looklook",
-    "sub": "Once signed in, you can open this computer's terminals from your phone or any browser.",
+    "title": "Turn on remote access",
+    "sub": "Sign this computer in to your Looklook account to open its sessions from your phone, wherever you are.",
     "email": "Email",
     "password": "Password",
     "submit": "Sign in",
-    "register": "No account yet? Sign up",
+    "register": "No account yet? Sign up free",
     "forgot": "Forgot password",
     "busy_title": "This account is already signed in on \"{{name}}\"",
     "other_computer": "another computer",
@@ -112,7 +112,7 @@
     "server_change": "Change",
     "server_label": "Server address",
     "server_hint": "You normally don't need to change this. If you host your own Looklook server, enter its address, e.g. https://looklook.example",
-    "start": "Sign in through the Looklook server",
+    "start": "Sign in to Looklook",
     "retry": "Try again",
     "code_label": "Authorization code (check it matches on the web page)",
     "opened": "We opened your browser. Approve this computer there. Didn't open?",
@@ -124,7 +124,7 @@
     "qa": {
       "what": {
         "q": "What can it do?",
-        "a": "Open this computer's terminals from your phone or any browser: see how Claude Code or Codex is doing and reply to keep it going; run commands and read logs too. Close the page and tasks keep running."
+        "a": "Manage terminals and AI sessions (Claude Code, Codex and more) on this computer, and tasks keep running after you close the page. No sign-in needed for that. With remote access, pick up from your phone or any browser: check progress and reply to keep it going."
       },
       "vs": {
         "q": "Is it like remote control tools such as ToDesk?",
@@ -136,14 +136,14 @@
       },
       "install": {
         "q": "Do I install it on both the computer and phone?",
-        "a": "Only this computer needs Looklook (the one you're using now). Phones and other computers need nothing: open your personal address in a browser and sign in."
+        "a": "Only this computer needs Looklook (the one you're using now). Phones and other computers need nothing: on the same Wi‑Fi just open it; from outside, open your personal address in a browser and sign in."
       }
     }
   },
   "terminals": {
     "remote_title": "Open from a phone or another computer",
     "remote_body": "Below is your personal address (one per account; it never changes). Open it in a browser on your phone or any computer and sign in to your Looklook account to keep using this computer's sessions. Nothing to install on the phone. Data always travels through an encrypted channel.",
-    "remote_paused": "Remote access is temporarily unavailable; see the notice at the top of the page.",
+    "remote_paused": "Remote access is paused; see the notice at the top of the page. It keeps working on this computer.",
     "no_ttyd": "The installation is incomplete and the terminal component is missing, so terminals can't start. Please reinstall Looklook.",
     "not_persistent": {
       "darwin": "The built-in background-session component couldn't start on this Mac, so programs in a terminal end when you close its page. Reinstall Looklook, or run brew install tmux in Terminal as an alternative, then reopen Looklook.",
@@ -312,8 +312,8 @@
   },
   "pages": {
     "title": "Local pages",
-    "intro": "Web pages running on this computer (such as a site under development at localhost:5173) can be placed under your personal address so you can open them from your phone or another computer. Only you can see them after signing in.",
-    "paused": "Your account is temporarily unavailable, so local pages can't be opened either.",
+    "intro": "Put web pages running on this computer (such as a site you're developing at localhost:5173) under your personal address, so you can open them from your phone or any other computer. Only your signed-in Looklook account can see them.",
+    "paused": "While remote access is paused, local pages can't be opened from outside either.",
     "list_title": "Added pages",
     "empty_title": "No pages added yet",
     "empty_body": "Enter the number after the colon in the page's address below to create an address that works from outside.",
@@ -2969,5 +2969,34 @@
         "body": "Quick switch, new session, find in chat and more, all on one page."
       }
     }
+  },
+  "upsell": {
+    "title": "Keep going from your phone, wherever you are",
+    "offer": "1 year free during the beta",
+    "price": "Sign up during the beta and get a year of remote access free. After that it's tentatively $7.77/month; the price may change with server costs when paid plans open.",
+    "body": "On this computer and on the same Wi‑Fi, Looklook works without signing in. With remote access you can open it from your phone or any browser while you're out: check how the AI is doing, approve with a tap, send a screenshot so it can keep fixing.",
+    "points": {
+      "anywhere": "A personal https address that works in any browser, phone or computer. No app to install",
+      "network": "Direct connection first, with automatic relay fallback on routes in China and abroad. Encrypted end to end",
+      "machines": "Up to 7 computers on one page, with settings synced between them",
+      "pages": "Open the web pages you're developing (localhost) from anywhere, and share them for a while"
+    },
+    "cta": "Turn on remote access for free",
+    "compare": "Compare Free and Remote",
+    "paused": {
+      "MEMBERSHIP_EXPIRED": "Your membership has expired, so remote access is paused",
+      "ACCOUNT_DISABLED": "Your account is disabled, so remote access is paused",
+      "OFFLINE_TOO_LONG": "This computer hasn't reached the Looklook server for too long, so remote access is paused",
+      "other": "Remote access isn't available right now"
+    },
+    "paused_body": "Everything still works on this computer and running tasks aren't affected. It just can't be opened from outside for now.",
+    "paid_soon": "Paid plans aren't open yet. For now, redeem a renewal code or invite friends: every friend who signs up extends your membership.",
+    "renew_soon_one": "Remote access ends in {{count}} day. After that you can't open this computer from outside, though it keeps working here. Paid plans aren't open yet; invite friends to extend your membership.",
+    "renew_soon_other": "Remote access ends in {{count}} days. After that you can't open this computer from outside, though it keeps working here. Paid plans aren't open yet; invite friends to extend your membership.",
+    "renew_later": "Remind me later",
+    "chip": "Go remote",
+    "chip_title": "Open this computer from your phone, wherever you are",
+    "menu": "Turn on remote access",
+    "menu_hint": "1 year free"
   }
 }

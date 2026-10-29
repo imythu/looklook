@@ -4,7 +4,7 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, Compass, FolderOpen, Github, Globe, History, House, Keyboard, Languages, Laptop, Link2, ListTodo, LogOut, MessageSquare, Plus, Server, Settings as SettingsIcon, ShieldCheck, Wrench } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, Compass, FolderOpen, Github, Globe, History, House, Keyboard, Languages, Laptop, Link2, ListTodo, LogIn, LogOut, MessageSquare, Plus, Server, Settings as SettingsIcon, ShieldCheck, UserRound, Wrench } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -46,6 +46,7 @@ import { RelayHint } from './shared/RelayPicker.jsx';
 import { ConnChip } from './shared/RelayStatus.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
 import { TransferBanner } from './pages/SshTransfer.jsx';
+import { remoteAllowed, renewSoon } from './shared/Remote.jsx';
 
 const StatusCtx = createContext({ status: null, reload: () => {} });
 
@@ -131,6 +132,13 @@ function writeFlag(key, v) {
 }
 
 export function Initial({ name, large }) {
+  if (name === null) {
+    return (
+      <span className={`avatar avatar-guest ${large ? 'avatar-lg' : ''}`}>
+        <UserRound size={large ? 22 : 16} aria-hidden="true" />
+      </span>
+    );
+  }
   return <span className={`avatar ${large ? 'avatar-lg' : ''}`}>{(name || '?').trim().slice(0, 1).toUpperCase()}</span>;
 }
 
@@ -159,16 +167,43 @@ export function useLogout() {
   };
 }
 
+const RENEW_LATER_KEY = 'looklook.renew_later';
+
+/** 稍后提醒：记下到期时间和当时还剩几天，剩 3 天、1 天时再提醒一次。 */
+function useRenewLater(expires, left) {
+  const tier = left === null ? null : left <= 1 ? 1 : left <= 3 ? 3 : 14;
+  const key = `${expires}:${tier}`;
+  const [later, setLater] = useState(() => {
+    try {
+      return localStorage.getItem(RENEW_LATER_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const dismiss = () => {
+    try {
+      localStorage.setItem(RENEW_LATER_KEY, key);
+    } catch {
+      /* 只是不记住 */
+    }
+    setLater(key);
+  };
+  return [later === key, dismiss];
+}
+
 function GateBanner() {
   const { t } = useTranslation();
   const { status, reload } = useStatus();
   const acc = status.account;
+  const soon = renewSoon(status);
+  const [later, dismiss] = useRenewLater(acc.session?.membership_expires_at, soon);
   const reconnect = async () => {
     await api.post('/auth/reconnect').catch(() => {});
     setTimeout(reload, 1500);
   };
+  // 没登录：这台电脑照常用，远程访问的入口在顶栏、用户菜单和本机网页里，不在这里打扰
   if (!acc.logged_in) return null;
-  if (!acc.allowed) {
+  if (!remoteAllowed(status)) {
     const expired = acc.reason === 'MEMBERSHIP_EXPIRED';
     return (
       <div className="banner banner-error" role="alert">
@@ -183,6 +218,19 @@ function GateBanner() {
             {t('gate.reconnect')}
           </Button>
         )}
+      </div>
+    );
+  }
+  if (soon !== null && !later) {
+    return (
+      <div className="banner banner-warn">
+        <span className="grow">{t('upsell.renew_soon', { count: soon })}</span>
+        <Link to="/membership" className="btn btn-primary">
+          {t('gate.renew')}
+        </Link>
+        <Button variant="ghost" onClick={dismiss}>
+          {t('upsell.renew_later')}
+        </Button>
       </div>
     );
   }
@@ -220,6 +268,7 @@ function useUserMenu() {
   const open = (url) => () => window.open(url, '_blank', 'noopener');
   const left = daysLeft(status.account.session?.membership_expires_at);
   const en = i18n.language?.startsWith('en');
+  const guest = !status.account.logged_in;
   // 专属地址：手机、外面的电脑打开它就能用；菜单里一直看得到，点一下复制
   const addr = status.account.session?.user_host_url;
   const copyAddr = async () => {
@@ -233,20 +282,24 @@ function useUserMenu() {
   return [
     addr && { icon: Link2, label: t('acct.address'), hint: addr.replace(/^https?:\/\//, '').replace(/\/$/, ''), onClick: copyAddr },
     addr && 'sep',
-    { icon: Laptop, label: t('acct.computers'), onClick: () => navigate('/devices') },
-    { icon: CalendarClock, label: t('acct.membership'), hint: left > 0 ? t('account.days_left', { n: left }) : t('account.expired'), onClick: () => navigate('/membership') },
-    { icon: ShieldCheck, label: t('acct.account'), onClick: () => navigate('/account') },
+    // 没登录：第一项就是开通远程访问
+    guest && { icon: LogIn, label: t('upsell.menu'), hint: t('upsell.menu_hint'), onClick: () => navigate('/account') },
+    guest && 'sep',
+    !guest && { icon: Laptop, label: t('acct.computers'), onClick: () => navigate('/devices') },
+    !guest && { icon: CalendarClock, label: t('acct.membership'), hint: left > 0 ? t('account.days_left', { n: left }) : t('account.expired'), onClick: () => navigate('/membership') },
+    !guest && { icon: ShieldCheck, label: t('acct.account'), onClick: () => navigate('/account') },
     { icon: SettingsIcon, label: t('nav.settings'), hint: shouldRemind(status.update) ? t('update.badge') : undefined, onClick: () => navigate('/settings') },
     'sep',
     { icon: Languages, label: en ? '中文' : 'English', onClick: () => setLocale(en ? 'zh-CN' : 'en-US') },
     { icon: Compass, label: t('onboard.menu'), onClick: () => (tips.unmark('onboard.hide'), navigate('/')) },
     { icon: Keyboard, label: t('keys.title'), hint: keyLabel('mod+/'), onClick: () => window.dispatchEvent(new Event('ll-shortcuts')) },
-    { icon: Bug, label: t('report.title'), onClick: openReport },
+    // 问题报告经看看服务器转交，要登录；没登录时到 GitHub 提
+    !guest && { icon: Bug, label: t('report.title'), onClick: openReport },
     { icon: House, label: t('nav.home_page'), onClick: open(webUrl(status, '/')) },
     { icon: BookOpen, label: t('nav.docs'), onClick: open(webUrl(status, '/docs')) },
     { icon: Github, label: t('nav.github'), onClick: open(SOURCE_URL) },
-    'sep',
-    { icon: LogOut, label: t('nav.logout'), onClick: logout, danger: true },
+    !guest && 'sep',
+    !guest && { icon: LogOut, label: t('nav.logout'), onClick: logout, danger: true },
   ];
 }
 
@@ -338,8 +391,8 @@ function NavRail({ path, paneOpen, onPane }) {
       <span className="rail-conn">
         <ConnChip />
       </span>
-      <PopMenu items={userMenu} className="rail-btn rail-me" label={s.user.nickname}>
-        <Initial name={s.user.nickname} />
+      <PopMenu items={userMenu} className="rail-btn rail-me" label={s?.user.nickname ?? t('upsell.menu')}>
+        <Initial name={s ? s.user.nickname : null} />
       </PopMenu>
     </nav>
   );
@@ -428,8 +481,8 @@ function MobileTabs({ path }) {
         <Wrench size={21} aria-hidden="true" />
         <span>{t('sess.tools')}</span>
       </PopMenu>
-      <PopMenu items={userMenu} className="mtab" label={s.user.nickname} sheet>
-        <Initial name={s.user.nickname} />
+      <PopMenu items={userMenu} className="mtab" label={s?.user.nickname ?? t('upsell.menu')} sheet>
+        <Initial name={s ? s.user.nickname : null} />
         {shouldRemind(status.update) && <span className="dot-badge" aria-hidden="true" />}
         <span>{t('nav.me')}</span>
       </PopMenu>
@@ -565,7 +618,7 @@ function PageDrawer({ path, behind, onClose, stale, children }) {
     if (id) setTimeout(() => sessions.requestFocus(id), 0);
   };
   return (
-    <Drawer open={Boolean(path)} onClose={close} title={path ? t(DRAWER_PAGES[path]) : ''} wide={path === '/settings'} head={perDevice && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/remote')} />}>
+    <Drawer open={Boolean(path)} onClose={close} title={!path ? '' : !status.account.logged_in && ACCOUNT_PAGES.includes(path) ? t('upsell.menu') : t(DRAWER_PAGES[path])} wide={path === '/settings'} head={perDevice && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/remote')} />}>
       <Fragment key={perDevice ? devices.selected : 'all'}>
         {perDevice && stale ? (
           <div className="stack">
@@ -712,7 +765,8 @@ function Shell() {
     );
   }
   let body;
-  if (!status.account.logged_in) {
+  // 远程打开时一定已经登录；本机、局域网打开不需要登录，没登录时账户、电脑、会员几页显示“开通远程访问”
+  if (!status.account.logged_in && status.access !== 'local') {
     body = (
       <PublicLayout>
         <Login />
@@ -724,10 +778,11 @@ function Shell() {
     // 换了登录（退出后重新登录）时重置终端页。远程打开时状态来自选中的那台电脑，选中的电脑一变 device_id 就变，
     // 不能拿它当 key：选中的电脑短暂离线时会自动换到默认电脑，终端页重新挂载，打开着的终端小窗就没了。
     // 多台电脑时状态来自选中的那台，换电脑不能换 key；本机 App 用自己的设备 id（列表的 default）。
-    const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : status.account.session?.device_id;
+    const login = rtcMode ? 'remote' : devices.multi ? `local:${devices.def}` : (status.account.session?.device_id ?? 'guest');
     const home = opensInPage() ? <DraftPane key={`start:${login}`} /> : <SessionHome />;
     const page = SESS.test(path) ? null : { '/': home, '/new': <DraftPane key={`start:${login}`} />, '/tasks': <Board />, '/history': <HistoryPage />, '/project': <ProjectPage />, '/files': <Files />, '/ssh': <SshHosts />, '/pages': <Pages />, '/ai': <AiPage />, '/system': <System /> }[path];
-    const drawerPage = route.drawer && { '/settings': <Settings />, '/account': <Account />, '/devices': <Computers />, '/membership': <Membership /> }[route.drawer];
+    const guest = !status.account.logged_in;
+    const drawerPage = route.drawer && { '/settings': <Settings />, '/account': guest ? <Login drawer /> : <Account />, '/devices': guest ? <Login drawer /> : <Computers />, '/membership': guest ? <Login drawer /> : <Membership /> }[route.drawer];
     body = (
       <SessionsProvider key={login} enabled>
         <SessionUiProvider>
@@ -746,8 +801,8 @@ function Shell() {
       <DevicesProvider value={devices}>
         <UpdateProvider>
           <ReportProvider>
-            <TipsProvider enabled={status.account.logged_in}>
-              {status.account.logged_in && <OnboardTracker />}
+            <TipsProvider enabled>
+              <OnboardTracker />
               {body}
               <PullRefresh />
             </TipsProvider>

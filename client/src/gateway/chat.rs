@@ -19,7 +19,6 @@ use serde_json::{json, Value};
 use tokio::sync::broadcast::error::RecvError;
 
 use super::access::Peer;
-use super::api::require_allowed;
 use super::{Access, App};
 use crate::chat::{hooks, Event, PermissionAnswer};
 use crate::error::LocalError;
@@ -49,7 +48,6 @@ pub async fn snapshot(State(app): State<App>, Path(id): Path<String>) -> R<Json<
 /// 一个对话的事件（事件名、JSON 文本）：`snapshot`（第一条，以及落后太多时）、`status`、`items`、`reset`（界面重新取快照）。
 /// 看着的期间（流还在）算一个观看者。SSE（[`events`]）和多路 WebSocket（`chat_mux`）共用。
 pub(super) async fn feed(app: App, id: String) -> R<impl Stream<Item = (&'static str, String)> + Send + 'static> {
-    require_allowed(&app)?;
     let (rx, viewer) = app.chat.subscribe(&id)?;
     let first = app.chat.snapshot(&id).await?;
     Ok(futures_util::stream::unfold((app, id, rx, viewer, Some(first)), |(app, id, mut rx, viewer, first)| async move {
@@ -152,7 +150,6 @@ pub struct InputReq {
 }
 
 pub async fn input(State(app): State<App>, Path(id): Path<String>, Json(req): Json<InputReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     if req.text.len() > 200_000 || req.images.len() > 10 {
         return Err(LocalError::invalid("text", "too_long"));
     }
@@ -169,26 +166,22 @@ pub async fn input(State(app): State<App>, Path(id): Path<String>, Json(req): Js
 
 /// 以前的会话“现在就转过来”：不等空闲，退出终端里以前的 Claude Code / Codex，接着同一段对话转到对话模式
 pub async fn adopt(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.adopt(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Codex 终端标签上的“重新连接终端”
 pub async fn codex_terminal(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.codex_reconnect_terminal(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn interrupt(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.interrupt(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn permission(State(app): State<App>, Path(id): Path<String>, Json(req): Json<PermissionAnswer>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.answer(&id, &req)?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -201,7 +194,6 @@ pub struct PlanReq {
 }
 
 pub async fn plan(State(app): State<App>, Path(id): Path<String>, Json(req): Json<PlanReq>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.plan(&id, req.choice, req.feedback.as_deref()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -220,13 +212,11 @@ fn yes() -> bool {
 
 /// 换个 Claude Code 账号接着同一段对话继续
 pub async fn switch_profile(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SwitchProfileReq>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.switch_profile(&id, &req.profile, req.go_on).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn relaunch(State(app): State<App>, Path(id): Path<String>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.relaunch(&id).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -239,7 +229,6 @@ pub struct SettingReq {
 
 /// 快捷设置：模型、思考强度、权限模式
 pub async fn setting(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SettingReq>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.setting(&id, &req.kind, &req.value).await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -264,7 +253,6 @@ pub struct WorktreeReq {
 }
 
 pub async fn worktree(State(app): State<App>, Path(id): Path<String>, Json(req): Json<WorktreeReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     Ok(Json(app.chat.worktree(&id, &req.mode, req.root.as_deref()).await?))
 }
 
@@ -333,14 +321,12 @@ pub struct UpdateReq {
 
 /// `POST /api/instances/{id}/chat/codex-update`：更新 Codex（返回安装任务，进度看 `GET /tools/install/codex`）或跳过这个版本
 pub async fn codex_update(State(app): State<App>, Path(id): Path<String>, Json(req): Json<UpdateReq>) -> R<Json<Value>> {
-    require_allowed(&app)?;
     app.store.instance(&id)?.ok_or_else(LocalError::not_found)?;
     Ok(Json(app.chat.codex_update(req.install).await?))
 }
 
 /// `POST /api/instances/{id}/chat/hooks`：信任（`trust: true`）或跳过这几条
 pub async fn hooks_answer(State(app): State<App>, Path(id): Path<String>, Json(req): Json<HooksReq>) -> R<StatusCode> {
-    require_allowed(&app)?;
     let picked: Vec<(String, String)> = req.hooks.into_iter().map(|h| (h.key, h.hash)).collect();
     app.chat.hooks_answer(&id, req.trust, &picked).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -412,14 +398,12 @@ pub struct SeenReq {
 
 /// 看过了（看板上点“知道了”），或者会话页正开着（`active`，每 20 秒一次）
 pub async fn seen(State(app): State<App>, Path(id): Path<String>, Json(req): Json<SeenReq>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.seen(&id, req.active)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// TUI 上的选择框：选一项或取消
 pub async fn dialog(State(app): State<App>, Path(id): Path<String>, Json(req): Json<DialogReq>) -> R<StatusCode> {
-    require_allowed(&app)?;
     match req.index {
         Some(i) => app.chat.dialog_choose(&id, &req.title, &req.label, i).await?,
         None => app.chat.dialog_cancel(&id).await?,
@@ -442,7 +426,6 @@ pub async fn task_output(State(app): State<App>, Path(id): Path<String>, Query(q
 }
 
 pub async fn task_stop(State(app): State<App>, Path(id): Path<String>, Json(q): Json<TaskQuery>) -> R<StatusCode> {
-    require_allowed(&app)?;
     app.chat.stop_task(&id, &q.tool).await?;
     Ok(StatusCode::NO_CONTENT)
 }

@@ -6,7 +6,7 @@
 //! 优先用随包的 looklook-mux（Linux/macOS 是静态编译的 tmux，Windows 是兼容 tmux 命令的 psmux），其次是系统里的 tmux；
 //! 都没有（或随包程序无法运行）时退回“直接运行”：关掉网页即结束程序。
 //!
-//! 账户不可用（未登录、到期、离线过久）时只停 ttyd，不结束 tmux 里的任务；恢复后自动接回。
+//! 本机使用不需要账户：未登录、会员到期时终端照常运行，只是不能远程打开（见 `gateway::remote_gate`）。
 
 use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, SocketAddr, TcpListener};
@@ -20,7 +20,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use tokio::process::{Child, Command};
 
-use crate::account::Account;
 use crate::error::LocalError;
 use crate::paths::Paths;
 use crate::settings::Settings;
@@ -1406,9 +1405,8 @@ impl Instances {
         }
     }
 
-    /// 后台看护：跟随账户状态停止/接回 ttyd；ttyd 意外退出时重启。
-    pub async fn supervise(self: Arc<Self>, account: Arc<Account>) {
-        let mut suspended = false;
+    /// 后台看护：ttyd 意外退出时重启。本机使用不看账户（未登录、会员到期也照常运行），远程打开由网关把关。
+    pub async fn supervise(self: Arc<Self>) {
         let mut orphans = HashSet::new();
         let mut swept = Instant::now();
         loop {
@@ -1416,33 +1414,20 @@ impl Instances {
                 swept = Instant::now();
                 orphans = self.sweep_orphans(orphans).await;
             }
-            let allowed = account.gate().allowed();
-            if !allowed {
-                if !suspended && !lock(&self.procs).is_empty() {
-                    tracing::info!(reason = ?account.gate().reason(), "账户当前不可用，暂停所有终端入口（任务继续运行）");
+            self.reap();
+            let rows = self.store.instances().unwrap_or_default();
+            for row in rows.into_iter().filter(|r| r.want_running) {
+                let gave_up = lock(&self.health).get(&row.id).is_some_and(|h| h.quick_exits >= 3);
+                if lock(&self.procs).contains_key(&row.id) || gave_up {
+                    continue;
                 }
-                let ids: Vec<String> = lock(&self.procs).keys().cloned().collect();
-                for id in ids {
-                    self.kill_ttyd(&id).await;
-                }
-                suspended = true;
-            } else {
-                suspended = false;
-                self.reap();
-                let rows = self.store.instances().unwrap_or_default();
-                for row in rows.into_iter().filter(|r| r.want_running) {
-                    let gave_up = lock(&self.health).get(&row.id).is_some_and(|h| h.quick_exits >= 3);
-                    if lock(&self.procs).contains_key(&row.id) || gave_up {
-                        continue;
-                    }
-                    // 开机自动启动的终端要立即运行命令；其余只接回已有会话。
-                    if let Err(e) = self.resume(&row.id, row.auto_start).await {
-                        tracing::warn!(id = %row.id, error = ?e.code, "恢复终端失败");
-                        let mut h = lock(&self.health);
-                        let entry = h.entry(row.id.clone()).or_default();
-                        entry.quick_exits += 1;
-                        entry.error = Some(e.code.clone());
-                    }
+                // 开机自动启动的终端要立即运行命令；其余只接回已有会话。
+                if let Err(e) = self.resume(&row.id, row.auto_start).await {
+                    tracing::warn!(id = %row.id, error = ?e.code, "恢复终端失败");
+                    let mut h = lock(&self.health);
+                    let entry = h.entry(row.id.clone()).or_default();
+                    entry.quick_exits += 1;
+                    entry.error = Some(e.code.clone());
                 }
             }
             tokio::time::sleep(Duration::from_secs(2)).await;

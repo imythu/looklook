@@ -6,6 +6,7 @@ import { Bell, Check, ChevronDown, FolderPlus, ListTodo, MessageSquare, Smartpho
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
 import { CHAT_LAUNCHES } from '../shared/chat.js';
 import { isTouch } from '../shared/KeyBar.jsx';
@@ -48,6 +49,8 @@ export function OnboardTracker() {
 function useGuide() {
   const tips = useTips();
   const s = useSessions();
+  const { status } = useStatus();
+  const loggedIn = status.account.logged_in;
   const hidden = !tips.ready || tips.has(HIDE);
   const done = Object.fromEntries(STEPS.map(({ id }) => [id, tips.has(`step.${id}`)]));
   const hasProject = s.projects.length > 0;
@@ -59,12 +62,12 @@ function useGuide() {
   }, [hidden, hasProject, hasAi, done.project, done.ai]);
   // 手机：平台上登录过的浏览器里有手机就算；通知：配了飞书或别的渠道就算。只在还没做的时候查一次
   useEffect(() => {
-    if (hidden || done.phone) return;
+    if (hidden || done.phone || !loggedIn) return;
     platform
       .get('/sessions')
       .then((r) => r?.items?.some((x) => MOBILE_UA.test(x.user_agent ?? '')) && tips.mark('step.phone'))
       .catch(() => {});
-  }, [hidden, done.phone]);
+  }, [hidden, done.phone, loggedIn]);
   useEffect(() => {
     if (hidden || done.notify) return;
     api

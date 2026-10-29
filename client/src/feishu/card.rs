@@ -345,6 +345,19 @@ pub fn stalled(i: &Info, doing: &str, idle_ms: i64, base: &Act) -> Value {
     card(header(&title, &subtitle(i), "orange", None), &format!("{title} · {}", i.title), els)
 }
 
+/// 没登录的电脑：卡片末尾加一句开通远程访问（“打开”指向这台电脑，离开它就打不开）
+pub fn remote_hint(mut c: Value, en: bool, url: &str) -> Value {
+    if let Some(els) = c["body"]["elements"].as_array_mut() {
+        els.push(note(&tr(
+            en,
+            "“打开”只在这台电脑上能用。开通远程访问后，出门在外用手机一点就能接着处理（Beta 期间注册送一年）。",
+            "\"Open\" only works on this computer. Turn on remote access to pick things up from your phone anywhere, free for a year if you sign up during the beta.",
+        )));
+        els.push(row(vec![link(&tr(en, "开通远程访问", "Turn on remote access"), url)]));
+    }
+    c
+}
+
 /// 超出每分钟上限时合并成一条
 pub fn digest(en: bool, n: usize, url: &str) -> Value {
     let title = tr(en, &format!("还有 {n} 条通知没发"), &format!("{n} more notifications"));
@@ -852,5 +865,13 @@ mod tests {
         assert_eq!(buttons(&c), ["在飞书里接着", "打开任务"]);
         assert!(sessions(true, &[], "u").to_string().contains("No sessions"));
         assert_eq!(body_markdown("<at id=all></at>"), "‹at id=all></at>");
+    }
+
+    #[test]
+    fn guest_hint_keeps_buttons() {
+        let act = Act { a: "test".into(), n: "n".into(), ..Default::default() };
+        let c = remote_hint(test(true, &act, false), true, "https://looklook.test/register");
+        assert!(c.to_string().contains("Turn on remote access") && c.to_string().contains("https://looklook.test/register"));
+        assert!(buttons(&c).len() >= 2);
     }
 }

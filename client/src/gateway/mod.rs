@@ -149,8 +149,31 @@ pub fn router(app: App) -> Router {
         .route("/static/term.js", get(assets::term_js))
         .route("/static/web.js", get(assets::web_js))
         .fallback(assets::ui)
+        .layer(middleware::from_fn_with_state(app.clone(), remote_gate))
         .layer(middleware::from_fn(security_headers))
         .with_state(app)
+}
+
+/// 本机、局域网打开不需要账户；远程打开（专属地址、WebRTC）要登录且会员有效。
+/// 不能用时只留状态接口，远程页面据此说明原因、引导续费。
+async fn remote_gate(State(app): State<App>, req: Request, next: Next) -> Response {
+    let local = req.extensions().get::<Access>().is_none_or(Access::is_local);
+    if local || req.uri().path() == "/api/status" {
+        return next.run(req).await;
+    }
+    let gate = app.account.gate();
+    if gate.allowed() {
+        return next.run(req).await;
+    }
+    if req.uri().path().starts_with("/api/") {
+        return LocalError::locked(gate.reason()).into_response();
+    }
+    let kind = match gate.reason() {
+        Some("MEMBERSHIP_EXPIRED") => "locked_expired",
+        Some(crate::account::OFFLINE_TOO_LONG) => "locked_offline",
+        _ => "locked",
+    };
+    assets::message_page(StatusCode::FORBIDDEN, kind)
 }
 
 /// 管理台、终端页只允许同源嵌入（本机直连的终端页改用 CSP `frame-ancestors`，见 `terminal`）；地址里的一次性口令不随 Referer 泄露。
@@ -259,10 +282,6 @@ async fn relay_entry(app: App, inner: Router, mut req: Request) -> Response {
 async fn terminal(State(app): State<App>, req: Request) -> Response {
     let access = req.extensions().get::<Access>().cloned().unwrap_or(Access::Local);
     let id = req.uri().path().trim_start_matches("/i/").split('/').next().unwrap_or("").to_string();
-    let gate = app.account.gate();
-    if !gate.allowed() {
-        return assets::message_page(StatusCode::FORBIDDEN, "locked");
-    }
     let Some((port, auth)) = app.instances.upstream(&id) else {
         return assets::message_page(StatusCode::SERVICE_UNAVAILABLE, "not_running");
     };
@@ -464,6 +483,60 @@ mod tests {
             m.append(axum::http::HeaderName::from_bytes(k.as_bytes()).unwrap(), HeaderValue::from_str(v).unwrap());
         }
         m
+    }
+
+    /// 本机、局域网不看账户；远程打开要登录且会员有效，不能用时只留状态接口。
+    #[tokio::test]
+    async fn remote_needs_account_local_does_not() {
+        use tower::ServiceExt;
+        let home = tempfile::tempdir().unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let a = crate::ssh_transfer::e2e::app(home.path(), "http://127.0.0.1:9", "deva", key);
+        let call = |access: Access, path: &str| {
+            let mut req = Request::builder().uri(path).body(axum::body::Body::empty()).unwrap();
+            req.extensions_mut().insert(access);
+            let r = router(a.clone());
+            async move {
+                let r = r.oneshot(req).await.unwrap();
+                let status = r.status();
+                let body = axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap();
+                (status, serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default(), String::from_utf8_lossy(&body).into_owned())
+            }
+        };
+        let remote = || Access::Remote { host: "alice.looklook.test".into(), proto: "https".into() };
+        let rtc = || Access::Rtc { origin: "https://alice.looklook.test".into() };
+
+        let (st, _, _) = call(remote(), "/api/settings").await;
+        assert_eq!(st, StatusCode::OK, "会员有效时远程照常");
+
+        let mut s = a.account.session().unwrap();
+        s.expires_ms = 1;
+        a.account.set_for_test(s, &[]);
+        let (_, v, _) = call(Access::Local, "/api/status").await;
+        assert_eq!((v["account"]["allowed"].as_bool(), v["account"]["remote_allowed"].as_bool()), (Some(true), Some(false)));
+        let (st, _, _) = call(Access::Local, "/api/settings").await;
+        assert_eq!(st, StatusCode::OK, "会员到期不影响本机");
+        let (st, v, _) = call(remote(), "/api/status").await;
+        assert_eq!((st, v["account"]["allowed"].as_bool(), v["account"]["reason"].as_str()), (StatusCode::OK, Some(false), Some("MEMBERSHIP_EXPIRED")));
+        for access in [remote(), rtc()] {
+            let (st, v, _) = call(access, "/api/settings").await;
+            assert_eq!((st, v["error"]["code"].as_str(), v["error"]["params"]["reason"].as_str()), (StatusCode::FORBIDDEN, Some("LOCKED"), Some("MEMBERSHIP_EXPIRED")));
+        }
+        let (st, _, html) = call(remote(), "/i/abcdefgh/").await;
+        assert_eq!(st, StatusCode::FORBIDDEN);
+        assert!(html.contains("会员已到期"), "{html}");
+
+        a.account.clear_for_test();
+        let (_, v, _) = call(Access::Local, "/api/status").await;
+        assert_eq!((v["account"]["logged_in"].as_bool(), v["account"]["allowed"].as_bool()), (Some(false), Some(true)));
+        for path in ["/api/settings", "/api/instances", "/api/notify"] {
+            let (st, v, _) = call(Access::Local, path).await;
+            assert_eq!(st, StatusCode::OK, "没登录也能在本机用：{path} {v}");
+        }
+        let (_, v, _) = call(Access::Local, "/api/tunnels").await;
+        assert_eq!(v["error"]["code"].as_str(), Some("NOT_LOGGED_IN"), "本机网页是远程功能");
+        let (st, v, _) = call(remote(), "/api/instances").await;
+        assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::UNAUTHORIZED, Some("NOT_LOGGED_IN")));
     }
 
     #[test]
