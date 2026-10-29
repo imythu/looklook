@@ -2154,17 +2154,20 @@ async fn put_access(State(app): State<App>, Extension(access): Extension<Access>
 
 // ---------------- AI 助手接入（MCP） ----------------
 
-async fn mcp_view(app: &App) -> Value {
+/// 远程打开时不给令牌（`local: false`，令牌为空）：开关能看能改，令牌和装配置只在本机。
+async fn mcp_view(app: &App, access: &Access) -> Value {
     let c = super::mcp::McpConfig::load(&app.store);
     let url = super::mcp::endpoint(app);
     let agents = crate::agents::status(app.instances.shell(), &url, &c.token).await;
-    json!({ "enabled": c.enabled, "ssh": !c.ssh_disabled, "token": c.token, "url": url, "agents": agents, "tools": super::mcp::tool_names() })
+    let local = access.is_local();
+    let token = if local { c.token } else { String::new() };
+    json!({ "enabled": c.enabled, "ssh": !c.ssh_disabled, "token": token, "local": local, "url": url, "agents": agents, "tools": super::mcp::tool_names() })
 }
 
-/// 和访问控制一样，只能直接在这台机器（或允许的局域网）上查看和修改：令牌只在本机有用，装配置也是改本机文件。
+/// 开关（MCP、SSH 工具）远程也能改；令牌、换令牌、装进 AI 助手只能直接在这台机器（或允许的局域网）上做：
+/// 令牌只在本机有用，装配置也是改本机文件。
 async fn get_mcp(State(app): State<App>, Extension(access): Extension<Access>) -> R<Json<Value>> {
-    require_local(&access)?;
-    Ok(Json(mcp_view(&app).await))
+    Ok(Json(mcp_view(&app, &access).await))
 }
 
 #[derive(Deserialize, Default)]
@@ -2178,7 +2181,9 @@ struct McpReq {
 }
 
 async fn put_mcp(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<McpReq>) -> R<Json<Value>> {
-    require_local(&access)?;
+    if req.rotate {
+        require_local(&access)?;
+    }
     let mut c = super::mcp::McpConfig::load(&app.store);
     let old = c.token.clone();
     if let Some(v) = req.enabled {
@@ -2203,7 +2208,7 @@ async fn put_mcp(State(app): State<App>, Extension(access): Extension<Access>, J
             }
         }
     }
-    Ok(Json(mcp_view(&app).await))
+    Ok(Json(mcp_view(&app, &access).await))
 }
 
 #[derive(Deserialize)]
@@ -2223,14 +2228,14 @@ async fn mcp_install(State(app): State<App>, Extension(access): Extension<Access
         return Err(LocalError::new("MCP_DISABLED"));
     }
     crate::agents::install(agent, app.instances.shell(), &super::mcp::endpoint(&app), &c.token, skill).await?;
-    Ok(Json(mcp_view(&app).await))
+    Ok(Json(mcp_view(&app, &access).await))
 }
 
 async fn mcp_uninstall(State(app): State<App>, Extension(access): Extension<Access>, Json(req): Json<AgentReq>) -> R<Json<Value>> {
     require_local(&access)?;
     let agent = crate::agents::Agent::parse(&req.agent).ok_or_else(|| LocalError::invalid("agent", "enum"))?;
     crate::agents::uninstall(agent, app.instances.shell()).await?;
-    Ok(Json(mcp_view(&app).await))
+    Ok(Json(mcp_view(&app, &access).await))
 }
 
 // ---------------- shell ----------------
@@ -2762,6 +2767,49 @@ mod tests {
     fn hidden(qs: &str) -> Option<bool> {
         let uri: Uri = format!("/api/fs/list?{qs}").parse().unwrap();
         Query::<FsQ>::try_from_uri(&uri).ok().map(|q| q.0.hidden)
+    }
+
+    /// 远程打开：MCP 和 SSH 工具的开关能看能改，令牌不给，换令牌、装进 AI 助手被拒。
+    #[tokio::test(flavor = "multi_thread")]
+    async fn mcp_switches_work_remotely_token_stays_local() {
+        use axum::body::Body;
+        use axum::http::Request;
+        use tower::ServiceExt;
+        let home = tempfile::tempdir().unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7u8; 32]);
+        let a = crate::ssh_transfer::e2e::app(home.path(), "http://127.0.0.1:9", "deva", key);
+        let call = |access: Access, method: &str, path: &str, body: Value| {
+            let mut req = Request::builder().method(method).uri(path).header("content-type", "application/json").header(super::super::CLIENT_HEADER, "1").body(Body::from(body.to_string())).unwrap();
+            req.extensions_mut().insert(access);
+            let r = super::super::router(a.clone());
+            async move {
+                let r = r.oneshot(req).await.unwrap();
+                let status = r.status();
+                (status, serde_json::from_slice::<Value>(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap()).unwrap_or_default())
+            }
+        };
+        let remote = || Access::Remote { host: "alice.looklook.test".into(), proto: "https".into() };
+
+        let (st, v) = call(remote(), "PUT", "/api/mcp", json!({ "enabled": true, "ssh": false })).await;
+        assert_eq!(st, StatusCode::OK, "{v}");
+        assert_eq!((v["enabled"].as_bool(), v["ssh"].as_bool(), v["local"].as_bool(), v["token"].as_str()), (Some(true), Some(false), Some(false), Some("")));
+        let token = super::super::mcp::McpConfig::load(&a.store).token;
+        assert!(!token.is_empty(), "远程打开时也要生成令牌");
+
+        let (_, v) = call(Access::Local, "GET", "/api/mcp", json!({})).await;
+        assert_eq!((v["local"].as_bool(), v["token"].as_str()), (Some(true), Some(token.as_str())));
+        let (_, v) = call(remote(), "GET", "/api/mcp", json!({})).await;
+        assert_eq!((v["enabled"].as_bool(), v["token"].as_str()), (Some(true), Some("")));
+
+        for (path, body) in [("/api/mcp", json!({ "rotate": true })), ("/api/mcp/install", json!({ "agent": "claude", "skill": "ask" })), ("/api/mcp/uninstall", json!({ "agent": "claude" }))] {
+            let method = if path == "/api/mcp" { "PUT" } else { "POST" };
+            let (st, v) = call(remote(), method, path, body).await;
+            assert_eq!((st, v["error"]["code"].as_str()), (StatusCode::FORBIDDEN, Some("REMOTE_FORBIDDEN")), "{path}");
+        }
+        assert_eq!(super::super::mcp::McpConfig::load(&a.store).token, token);
+
+        let (_, v) = call(remote(), "PUT", "/api/mcp", json!({ "enabled": false })).await;
+        assert_eq!(v["enabled"].as_bool(), Some(false));
     }
 
     #[test]

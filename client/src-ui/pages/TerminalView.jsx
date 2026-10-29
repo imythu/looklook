@@ -13,6 +13,7 @@ import { CHAT_LAUNCHES } from '../shared/chat.js';
 import { usePaths } from '../shared/paths.jsx';
 import { termFit, termFocus, termOffline, termPaste, termSrc, useFocusWhenReady, useRefitOnReturn, useTermConn, useTermTheme } from '../shared/termFrame.js';
 import { backToDraft, retryFirst, useFirstSend } from '../shared/firstSend.js';
+import ErrorBoundary from '../shared/ErrorBoundary.jsx';
 import { errorText } from '../shared/i18n.js';
 import { AI_LAUNCHES } from '../shared/keys.js';
 import KeyBar, { isTouch, keepFocus, useKeybarShown, useTouchTerminal } from '../shared/KeyBar.jsx';
@@ -524,7 +525,9 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
         {/* 对话一直挂着（切到别的标签时只是隐藏）：切回来时内容和滚动位置都还在 */}
         {running && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} offline={offline} onTab={setTab} onDraftBack={draftBack} />
+            <ErrorBoundary>
+              <ChatView id={id} launch={inst?.launch} active={active && tab === 'chat'} touch={false} offline={offline} onTab={setTab} onDraftBack={draftBack} />
+            </ErrorBoundary>
           </div>
         )}
       </div>
@@ -786,7 +789,9 @@ function TermPage({ id }) {
         )}
         {live && chat && (
           <div className="term-files-tab chat-tab" hidden={tab !== 'chat'}>
-            <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} offline={offline} onTab={setTab} onDraftBack={draftBack} />
+            <ErrorBoundary>
+              <ChatView id={id} launch={inst?.launch} active={tab === 'chat'} touch={touch} offline={offline} onTab={setTab} onDraftBack={draftBack} />
+            </ErrorBoundary>
           </div>
         )}
       </div>

@@ -28,6 +28,7 @@ import TerminalView from './pages/TerminalView.jsx';
 import { api, rtcMode, selectedDevice } from './shared/api.js';
 import { useAwayTracker } from './shared/board.js';
 import { DeviceSwitcher, DevicesProvider, deviceName, useDevices, useDeviceState } from './shared/devices.jsx';
+import ErrorBoundary from './shared/ErrorBoundary.jsx';
 import { Link, Router, useCanonicalPath, useRouter } from './shared/router.jsx';
 import PopMenu from './shared/PopMenu.jsx';
 import { sessionState, SessionsProvider, useSessions } from './shared/sessions.jsx';
@@ -535,7 +536,7 @@ function ConsoleLayout({ path, stale, children }) {
                 <Skeleton height={180} />
               </div>
             ) : (
-              children
+              <ErrorBoundary resetKey={path}>{children}</ErrorBoundary>
             )}
           </Fragment>
           {/* 打开过的会话一直挂着（不在会话页时隐藏），切回来不用重新连 */}
@@ -572,7 +573,7 @@ function PageDrawer({ path, behind, onClose, stale, children }) {
             <Skeleton height={180} />
           </div>
         ) : (
-          children
+          <ErrorBoundary resetKey={path}>{children}</ErrorBoundary>
         )}
       </Fragment>
     </Drawer>

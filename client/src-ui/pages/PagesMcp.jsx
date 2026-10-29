@@ -1,6 +1,6 @@
 // AI 助手页的 MCP 接口：打开后，Codex / Claude Code / OpenCode / DSH 可以自己查看、添加本机网页，
 // 在允许 AI 使用的 SSH 主机上运行命令（工具清单和开关见 Ai.jsx）。
-// 令牌和配置都只在这台机器上；只有直接在本机（或允许的局域网）打开管理台时显示。
+// 开关远程也能改；令牌和装进 AI 助手只在直接在本机（或允许的局域网）打开管理台时显示（`v.local`）。
 import { Bot, RefreshCw, Trash2 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -97,7 +97,8 @@ export default function McpCard({ onChange }) {
       actions={<Switch checked={v.enabled} disabled={busy} label={t('pages.mcp.enable')} onChange={(on) => act(() => api.put('/mcp', { enabled: on }))} />}
     >
       <p className="muted">{t('pages.mcp.intro')}</p>
-      {v.enabled && (
+      {v.enabled && !v.local && <Note kind="info">{t('ai.local_only')}</Note>}
+      {v.enabled && v.local && (
         <>
           <div className="field">
             <span className="field-label">{t('pages.mcp.skill')}</span>

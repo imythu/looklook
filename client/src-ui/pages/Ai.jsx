@@ -1,15 +1,14 @@
 // AI 助手：MCP 接口（令牌、一键装进 Codex / Claude Code / OpenCode / DSH）和它给 AI 助手的全部工具，
 // 一处看清 AI 能做什么：本机网页的工具，以及 SSH 工具的总开关和每台主机“允许 AI 使用”的快捷开关。
-// MCP 的令牌和配置只能直接在这台电脑上看、改；远程打开时只显示工具和主机开关。
+// 开关远程也能改；MCP 的令牌和装进 AI 助手只能直接在这台电脑上看、做（见 PagesMcp.jsx）。
 import { Bot, Globe, Server, Wrench } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { useStatus } from '../App.jsx';
 import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { Link } from '../shared/router.jsx';
-import { Card, ErrorNote, Note, Skeleton, Switch, useLoad, useToast } from '../shared/ui.jsx';
+import { Card, ErrorNote, Skeleton, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { HelpLink } from '../shared/help.jsx';
 import McpCard from './PagesMcp.jsx';
 
@@ -30,7 +29,7 @@ function ToolList({ names, on }) {
   );
 }
 
-function ToolsCard({ version, local }) {
+function ToolsCard({ version }) {
   const { t } = useTranslation();
   const toast = useToast();
   const [data, error, reload] = useLoad(() => api.get('/ssh/hosts'), [version]);
@@ -71,10 +70,9 @@ function ToolsCard({ version, local }) {
         <div className="ai-group-head">
           <Server size={16} aria-hidden="true" />
           <b className="grow">{t('ai.group_ssh')}</b>
-          <Switch checked={ssh} disabled={!local || busy === 'ssh'} label={t('ai.ssh_switch')} onChange={(on) => run('ssh', () => api.put('/mcp', { ssh: on }))} />
+          <Switch checked={ssh} disabled={busy === 'ssh'} label={t('ai.ssh_switch')} onChange={(on) => run('ssh', () => api.put('/mcp', { ssh: on }))} />
         </div>
         <p className="small muted">{t(ssh ? 'ai.ssh_on_hint' : 'ai.ssh_off_hint')}</p>
-        {!local && <p className="small muted">{t('ai.ssh_switch_local')}</p>}
         <ToolList names={SSH_TOOLS} on={mcp && ssh} />
         {data.items.length === 0 ? (
           <p className="small muted">
@@ -111,8 +109,6 @@ function ToolsCard({ version, local }) {
 
 export default function AiPage() {
   const { t } = useTranslation();
-  const { status } = useStatus();
-  const local = status.access === 'local';
   // MCP 开关一变，工具卡片跟着刷新
   const [version, setVersion] = useState(0);
   return (
@@ -123,8 +119,8 @@ export default function AiPage() {
         </h1>
       </div>
       <p className="muted">{t('ai.intro')}</p>
-      {local ? <McpCard onChange={() => setVersion((v) => v + 1)} /> : <Note kind="info">{t('ai.local_only')}</Note>}
-      <ToolsCard version={version} local={local} />
+      <McpCard onChange={() => setVersion((v) => v + 1)} />
+      <ToolsCard version={version} />
     </>
   );
 }

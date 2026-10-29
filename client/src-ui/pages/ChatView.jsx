@@ -104,6 +104,7 @@ import {
   toolUseIds,
 } from '../shared/chat.js';
 import { copyText } from '../shared/chatCopy.js';
+import ErrorBoundary from '../shared/ErrorBoundary.jsx';
 import { errorText } from '../shared/i18n.js';
 import Markdown from '../shared/Markdown.jsx';
 import { useRouter } from '../shared/router.jsx';
@@ -3845,13 +3846,15 @@ function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompac
         </button>
       </header>
       <div className="chat-side-body">
-        {tab === 'changes' && <ChangesTab id={id} items={items} onTab={onTermTab} />}
-        {tab === 'tasks' && <TasksTab id={id} sel={agentSel} onSel={onAgentSel} />}
-        {tab === 'agents' && <AgentsTab id={id} items={items} live={live} sel={agentSel} onSel={onAgentSel} />}
-        {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
-        {tab === 'config' && <ConfigTab id={id} />}
-        {tab === 'resources' && <ResourcesTab id={id} items={items} />}
-        {tab === 'outline' && <OutlineTab items={items} {...outline} />}
+        <ErrorBoundary resetKey={tab}>
+          {tab === 'changes' && <ChangesTab id={id} items={items} onTab={onTermTab} />}
+          {tab === 'tasks' && <TasksTab id={id} sel={agentSel} onSel={onAgentSel} />}
+          {tab === 'agents' && <AgentsTab id={id} items={items} live={live} sel={agentSel} onSel={onAgentSel} />}
+          {tab === 'usage' && <UsageTab id={id} status={status} onCompact={onCompact} />}
+          {tab === 'config' && <ConfigTab id={id} />}
+          {tab === 'resources' && <ResourcesTab id={id} items={items} />}
+          {tab === 'outline' && <OutlineTab items={items} {...outline} />}
+        </ErrorBoundary>
       </div>
     </aside>
   );

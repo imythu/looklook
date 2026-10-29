@@ -61,6 +61,12 @@
     "body": "Looklook may have quit on this computer. Reopen it, then click the button below.",
     "retry": "Reconnect"
   },
+  "crash": {
+    "part": "This part of the page hit an error; everything else still works. It was saved to Problems & logs.",
+    "page": "The page hit an error. It was saved to Problems & logs; reloading usually fixes it.",
+    "retry": "Try again",
+    "reload": "Reload page"
+  },
   "gate": {
     "MEMBERSHIP_EXPIRED": "Your membership has expired, so terminals are paused. Running tasks are not affected and resume after you renew.",
     "ACCOUNT_DISABLED": "Your account is disabled, so terminals are paused. Running tasks are not affected.",
@@ -1441,7 +1447,7 @@
   "ai": {
     "title": "AI tools & access",
     "intro": "AI assistants such as Claude Code and Codex use Looklook through its MCP interface. Set the interface up here and see and control what they can do.",
-    "local_only": "The MCP token and installation can only be viewed and changed when the console is opened directly on this computer (running in Docker? start with --local-from to count the host as this computer). The host switches below also work remotely.",
+    "local_only": "Remotely you can only turn it on or off; the token and installing into AI assistants are only available when the console is opened directly on this computer (running in Docker? start with --local-from to count the host as this computer).",
     "tools_title": "Tools AI assistants can use",
     "tools_intro": "The MCP interface is on; AI assistants can use the tools that are on below.",
     "tools_off": "The MCP interface is off, so AI assistants can't use any tools right now. The tools below apply once it is on.",
@@ -1452,7 +1458,6 @@
     "ssh_switch": "Let AI assistants use SSH hosts",
     "ssh_on_hint": "AI assistants can only use the hosts switched on below. Looklook signs in for them; they never see passwords or keys, and passwords, keys and common tokens are removed from the output.",
     "ssh_off_hint": "Off: AI assistants don't see the SSH tools and can't run commands on any host. The per-host switches below are kept for when you turn this back on.",
-    "ssh_switch_local": "This master switch can only be changed when the console is opened directly on this computer.",
     "no_hosts": "No SSH hosts saved yet. Add one:",
     "hosts_count": "{{n}} of {{total}} hosts allowed for AI",
     "tool": {

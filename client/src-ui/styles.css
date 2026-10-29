@@ -302,6 +302,9 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .note-warn { background: var(--warn-soft); color: var(--warn); }
 .note-ok { background: var(--ok-soft); color: var(--ok); }
 .note-fold { display: block; padding: 0; }
+.crashed { margin: 12px; }
+.crashed-page { margin: 24px max(16px, calc(50% - 280px)); }
+.crashed-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .install-log { margin: 6px 0 0; max-height: 180px; overflow: auto; padding: 8px 10px; border-radius: 8px; background: var(--panel-2); color: var(--text); font-size: 12px; line-height: 1.45; white-space: pre-wrap; word-break: break-all; }
 .note-fold summary { display: flex; gap: 8px; align-items: center; padding: 8px 12px; min-height: 36px; cursor: pointer; list-style: none; font-size: 13.5px; }
 .note-fold summary::-webkit-details-marker { display: none; }
