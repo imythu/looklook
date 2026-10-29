@@ -3,6 +3,7 @@
 //! - 端口范围：每条 PeerConnection 在范围里绑一个 UDP 端口，用完了改用随机端口（[`super::peer::Pc`]）；
 //! - 公网地址：等候选收集完，在签名前写进本机 SDP（[`add_public`]），对端连得进来就直连，连不进来 ICE 照常走中转；
 //!   也可以填域名（DDNS），后台定时解析（[`resolve_loop`]），写 SDP 时用最近一次的结果，不在建连时等 DNS；
+//!   系统 DNS 解析不出可用地址（开着代理软件的 fake-ip 模式时只给 198.18.x.x）就改问公共 DoH（[`doh`]）；
 //! - 检测（[`detect`]）：电脑自己去问中转的 STUN 和 cip.cc、ip.me 等服务，只用来辅助填写，不自动保存。
 //!
 //! 存在本机数据库（`kv.rtc_net`），不在电脑之间同步；改了只对新建的连接生效。
@@ -253,6 +254,9 @@ static RESOLVED: RwLock<Option<HashMap<(String, bool), IpAddr>>> = RwLock::new(N
 
 const RESOLVE_EVERY: Duration = Duration::from_secs(60);
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(3);
+/// 公共 DoH（JSON 接口），直接用 IP 访问：DoH 自己的域名也会被 fake-ip 劫持。国内外各一个，同时问，取先答上来的。
+const DOH: &[&str] = &["https://223.5.5.5/resolve", "https://1.1.1.1/dns-query"];
+const DOH_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// 填的地址现在对应的 IP：IP 直接用；域名用最近一次解析的结果，还没解析出来时为 None（不写公网候选）。
 /// 设置里存的都是规范写法，IP 保存时已经校验过，这里不再检查。
@@ -278,10 +282,13 @@ pub async fn resolve(c: &NetConfig) {
     }
     let lookups = names.iter().map(|(n, v6)| async move {
         let r = tokio::time::timeout(RESOLVE_TIMEOUT, tokio::net::lookup_host((n.as_str(), 0))).await;
-        let ip = match r {
+        let mut ip = match r {
             Ok(Ok(addrs)) => addrs.map(|a| a.ip().to_canonical()).find(|ip| usable(*ip, *v6)),
             _ => None,
         };
+        if ip.is_none() {
+            ip = doh(n, *v6).await;
+        }
         if ip.is_none() {
             tracing::debug!(domain = %n, v6, "直连公网地址的域名没解析出可用地址");
         }
@@ -298,6 +305,39 @@ pub async fn resolve(c: &NetConfig) {
             }
         }
     }
+}
+
+/// 问公共 DoH：几个服务同时问，第一个给出可用地址的为准。
+async fn doh(name: &str, v6: bool) -> Option<IpAddr> {
+    let client = reqwest::Client::builder().no_proxy().timeout(DOH_TIMEOUT).build().ok()?;
+    let asks = DOH.iter().map(|url| {
+        let client = client.clone();
+        Box::pin(async move {
+            let resp = client
+                .get(*url)
+                .query(&[("name", name), ("type", if v6 { "AAAA" } else { "A" })])
+                .header("Accept", "application/dns-json")
+                .send()
+                .await
+                .ok()?;
+            doh_answer(&resp.json::<Value>().await.ok()?, v6)
+        })
+    });
+    let mut asks: Vec<_> = asks.collect();
+    while !asks.is_empty() {
+        let (ip, _, rest) = futures_util::future::select_all(asks).await;
+        if ip.is_some() {
+            return ip;
+        }
+        asks = rest;
+    }
+    None
+}
+
+/// DoH JSON 回答里第一个可用的地址（CNAME 等其他类型的记录跳过）。
+fn doh_answer(v: &Value, v6: bool) -> Option<IpAddr> {
+    let want = if v6 { 28 } else { 1 };
+    v["Answer"].as_array()?.iter().filter(|a| a["type"] == want).filter_map(|a| a["data"].as_str()?.parse().ok()).find(|ip| usable(*ip, v6))
 }
 
 /// 后台每分钟解析一次当前设置里的域名（没有域名时什么也不做）。
@@ -534,6 +574,26 @@ mod tests {
         // fake-ip、回环这类解析结果不用
         assert!(!usable("198.18.0.5".parse().unwrap(), false) && !usable("127.0.0.1".parse().unwrap(), false));
         assert!(usable("198.20.0.5".parse().unwrap(), false) && !usable("2001:db8::1".parse().unwrap(), false));
+    }
+
+    #[test]
+    fn doh_answers() {
+        let v = json!({"Status": 0, "Answer": [
+            {"name": "6.example.com.", "type": 5, "data": "ddns.example.net."},
+            {"name": "ddns.example.net.", "type": 28, "data": "2001:db8:1::9"},
+        ]});
+        assert_eq!(doh_answer(&v, true), Some("2001:db8:1::9".parse().unwrap()));
+        assert_eq!(doh_answer(&v, false), None);
+        assert_eq!(doh_answer(&json!({"Answer": [{"type": 1, "data": "198.18.0.88"}]}), false), None, "fake-ip 也不要");
+        assert_eq!(doh_answer(&json!({"Status": 3}), false), None);
+    }
+
+    /// 联网：`cargo test doh_live -- --ignored`
+    #[tokio::test]
+    #[ignore]
+    async fn doh_live() {
+        assert!(doh("dns.google", false).await.is_some());
+        assert!(doh("dns.google", true).await.is_some_and(|ip| ip.is_ipv6()));
     }
 
     #[test]
