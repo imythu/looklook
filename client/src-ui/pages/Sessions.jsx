@@ -4,7 +4,7 @@
 // 侧栏每个项目只列最近几个，其余在项目页（Project.jsx）。
 // 项目 = 某台电脑上的一个文件夹（见 shared/sessions.jsx）。电脑用颜色 + 系统图标区分（shared/brands.jsx）。
 // 电脑上会话在右边打开，最近打开的几个在后台保持连接；手机上整页打开 /t/{id}（有按键条）。
-import { AlertCircle, Check, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, Laptop, ListTree, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, PanelLeftClose, Trash2 } from 'lucide-react';
+import { AlertCircle, Check, ChevronDown, Container, Copy, X, ChevronsDownUp, ChevronsUpDown, EyeOff, Folder, FolderPlus, History, Laptop, Lightbulb, ListTree, Moon, Pin, PinOff, Play, Plus, Search, SlidersHorizontal, PanelLeftClose, Trash2 } from 'lucide-react';
 import { createContext, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -21,6 +21,8 @@ import { baseName, customName, groupProjects, isActive as isLive, isDraftProject
 import { isMod, keyLabel } from '../shared/hotkeys.js';
 import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
 import { AddProjectDialog } from './AddProject.jsx';
+import { HomeScreenTip, Onboarding } from './Onboarding.jsx';
+import { TipBar, useTip } from '../shared/tips.jsx';
 import { CAN_FORK } from './History.jsx';
 import { BackendNote, InstanceDialog, LogsDialog, useInstanceActions } from './Terminals.jsx';
 import { TermPane } from './TerminalView.jsx';
@@ -913,6 +915,7 @@ export function SessionList({ currentId, onCollapse }) {
       </div>
       <div className="slist-body">
         {s.error && <ErrorNote error={s.error} />}
+        <SessionTips attn={attn.length > 0} />
         {attn.length > 0 && groupBy !== 'recent' && (
           <section className="sattn" aria-label={t('sess.attention')}>
             <h3 className="slist-label slist-label-warn">
@@ -945,6 +948,42 @@ export function SessionList({ currentId, onCollapse }) {
   );
 }
 
+/**
+ * 会话栏里讲一次的几件事（docs/ONBOARDING_2026-10.md §3.3），一次只出一条：
+ * 第一次有人等你处理；开过会话后，关掉网页它也接着跑；有了项目后，项目、会话、以前的对话是什么。
+ */
+function SessionTips({ attn }) {
+  const { t } = useTranslation();
+  const s = useSessions();
+  const { navigate } = useRouter();
+  const [attnTip, attnDone] = useTip('sess.attn', attn, 3);
+  const [bgTip, bgDone] = useTip('sess.background', s.items.some(isLive), 2);
+  const [conceptTip, conceptDone] = useTip('sess.concepts', s.projects.length > 0, 1);
+  if (attnTip) {
+    return (
+      <TipBar icon={AlertCircle} onDone={attnDone} action={{ label: t('tips.attn.go'), onClick: () => navigate('/tasks') }} className="slist-tip">
+        <p>{t('tips.attn.body')}</p>
+      </TipBar>
+    );
+  }
+  if (bgTip) {
+    return (
+      <TipBar icon={Moon} onDone={bgDone} className="slist-tip">
+        <p>{t('tips.background.body')}</p>
+      </TipBar>
+    );
+  }
+  if (conceptTip) {
+    return (
+      <TipBar icon={Lightbulb} onDone={conceptDone} className="slist-tip">
+        <p>{t('tips.concepts.project')}</p>
+        <p>{t('tips.concepts.history')}</p>
+      </TipBar>
+    );
+  }
+  return null;
+}
+
 function NewProjectButton() {
   const { t } = useTranslation();
   const ui = useSessionUi();
@@ -960,6 +999,8 @@ export function SessionHome() {
   return (
     <div className="shome">
       <BackendNote />
+      <Onboarding />
+      <HomeScreenTip />
       <SessionList />
     </div>
   );

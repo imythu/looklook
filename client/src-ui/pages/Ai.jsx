@@ -10,6 +10,7 @@ import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { Link } from '../shared/router.jsx';
 import { Card, ErrorNote, Note, Skeleton, Switch, useLoad, useToast } from '../shared/ui.jsx';
+import { HelpLink } from '../shared/help.jsx';
 import McpCard from './PagesMcp.jsx';
 
 const PAGE_TOOLS = ['list_mappings', 'find_mapping', 'ensure_mapping'];
@@ -118,7 +119,7 @@ export default function AiPage() {
     <>
       <div className="page-head">
         <h1 className="inline">
-          <Bot size={24} aria-hidden="true" /> {t('ai.title')}
+          <Bot size={24} aria-hidden="true" /> {t('ai.title')} <HelpLink page="ai" />
         </h1>
       </div>
       <p className="muted">{t('ai.intro')}</p>

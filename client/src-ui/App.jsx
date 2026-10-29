@@ -4,7 +4,7 @@
 // 本机 App 和浏览器远程打开是同一个界面，差别只在顶栏的连接胶囊（ConnChip）。
 // 首页 / 是开始页（手机上是会话列表），/s/{id} 在右边打开会话；整页终端 /t/{id} 占满整个窗口（手机、新窗口）。
 // 界面不出现“ttyd、tmux、隧道、端口转发”等术语。
-import { Activity, BookOpen, Bot, Bug, CalendarClock, FolderOpen, Github, Globe, History, House, Keyboard, Languages, Laptop, Link2, ListTodo, LogOut, MessageSquare, Plus, Server, Settings as SettingsIcon, ShieldCheck, Wrench } from 'lucide-react';
+import { Activity, BookOpen, Bot, Bug, CalendarClock, Compass, FolderOpen, Github, Globe, History, House, Keyboard, Languages, Laptop, Link2, ListTodo, LogOut, MessageSquare, Plus, Server, Settings as SettingsIcon, ShieldCheck, Wrench } from 'lucide-react';
 import { createContext, Fragment, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -39,6 +39,8 @@ import QuickSwitch from './shared/QuickSwitch.jsx';
 import ShortcutsHelp from './shared/Shortcuts.jsx';
 import { errorText } from './shared/i18n.js';
 import { ReportProvider, useReportDialog } from './shared/Report.jsx';
+import { TipsProvider, useTips } from './shared/tips.jsx';
+import { OnboardTracker } from './pages/Onboarding.jsx';
 import { RelayHint } from './shared/RelayPicker.jsx';
 import { ConnChip } from './shared/RelayStatus.jsx';
 import { JustUpdatedBanner, shouldRemind, UpdateBanner, UpdateProvider } from './shared/Update.jsx';
@@ -213,6 +215,7 @@ function useUserMenu() {
   const logout = useLogout();
   const openReport = useReportDialog();
   const toast = useToast();
+  const tips = useTips();
   const open = (url) => () => window.open(url, '_blank', 'noopener');
   const left = daysLeft(status.account.session?.membership_expires_at);
   const en = i18n.language?.startsWith('en');
@@ -235,6 +238,7 @@ function useUserMenu() {
     { icon: SettingsIcon, label: t('nav.settings'), hint: shouldRemind(status.update) ? t('update.badge') : undefined, onClick: () => navigate('/settings') },
     'sep',
     { icon: Languages, label: en ? '中文' : 'English', onClick: () => setLocale(en ? 'zh-CN' : 'en-US') },
+    { icon: Compass, label: t('onboard.menu'), onClick: () => (tips.unmark('onboard.hide'), navigate('/')) },
     { icon: Keyboard, label: t('keys.title'), hint: keyLabel('mod+/'), onClick: () => window.dispatchEvent(new Event('ll-shortcuts')) },
     { icon: Bug, label: t('report.title'), onClick: openReport },
     { icon: House, label: t('nav.home_page'), onClick: open(webUrl(status, '/')) },
@@ -385,7 +389,7 @@ function ToolContext() {
   return (
     <div className="toolctx">
       <span className="muted small">{t('nav.tools_on')}</span>
-      <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />
+      <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/remote')} />
     </div>
   );
 }
@@ -505,7 +509,7 @@ function ConsoleLayout({ path, stale, children }) {
           <span className="brand-text">{t('brand')}</span>
         </Link>
         <span className="inline" style={{ flexWrap: 'nowrap' }}>
-          {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}
+          {switcher && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/remote')} />}
           <ConnChip />
         </span>
       </header>
@@ -560,7 +564,7 @@ function PageDrawer({ path, behind, onClose, stale, children }) {
     if (id) setTimeout(() => sessions.requestFocus(id), 0);
   };
   return (
-    <Drawer open={Boolean(path)} onClose={close} title={path ? t(DRAWER_PAGES[path]) : ''} wide={path === '/settings'} head={perDevice && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/faq')} />}>
+    <Drawer open={Boolean(path)} onClose={close} title={path ? t(DRAWER_PAGES[path]) : ''} wide={path === '/settings'} head={perDevice && <DeviceSwitcher perDevice helpUrl={webUrl(status, '/docs/remote')} />}>
       <Fragment key={perDevice ? devices.selected : 'all'}>
         {perDevice && stale ? (
           <div className="stack">
@@ -741,8 +745,11 @@ function Shell() {
       <DevicesProvider value={devices}>
         <UpdateProvider>
           <ReportProvider>
-            {body}
-            <PullRefresh />
+            <TipsProvider enabled={status.account.logged_in}>
+              {status.account.logged_in && <OnboardTracker />}
+              {body}
+              <PullRefresh />
+            </TipsProvider>
           </ReportProvider>
         </UpdateProvider>
       </DevicesProvider>

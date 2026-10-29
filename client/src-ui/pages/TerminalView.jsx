@@ -29,6 +29,7 @@ import { WebPage } from './WebPane.jsx';
 import { useTermFiles } from './TermFiles.jsx';
 import { APP_CHROME, termTheme, termVars } from '../shared/termTheme.js';
 import { useSeenPing } from '../shared/board.js';
+import { TipPop, useTip } from '../shared/tips.jsx';
 
 /** 终端页面加载期间的提示：跳动的小点 + 一句人话；等得久了给出刷新按钮。 */
 function TermConnecting({ onRetry }) {
@@ -195,11 +196,25 @@ function useTab(id, chat) {
   return [tab, setTab];
 }
 
-/** 宽屏：顶栏里的分段标签。切到别的标签时终端 iframe 不卸载，会话保持连接。 */
-export function TermTabs({ tab, onChange, chat }) {
+/** 第一次看到“对话”标签时说一次：对话和终端是同一个会话的两种看法（docs/ONBOARDING_2026-10.md §3.3）。`on`：这个会话正显示着。 */
+function ChatTabTip({ on, launch, up = false }) {
+  const { t } = useTranslation();
+  const [show, done] = useTip('sess.chat_term', on);
+  if (!show) return null;
+  const agent = t(`launch.${launch}.title`, { defaultValue: 'AI' });
+  return (
+    <TipPop title={t('tips.chat_term.title')} onDone={done} side={up ? 'left' : 'right'} up={up}>
+      <p>{t('tips.chat_term.body', { agent })}</p>
+    </TipPop>
+  );
+}
+
+/** 宽屏：顶栏里的分段标签。切到别的标签时终端 iframe 不卸载，会话保持连接。`tip`：在这里说一次对话和终端的关系 */
+export function TermTabs({ tab, onChange, chat, tip = false, launch }) {
   const { t } = useTranslation();
   return (
     <div className="term-tabs" role="tablist" aria-label={t('fb.tabs')}>
+      {chat && <ChatTabTip on={tip} launch={launch} />}
       {tabsFor(chat).map(([key, Icon, label]) => (
         <button key={key} type="button" role="tab" aria-selected={tab === key} className={`term-tab ${tab === key ? 'on' : ''}`} onClick={() => onChange(key)} title={t(label)}>
           <Icon size={16} aria-hidden="true" />
@@ -212,10 +227,11 @@ export function TermTabs({ tab, onChange, chat }) {
 }
 
 /** 手机、窄屏：底部标签栏（图标在上、文字在下），拇指够得着，也不和顶栏的按钮抢地方。 */
-function TermTabBar({ tab, onChange, chat }) {
+function TermTabBar({ tab, onChange, chat, launch }) {
   const { t } = useTranslation();
   return (
     <nav className="term-tabbar" role="tablist" aria-label={t('fb.tabs')}>
+      {chat && <ChatTabTip on launch={launch} up />}
       {tabsFor(chat).map(([key, Icon, label]) => (
         <button key={key} type="button" role="tab" aria-selected={tab === key} onClick={() => onChange(key)}>
           <Icon size={20} aria-hidden="true" />
@@ -457,7 +473,7 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
           {sub}
           {running && <LinkBadge id={id} />}
         </span>
-        {running && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
+        {running && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} tip={active} launch={inst?.launch} />}
         {tab === 'term' && <NewlineHint inst={inst} touch={false} />}
         {running && tab === 'term' && reconnect.button}
         {running && (
@@ -716,7 +732,7 @@ function TermPage({ id }) {
           {live && <LinkBadge id={id} />}
         </span>
         {tab === 'term' && <NewlineHint inst={inst} touch={touch} />}
-        {live && !bottomTabs && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} />}
+        {live && !bottomTabs && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} tip launch={inst?.launch} />}
         {!compact && tab === 'term' && live && reconnect.button}
         {!compact && tab === 'term' && live && (
           <button type="button" className="btn btn-plain btn-icon" onClick={() => setSelecting(!selecting)} aria-pressed={selecting} aria-label={t('select.toggle')} title={t('select.toggle')}>
@@ -775,7 +791,7 @@ function TermPage({ id }) {
         )}
       </div>
       {keybarShown && !selecting && <KeyBar frame={frame} os={status.capabilities.os} ime={mobile.ime} tight={mobile.tight} ai={AI_LAUNCHES.includes(inst?.launch)} />}
-      {tabbarShown && <TermTabBar tab={tab} onChange={setTab} chat={chat} />}
+      {tabbarShown && <TermTabBar tab={tab} onChange={setTab} chat={chat} launch={inst?.launch} />}
     </div>
   );
 }

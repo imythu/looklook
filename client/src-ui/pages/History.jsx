@@ -14,6 +14,7 @@ import { useRouter } from '../shared/router.jsx';
 import { baseName, useSessions } from '../shared/sessions.jsx';
 import { relativeTime } from '../shared/time.js';
 import { ErrorNote, Spinner, useToast } from '../shared/ui.jsx';
+import { HelpLink } from '../shared/help.jsx';
 import { isTouch } from '../shared/KeyBar.jsx';
 import { useSessionUi } from './Sessions.jsx';
 
@@ -686,7 +687,9 @@ export function HistoryPage() {
       {filters}
       <div className="hist-main">
         <div className="page-head">
-          <h1>{t('hist.title')}</h1>
+          <h1 className="inline">
+            {t('hist.title')} <HelpLink page="chat" />
+          </h1>
         </div>
         <div className="hist-bar">
           <label className="slist-search hist-search">

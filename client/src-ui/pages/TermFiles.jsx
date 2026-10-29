@@ -9,6 +9,7 @@ import { api } from '../shared/api.js';
 import { baseName, isImageName, PastedTray } from '../shared/Attachments.jsx';
 import { frameOrigin, termFocus, termPaste, termSend } from '../shared/termFrame.js';
 import { errorText } from '../shared/i18n.js';
+import { useTip } from '../shared/tips.jsx';
 import { uploadStore } from '../shared/uploader.js';
 import { CopyButton, useToast } from '../shared/ui.jsx';
 import { agentPastes, formatBytes, isAiInstance, joinPaths, routeFor, transferAction } from '../shared/xfer.js';
@@ -74,7 +75,8 @@ function ProgressRing({ ratio }) {
   );
 }
 
-// 第一次用终端时，在“上传”按钮下方提示一次上传/拖放/粘贴（只存在本浏览器里，存不了也只是多提示几次）。
+// 第一次用终端时，在“上传”按钮下方提示一次上传/拖放/粘贴。点了“知道了”记在提示里（shared/tips.jsx 的 files.upload），
+// 自动出现过几次只记在本浏览器里（存不了也只是多提示几次）。
 const TIP_KEY = 'll-files-tip';
 const TIP_MAX_SHOWS = 3; // 没点“知道了”时最多自动出现几次
 const TIP_DELAY_MS = 1200;
@@ -95,10 +97,7 @@ function saveTip(p) {
     // 隐私模式等
   }
 }
-const tipWanted = () => {
-  const s = tipState();
-  return !s.done && (s.n ?? 0) < TIP_MAX_SHOWS;
-};
+const tipWanted = () => (tipState().n ?? 0) < TIP_MAX_SHOWS;
 
 /** 提示气泡的位置：按钮下方，箭头对准按钮。悬浮小窗可以被拖动，所以显示期间定时重新计算。 */
 function useTipPos(anchor, shown) {
@@ -201,26 +200,32 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
   const visibleH = useVisibleHeight(touch && open);
   const pos = usePopoverPos(btn, open && !touch);
   const [tip, setTip] = useState(false);
+  // 自动收起后这次不再占着提示的位置，让别的提示能出来
+  const [tipGone, setTipGone] = useState(false);
+  const [tipFree, tipMark] = useTip('files.upload', enabled && !tipGone && tipWanted());
   const tipPos = useTipPos(btn, tip);
   // 这次粘贴 / 拖进来、存进附件目录的图片：终端右下角显示缩略图，点开看大图或删除（附件的管理在设置页）
   const [shots, setShots] = useState([]);
 
   // 第一次提示：终端可用后稍等再出现，到时自动收起（不算“知道了”，下次还会再提示，最多 TIP_MAX_SHOWS 次）。
   useEffect(() => {
-    if (!enabled || !tipWanted()) return undefined;
+    if (!enabled || !tipFree || !tipWanted()) return undefined;
     let hide;
     const show = setTimeout(() => {
       if (tipShowing || !tipWanted()) return;
       tipShowing = true;
       saveTip({ n: (tipState().n ?? 0) + 1 });
       setTip(true);
-      hide = setTimeout(() => setTip(false), TIP_AUTOHIDE_MS);
+      hide = setTimeout(() => {
+        setTip(false);
+        setTipGone(true);
+      }, TIP_AUTOHIDE_MS);
     }, TIP_DELAY_MS);
     return () => {
       clearTimeout(show);
       clearTimeout(hide);
     };
-  }, [enabled]);
+  }, [enabled, tipFree]);
   useEffect(() => {
     if (!tip) return undefined;
     return () => {
@@ -228,7 +233,7 @@ export function useTermFiles({ id, inst, frame, enabled, touch, hostOs, keybar }
     };
   }, [tip]);
   const tipDone = () => {
-    saveTip({ done: true });
+    tipMark();
     setTip(false);
   };
 

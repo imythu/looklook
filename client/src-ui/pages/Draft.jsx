@@ -21,6 +21,8 @@ import { baseName, isDraftProject, projectEntries, projectKey, projectPath, useS
 import { Button, ErrorNote, Spinner, Switch, useLoad, useToast } from '../shared/ui.jsx';
 import { ClaudeProfilePick, CodexProfilePick } from './ClaudeProfiles.jsx';
 import { DiscoverCard } from './AddProject.jsx';
+import { Onboarding, useGuideShowsRemote } from './Onboarding.jsx';
+import { DraftTip } from './Discover.jsx';
 import PromptsMenu from './PromptTemplates.jsx';
 import { AI_TOOLS, FULL_ACCESS, fullAccessFor, opensInPage, shortAgo, useSessionUi } from './Sessions.jsx';
 import { BackendNote, FolderPicker, InstallProgress, Promotions, RemoteCard, ShellPicker } from './Terminals.jsx';
@@ -444,6 +446,7 @@ function DraftForm() {
   const projName = container ? container.name : project?.name || baseName(workdir) || workdir || '…';
   const recent = project && !container ? projectEntries(project).rest.filter((x) => x.kind === 'conv').slice(0, RECENT_N) : [];
   const empty = !text.trim() && !files.length;
+  const guideRemote = useGuideShowsRemote();
   const dshHere = s.items.some((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device));
   const typeItems = [
     { head: t('draft.group_chat') },
@@ -491,11 +494,19 @@ function DraftForm() {
           <p className="muted">{t('draft.lead')}</p>
         </div>
         {recent.length > 0 && <RecentConvs device={device} items={recent} />}
+        {empty && (
+          <Onboarding
+            onTry={(x) => {
+              setText(x);
+              input.current?.focus();
+            }}
+          />
+        )}
         {s.projects.length === 0 && <DiscoverCard device={device} />}
         {empty && (
           <div className="draft-cards">
             <BackendNote />
-            <RemoteCard />
+            {!guideRemote && <RemoteCard />}
             <SafetyNote />
             <Promotions />
           </div>
@@ -680,7 +691,7 @@ function DraftForm() {
           )}
         </form>
         <ErrorNote error={error} />
-        {!isTouch() && <p className="draft-hint">{t('draft.keys')}</p>}
+        <DraftTip />
       </div>
     </div>
   );

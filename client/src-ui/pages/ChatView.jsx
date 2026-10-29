@@ -117,6 +117,7 @@ import { Button, CopyButton, useConfirm, useLoad, useToast } from '../shared/ui.
 import { KindIcon, profileName } from './ClaudeProfiles.jsx';
 import { FindBar, MessageSheet, OutlineTab, UserActs, fillInput, useChatKeys, useLongPress } from './ChatTools.jsx';
 import { LaunchIcon } from '../shared/brands.jsx';
+import { ChatHowTo, NotifyAsk } from './ChatTips.jsx';
 import { endpoints as fileEndpoints, Preview as FilePreview } from './FileBrowser.jsx';
 import { imeComposing } from '../shared/ime.js';
 
@@ -2564,8 +2565,7 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
       setMenu('new');
       return;
     }
-    // 第一次发消息时（有用户操作）申请通知权限：需要确认、做完了在后台也能知道
-    if (typeof Notification !== 'undefined' && Notification.permission === 'default') Notification.requestPermission().catch?.(() => {});
+    // 通知权限不在这里申请：等第一次需要确认、或者跑完一轮长任务时说清楚为什么再问（ChatTips.jsx 的 NotifyAsk）
     setSending(true);
     // 先清空输入框（斜杠命令也一样）；没送出去时再放回来，不丢用户打的字
     inflight.current = body;
@@ -3623,10 +3623,10 @@ function UsageTab({ id, status, onCompact }) {
               </dd>
             </>
           )}
-          {(lim.account.plan || lim.plan) && (
+          {(lim?.account?.plan || lim?.plan) && (
             <>
               <dt>{t('chat.usage_plan')}</dt>
-              <dd>{lim.account.plan || lim.plan}</dd>
+              <dd>{lim?.account?.plan || lim?.plan}</dd>
             </>
           )}
         </dl>
@@ -4208,6 +4208,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
                       </button>
                     ))}
                   </div>
+                  <ChatHowTo agent={agentId} touch={touch} />
                   <p className="chat-note">{t('chat.beta_note')}</p>
                 </div>
               )}
@@ -4266,6 +4267,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           {agentId === 'codex' && status != null && <CodexSetup id={id} phase={phase} onTab={onTab} />}
           {phase !== 'detached' && <AgentStrip id={id} items={items} live={live} bg={bg} onOpen={openAgent} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
+          <NotifyAsk active={active} phase={phase} />
           <Composer id={id} active={active} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
       </div>

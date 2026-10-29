@@ -11,6 +11,7 @@ import { errorText } from '../shared/i18n.js';
 import { Link } from '../shared/router.jsx';
 import { formatTime, relativeTime } from '../shared/time.js';
 import { Button, Card, CopyButton, Empty, ErrorNote, Field, Modal, Note, Skeleton, Switch, useAction, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
+import { HelpLink } from '../shared/help.jsx';
 
 // 分享有效期可选项（小时），服务端上限 7 天
 const SHARE_HOURS = [1, 24, 72, 168];
@@ -323,7 +324,9 @@ export default function Pages() {
   return (
     <>
       <div className="page-head">
-        <h1>{t('pages.title')}</h1>
+        <h1 className="inline">
+          {t('pages.title')} <HelpLink page="local-pages" />
+        </h1>
       </div>
       <p className="muted">{t('pages.intro')}</p>
       {!status.account.allowed && <Note kind="warn">{t('pages.paused')}</Note>}

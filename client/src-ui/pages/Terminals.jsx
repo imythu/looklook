@@ -62,11 +62,11 @@ const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
 const AI_TOOLS = ["codex", "claude", "opencode", "dsh"];
 const FULL_ACCESS = ["codex", "claude", "opencode"];
 
-export function RemoteCard() {
+export function RemoteCard({ initialOpen = false }) {
   const { t } = useTranslation();
   const { status } = useStatus();
-  const [qr, setQr] = useState(false);
-  const [open, setOpen] = useState(false);
+  const [qr, setQr] = useState(initialOpen);
+  const [open, setOpen] = useState(initialOpen);
   const [mode, setMode] = useState(() => {
     try {
       return localStorage.getItem("remote_mode") === "lan" ? "lan" : "public";

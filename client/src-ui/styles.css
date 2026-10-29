@@ -1070,7 +1070,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .latency-slow { color: var(--danger); }
 
 /* ---------- 终端页“文件”标签（FileBrowser.jsx） ---------- */
-.term-tabs { flex: none; display: inline-flex; gap: 2px; padding: 2px; margin: 0 4px; border-radius: 10px; background: var(--term-hover, rgba(255, 255, 255, .06)); }
+.term-tabs { position: relative; flex: none; display: inline-flex; gap: 2px; padding: 2px; margin: 0 4px; border-radius: 10px; background: var(--term-hover, rgba(255, 255, 255, .06)); }
 .term-tab { display: inline-flex; align-items: center; gap: 5px; min-height: 34px; padding: 0 10px; border: 0; border-radius: 8px; background: transparent; color: var(--term-muted, #9aa1b2); font: 500 13px/1 var(--font); cursor: pointer; }
 .term-tab:hover { color: var(--term-fg, #e3e6ee); }
 .term-tab.on { background: var(--term-key-active, #2a2f3b); color: var(--term-fg, #fff); }
@@ -1404,7 +1404,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 
 /* ---------- 整页终端：手机 / 窄屏的底部标签栏 ---------- */
 .term-tabbar {
-  flex: none; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); padding: 2px max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
+  position: relative; flex: none; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); padding: 2px max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
   background: var(--term-bar); border-top: 1px solid var(--term-line); user-select: none; -webkit-user-select: none;
 }
 .term-tabbar button {
@@ -3055,3 +3055,82 @@ button.chat-read-no:hover { color: var(--brand); opacity: 1; }
 .chat-fv-nav .chat-note { margin: 0; min-width: 3.2em; text-align: center; }
 .chat-account { display: flex; align-items: center; justify-content: flex-end; gap: 2px; min-width: 0; }
 .chat-account .btn-icon { width: 26px; height: 26px; min-height: 26px; color: var(--muted); }
+/* 使用提示（shared/tips.jsx）：气泡贴在父元素下面（父元素 position: relative），一行提示放在页面里 */
+.tip-pop {
+  position: absolute; top: calc(100% + 10px); z-index: 69; width: max-content; max-width: min(300px, calc(100vw - 24px));
+  padding: 12px 14px 8px; border-radius: 12px; background: var(--brand); color: var(--on-brand);
+  font-size: 14px; line-height: 1.5; font-weight: 400; text-align: left; white-space: normal; box-shadow: var(--shadow-lg); animation: fade .2s;
+}
+.tip-pop::before { content: ""; position: absolute; top: -5px; width: 10px; height: 10px; background: inherit; transform: rotate(45deg); border-radius: 2px; }
+.tip-left { left: 0; }
+.tip-left::before { left: 18px; }
+.tip-right { right: 0; }
+.tip-right::before { right: 18px; }
+.tip-up { top: auto; bottom: calc(100% + 10px); }
+.tip-up::before { top: auto; bottom: -5px; }
+.tip-pop p { margin: 0; }
+.tip-title { font-weight: 700; margin-bottom: 2px !important; }
+.tip-body kbd, .tip-bar kbd { font: 600 12px/1 ui-monospace, monospace; padding: 2px 5px; border-radius: 5px; background: rgba(127, 127, 127, .22); }
+.tip-actions { display: flex; justify-content: flex-end; gap: 6px; margin-top: 8px; }
+.tip-actions .btn { min-height: 34px; padding: 0 12px; font-size: 14px; }
+.tip-actions .btn-plain, .tip-actions .btn-plain:hover { color: inherit; }
+.tip-actions .btn-primary { background: var(--on-brand); color: var(--brand); }
+.tip-bar {
+  display: flex; align-items: flex-start; gap: 8px; padding: 8px 6px 8px 12px; border-radius: 12px;
+  background: var(--brand-soft); color: var(--text); font-size: 13px; line-height: 1.55;
+}
+.tip-bar-icon { flex: none; margin-top: 2px; color: var(--brand); }
+.tip-bar-text p { margin: 0; }
+.tip-bar-text p + p { margin-top: 2px; }
+.tip-bar > .btn { flex: none; }
+.tip-bar > .btn-icon { width: 30px; min-height: 30px; margin: -4px 0; }
+@media (prefers-reduced-motion: reduce) { .tip-pop { animation: none; } }
+
+/* 上手清单（pages/Onboarding.jsx） */
+.onboard { width: 100%; max-width: 560px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); padding: 4px 6px 6px; }
+.shome > .onboard { max-width: none; margin-bottom: 12px; }
+.onboard-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 40px; padding: 0 8px; border: 0; background: none; color: var(--text); font: inherit; font-size: 14px; text-align: left; cursor: pointer; }
+.onboard-count { font-size: 12px; font-weight: 600; color: var(--brand); }
+.onboard-chev { color: var(--muted); transition: transform .15s; }
+.onboard-chev.open { transform: rotate(180deg); }
+.onboard-lead { margin: 0 8px 6px; font-size: 13px; color: var(--muted); }
+.onboard-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.onboard-step { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 8px; border-radius: 10px; }
+.onboard-step.next { background: var(--brand-soft); }
+.onboard-mark { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--panel-2); color: var(--muted); }
+.onboard-step.next .onboard-mark { background: var(--brand); color: var(--on-brand); }
+.onboard-step.done .onboard-mark { background: color-mix(in srgb, var(--ok, #16a34a) 16%, var(--panel)); color: var(--ok, #16a34a); }
+.onboard-step.done b { font-weight: 500; color: var(--muted); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--muted) 50%, transparent); }
+.onboard-text { display: grid; min-width: 0; flex-basis: 160px; font-size: 14px; line-height: 1.4; }
+.onboard-text .small { font-size: 12.5px; }
+.onboard-step > .btn { flex: none; }
+.onboard-extra { flex-basis: 100%; }
+.onboard-extra .remote-card { margin: 0; }
+.onboard-foot { display: flex; justify-content: flex-end; padding: 2px 4px 0; }
+.onboard-foot .btn { color: var(--muted); }
+.onboard-done { display: flex; align-items: center; gap: 8px; padding: 6px 4px 6px 12px; font-size: 13.5px; color: var(--muted); }
+.onboard-done > svg { color: var(--ok, #16a34a); }
+.slist-tip { margin: 0 0 10px; }
+/* 对话页的教学（pages/ChatTips.jsx） */
+.chat-howto { display: flex; align-items: center; gap: 6px; max-width: 520px; margin: 4px auto 0; font-size: 13px; color: var(--muted); text-align: left; }
+.chat-howto > svg { flex: none; color: var(--brand); }
+.chat-howto kbd { font: 600 12px/1 ui-monospace, monospace; padding: 2px 5px; border-radius: 5px; background: var(--panel-2); }
+.chat-howto .btn { flex: none; width: 28px; min-height: 28px; padding: 0; color: var(--muted); }
+.chat-tip { margin: 0 0 8px; }
+.chat-howto .btn svg { color: inherit; }
+
+/* 发现更多功能（pages/Discover.jsx）、页面标题旁的“？”（shared/help.jsx） */
+.draft-hint { display: grid; gap: 2px; }
+.draft-tip { display: inline-flex; align-items: center; justify-content: center; gap: 2px; }
+.draft-tip .btn { width: 24px; min-height: 24px; padding: 0; color: var(--muted); }
+.onboard-foot { justify-content: space-between; }
+.onboard-foot .onboard-more { color: var(--brand); }
+.discover-lead { margin: 0 0 12px; }
+.discover-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.discover-item { display: flex; align-items: flex-start; gap: 10px; width: 100%; height: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.discover-item:hover { border-color: var(--brand); }
+.discover-icon { flex: none; display: grid; place-items: center; width: 32px; height: 32px; border-radius: 9px; background: var(--brand-soft); color: var(--brand); }
+.discover-text { display: grid; gap: 2px; min-width: 0; font-size: 14px; line-height: 1.4; }
+.help-link { display: inline-grid; place-items: center; width: 28px; height: 28px; margin-left: 2px; border-radius: 8px; color: var(--muted); vertical-align: middle; }
+.help-link:hover { color: var(--brand); background: var(--brand-soft); }
+.page-tip { margin: 0 0 14px; }

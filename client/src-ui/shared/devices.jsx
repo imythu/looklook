@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { configureDevices, deviceApi, fetchDevices, localApi, rtcMode } from './api.js';
 import { DeviceAvatar } from './brands.jsx';
 import { linkLabel, PathDot, PathLine, useLinks } from './paths.jsx';
+import { useTip } from './tips.jsx';
 import { Button, ErrorNote, Field, Modal, Switch, useAction, useToast } from './ui.jsx';
 
 const KEY = 'looklook.device';
@@ -156,24 +157,6 @@ export function deviceName(t, d) {
   return d?.name || t('devices.unnamed');
 }
 
-const TIP_KEY = 'looklook.device-tip';
-
-function tipSeen() {
-  try {
-    return localStorage.getItem(TIP_KEY) === '1';
-  } catch {
-    return true;
-  }
-}
-
-function markTipSeen() {
-  try {
-    localStorage.setItem(TIP_KEY, '1');
-  } catch {
-    /* 无痕模式等：只是下次还会提示 */
-  }
-}
-
 /**
  * 顶栏的电脑切换（多台电脑时在所有页面显示）：一个写着当前电脑名的按钮，点开是电脑列表。
  * - 按电脑的页面（本机网页、系统、设置）：选一台就切换到那台；
@@ -186,8 +169,9 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
   const { t } = useTranslation();
   const d = useDevices();
   const [open, setOpen] = useState(false);
-  const [tip, setTip] = useState(() => !tipSeen());
   const ref = useRef(null);
+  // 侧栏里的按钮本身写着“工具作用于这台电脑”，不再弹提示（免得盖住下面的工具）
+  const [tip, dismissTip] = useTip('devices.switch', d.multi && !side);
   useEffect(() => {
     if (!open) return undefined;
     const close = (e) => {
@@ -205,10 +189,6 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
   const current = d.byId(d.selected);
   const online = d.items.filter((x) => x.online).length;
   const links = useLinks();
-  const dismissTip = () => {
-    markTipSeen();
-    setTip(false);
-  };
   const toggle = () => {
     dismissTip();
     setOpen((o) => !o);
@@ -245,8 +225,7 @@ export function DeviceSwitcher({ perDevice, helpUrl, side = false }) {
         )}
         <ChevronDown size={15} aria-hidden="true" className="device-chev" />
       </button>
-      {/* 侧栏里的按钮本身写着“工具作用于这台电脑”，不再弹提示（免得盖住下面的工具） */}
-      {tip && !open && !side && (
+      {tip && !open && (
         <div className="device-tip" role="note">
           <span>{t(perDevice ? 'devices.tip_switch' : 'devices.tip_list', { count: d.items.length })}</span>
           <button type="button" className="btn btn-plain btn-icon" onClick={dismissTip} aria-label={t('action.close')}>

@@ -25,7 +25,8 @@ import { DiagCard } from '../shared/Report.jsx';
 import RelayPicker, { RELAYS_ANCHOR } from '../shared/RelayPicker.jsx';
 import { useRouter } from '../shared/router.jsx';
 import { shouldRemind, UpdateCheck } from '../shared/Update.jsx';
-import { Card, ErrorNote, Field, Seg, useLoad } from '../shared/ui.jsx';
+import { Button, Card, ErrorNote, Field, Seg, useAction, useLoad, useToast } from '../shared/ui.jsx';
+import { useTips } from '../shared/tips.jsx';
 import { SyncCard, SyncLabel } from '../shared/SettingsSync.jsx';
 
 // 开源仓库（客户端 AGPL-3.0-or-later）
@@ -123,6 +124,26 @@ function useAutoSave(status, reload) {
   return [s, setS, state];
 }
 
+/** 使用提示：看过的一次性提示、上手清单都重新出现（shared/tips.jsx）。 */
+function TipsField() {
+  const { t } = useTranslation();
+  const tips = useTips();
+  const toast = useToast();
+  const { busy, run } = useAction();
+  const reset = () =>
+    run(async () => {
+      await tips.reset();
+      toast(t('tips.reset_done'));
+    });
+  return (
+    <Field label={t('tips.reset_label')} hint={t('tips.reset_hint')}>
+      <Button variant="secondary" busy={busy} onClick={reset}>
+        {t('tips.reset')}
+      </Button>
+    </Field>
+  );
+}
+
 function SaveState({ state }) {
   const { t } = useTranslation();
   if (state.phase === 'saving') return <span className="save-state">{t('settings.saving')}</span>;
@@ -172,6 +193,7 @@ export default function Settings() {
               ]}
             />
           </Field>
+          <TipsField />
         </Card>
         {caps.os === 'darwin' && status.access === 'local' && <MacFoldersCard />}
         <SyncCard />

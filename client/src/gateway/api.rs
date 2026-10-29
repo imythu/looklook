@@ -147,6 +147,7 @@ pub fn routes(app: App) -> Router<App> {
         .route("/prompts", get(get_prompts).post(create_prompt))
         .route("/prompts/seed", post(seed_prompts))
         .route("/prompts/{id}", put(update_prompt).delete(delete_prompt))
+        .route("/tips", get(get_tips).post(mark_tips).delete(reset_tips))
         .route("/tunnels", get(list_tunnels).post(create_tunnel))
         .route("/tunnels/{id}", patch(update_tunnel).delete(delete_tunnel))
         .route("/tunnels/{id}/shares", get(list_page_shares).post(create_page_share))
@@ -1678,6 +1679,38 @@ struct SeedReq {
 async fn seed_prompts(State(app): State<App>, Json(r): Json<SeedReq>) -> R<Json<Value>> {
     crate::prompts::seed(&app, r.items)?;
     get_prompts(State(app)).await
+}
+
+// ---------------- 使用提示看过没有（tips.rs） ----------------
+
+async fn get_tips(State(app): State<App>) -> R<Json<Value>> {
+    Ok(Json(crate::tips::list(&app.store)?))
+}
+
+#[derive(Deserialize)]
+struct TipsReq {
+    ids: Vec<String>,
+    /// false = 取消看过
+    #[serde(default = "yes")]
+    seen: bool,
+}
+
+fn yes() -> bool {
+    true
+}
+
+async fn mark_tips(State(app): State<App>, Json(r): Json<TipsReq>) -> R<Json<Value>> {
+    if r.seen {
+        crate::tips::mark(&app, &r.ids)?;
+    } else {
+        crate::tips::unmark(&app, &r.ids)?;
+    }
+    get_tips(State(app)).await
+}
+
+async fn reset_tips(State(app): State<App>) -> R<Json<Value>> {
+    crate::tips::reset(&app)?;
+    get_tips(State(app)).await
 }
 
 async fn put_guard(State(app): State<App>, Json(g): Json<crate::guard::Guard>) -> R<Json<Value>> {

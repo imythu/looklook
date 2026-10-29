@@ -2031,7 +2031,9 @@
     "away_done": "{{n}} done",
     "away_failed": "{{n}} failed",
     "away_attn": "{{n}} waiting for you",
-    "away_sep": ", "
+    "away_sep": ", ",
+    "empty_phone": "On your phone, Tasks lets you tap Allow or Deny, or answer its questions, right there.",
+    "empty_go": "Start an AI session"
   },
   "sess": {
     "new": "New session",
@@ -2773,5 +2775,151 @@
     "pricing_at": "Prices updated {{at}}.",
     "pricing_none": "Prices not loaded yet (models.dev must be reachable).",
     "scanned_at": "Stats updated {{at}}."
+  },
+  "tips": {
+    "ok": "Got it",
+    "reset_label": "Tips",
+    "reset_hint": "Bring back the tips you dismissed and the getting-started checklist (for every browser on this computer, and every computer when settings sync is on).",
+    "reset": "Show all tips again",
+    "reset_done": "Tips will show again",
+    "chat_term": {
+      "title": "Chat and Terminal are the same session",
+      "body": "Chat lays out {{agent}}'s replies, edits and commands so they're easy to read; Terminal is {{agent}} itself. Switch any time, the content is the same. Chat is still in beta; if something looks off, switch to Terminal."
+    },
+    "attn": {
+      "body": "A session has stopped and is waiting for you to approve or answer. Everything waiting on any of your computers shows up in Tasks, and you can approve or deny right from your phone.",
+      "go": "Open Tasks"
+    },
+    "background": {
+      "body": "Sessions run on your computer. Closing the page, losing the network or switching to your phone doesn't stop them; come back and pick up where you left off. Only Stop ends a session."
+    },
+    "concepts": {
+      "project": "A project is a folder on your computer; sessions are the chats and terminals open in it.",
+      "history": "Under each project you'll also find your earlier Claude Code and Codex conversations in that folder. Click one to continue it."
+    },
+    "howto": {
+      "slash": "Type / to see every command and skill, e.g. /model to switch models or /compact to shrink the context.",
+      "paste": "Paste screenshots straight into the box, or drag files in.",
+      "photo": "Tap + (Add images) next to the box to send photos and screenshots from your phone.",
+      "mode": "Shift+Tab switches the permission mode: ask every time, allow edits, or plan only.",
+      "resume": "Want to continue an earlier conversation? Type /resume, or click an older chat under the project in the sidebar.",
+      "history": "Press ↑ to bring back what you just said; Ctrl+R searches everything you've said before.",
+      "find": "{{find}} finds text in the chat; Alt+↑ / Alt+↓ jumps between your messages.",
+      "longpress": "Long-press a message to copy all of it or select part of the text.",
+      "next": "Another tip"
+    },
+    "notify": {
+      "body": "Get a browser notification when it stops to wait for you or finishes, so you don't have to keep watching this page.",
+      "allow": "Turn on notifications",
+      "denied": "This browser blocks notifications from Looklook. You can allow them in the browser's site settings. When you're away from the computer, notification channels like Feishu or Bark work better.",
+      "channels": "Set up channels"
+    },
+    "homescreen": {
+      "ios": "Add it to your home screen to open it like an app: tap Share at the bottom of Safari, then Add to Home Screen.",
+      "android": "Add it to your home screen to open it like an app: open the browser menu and choose Add to Home screen or Install app."
+    },
+    "help": "Help",
+    "files_page": "Click a file to preview it (text, images, Markdown, Office documents); each row's menu can download, rename or delete. Use Upload, or drag files into the list, to put them on this computer."
+  },
+  "onboard": {
+    "title": "Get started",
+    "lead": "A few steps to hand work to AI on your computer and keep going from your phone after you leave.",
+    "menu": "Getting started",
+    "hide": "Don't show again",
+    "skip": "Skip, I know my way around",
+    "all_done": "All set. You can reopen this from Getting started in the user menu.",
+    "project": {
+      "title": "Add a project folder",
+      "body": "Pick the folder where your code lives and start sessions in it. Earlier Claude Code and Codex conversations there show up too.",
+      "go": "Add project"
+    },
+    "ai": {
+      "title": "Start an AI session and give it a task",
+      "body": "Write your first message and press Enter. You can pick Claude Code, Codex, OpenCode or a plain terminal.",
+      "go": "Try it",
+      "sample": "Explain how this project is structured"
+    },
+    "phone": {
+      "title": "Open it on your phone",
+      "body": "Scan to open your personal address on your phone, then add it to the home screen to use it like an app.",
+      "go": "Show QR code",
+      "hide": "Hide"
+    },
+    "notify": {
+      "title": "Know when it needs you, even away from the desk",
+      "body": "Get pushed to your phone via Feishu, WeCom, Bark and more when AI waits for approval, finishes or fails.",
+      "go": "Set up notifications"
+    },
+    "tasks": {
+      "title": "Take a look at Tasks",
+      "body": "AI sessions waiting for you, working or just finished, on all your computers. You can handle them from your phone too.",
+      "go": "Open Tasks"
+    }
+  },
+  "discover": {
+    "open": "What else can it do?",
+    "title": "What else can Looklook do?",
+    "lead": "Click one to go there.",
+    "tip": {
+      "quick": "Tip: {{quick}} quickly switches between sessions, projects and earlier conversations.",
+      "keys": "Tip: {{keys}} shows every keyboard shortcut.",
+      "templates": "Tip: the templates button in the message box keeps lines you use often. Click one to fill it in, edit, then send.",
+      "more": "Tip: ⋯ lets you name the session, change the shell, start it automatically at boot, or open it in a Docker container.",
+      "history": "Tip: Earlier conversations searches everything you've chatted about. Click one to continue it.",
+      "multi": "Tip: one account can sign in on 7 computers. Their sessions show up together, all under the same personal address.",
+      "pull": "Tip: pull down on a list to refresh it.",
+      "keybar": "Tip: the key bar under the terminal has Esc, Tab, Ctrl+C and arrow keys, everything your phone keyboard lacks.",
+      "landscape": "Tip: turn your phone sideways for a wider terminal."
+    },
+    "f": {
+      "files": {
+        "title": "Files",
+        "body": "Browse, preview, upload and download files on this computer."
+      },
+      "ssh": {
+        "title": "SSH hosts",
+        "body": "Save the servers you use, open an SSH terminal in one click, and let AI run commands on them safely."
+      },
+      "pages": {
+        "title": "Local pages",
+        "body": "Open sites you're developing on this computer (like localhost:5173) from your phone too."
+      },
+      "ai": {
+        "title": "AI assistants",
+        "body": "Let Claude Code and Codex use Looklook's tools to add pages or run commands on servers you allow."
+      },
+      "accounts": {
+        "title": "Accounts & models",
+        "body": "Add several Claude accounts or third-party model APIs and switch when one runs out."
+      },
+      "history": {
+        "title": "Earlier conversations",
+        "body": "Claude Code, Codex and OpenCode conversations on this computer. Search them and continue any."
+      },
+      "tasks": {
+        "title": "Tasks",
+        "body": "AI sessions waiting for you, working or just finished, on all your computers, in one place."
+      },
+      "docker": {
+        "title": "Sessions in Docker containers",
+        "body": "In a new session's ⋯ menu, pick a running container and open a terminal inside it."
+      },
+      "computers": {
+        "title": "More computers",
+        "body": "Up to 7 computers per account, shown together in the sidebar."
+      },
+      "sync": {
+        "title": "Settings sync",
+        "body": "Terminal look, templates, notifications and more stay in sync across your computers."
+      },
+      "membership": {
+        "title": "Membership & invites",
+        "body": "See when it expires, renew, and invite friends."
+      },
+      "shortcuts": {
+        "title": "Keyboard shortcuts",
+        "body": "Quick switch, new session, find in chat and more, all on one page."
+      }
+    }
   }
 }

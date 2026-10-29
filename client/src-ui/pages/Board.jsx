@@ -1,7 +1,7 @@
 // 任务看板（docs/TASK_BOARD.md §5，样机 A）：所有电脑上的 AI 会话按“等你处理 → 正在干活 → 刚结束”分组，
 // 一行一句话说清现状。点一行展开（宽屏在右侧详情栏），能直接允许 / 拒绝、回答选项、处理选择框、停止、知道了。
 // 数据就是会话列表（每 5 秒取一次，sessions.jsx），操作复用对话界面的接口（按终端自动发给它所在的电脑）。
-import { AlertTriangle, Check, ChevronRight, ExternalLink, Inbox, X } from 'lucide-react';
+import { AlertTriangle, Check, ChevronRight, ExternalLink, Inbox, Plus, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -13,8 +13,9 @@ import { errorText } from '../shared/i18n.js';
 import { baseName, useSessions } from '../shared/sessions.jsx';
 import { spinnerText } from '../shared/spinner.js';
 import { spanText } from '../shared/time.js';
-import { Link } from '../shared/router.jsx';
+import { Link, useRouter } from '../shared/router.jsx';
 import { Button, Empty, Note, Skeleton, useConfirm, useToast } from '../shared/ui.jsx';
+import { HelpLink } from '../shared/help.jsx';
 import { useSessionUi } from './Sessions.jsx';
 import { useNarrow } from './TerminalView.jsx';
 
@@ -280,6 +281,7 @@ export default function Board() {
   const sessions = useSessions();
   const devices = useDevices();
   const ui = useSessionUi();
+  const { navigate } = useRouter();
   const narrow = useNarrow('(max-width: 1099px)');
   const now = useNow();
   const act = useActivityText();
@@ -315,7 +317,9 @@ export default function Board() {
   return (
     <div className="board">
       <header className="bd-head">
-        <h1>{t('board.title')}</h1>
+        <h1 className="inline">
+          {t('board.title')} <HelpLink page="tasks" />
+        </h1>
         {!empty && <span className="muted small">{counts}</span>}
       </header>
       {feishuDown && (
@@ -340,7 +344,11 @@ export default function Board() {
         <div className="bd-list">
           {empty && (
             <Empty icon={Inbox} title={t('board.empty_title')}>
-              {t('board.empty_body')}
+              <p>{t('board.empty_body')}</p>
+              <p className="muted small">{t('board.empty_phone')}</p>
+              <Button icon={Plus} onClick={() => navigate('/new')}>
+                {t('board.empty_go')}
+              </Button>
             </Empty>
           )}
           {BOARD_GROUPS.map(

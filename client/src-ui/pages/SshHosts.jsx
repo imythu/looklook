@@ -12,6 +12,7 @@ import { api } from '../shared/api.js';
 import { errorText } from '../shared/i18n.js';
 import { Link, useRouter } from '../shared/router.jsx';
 import { Button, Card, CopyButton, Empty, ErrorNote, Field, FoldNote, Modal, Note, PasswordInput, Skeleton, Switch, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
+import { HelpLink } from '../shared/help.jsx';
 import { Seg } from './Settings.jsx';
 import { ImportDialog, TransferPanel } from './SshTransfer.jsx';
 import { FolderPicker } from './Terminals.jsx';
@@ -697,7 +698,9 @@ export default function SshHosts() {
   return (
     <>
       <div className="page-head">
-        <h1>{t('ssh.title')}</h1>
+        <h1 className="inline">
+          {t('ssh.title')} <HelpLink page="ssh" />
+        </h1>
         <span className="row">
           <Button variant="ghost" icon={ArrowDownToLine} onClick={() => setImporting(true)}>
             {t('sshx.import')}

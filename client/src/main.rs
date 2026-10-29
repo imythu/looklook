@@ -63,6 +63,7 @@ mod shells;
 mod ssh;
 mod ssh_transfer;
 mod store;
+mod tips;
 mod tools;
 mod transfer;
 #[cfg(any(windows, target_os = "macos"))]
