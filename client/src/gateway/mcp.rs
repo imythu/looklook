@@ -279,7 +279,7 @@ impl From<LocalError> for ToolError {
 /// 给 AI 助手看的错误说明（它会转述给用户）
 fn explain(code: &str) -> &'static str {
     match code {
-        "NOT_LOGGED_IN" => "Opening local pages from outside is part of Looklook remote access, which needs a Looklook account (new accounts get a year free during the beta). Tell the user they can turn it on from the Looklook console; everything else keeps working without signing in.",
+        "NOT_LOGGED_IN" => "Opening local pages from outside is part of Looklook remote access, which needs a Looklook account (new accounts get their first year free). Tell the user they can turn it on from the Looklook console; everything else keeps working without signing in.",
         "LOCKED" => "Looklook remote access is paused (membership expired, account disabled, or offline too long). Tell the user they can extend their membership in the Looklook console (Membership: redeem a renewal code or invite friends). Everything on this computer keeps working.",
         "NETWORK" => "Looklook cannot reach its server right now. Try again later.",
         "PORT_RESERVED" => "This port belongs to Looklook itself and cannot be published.",

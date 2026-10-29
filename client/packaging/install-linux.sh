@@ -135,7 +135,7 @@ say ""
 say "✓ 看看客户端已安装，这台电脑上和同一 Wi‑Fi 里不用登录就能用 / Looklook client installed. It works on this computer and the same Wi‑Fi without signing in"
 say ""
 cmd() { printf '  %s %-8s %s\n' "$LL" "$1" "$2"; }
-cmd login "开通远程访问，出门在外也能用手机打开（Beta 期间注册送一年）/ Turn on remote access to open it from your phone anywhere (1 year free during the beta)"
+cmd login "开通远程访问，出门在外也能用手机打开（新用户注册送一年）/ Turn on remote access to open it from your phone anywhere (first year free)"
 cmd status "查看状态 / Show status"
 cmd restart "重启，终端里的任务不受影响 / Restart; running tasks keep running"
 cmd access "局域网访问、白名单 / LAN access and whitelist"

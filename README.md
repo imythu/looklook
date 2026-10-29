@@ -43,7 +43,7 @@ It works right away, no account needed: open `http://127.0.0.1:1234` on that mac
 
 |  | Free | Remote |
 | --- | --- | --- |
-| Price | Free, no account | Free for a year if you sign up during the beta, then tentatively $7.77/month (¥9.99 in China) |
+| Price | Free, no account | Free for your first year, then tentatively $7.77/month (¥9.99 in China) |
 | Terminals and AI sessions that keep running | ✓ | ✓ |
 | Claude Code, Codex, OpenCode or any CLI | ✓ | ✓ |
 | Chat view, task board, files, Git, SSH hosts, MCP | ✓ | ✓ |
@@ -108,7 +108,7 @@ Found a vulnerability? See [SECURITY.md](SECURITY.md).
 
 ## What's open and what's hosted
 
-This repository is the **desktop app / client** (`client/`) and the **client ↔ server protocol** (`protocol/`). The client is under AGPL-3.0-or-later and the protocol under MIT (see [License](#license)). The client works fully on your machine and LAN without signing in. Remote access goes through the hosted Looklook service (accounts, relays, personal addresses) and needs a Looklook account: free for a year if you sign up during the beta; see [Free and Remote](#free-and-remote) for pricing after that.
+This repository is the **desktop app / client** (`client/`) and the **client ↔ server protocol** (`protocol/`). The client is under AGPL-3.0-or-later and the protocol under MIT (see [License](#license)). The client works fully on your machine and LAN without signing in. Remote access goes through the hosted Looklook service (accounts, relays, personal addresses) and needs a Looklook account: free for your first year; see [Free and Remote](#free-and-remote) for pricing after that.
 
 ## Platforms
 

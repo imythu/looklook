@@ -236,8 +236,8 @@ pub fn test(en: bool, url: &str) -> Msg {
 pub fn remote_hint(mut m: Msg, en: bool, url: &str) -> Msg {
     m.lines.push(tr(
         en,
-        "这台电脑还没开通远程访问，离开它就打不开看看。开通后出门在外用手机一点就能接着处理（Beta 期间注册送一年）。",
-        "Remote access isn't on for this computer, so Looklook only opens on it. Turn it on to pick things up from your phone anywhere, free for a year if you sign up during the beta.",
+        "这台电脑还没开通远程访问，离开它就打不开看看。开通后出门在外用手机一点就能接着处理（新用户注册送一年）。",
+        "Remote access isn't on for this computer, so Looklook only opens on it. Turn it on to pick things up from your phone anywhere, free for your first year.",
     ));
     m.url = url.into();
     m.link = tr(en, "开通远程访问", "Turn on remote access");

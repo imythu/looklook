@@ -350,8 +350,8 @@ pub fn remote_hint(mut c: Value, en: bool, url: &str) -> Value {
     if let Some(els) = c["body"]["elements"].as_array_mut() {
         els.push(note(&tr(
             en,
-            "“打开”只在这台电脑上能用。开通远程访问后，出门在外用手机一点就能接着处理（Beta 期间注册送一年）。",
-            "\"Open\" only works on this computer. Turn on remote access to pick things up from your phone anywhere, free for a year if you sign up during the beta.",
+            "“打开”只在这台电脑上能用。开通远程访问后，出门在外用手机一点就能接着处理（新用户注册送一年）。",
+            "\"Open\" only works on this computer. Turn on remote access to pick things up from your phone anywhere, free for your first year.",
         )));
         els.push(row(vec![link(&tr(en, "开通远程访问", "Turn on remote access"), url)]));
     }

@@ -1096,8 +1096,8 @@ fn print_status(v: &Value) {
     let v = if v.get("account").is_some() { &v["account"] } else { v };
     if v["logged_in"].as_bool() != Some(true) {
         println!("未登录：这台电脑上和同一 Wi‑Fi 里照常使用 / Not signed in: works on this computer and the same Wi‑Fi（服务端 / server: {}）", v["server"].as_str().unwrap_or("-"));
-        println!("开通远程访问，出门在外也能用手机打开：looklook login（Beta 期间注册送一年）");
-        println!("Turn on remote access to open it from your phone anywhere: looklook login (1 year free during the beta)");
+        println!("开通远程访问，出门在外也能用手机打开：looklook login（新用户注册送一年）");
+        println!("Turn on remote access to open it from your phone anywhere: looklook login (first year free)");
         return;
     }
     let s = &v["session"];

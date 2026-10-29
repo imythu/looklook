@@ -1,4 +1,4 @@
-// 远程访问的引导：本机、局域网不登录也能用，在外面打开要看看账户（Beta 期间新用户注册免费一年），到期了要续费。
+// 远程访问的引导：本机、局域网不登录也能用，在外面打开要看看账户（新用户注册免费一年），到期了要续费。
 import { Check, Globe } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
