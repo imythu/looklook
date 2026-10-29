@@ -3,7 +3,8 @@
 //! - “自动选择”模式（没有手动选过线路）：发现明显更快的线路，在没有打开的终端时自动换过去
 //!   （带 `auto: true` 提交，平台不会用它覆盖手动选择）；有终端开着时先不换，只提示；
 //! - 手动选了线路、而它明显偏慢且有快得多的线路：提示用户可以去“设置 → 远程线路”换；
-//! - 测速结果放进 `/api/status` 的 `relay_check`，管理台据此显示不打扰的提示。
+//! - 测速结果放进 `/api/status` 的 `relay_check`，管理台据此显示不打扰的提示；
+//! - 到某条线路 UDP 不通、TCP 通时，远程控制台改经 TCP 用 TURN（`rtc::turn_tcp`），这时按 TCP 的延迟算。
 //!
 //! “明显更快”要同时快 30 ms 以上和 30% 以上，并且连测两次都成立，避免网络抖动时来回换。
 
@@ -24,6 +25,8 @@ const INTERVAL: Duration = Duration::from_secs(15 * 60);
 const CONFIRM_DELAY: Duration = Duration::from_secs(60);
 /// 当前线路测不通时隔多久重测（网络恢复后提示要尽快消失）。
 const BLOCKED_RETRY: Duration = Duration::from_secs(60);
+/// 当前线路只有 TCP 通时隔多久重测（UDP 恢复后尽快换回 UDP）。
+const TCP_RETRY: Duration = Duration::from_secs(5 * 60);
 /// 延迟达到这个值（毫秒）算慢。
 pub const SLOW_MS: u32 = 150;
 
@@ -34,6 +37,9 @@ pub struct Item {
     /// 测速用的 STUN 地址（`主机:端口`）：界面据此告诉开着代理软件的用户该让哪些地址直连
     pub stun: Option<String>,
     pub latency_ms: Option<u32>,
+    /// UDP 不通、TCP 通：`latency_ms` 是经 TCP 测的，远程控制台经 TCP 用 TURN（`rtc::turn_tcp`）
+    pub tcp: bool,
+    /// UDP 的错误（TCP 也不通时）
     pub error: Option<String>,
 }
 
@@ -52,34 +58,38 @@ pub struct Check {
     pub best_ms: Option<u32>,
     /// 当前线路偏慢（或测不通）
     pub slow: bool,
-    /// 当前线路测不通：这台电脑到它的 UDP 3478（TURN）不通，远程控制台（WebRTC）连不上，
+    /// 当前线路测不通：这台电脑到它的 3478（TURN）UDP 和 TCP 都不通，远程控制台（WebRTC）连不上，
     /// 远程通道显示已连接也一样。原因见对应条目的 `error`。
     pub blocked: bool,
+    /// 当前线路 UDP 不通、经 TCP 能用：远程控制台能连，可能稍慢
+    pub tcp: bool,
     /// 建议换到的线路：当前偏慢、且这条明显更快，但没有自动换（手动模式，或者有终端开着）
     pub suggest: Option<String>,
 }
 
-/// 测一遍所有线路（并发，最多几秒）。
+/// 测一遍所有线路（并发，最多几秒）：UDP 测不通的再经 TCP 测，并据此决定远程控制台是否经 TCP 用 TURN。
 pub async fn measure(account: &Account) -> crate::platform::PResult<Check> {
     let list = account.relays().await?;
     let pings = futures_util::future::join_all(list.items.iter().map(|i| async {
-        match &i.stun {
-            Some(a) => crate::relay::ping(a).await,
-            None => Err("unsupported".to_string()),
-        }
+        let Some(a) = &i.stun else { return (None, false, Some("unsupported".to_string())) };
+        let (udp, tcp) = tokio::join!(crate::relay::ping(a), crate::relay::ping_tcp(a));
+        let r = match (udp, tcp) {
+            (Ok(ms), _) => (Some(ms), false, None),
+            (Err(_), Ok(ms)) => (Some(ms), true, None),
+            (Err(e), Err(t)) => {
+                tracing::debug!(relay = %a, udp = %e, tcp = %t, "线路测不通");
+                (None, false, Some(e))
+            }
+        };
+        crate::rtc::turn_tcp::set_tcp(a, r.1);
+        r
     }))
     .await;
     let items: Vec<Item> = list
         .items
         .iter()
         .zip(pings)
-        .map(|(i, p)| {
-            let (latency_ms, error) = match p {
-                Ok(ms) => (Some(ms), None),
-                Err(e) => (None, Some(e)),
-            };
-            Item { name: i.name.clone(), address: i.address.clone(), stun: i.stun.clone(), latency_ms, error }
-        })
+        .map(|(i, (latency_ms, tcp, error))| Item { name: i.name.clone(), address: i.address.clone(), stun: i.stun.clone(), latency_ms, tcp, error })
         .collect();
     Ok(conclude(items, list.preferred, list.current, list.auto_picked, crate::util::system_ms()))
 }
@@ -93,7 +103,8 @@ fn conclude(items: Vec<Item>, preferred: Option<String>, current: Option<String>
     let current_testable = current.as_ref().is_some_and(|c| items.iter().any(|i| &i.name == c && i.error.as_deref() != Some("unsupported")));
     let slow = current_testable && current_ms.is_none_or(|ms| ms >= SLOW_MS);
     let blocked = current_testable && current_ms.is_none();
-    Check { checked_at: now, items, preferred, current, auto, current_ms, best, best_ms, slow, blocked, suggest: None }
+    let tcp = current.as_ref().and_then(|c| items.iter().find(|i| &i.name == c)).is_some_and(|i| i.tcp);
+    Check { checked_at: now, items, preferred, current, auto, current_ms, best, best_ms, slow, blocked, tcp, suggest: None }
 }
 
 /// `best` 是否明显比当前线路快。
@@ -187,7 +198,9 @@ impl RelayWatch {
                         c.auto = r.preferred.is_none() || r.auto_picked;
                         c.preferred = r.preferred;
                         c.current = r.current;
-                        c.current_ms = c.current.as_ref().and_then(|n| c.items.iter().find(|i| &i.name == n)).and_then(|i| i.latency_ms);
+                        let cur = c.current.as_ref().and_then(|n| c.items.iter().find(|i| &i.name == n));
+                        c.current_ms = cur.and_then(|i| i.latency_ms);
+                        c.tcp = cur.is_some_and(|i| i.tcp);
                         c.slow = c.current_ms.is_none_or(|ms| ms >= SLOW_MS);
                         c.blocked = c.current_ms.is_none();
                     }
@@ -201,16 +214,19 @@ impl RelayWatch {
         if blocked != old.as_ref().is_some_and(|o| o.blocked) {
             let error = c.current.as_ref().and_then(|n| c.items.iter().find(|i| &i.name == n)).and_then(|i| i.error.clone());
             if blocked {
-                tracing::warn!(relay = ?c.current, ?error, "到线路的 UDP 不通，远程控制台连不上");
+                tracing::warn!(relay = ?c.current, ?error, "到线路的 UDP 和 TCP 都不通，远程控制台连不上");
             } else {
-                tracing::info!(relay = ?c.current, "到线路的 UDP 通了");
+                tracing::info!(relay = ?c.current, tcp = c.tcp, "到线路通了");
             }
         }
+        let tcp = c.tcp;
         *self.last.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
         if blocked {
             BLOCKED_RETRY
         } else if pending.is_some() {
             CONFIRM_DELAY
+        } else if tcp {
+            TCP_RETRY
         } else {
             INTERVAL
         }
@@ -233,7 +249,7 @@ mod tests {
     use super::*;
 
     fn item(name: &str, ms: Option<u32>) -> Item {
-        Item { name: name.into(), address: None, stun: None, latency_ms: ms, error: ms.is_none().then(|| "timeout".into()) }
+        Item { name: name.into(), address: None, stun: None, latency_ms: ms, tcp: false, error: ms.is_none().then(|| "timeout".into()) }
     }
 
     #[test]

@@ -456,19 +456,58 @@ pub async fn stun_mapped(addr: &str) -> Result<std::net::IpAddr, String> {
 
 /// 解析好地址、连上（UDP connect）的 socket。
 async fn stun_socket(addr: &str) -> Result<tokio::net::UdpSocket, String> {
+    let to = resolve(addr).await?;
+    let bind: SocketAddr = if to.is_ipv4() { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
+    let sock = tokio::net::UdpSocket::bind(bind).await.map_err(|_| "network".to_string())?;
+    sock.connect(to).await.map_err(|_| "network".to_string())?;
+    Ok(sock)
+}
+
+/// 线路的 `主机:端口` → 地址：与通道相同的开发用解析覆盖（`*.localhost`、`LOOKLOOK_RESOLVE`），其余走系统解析。
+pub async fn resolve(addr: &str) -> Result<SocketAddr, String> {
     let (host, port) = addr
         .rsplit_once(':')
         .and_then(|(h, p)| Some((h.trim_start_matches('[').trim_end_matches(']'), p.parse::<u16>().ok()?)))
         .ok_or_else(|| "address".to_string())?;
-    // 与通道相同的开发用解析覆盖（`*.localhost`、`LOOKLOOK_RESOLVE`）
     let ip = match localhost_addr(host).or_else(|| resolve_override(host)).or_else(|| host.parse().ok()) {
         Some(ip) => ip,
         None => tokio::net::lookup_host((host, port)).await.ok().and_then(|mut a| a.next()).map(|a| a.ip()).ok_or_else(|| "dns".to_string())?,
     };
-    let bind: SocketAddr = if ip.is_ipv4() { (std::net::Ipv4Addr::UNSPECIFIED, 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
-    let sock = tokio::net::UdpSocket::bind(bind).await.map_err(|_| "network".to_string())?;
-    sock.connect((ip, port)).await.map_err(|_| "network".to_string())?;
-    Ok(sock)
+    Ok(SocketAddr::new(ip, port))
+}
+
+/// 经 TCP 测一条线路的延迟（毫秒）：UDP 不通时远程控制台改经 TCP 用 TURN（`rtc::turn_tcp`），测的就是这条路。
+/// 连上以后发 `PING_SAMPLES` 次 Binding 请求取最小值，不含建连的时间。
+pub async fn ping_tcp(addr: &str) -> Result<u32, String> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    const PING_SAMPLES: usize = 3;
+    let to = resolve(addr).await?;
+    let mut s = match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(to)).await {
+        Ok(Ok(s)) => s,
+        Ok(Err(_)) => return Err("connect".into()),
+        Err(_) => return Err("timeout".into()),
+    };
+    let _ = s.set_nodelay(true);
+    let mut best: Option<Duration> = None;
+    for _ in 0..PING_SAMPLES {
+        let tx: [u8; 12] = rand::random();
+        let t = Instant::now();
+        let once = async {
+            s.write_all(&stun_binding_request(&tx)).await?;
+            let mut head = [0u8; 20];
+            s.read_exact(&mut head).await?;
+            let mut rest = vec![0u8; u16::from_be_bytes([head[2], head[3]]) as usize];
+            s.read_exact(&mut rest).await?;
+            Ok::<_, std::io::Error>(is_stun_binding_success(&head, &tx))
+        };
+        match tokio::time::timeout(Duration::from_secs(2), once).await {
+            Ok(Ok(true)) => best = Some(best.map_or(t.elapsed(), |b| b.min(t.elapsed()))),
+            Ok(Ok(false)) => return Err("protocol".into()),
+            Ok(Err(_)) => return Err("connect".into()),
+            Err(_) => return Err("timeout".into()),
+        }
+    }
+    best.map(|b| b.as_millis().clamp(1, u32::MAX as u128) as u32).ok_or_else(|| "timeout".into())
 }
 
 const STUN_MAGIC: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];

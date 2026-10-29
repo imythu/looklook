@@ -24,7 +24,11 @@
    都继承了 WebRTC 的 UDP socket：看看自己关掉连接后它们还一直占着端口，2026-10-26 在一台机器上看到 50000-50031 被占了 31 个，
    端口范围占满后只能退到随机端口，配了端口转发 / 公网地址的直连就连不上。加了 `sock_no_inherit`（POSIX `FD_CLOEXEC`、
    Windows `SetHandleInformation`），每个 `socket()` / `accept()` / `pipe()` 之后调用。测试：`rtc::peer::tests::sockets_are_not_inherited`。
-4. **构建**（`build.rs`，`patches/datachannel-sys-build.patch`）：
+4. **libjuice：经回环地址上的 TURN 拿到的映射地址不当作 srflx 候选**（`libdatachannel/deps/libjuice/src/agent.c`，
+   `patches/libjuice-turn-tcp-forwarder-mapped.patch`）。到线路的 UDP 不通时，客户端在本机回环地址上开一个转发，
+   经 TCP 连线路上的 TURN（`src/rtc/turn_tcp.rs`），TURN 分配应答里的映射地址是那条 TCP 连接的，当作 UDP 的 srflx 候选
+   只会让对端白白检查一个连不上的地址。
+5. **构建**（`build.rs`，`patches/datachannel-sys-build.patch`）：
    - 交叉编译时关掉 CMake 的 pkg-config 查找，否则会用宿主机的 `openssl.pc`，链接时多出 `-lz`；
    - 目标是 Windows 时补链接静态 OpenSSL 和 libjuice 需要的系统库（按 `CARGO_CFG_TARGET_OS` 判断，不能用 `cfg!`）；
    - 打开 `NO_TESTS`，因为下面删掉了测试目录。

@@ -1,4 +1,5 @@
-// 远程通道连接状态：连接中（动画）/ 已连接 / 已连接但到线路的 UDP 不通（远程控制台连不上）/ 失败（给出原因、怎么办，以及可展开的技术详情）。
+// 远程通道连接状态：连接中（动画）/ 已连接（到线路 UDP 不通时注明远程控制台改经 TCP）/
+// 已连接但到线路的 UDP 和 TCP 都不通（远程控制台连不上）/ 失败（给出原因、怎么办，以及可展开的技术详情）。
 // ConnChip：管理台右上角的连接胶囊，本机、局域网、远程打开都在同一个位置：
 //   本机：“本机 · 远程在线”，点开是远程通道的详情、“立即重连”和换线路；
 //   远程（浏览器，或 App 里选中了别的电脑）：“远程 · 86 ms”，点开是连着哪台电脑、端到端加密、延迟和线路；
@@ -19,7 +20,7 @@ import { Button, useToast } from './ui.jsx';
 
 const KNOWN = ['dns', 'refused', 'timeout', 'network', 'auth', 'handshake', 'heartbeat', 'config'];
 
-/** 远程通道连着，但测速发现这台电脑到当前线路的 UDP 不通：远程控制台（WebRTC）连不上。 */
+/** 远程通道连着，但测速发现这台电脑到当前线路的 UDP 和 TCP 都不通：远程控制台（WebRTC）连不上。 */
 function udpBlocked(status) {
   return status.relay?.state === 'connected' && !!status.relay_check?.blocked;
 }
@@ -32,6 +33,9 @@ export default function RelayStatus() {
   if (!r || r.state === 'off') return null;
   const failed = r.state === 'failed';
   const blocked = udpBlocked(status);
+  const tcp = r.state === 'connected' && !blocked && !!status.relay_check?.tcp;
+  // 能换的线路：测得出延迟、不是当前这条
+  const others = (status.relay_check?.items ?? []).filter((i) => i.latency_ms != null && i.name !== status.relay_check?.current);
   const reason = KNOWN.includes(r.reason) ? r.reason : 'other';
   return (
     <div className={`relay-status relay-${r.state}`} role="status" aria-live="polite">
@@ -52,10 +56,17 @@ export default function RelayStatus() {
         <>
           <p className="relay-why">{t('relay.blocked_why', { name: status.relay_check.current })}</p>
           <p className="muted small relay-local">
-            {t('relay.blocked_fix')} <Link to={`/settings#${RELAYS_ANCHOR}`}>{t('relays.change_in_settings')}</Link>
+            {others.length > 0 ? (
+              <>
+                {t('relay.blocked_fix')} <Link to={`/settings#${RELAYS_ANCHOR}`}>{t('relays.change_in_settings')}</Link>
+              </>
+            ) : (
+              t('relay.blocked_fix_single')
+            )}
           </p>
         </>
       )}
+      {tcp && <p className="muted small relay-local">{t('relay.tcp_note', { name: status.relay_check.current })}</p>}
       {failed && (
         <>
           <p className="relay-why">{t(`relay.reason.${reason}`)}</p>

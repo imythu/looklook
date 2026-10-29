@@ -466,7 +466,8 @@ fn resolve_host(hostport: &str) -> String {
 }
 
 /// 浏览器格式的 ICE 服务器 → libdatachannel 的 URL：`stun:host:port`、`turn:user:pass@host:port?transport=udp`。
-/// libjuice 只支持 UDP 的 TURN，`transport=tcp` 的地址跳过（docs/06 §11）。
+/// libjuice 只支持 UDP 的 TURN：`transport=tcp` 的地址在测速发现到这条线路 UDP 不通时换成本机回环地址上的
+/// 转发（[`super::turn_tcp`]，转发经 TCP 连线路），平时跳过（docs/06 §11）。
 pub fn ice_urls(servers: &[IceServer]) -> Vec<String> {
     let enc = |s: &str| {
         s.bytes()
@@ -483,11 +484,14 @@ pub fn ice_urls(servers: &[IceServer]) -> Vec<String> {
                 out.push(format!("stun:{}", resolve_host(rest)));
             } else if let Some(rest) = url.strip_prefix("turn:") {
                 let (hostport, query) = rest.split_once('?').unwrap_or((rest, ""));
-                let hostport = resolve_host(hostport);
                 let udp = query.split('&').all(|kv| kv != "transport=tcp");
-                if !udp {
-                    continue;
-                }
+                let hostport = match udp {
+                    true => resolve_host(hostport),
+                    false => match super::turn_tcp::local_for(hostport) {
+                        Some(local) => local.to_string(),
+                        None => continue,
+                    },
+                };
                 let (Some(u), Some(p)) = (&s.username, &s.credential) else { continue };
                 out.push(format!("turn:{}:{}@{hostport}?transport=udp", enc(u), enc(p)));
             }
@@ -570,6 +574,77 @@ mod tests {
         // base64 密码里的 + / = 都要编码
         let p = s[1].credential.clone().unwrap();
         assert!(!urls[1].contains(&p) || !p.contains(['+', '/', '=']));
+    }
+
+    /// 到线路 UDP 不通时，`transport=tcp` 的 TURN 地址换成本机的转发（经 TCP 连线路）。
+    #[tokio::test]
+    async fn tcp_turn_goes_through_the_local_forwarder() {
+        let s = looklook_protocol::rtc::ice_servers("r9.x", b"k", "1", 1_700_000_000);
+        assert_eq!(ice_urls(&s).len(), 2);
+        super::super::turn_tcp::set_tcp("r9.x:3478", true);
+        let local = super::super::turn_tcp::local_for("r9.x:3478").unwrap();
+        let urls = ice_urls(&s);
+        assert_eq!(urls.len(), 3, "{urls:?}");
+        assert!(urls[1].ends_with("@r9.x:3478?transport=udp"), "{}", urls[1]);
+        assert!(urls[2].ends_with(&format!("@{local}?transport=udp")), "{}", urls[2]);
+        super::super::turn_tcp::set_tcp("r9.x:3478", false);
+        assert_eq!(ice_urls(&s).len(), 2);
+    }
+
+    /// 到线路只有 TCP 通时经本地转发用 TURN，真连一次：本机起一个只收 TCP 的 coturn（`--no-udp`），
+    /// 应答方只拿到经 TCP 得到的中继候选（没有 TCP 连接的映射地址冒充的 srflx），连接走中继。
+    /// 要装 coturn，用 `LOOKLOOK_TEST_RELAY_IP` 给出本机的局域网地址（中继地址），并用防火墙挡住应答方
+    /// 端口（50160-50167）除回环以外的 UDP，模拟 UDP 不通的网络（root）：
+    /// ```sh
+    /// iptables -I OUTPUT -p udp --sport 50160:50167 ! -d 127.0.0.1 -j DROP
+    /// iptables -I OUTPUT -p udp --dport 50160:50167 ! -s 127.0.0.1 -j DROP
+    /// LOOKLOOK_TEST_RELAY_IP=192.168.1.2 cargo test turn_over_tcp -- --ignored
+    /// iptables -D OUTPUT -p udp --sport 50160:50167 ! -d 127.0.0.1 -j DROP
+    /// iptables -D OUTPUT -p udp --dport 50160:50167 ! -s 127.0.0.1 -j DROP
+    /// ```
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn turn_over_tcp_connects() {
+        let relay_ip = std::env::var("LOOKLOOK_TEST_RELAY_IP").expect("LOOKLOOK_TEST_RELAY_IP");
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        struct Kill(std::process::Child);
+        impl Drop for Kill {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let turn = std::process::Command::new("turnserver")
+            .args(["-n", "--no-cli", "--no-tls", "--no-dtls", "--no-udp", "--listening-ip", "127.0.0.1", "--listening-port"])
+            .arg(port.to_string())
+            .args(["--relay-ip", &relay_ip, "--min-port", "49200", "--max-port", "49300", "--use-auth-secret", "--static-auth-secret", "k"])
+            .args(["--realm", "looklook", "--log-file", "stdout", "--simple-log"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .map(Kill)
+            .expect("turnserver");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let target = format!("127.0.0.1:{port}");
+        let exp = crate::util::system_ms() / 1000 + 3600;
+        let mut ice = looklook_protocol::rtc::ice_servers("127.0.0.1", b"k", "1", exp);
+        ice[1].urls = vec![format!("turn:{target}?transport=udp"), format!("turn:{target}?transport=tcp")];
+        crate::rtc::turn_tcp::set_tcp(&target, true);
+        let (mut a, mut ctl) = Pc::offer_in(&[], &NetConfig::DEFAULT, false).unwrap();
+        let offer = a.local_offer(Duration::from_secs(3)).await.unwrap();
+        let net = NetConfig { port_begin: 50160, port_end: 50167, ipv6: false, ..NetConfig::DEFAULT };
+        let mut b = Pc::answer_in(&ice, &offer, &net, true).unwrap();
+        let answer = b.local_answer(Duration::from_secs(5)).await.unwrap();
+        assert!(answer.contains(&format!(" {relay_ip} ")) && answer.contains(" typ relay"), "{answer}");
+        assert!(!answer.contains(" typ srflx"), "{answer}");
+        a.set_answer(&answer).unwrap();
+        let opened = ctl.opened(Duration::from_secs(10)).await;
+        let path = b.path();
+        drop(turn);
+        opened.unwrap();
+        assert_eq!(path.as_ref().map(|p| p.kind), Some(PathKind::Relay), "{path:?}");
+        drop(ctl);
+        tokio::task::spawn_blocking(move || drop((a, b))).await.unwrap();
     }
 
     #[test]

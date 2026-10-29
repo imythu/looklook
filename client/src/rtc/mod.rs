@@ -16,6 +16,7 @@ pub mod peer;
 pub mod probe;
 pub mod resume;
 pub mod signal;
+pub mod turn_tcp;
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};

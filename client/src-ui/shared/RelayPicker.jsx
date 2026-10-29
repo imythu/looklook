@@ -64,6 +64,7 @@ function Latency({ item }) {
   return (
     <span className={`latency latency-${s}`}>
       {t('relays.ms', { ms: item.latency_ms })} · {t(`relays.speed.${s}`)}
+      {item.tcp && <span title={t('relays.via_tcp_hint')}> · {t('relays.via_tcp')}</span>}
     </span>
   );
 }

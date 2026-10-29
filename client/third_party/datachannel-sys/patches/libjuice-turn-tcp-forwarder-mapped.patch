@@ -1,0 +1,13 @@
+--- a/libdatachannel/deps/libjuice/src/agent.c
++++ b/libdatachannel/deps/libjuice/src/agent.c
+@@ -1743,7 +1743,9 @@ int agent_process_turn_allocate(juice_agent_t *agent, const stun_message_t *msg,
+ 			agent_arm_keepalive(agent, entry);
+ 		}
+ 
+-		if (msg->mapped.len) {
++		// looklook: a TURN server on the loopback address is the client's local forwarder to a TURN server over TCP
++		// (looklook-client src/rtc/turn_tcp.rs); the mapped address is the TCP connection's, not a UDP reflexive one.
++		if (msg->mapped.len && !addr_is_local((const struct sockaddr *)&entry->record.addr)) {
+ 			JLOG_VERBOSE("Response has mapped address");
+ 
+ 			if (JLOG_INFO_ENABLED) {
