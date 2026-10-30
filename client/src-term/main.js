@@ -115,6 +115,15 @@ class Xterm {
     // 网页字体（终端字体由 /fonts/fonts.css 提供）加载完时 term-inject.js 会让 xterm 重新测量字符宽度；
     // WebGL 的字形图集是按旧字体画的，一并清掉重画。
     document.fonts?.addEventListener?.('loadingdone', () => this.webgl?.clearTextureAtlas());
+    // xterm 6 只给里层（.xterm-scrollable-element）涂配色底色，外层 .xterm-viewport 留着 CSS 里的 #000，
+    // 盖住了四周 5px 的留白，浅色配色时终端外面一圈黑框。跟着里层的底色一起涂（换配色时 xterm 会改里层的 style）。
+    const inner = parent.querySelector('.xterm-scrollable-element');
+    const outer = parent.querySelector('.xterm-viewport');
+    if (inner && outer) {
+      const paint = () => (outer.style.backgroundColor = inner.style.backgroundColor);
+      paint();
+      new MutationObserver(paint).observe(inner, { attributes: true, attributeFilter: ['style'] });
+    }
   }
 
   initListeners() {
@@ -328,6 +337,8 @@ class Xterm {
           break;
       }
     }
+    // lineHeight、letterSpacing 也改变格子大小，上面只在 font* 时重新适配，最后统一再来一次（否则最下面几行被裁掉）
+    fitAddon.fit();
   }
 
   setRenderer(type) {
