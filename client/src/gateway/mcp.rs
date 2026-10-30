@@ -10,7 +10,6 @@
 //! `list_ssh_hosts`、`ssh_run`：在用户标了“允许 AI 使用”的 SSH 主机上运行命令（ssh.rs）。AI 只给出主机名，
 //! 登录用的密码 / 私钥由看看在本机提供，不经过 AI；返回的输出去掉已存密码、私钥块和常见令牌。
 //! 返回里附带端口探测结果：本机网页只转发到 127.0.0.1，开发服务器只监听 `::1` 时要提醒改监听地址。
-//! `feishu_*`：以你本人的身份读群聊和单聊、下载文件、找人、读云文档、发消息（发之前在飞书里问你），见 feishu_tools.rs。
 
 use std::time::Duration;
 
@@ -44,7 +43,7 @@ pub struct McpConfig {
     pub token: String,
     /// 关掉 SSH 工具（`list_ssh_hosts`、`ssh_run`）：不出现在工具列表里，调用也拒绝。默认开着，但只能用标了“允许 AI 使用”的主机
     pub ssh_disabled: bool,
-    /// 关掉飞书工具（`feishu_*`，以你的身份读、发飞书消息）。默认开着，但要设置好飞书、本人在飞书里授权过才能用
+    /// 原来的飞书工具开关；飞书工具已经拿掉，这里不再用到（管理台接口还在读写，跟着那边一起删）
     pub feishu_disabled: bool,
 }
 
@@ -143,14 +142,14 @@ async fn dispatch(app: &App, msg: Value) -> Option<Value> {
             json!({
                 "protocolVersion": version,
                 "capabilities": { "tools": { "listChanged": false } },
-                "serverInfo": { "name": SERVER_NAME, "title": "Looklook local pages", "version": VERSION },
-                "instructions": if feishu_on(app, &McpConfig::load(&app.store)) { format!("{INSTRUCTIONS}{}", crate::feishu_tools::INSTRUCTIONS) } else { INSTRUCTIONS.to_string() },
+                "serverInfo": { "name": SERVER_NAME, "title": "Looklook: local pages and SSH servers", "version": VERSION },
+                "instructions": instructions(app, &McpConfig::load(&app.store), params.pointer("/clientInfo/name").and_then(Value::as_str).unwrap_or("")),
             })
         }
         "ping" => json!({}),
         "tools/list" => {
             let c = McpConfig::load(&app.store);
-            json!({ "tools": tool_defs(!c.ssh_disabled, feishu_on(app, &c)) })
+            json!({ "tools": tool_defs(!c.ssh_disabled) })
         }
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
@@ -171,37 +170,78 @@ fn tool_result(v: Value, is_error: bool) -> Value {
     json!({ "content": [{ "type": "text", "text": text }], "structuredContent": v, "isError": is_error })
 }
 
-const INSTRUCTIONS: &str = "Looklook publishes web pages running on this computer (e.g. a dev server on localhost:5173) at the user's private Looklook address, \
-so they can open them from a phone or another computer. Only the signed-in owner can open these addresses. \
-Use find_mapping to check whether a port already has an address, ensure_mapping to create one or reuse the existing one, list_mappings to see all. \
-Each port has at most one mapping; the account has a small limit (usually 10). Looklook forwards to 127.0.0.1 only. \
-If list_ssh_hosts and ssh_run are available, you may also run commands on SSH servers the user saved in Looklook and allowed for AI; \
-Looklook logs in for you, so never ask for passwords or keys. Some hosts run Windows (cmd or PowerShell), not a POSIX shell.";
+/// 连上时给 AI 助手的总说明。Claude Code 只把工具名放进上下文、用到时才去查说明，所以这里要写清
+/// “什么时候该用”，并按管理台里的设置写：这个助手的本机网页用法（自动 / 先问 / 只在要求时）、
+/// 远程访问能不能用、能用的 SSH 主机名。
+fn instructions(app: &App, c: &McpConfig, client: &str) -> String {
+    let agent = crate::agents::from_client_name(client);
+    let pages = Pages { skill: crate::agents::pages_skill(agent), remote: app.account.gate().reason().map(str::to_string) };
+    let hosts = (!c.ssh_disabled).then(|| crate::ssh::list(&app.store).into_iter().filter(|h| h.allow_ai).map(|h| h.name).collect::<Vec<_>>());
+    instructions_text(&pages, hosts.as_deref())
+}
+
+struct Pages {
+    skill: Option<crate::agents::Skill>,
+    /// 远程访问用不了的原因（`NOT_LOGGED_IN`、`MEMBERSHIP_EXPIRED` 等）；能用是 `None`
+    remote: Option<String>,
+}
+
+/// `hosts`：SSH 工具关掉时是 `None`
+fn instructions_text(pages: &Pages, hosts: Option<&[String]>) -> String {
+    use crate::agents::Skill;
+    let mut s = String::from(
+        "Looklook runs on this computer. Use these tools on your own when the situations below come up; the user will not name Looklook.\n\
+\n\
+Local pages (*_mapping): gives a local HTTP server (dev server on localhost:5173, API on :8080) a private address the owner can open from \
+a phone or another computer, instead of ngrok, frp or `--host 0.0.0.0`. One mapping per port; forwards to 127.0.0.1 only. ",
+    );
+    let asked = "the user wants to open a local page elsewhere (\"on my phone\", \"remotely\", \"手机上看\", \"远程打开\", \"外网访问\")";
+    match (&pages.remote, pages.skill) {
+        (Some(r), _) => s.push_str(&format!(
+            "Remote access is off right now ({r}): do not offer addresses yourself; if {asked}, tell them it needs Looklook remote access, which they can turn on in the Looklook console.\n"
+        )),
+        (None, Some(Skill::Auto)) => s.push_str(&format!(
+            "User setting: automatic. When you start or notice a local web server (e.g. output shows http://localhost:5173), call ensure_mapping right away and give the URL, without asking; also when {asked}.\n"
+        )),
+        (None, Some(Skill::Ask)) => s.push_str(&format!(
+            "User setting: ask first. When you start or notice a local web server, call find_mapping: give the address if there is one, otherwise ask once whether to add it and call ensure_mapping only if they agree. When {asked}, ensure_mapping directly.\n"
+        )),
+        (None, None) => s.push_str(&format!(
+            "User setting: only on request. Do not bring it up yourself; when {asked}, call ensure_mapping and give the URL.\n"
+        )),
+    }
+    if let Some(names) = hosts {
+        s.push_str(
+            "\nSSH servers (list_ssh_hosts, ssh_run): Looklook logs in to the user's saved servers for you. When a task needs a remote server \
+(deploy, logs, disk, services, \"on the server\", \"服务器上\", \"线上\") or the user names a host below, use ssh_run, not `ssh` in a terminal \
+(it would ask for a password); never ask for passwords or keys. Some hosts run Windows (cmd/PowerShell).",
+        );
+        if names.is_empty() {
+            s.push_str(" No host is allowed for AI yet; the user can allow hosts in the Looklook console (SSH hosts).\n");
+        } else {
+            let shown: Vec<&str> = names.iter().take(12).map(String::as_str).collect();
+            s.push_str(&format!(" Hosts you may use: {}{}.\n", shown.join(", "), if names.len() > shown.len() { ", …" } else { "" }));
+        }
+    }
+    s
+}
 
 /// SSH 工具的名字（总开关关掉时从工具列表里拿掉）
 const SSH_TOOLS: [&str; 2] = ["list_ssh_hosts", "ssh_run"];
 
-/// 飞书工具出不出现：没关掉，并且设置好了飞书、绑定了人（授权等第一次用到时再做）
-fn feishu_on(app: &App, c: &McpConfig) -> bool {
-    !c.feishu_disabled && crate::notify::load_feishu(&app.store).is_some_and(|f| f.open_id.is_some())
-}
-
-/// 给管理台“AI 助手”页列出的工具：名字和分组（`pages` / `ssh` / `feishu`），说明由界面翻译。
+/// 给管理台“AI 助手”页列出的工具：名字和分组（`pages` / `ssh`），说明由界面翻译。
 pub fn tool_names() -> Value {
-    let all = tool_defs(true, true);
+    let all = tool_defs(true);
     let items = all.as_array().map(Vec::as_slice).unwrap_or_default();
-    let group = |n: &str| if SSH_TOOLS.contains(&n) { "ssh" } else if crate::feishu_tools::TOOLS.contains(&n) { "feishu" } else { "pages" };
+    let group = |n: &str| if SSH_TOOLS.contains(&n) { "ssh" } else { "pages" };
     Value::Array(items.iter().filter_map(|t| t["name"].as_str()).map(|n| json!({ "name": n, "group": group(n) })).collect())
 }
 
-fn tool_defs(ssh: bool, feishu: bool) -> Value {
+fn tool_defs(ssh: bool) -> Value {
     let mut defs = all_tool_defs();
     if let Some(a) = defs.as_array_mut() {
         if !ssh {
             a.retain(|t| !t["name"].as_str().is_some_and(|n| SSH_TOOLS.contains(&n)));
-        }
-        if feishu {
-            a.extend(crate::feishu_tools::defs());
         }
     }
     defs
@@ -213,21 +253,21 @@ fn all_tool_defs() -> Value {
         {
             "name": "list_mappings",
             "title": "List local page mappings",
-            "description": "List every local port already published through Looklook, with its public URL and whether it is enabled.",
+            "description": "List every local port already published through Looklook, with its access URL and whether it is enabled. Use when the user asks which local pages they have, or when the account is full.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
         {
             "name": "find_mapping",
             "title": "Find the mapping for a port",
-            "description": "Check whether a local port already has a Looklook address. Never creates anything. Returns `mapping` (null if none) and `local` (whether the port currently answers HTTP on 127.0.0.1).",
+            "description": "Check whether a local web server's port (a dev server you started, http://localhost:PORT in output, a port the user mentions) already has a Looklook address the user can open from a phone or another computer; when to check on your own follows the user's setting in the server instructions. Never creates anything. Returns `mapping` (null if none) and `local` (whether the port currently answers HTTP on 127.0.0.1).",
             "inputSchema": { "type": "object", "properties": { "port": port }, "required": ["port"] },
             "annotations": { "readOnlyHint": true },
         },
         {
             "name": "ensure_mapping",
             "title": "Create or reuse a mapping",
-            "description": "Publish a local HTTP port at the user's Looklook address. If the port is already mapped, the existing mapping is reused (and re-enabled if it was disabled) instead of creating a duplicate. Returns the access URL.",
+            "description": "Give a local HTTP server a private Looklook address so the user can open it from a phone or another computer (instead of ngrok, frp or binding 0.0.0.0). Use when the user wants to see or test a local page remotely, or on your own as the user's setting in the server instructions says. If the port is already mapped, the existing mapping is reused (and re-enabled if it was disabled) instead of creating a duplicate. Returns the access URL.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -241,14 +281,14 @@ fn all_tool_defs() -> Value {
         {
             "name": "list_ssh_hosts",
             "title": "List SSH hosts you may use",
-            "description": "List the SSH servers the user saved in Looklook and allowed AI assistants to use. Only names and user@host:port are returned — never passwords or keys.",
+            "description": "List the SSH servers the user saved in Looklook and allowed AI assistants to use. Call it whenever a task involves a remote server (deploy, logs, production, \"the server\") and you are not sure which host is meant. Only names and user@host:port are returned — never passwords or keys.",
             "inputSchema": { "type": "object", "properties": {} },
             "annotations": { "readOnlyHint": true },
         },
         {
             "name": "ssh_run",
             "title": "Run a command on an SSH host",
-            "description": "Run one non-interactive shell command on a saved SSH host (by name from list_ssh_hosts) and return exit_code, stdout and stderr (each capped at 64 KB). Looklook logs in with the user's stored credentials; you never see or need them. Known secrets, private keys and common tokens are redacted from the output. Commands that wait for input will time out.",
+            "description": "Run one non-interactive shell command on a saved SSH host (by name from list_ssh_hosts) and return exit_code, stdout and stderr (each capped at 64 KB). Use this instead of `ssh` in a terminal for anything on the user's servers: checking services, logs, disk, deploys, config. Looklook logs in with the user's stored credentials; you never see or need them. Known secrets, private keys and common tokens are redacted from the output. Commands that wait for input will time out.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -290,7 +330,6 @@ fn explain(code: &str) -> &'static str {
         "SSH_HOST_NOT_ALLOWED" => "No SSH host with that name is available to AI assistants. Call list_ssh_hosts; the user can allow more hosts in the Looklook console (SSH hosts).",
         "SSH_MISSING" => "The OpenSSH client (ssh) is not installed on this computer.",
         "SSH_FAILED" => "Looklook could not start the SSH connection.",
-        "FEISHU_AI_DISABLED" => "The user has turned off Feishu tools for AI assistants in the Looklook console (AI assistants page). Do not retry; tell the user if they need it.",
         _ => "The Looklook operation failed.",
     }
 }
@@ -314,17 +353,6 @@ async fn call_tool(app: &App, name: &str, args: &Value) -> Result<Value, ToolErr
             Ok(json!({ "port": port, "mapping": view(&t), "created": created, "reused": !created, "re_enabled": reenabled, "local": probe(port).await }))
         }
         n if SSH_TOOLS.contains(&n) && McpConfig::load(&app.store).ssh_disabled => Err(LocalError::new("SSH_AI_DISABLED").into()),
-        n if crate::feishu_tools::TOOLS.contains(&n) => {
-            if McpConfig::load(&app.store).feishu_disabled {
-                return Err(LocalError::new("FEISHU_AI_DISABLED").into());
-            }
-            tracing::info!(tool = n, "MCP 调飞书工具");
-            match crate::feishu_tools::call(app, n, args).await {
-                Some(Ok(v)) => Ok(v),
-                Some(Err(v)) => Err(ToolError::Failed(v)),
-                None => Err(ToolError::Unknown),
-            }
-        }
         "list_ssh_hosts" => {
             let all = crate::ssh::list(&app.store);
             let via = |h: &crate::ssh::SshHost| all.iter().find(|j| j.id == h.jump).map(|j| j.name.clone());
@@ -452,15 +480,34 @@ mod tests {
     #[test]
     fn ssh_switch_hides_ssh_tools() {
         let names = |v: Value| v.as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
-        assert!(names(tool_defs(true, false)).contains(&"ssh_run".to_string()));
-        let off = names(tool_defs(false, false));
+        assert!(names(tool_defs(true)).contains(&"ssh_run".to_string()));
+        let off = names(tool_defs(false));
         assert!(!off.iter().any(|n| SSH_TOOLS.contains(&n.as_str())) && off.contains(&"ensure_mapping".to_string()));
         assert_eq!(tool_names().as_array().unwrap().iter().filter(|t| t["group"] == "ssh").count(), 2);
-        assert_eq!(tool_names().as_array().unwrap().iter().filter(|t| t["group"] == "feishu").count(), crate::feishu_tools::TOOLS.len());
-        assert!(!off.iter().any(|n| n.starts_with("feishu_")) && names(tool_defs(true, true)).contains(&"feishu_send_message".to_string()));
+        assert!(!names(tool_defs(true)).iter().any(|n| n.starts_with("feishu_")));
         // 旧版本存的配置没有这个字段：SSH 工具照旧可用
         let old: McpConfig = serde_json::from_str(r#"{"enabled":true,"token":"x"}"#).unwrap();
         assert!(!old.ssh_disabled);
+    }
+
+    #[test]
+    fn instructions_fit() {
+        use crate::agents::Skill;
+        let on = |skill| Pages { skill, remote: None };
+        let hosts: Vec<String> = (0..30).map(|i| format!("prod-web-{i}")).collect();
+        for p in [on(Some(Skill::Auto)), on(Some(Skill::Ask)), on(None), Pages { skill: None, remote: Some("MEMBERSHIP_EXPIRED".into()) }] {
+            let full = instructions_text(&p, Some(&hosts));
+            // Claude Code 只取前 2048 个字符
+            assert!(full.chars().count() < 2048, "{}", full.chars().count());
+            assert!(!full.to_lowercase().contains("feishu"));
+        }
+        let full = instructions_text(&on(Some(Skill::Auto)), Some(&hosts));
+        assert!(full.contains("prod-web-11, …") && !full.contains("prod-web-12"));
+        assert!(full.contains("without asking"));
+        assert!(instructions_text(&on(None), None).contains("Do not bring it up yourself"));
+        assert!(instructions_text(&Pages { skill: Some(Skill::Auto), remote: Some("NOT_LOGGED_IN".into()) }, None).contains("Remote access is off"));
+        assert!(!instructions_text(&on(Some(Skill::Ask)), None).contains("ssh_run"));
+        assert!(instructions_text(&on(None), Some(&[])).contains("No host is allowed"));
     }
 
     #[test]

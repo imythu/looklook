@@ -193,6 +193,26 @@ fn installed_skill(agent: Agent) -> Option<Skill> {
     Skill::ALL.into_iter().find(|s| root.join(s.name()).join("SKILL.md").is_file())
 }
 
+/// MCP 连上来的是哪个助手：看 `initialize` 里的 `clientInfo.name`
+/// （Claude Code 是 `claude-code`，Codex 是 `codex-mcp-client`）。认不出来是 `None`。
+pub fn from_client_name(name: &str) -> Option<Agent> {
+    let n = name.to_ascii_lowercase();
+    [("claude", Agent::Claude), ("codex", Agent::Codex), ("opencode", Agent::OpenCode), ("dsh", Agent::Dsh), ("deepseek", Agent::Dsh)]
+        .into_iter()
+        .find(|(k, _)| n.contains(k))
+        .map(|(_, a)| a)
+}
+
+/// 管理台里给这个助手选的“本机网页”用法（装的是哪个技能；没装是 `None`）。
+/// 认不出助手时看所有助手，装了不同的取更保守的那个。
+pub fn pages_skill(agent: Option<Agent>) -> Option<Skill> {
+    let all: Vec<Skill> = match agent {
+        Some(a) => installed_skill(a).into_iter().collect(),
+        None => Agent::ALL.into_iter().filter_map(installed_skill).collect(),
+    };
+    if all.contains(&Skill::Ask) { Some(Skill::Ask) } else { all.first().copied() }
+}
+
 /// 装上选中的技能、删掉另一种；`None` 两种都删。只动我们自己的两个目录。
 fn set_skill(agent: Agent, skill: Option<Skill>) -> std::io::Result<()> {
     let root = agent.skills_dir();
@@ -744,6 +764,14 @@ mod tests {
         assert_eq!(judge(Some("u"), Some("Bearer t"), "u", "t"), "ok");
         assert_eq!(judge(Some("u"), Some("Bearer old"), "u", "t"), "stale");
         assert_eq!(judge(Some("http://127.0.0.1:1244/mcp"), Some("Bearer t"), "u", "t"), "stale");
+    }
+
+    #[test]
+    fn client_names() {
+        assert_eq!(from_client_name("claude-code"), Some(Agent::Claude));
+        assert_eq!(from_client_name("codex-mcp-client"), Some(Agent::Codex));
+        assert_eq!(from_client_name("opencode"), Some(Agent::OpenCode));
+        assert_eq!(from_client_name("mcp-inspector"), None);
     }
 
     #[test]
