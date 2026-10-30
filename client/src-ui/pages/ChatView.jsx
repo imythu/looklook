@@ -3716,7 +3716,8 @@ function useGenSrc(url) {
         made = URL.createObjectURL(b);
         if (alive) setSrc(made);
       })
-      .catch(() => {});
+      // 取不到（图片已经没了等）：给一个空地址，<img> 会触发 onError，按坏图显示，不要一直转圈
+      .catch(() => alive && setSrc('data:,'));
     return () => {
       alive = false;
       if (made) URL.revokeObjectURL(made);

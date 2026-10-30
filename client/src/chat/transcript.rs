@@ -358,7 +358,8 @@ impl Transcript {
     pub fn full_item(&self, key: &str) -> Option<Value> {
         let uuid = key.split(':').next()?;
         let text = std::fs::read_to_string(&self.path).ok()?;
-        text.lines().find(|l| l.contains(uuid)).and_then(|l| serde_json::from_str::<Value>(l).ok()).filter(|v| v["uuid"].as_str() == Some(uuid))
+        // 前面的 `file-history-snapshot` 也带着这条消息的 uuid（`messageId`），不能只看第一行
+        text.lines().filter(|l| l.contains(uuid)).filter_map(|l| serde_json::from_str::<Value>(l).ok()).find(|v| v["uuid"].as_str() == Some(uuid))
     }
 
     fn materialize(&self, parts: &[(usize, usize)]) -> Item {
@@ -838,6 +839,20 @@ mod tests {
         // 运行中发的（attachment.prompt）
         let q = serde_json::json!({ "attachment": { "prompt": [{ "type": "image", "source": { "type": "base64", "media_type": "image/webp", "data": "cQ==" } }] } });
         assert_eq!(img(user_image(&q, 0)).unwrap(), "image/webp:q");
+    }
+
+    #[test]
+    fn full_item_skips_snapshot_with_same_uuid() {
+        // Claude Code 先写 `file-history-snapshot`（messageId 就是用户消息的 uuid），再写用户消息
+        let path = std::env::temp_dir().join(format!("ll-full-item-{}.jsonl", std::process::id()));
+        let snap = line(json!({ "type": "file-history-snapshot", "messageId": "u1", "snapshot": { "messageId": "u1" } }));
+        let img = json!([{ "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "YWJj" } }]);
+        std::fs::write(&path, [snap, user("u1", None, img)].concat()).unwrap();
+        let t = Transcript::new(path.clone());
+        let rec = t.full_item("u1:0").unwrap();
+        assert_eq!(rec["type"], "user");
+        assert_eq!(user_image(&rec, 0).unwrap().0, "image/png");
+        let _ = std::fs::remove_file(&path);
     }
 
     use super::*;
