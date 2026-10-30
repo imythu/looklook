@@ -121,6 +121,7 @@ import { LaunchIcon } from '../shared/brands.jsx';
 import { ChatHowTo, NotifyAsk } from './ChatTips.jsx';
 import { endpoints as fileEndpoints, Preview as FilePreview } from './FileBrowser.jsx';
 import { imeComposing } from '../shared/ime.js';
+import { shownFocus } from '../shared/termFrame.js';
 
 // ---------------- 数据 ----------------
 
@@ -1345,7 +1346,7 @@ function useEnterKey(active, onEnter) {
     if (!active) return undefined;
     const on = (e) => {
       if (e.key !== 'Enter' || e.shiftKey || imeComposing(e)) return;
-      const el = document.activeElement;
+      const el = shownFocus();
       if (el && (el.closest('input, textarea, select, button, [contenteditable="true"]') || el.isContentEditable)) return;
       e.preventDefault();
       onEnter();
@@ -2444,8 +2445,8 @@ function writeDraft(id, text) {
 /** 把光标放进对话输入框；别处正在输入（另一个输入框、弹窗）时不抢。 */
 function claimFocus(el) {
   if (!el || el.disabled || !el.offsetParent) return;
-  const a = document.activeElement;
-  const elsewhere = a && a !== document.body && a !== el && !el.closest('.chat-composer')?.contains(a) && (a.matches?.('input, textarea, select, [contenteditable="true"]') || a.closest?.('[role="dialog"]'));
+  const a = shownFocus();
+  const elsewhere = a && a !== el && !el.closest('.chat-composer')?.contains(a) && (a.matches?.('input, textarea, select, [contenteditable="true"]') || a.closest?.('[role="dialog"]'));
   if (!elsewhere) el.focus({ preventScroll: true });
 }
 

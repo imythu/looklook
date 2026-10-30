@@ -62,13 +62,23 @@ export function termFocus(frame) {
  * 终端准备好时（term-inject.js 发 `looklook:ready`）聚焦它。iframe 的 load 事件比终端准备好早，那时聚焦可能落空；
  * 进入会话页、刷新终端后，当前显示的终端都能直接打字。`enabled`：工作台里只管当前显示的那个。
  */
+/**
+ * 当前有焦点、而且显示着的元素；没有就是 null。
+ * 切走的会话只是 hidden，Safari / macOS 的 WKWebView 不会把藏起来的输入框失焦，点按钮也不会把焦点移到按钮上，
+ * 所以 activeElement 还是上一个会话的输入框。拿它判断“别处正在输入”会一直不给新会话聚焦。
+ */
+export function shownFocus() {
+  const a = document.activeElement;
+  return a && a !== document.body && a.getClientRects().length > 0 ? a : null;
+}
+
 export function useFocusWhenReady(frame, enabled = true) {
   useEffect(() => {
     if (!enabled) return undefined;
     const on = (e) => {
       if (e.data?.type !== 'looklook:ready' || !frame.current || e.source !== frame.current.contentWindow) return;
       // 别的输入框（对话框、搜索框）正在用时不抢焦点
-      const el = document.activeElement;
+      const el = shownFocus();
       if (el && el !== frame.current && el.matches?.('input, textarea, select, [contenteditable="true"]')) return;
       termFocus(frame);
     };
