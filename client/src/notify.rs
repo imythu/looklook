@@ -360,8 +360,6 @@ pub struct Notifier {
     pub agent: crate::feishu_agent::Agent,
     /// 正在进行的扫码建应用（一台电脑同时只有一个）
     reg: Mutex<Option<Reg>>,
-    /// AI 助手的飞书工具（src/feishu_tools.rs）：用户令牌、等确认的消息
-    pub tools: crate::feishu_tools::Tools,
 }
 
 /// 扫码建应用（[`feishu::register`]）在这台电脑上的进度，给设置页看
@@ -879,9 +877,6 @@ impl Notifier {
         if f.open_id.as_deref() != Some(operator) {
             tracing::warn!(operator, "飞书：不是绑定的人点了卡片");
             return Some(toast("error", &tr(en, "不是绑定的飞书账号", "Not the bound Feishu account")));
-        }
-        if crate::feishu_tools::handles(&act.a) {
-            return Some(crate::feishu_tools::on_card(app, &act, operator).await);
         }
         if !load_rules(&app.store).actions {
             return Some(toast("info", &tr(en, "已设置为只通知，打开看看处理", "Notify-only mode. Open LookLook to respond.")));

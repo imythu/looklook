@@ -9,7 +9,6 @@ pub mod card;
 #[cfg(test)]
 pub(crate) mod fake;
 pub mod register;
-pub mod user;
 pub mod ws;
 
 use std::sync::Mutex;

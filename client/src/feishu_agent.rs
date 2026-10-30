@@ -1,5 +1,5 @@
 //! 在飞书里和 AI 对话（docs/FEISHU_AGENT.md）：私聊里直接发 = 跟“当前会话”说（第一次开一个），`/new` 开新的；
-//! 回复某张卡片 = 跟那张卡片的会话说；项目群里一个话题一个会话。
+//! 回复某张卡片 = 跟那张卡片的会话说；项目群里一个话题一个会话；转过来的别人的问题按来源定项目、开新会话（§11，`feishu_route.rs`）。
 //!
 //! - **不另写 agent**：开会话照会话页“新建”（`gateway::create_session`），接着说就是 `Chat::input`，
 //!   Claude Code、Codex 各走各的老路；
@@ -26,6 +26,7 @@ use crate::chat::Event;
 use crate::error::LocalError;
 use crate::feishu::card::{self, Act};
 use crate::feishu::{self, Api, Resource};
+use crate::feishu_route::{self as fr, Origin, Pick};
 use crate::gateway::App;
 use crate::notify::{self, load_feishu, load_rules, tr, Feishu};
 
@@ -34,10 +35,19 @@ pub const START: &str = "ag_start";
 pub const STOP: &str = "ag_stop";
 pub const NEW: &str = "ag_new";
 pub const PICK: &str = "ag_pick";
+/// 转过来的问题：换项目、列出别的会话、接到那个会话、回复来源、当新问题（不接旧会话）
+pub const MOVE: &str = "ag_move";
+pub const INTO: &str = "ag_into";
+pub const INTO_GO: &str = "ag_into_go";
+pub const REPLY: &str = "ag_reply";
+pub const FRESH: &str = "ag_fresh";
 /// 电脑之间请求的签名前缀（和卡片操作的分开，不能互相冒用）
 pub const RPC_KIND: &str = "looklook-notify-agent-v1";
 const RPC_PATH: &str = "/api/notify/agent";
 const ROUTES_KEY: &str = "feishu_agent.routes";
+/// 飞书里开的会话的第一句话（换项目、接到别的会话、回复来源时用）
+const SEEDS_KEY: &str = "feishu_agent.seeds";
+const SEEDS_MAX: usize = 300;
 const ROUTES_MAX: usize = 2000;
 const ROUTE_TTL_MS: i64 = 14 * 24 * 3600 * 1000;
 /// 一句话最多多少字（要放进开会话卡片按钮的 value 里，卡片不能超过 30 KB）
@@ -79,7 +89,25 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// 卡片按钮是不是这里处理（停止在 `Notifier::act` 里，因为要跟着会话所在的电脑走）
 pub fn handles(a: &str) -> bool {
-    matches!(a, START | NEW | PICK)
+    matches!(a, START | NEW | PICK | MOVE | INTO | INTO_GO | REPLY | FRESH)
+}
+
+/// 飞书里开的一个会话最开始交给它的东西
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct Seed {
+    i: String,
+    text: String,
+    #[serde(default)]
+    files: Vec<Resource>,
+    /// 原话那条消息
+    #[serde(default)]
+    m: String,
+    #[serde(default)]
+    origin: Option<Origin>,
+    /// 开在哪个文件夹
+    #[serde(default)]
+    dir: String,
+    at: i64,
 }
 
 /// 一条消息 → 一个会话
@@ -99,6 +127,10 @@ struct In {
     thread: Vec<String>,
     /// 加上的“正在输入”表情
     typing: Option<String>,
+    /// 转过来的（合并转发、看起来像转发的）：来源
+    origin: Option<Origin>,
+    /// 群里 @ 的（不是项目群）
+    group: bool,
     at: Instant,
 }
 
@@ -128,6 +160,8 @@ pub struct Agent {
     starting: Mutex<HashSet<String>>,
     /// 机器人自己的 open_id（应用 id → open_id），群里认 @
     bot: Mutex<Option<(String, String)>>,
+    /// 会话的第一句话（读一次 store）
+    seeds: Mutex<Option<Vec<Seed>>>,
 }
 
 impl Agent {
@@ -156,6 +190,41 @@ impl Agent {
     fn route_of(&self, app: &App, ids: &[String]) -> Option<String> {
         let found = ids.iter().find_map(|id| self.with_routes(app, |r| r.iter().rev().find(|x| x.m == *id).map(|x| x.i.clone())).or_else(|| app.notify.inst_of_card(id)))?;
         app.store.instance(&found).ok().flatten().map(|_| found)
+    }
+
+    /// 不再把消息对应到这个会话（换了项目、接到了别的会话）
+    fn forget(&self, app: &App, inst: &str) {
+        let snapshot = self.with_routes(app, |r| {
+            r.retain(|x| x.i != inst);
+            r.clone()
+        });
+        if let Err(e) = app.store.set(ROUTES_KEY, &snapshot) {
+            tracing::warn!(error = %e, "飞书：消息和会话的对应没存上");
+        }
+    }
+
+    fn with_seeds<T>(&self, app: &App, f: impl FnOnce(&mut Vec<Seed>) -> T) -> T {
+        let mut g = lock(&self.seeds);
+        let seeds = g.get_or_insert_with(|| app.store.get::<Vec<Seed>>(SEEDS_KEY).ok().flatten().unwrap_or_default());
+        f(seeds)
+    }
+
+    fn add_seed(&self, app: &App, seed: Seed) {
+        let snapshot = self.with_seeds(app, |v| {
+            v.retain(|x| x.i != seed.i);
+            v.push(seed);
+            if v.len() > SEEDS_MAX {
+                v.drain(..v.len() - SEEDS_MAX);
+            }
+            v.clone()
+        });
+        if let Err(e) = app.store.set(SEEDS_KEY, &snapshot) {
+            tracing::warn!(error = %e, "飞书：会话的第一句话没存上");
+        }
+    }
+
+    fn seed(&self, app: &App, inst: &str) -> Option<Seed> {
+        self.with_seeds(app, |v| v.iter().find(|x| x.i == inst).cloned())
     }
 
     /// 在飞书里对话过的会话：通知卡片回复到它最近一条消息的话题里
@@ -322,6 +391,12 @@ fn is_stop(text: &str) -> bool {
     matches!(t.as_str(), "停止" | "停" | "停下" | "停一下" | "别做了" | "stop" | "/stop" | "abort")
 }
 
+/// “结束”：这个会话的事办完了，之后同一个来源再转来的开新会话
+fn is_end(text: &str) -> bool {
+    let t = text.trim().trim_end_matches(['。', '.', '!', '！']).trim().to_lowercase();
+    matches!(t.as_str(), "结束" | "/done" | "/end" | "done")
+}
+
 fn is_help(text: &str) -> bool {
     matches!(text.trim().to_lowercase().as_str(), "/help" | "help" | "帮助" | "/帮助")
 }
@@ -343,22 +418,57 @@ fn as_event_msg(m: &Value) -> Value {
     json!({ "message_id": m["message_id"], "message_type": m["msg_type"], "content": m["body"]["content"] })
 }
 
-/// 合并转发的聊天记录：子消息的文字（一条一行）和里面的图片、文件
-fn forwarded_parts(id: &str, items: &[Value], en: bool) -> (String, Vec<Resource>) {
+/// 合并转发的聊天记录：子消息的文字（一条一行，前面写是谁说的）、里面的图片和文件、来源。
+/// 名字要通讯录权限，不要：你自己写“我”，别人按出现的顺序写 A、B…（只有一个人时写“对方”）。
+/// `me`：绑定的人的 open_id；`chat`：转到的这个私聊（子消息带的群不是它时才当原来的群）
+fn forwarded_parts(id: &str, items: &[Value], me: &str, chat: &str, en: bool) -> (String, Vec<Resource>, Origin) {
+    let subs: Vec<&Value> = items.iter().filter(|m| m["upper_message_id"] == id).collect();
+    let who = |m: &Value| m["sender"]["id"].as_str().filter(|_| m["sender"]["sender_type"] == "user").unwrap_or_default().to_string();
+    // 别人：按第一次出现的顺序，数一下各说了几条
+    let mut others: Vec<(String, usize)> = Vec::new();
+    for m in &subs {
+        let w = who(m);
+        if w.is_empty() || w == me {
+            continue;
+        }
+        match others.iter_mut().find(|(x, _)| *x == w) {
+            Some(o) => o.1 += 1,
+            None => others.push((w, 1)),
+        }
+    }
+    let label = |w: &str| -> String {
+        if !me.is_empty() && w == me {
+            return tr(en, "我", "Me");
+        }
+        match others.iter().position(|(x, _)| x == w) {
+            Some(_) if others.len() == 1 => tr(en, "对方", "Them"),
+            Some(i) => char::from(b'A' + (i % 26) as u8).to_string(),
+            None => String::new(),
+        }
+    };
     let mut lines = Vec::new();
     let mut files = Vec::new();
-    for m in items.iter().filter(|m| m["upper_message_id"] == id) {
+    let mut hint = String::new();
+    for m in &subs {
         let e = as_event_msg(m);
         let t = message_text(&e);
         if !t.is_empty() {
-            lines.push(t.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n"));
+            let w = label(&who(m));
+            if hint.is_empty() && who(m) != me {
+                hint = t.chars().take(60).collect();
+            }
+            let body = t.lines().map(|l| format!("> {l}")).collect::<Vec<_>>().join("\n");
+            lines.push(if w.is_empty() { body } else { format!("> **{w}**：\n{body}") });
         }
         files.extend(attachments(&e));
     }
+    let user = others.iter().max_by_key(|(_, n)| *n).map(|(w, _)| w.clone()).unwrap_or_default();
+    let from = subs.iter().filter_map(|m| m["chat_id"].as_str()).find(|c| c.starts_with("oc_") && *c != chat).unwrap_or_default();
+    let origin = Origin { user, chat: from.to_string(), hint };
     if lines.is_empty() {
-        return (String::new(), files);
+        return (String::new(), files, origin);
     }
-    (format!("{}\n{}", tr(en, "转发的聊天记录：", "Forwarded chat history:"), lines.join("\n>\n")), files)
+    (format!("{}\n{}", tr(en, "转发的聊天记录：", "Forwarded chat history:"), lines.join("\n>\n")), files, origin)
 }
 
 /// 回复的那条消息的文字（当引用带给 AI），最多 1000 字
@@ -444,7 +554,6 @@ pub(crate) async fn grant(app: &App, api: &Api, why: &str, extra: &[&str]) -> Op
         "read" => tr(en, "读合并转发、引用的消息，要开通“读取消息”。", "Reading forwarded and quoted messages needs the read-messages scope."),
         "cardkit" => tr(en, "边写边出的回复卡片要开通“创建与更新卡片”。会话已经在电脑上跑了。", "Streaming reply cards need the card-update scope. The session is already running on your computer."),
         "group" => tr(en, "建项目群要开通“创建群”。", "Creating project groups needs the create-group scope."),
-        "user" => tr(en, "AI 助手用你的身份读消息、发消息、读云文档，要给应用开通这些用户权限。开通后 AI 助手下次用到时会请你授权。", "For AI assistants to read and send messages and read docs as you, the app needs these user scopes. After that you'll be asked to authorize."),
         _ => tr(en, "看看用到的功能缺少权限。", "A feature LookLook uses is missing a scope."),
     };
     let msg = match api.send_card(&to, &card::grant(en, &text, &reg.url)).await {
@@ -502,12 +611,17 @@ pub async fn on_message(app: &App, f: &Feishu, ev: &Value) {
         return reply(&api, id, &off_hint(en)).await;
     }
     let mut files = attachments(msg);
+    let operator = f.open_id.clone().unwrap_or_default();
+    let mut origin = None;
     if msg["message_type"] == "merge_forward" {
         match api.get_message(id).await {
             Ok(items) => {
-                let (t, fs) = forwarded_parts(id, &items, en);
+                // 子消息里有没有原来的群、发送人是哪种 id：真飞书上还没核对过，先记下来
+                tracing::info!(items = %items.iter().skip(1).take(3).map(|m| json!({ "chat_id": m["chat_id"], "sender": m["sender"], "msg_type": m["msg_type"] }).to_string()).collect::<Vec<_>>().join(" "), "飞书：合并转发的子消息");
+                let (t, fs, o) = forwarded_parts(id, &items, &operator, &chat, en);
                 text = [text, t].into_iter().filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
                 files.extend(fs);
+                origin = Some(o);
             }
             Err(e) => {
                 scope_hint(app, &api, &e, "read").await;
@@ -522,11 +636,18 @@ pub async fn on_message(app: &App, f: &Feishu, ev: &Value) {
     if text.chars().count() > TEXT_MAX {
         return reply(&api, id, &tr(en, &format!("太长了，一次最多 {TEXT_MAX} 字。"), &format!("Too long: at most {TEXT_MAX} characters."))).await;
     }
-    let operator = f.open_id.clone().unwrap_or_default();
     let thread = thread_of(msg);
+    // 私聊里不在话题中的单条：飞书不带原作者，按样子猜是不是转发的
+    if origin.is_none() && msg["chat_type"] == "p2p" && thread.is_empty() && fr::looks_forwarded(&text) {
+        tracing::debug!(keys = ?msg.as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()), "飞书：看起来像转发的");
+        origin = Some(Origin { hint: text.chars().take(60).collect(), ..Default::default() });
+    }
     // 马上处理的命令
     if is_stop(&text) {
         return stop_cmd(app, &api, id, &chat, &thread, in_project, &operator, en).await;
+    }
+    if is_end(&text) {
+        return end_cmd(app, &api, id, &chat, en).await;
     }
     if is_help(&text) {
         if let Err(e) = api.reply(id, "interactive", &card::help(en), false).await {
@@ -546,7 +667,8 @@ pub async fn on_message(app: &App, f: &Feishu, ev: &Value) {
             None
         }
     };
-    let input = In { id: id.into(), text, files, thread, typing, at: Instant::now() };
+    let group = msg["chat_type"] == "group" && !in_project;
+    let input = In { id: id.into(), text, files, thread, typing, origin, group, at: Instant::now() };
     enqueue(app, &chat, input);
 }
 
@@ -593,7 +715,9 @@ fn enqueue(app: &App, chat: &str, input: In) {
         let text = ins.iter().map(|x| x.text.as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n");
         let files: Vec<Resource> = ins.iter().flat_map(|x| x.files.clone()).take(FILES_MAX).collect();
         let operator = f.open_id.clone().unwrap_or_default();
-        match route(&app, &api, &chat, &last.id, &last.thread, text, files, typing.clone(), &operator, en).await {
+        let origin = ins.iter().find_map(|x| x.origin.clone());
+        let group = ins.iter().any(|x| x.group);
+        match route(&app, &api, &chat, &last.id, &last.thread, text, files, typing.clone(), &operator, origin, group, en).await {
             // 交给了会话：表情等这一轮结束时由会话所在的电脑去掉
             Ok(true) => {}
             Ok(false) => drop_typing(&api, &typing).await,
@@ -605,10 +729,11 @@ fn enqueue(app: &App, chat: &str, input: In) {
     });
 }
 
-/// 一批消息交给谁：话题 / 回复的卡片对应的会话 → 项目群的新话题开新会话 → 当前会话 → 在上次的地方开新会话 → 问。
+/// 一批消息交给谁：话题 / 回复的卡片对应的会话 → 项目群的新话题开新会话 → 转过来的、写明了 `#项目` 的按 §11 定 →
+/// 当前会话 → 在上次的地方开新会话 → 问。`origin`：转过来的来源；`group`：群里 @ 的（没有当前会话时按群定项目）。
 /// 返回是否交给了会话（`Ok(false)`：回了选择卡片或提示）
 #[allow(clippy::too_many_arguments)]
-async fn route(app: &App, api: &Api, chat: &str, id: &str, thread: &[String], text: String, files: Vec<Resource>, typing: Vec<(String, String)>, operator: &str, en: bool) -> Result<bool, LocalError> {
+async fn route(app: &App, api: &Api, chat: &str, id: &str, thread: &[String], text: String, files: Vec<Resource>, typing: Vec<(String, String)>, operator: &str, origin: Option<Origin>, group: bool, en: bool) -> Result<bool, LocalError> {
     let proj = project(app, chat);
     let cmd = new_command(&text);
     let found = if thread.is_empty() { None } else { find(app, thread, operator).await };
@@ -628,10 +753,18 @@ async fn route(app: &App, api: &Api, chat: &str, id: &str, thread: &[String], te
     // 项目群里的新话题：在群对应的地方开新会话，回复开在话题里
     if let (Some(p), None) = (&proj, &found) {
         let Some((dev, dir)) = p.place.split_once('|') else { return Err(LocalError::new("NOT_FOUND")) };
-        let rpc = Rpc::Start { agent: p.agent.clone(), dir: dir.into(), text, anchor: Anchor::Reply { m: id.into(), th: true }, files, typing };
+        let rpc = Rpc::Start { agent: p.agent.clone(), dir: dir.into(), text, anchor: Anchor::Reply { m: id.into(), th: true }, files, typing, origin: None };
         return call(app, dev, rpc, operator).await.map(|_| true);
     }
     let cur = if proj.is_some() { None } else { current(app, chat) };
+    if cmd.is_none() && found.is_none() {
+        let named = fr::marks(&text).project.is_some();
+        let origin = origin.or_else(|| (group && cur.is_none()).then(|| Origin { chat: chat.into(), ..Default::default() }));
+        if origin.is_some() || named {
+            let t = Turn { chat, id, text, files, typing, operator, en };
+            return route_forward(app, api, t, origin, cur).await;
+        }
+    }
     match (cmd, found) {
         // 只发了 /new：给一张选择卡片，默认选这个话题（或当前会话）所在的地方
         (Some(_), found) if text.is_empty() && files.is_empty() => {
@@ -640,7 +773,7 @@ async fn route(app: &App, api: &Api, chat: &str, id: &str, thread: &[String], te
                 (None, Some(c)) => call(app, &c.dev, Rpc::Where { inst: c.inst }, operator).await.ok().and_then(|v| Some((format!("{}|{}", c.dev, v["dir"].as_str()?), v["agent"].as_str()?.to_string()))),
                 _ => None,
             };
-            let c = picker(app, None, &[], None, prefer, en).await;
+            let c = picker(app, None, &[], None, prefer, None, en).await;
             api.reply(id, "interactive", &c, false).await.map_err(|e| notify::feishu_error(&e))?;
             Ok(false)
         }
@@ -648,7 +781,7 @@ async fn route(app: &App, api: &Api, chat: &str, id: &str, thread: &[String], te
         (Some(_), found) => {
             let at = found.map(|x| (x.dev, x.inst)).or_else(|| cur.map(|c| (c.dev, c.inst)));
             if let Some((dev, inst)) = at {
-                match call(app, &dev, Rpc::New { inst, text: text.clone(), chat: chat.into(), files: files.clone(), src: None, typing: typing.clone() }, operator).await {
+                match call(app, &dev, Rpc::New { inst, text: text.clone(), chat: chat.into(), files: files.clone(), src: None, typing: typing.clone(), origin: None }, operator).await {
                     Ok(v) => {
                         if let Some(i) = v["inst"].as_str() {
                             set_current(app, chat, Some((&dev, i)));
@@ -685,11 +818,167 @@ async fn route(app: &App, api: &Api, chat: &str, id: &str, thread: &[String], te
     }
 }
 
+/// 一批要交给 AI 的消息
+struct Turn<'a> {
+    chat: &'a str,
+    /// 最后一条（新会话的话题、回答卡片都回复它）
+    id: &'a str,
+    text: String,
+    files: Vec<Resource>,
+    typing: Vec<(String, String)>,
+    operator: &'a str,
+    en: bool,
+}
+
+/// 转过来的问题、写明了 `#项目` 的：按 [`fr::decide`] 定交给哪里（docs/FEISHU_AGENT.md §11）
+async fn route_forward(app: &App, api: &Api, mut t: Turn<'_>, origin: Option<Origin>, cur: Option<Current>) -> Result<bool, LocalError> {
+    let marks = fr::marks(&t.text);
+    let mut places: Option<Vec<(String, String)>> = None;
+    let mut explicit = None;
+    if let Some(name) = &marks.project {
+        let list = all_places(app, t.operator).await;
+        explicit = fr::find_place(name, &list).map(String::from);
+        places = Some(list);
+        match &explicit {
+            Some(_) => t.text = fr::strip_project(&t.text, name),
+            None => reply(api, t.id, &tr(t.en, &format!("没找到叫「{name}」的项目，选一个："), &format!("No project named “{name}”; pick one:"))).await,
+        }
+    }
+    // 不是转发的、写明的项目就是当前会话的：接着说
+    if let (None, Some(p), Some(c)) = (&origin, &explicit, &cur) {
+        if let Ok(v) = call(app, &c.dev, Rpc::Where { inst: c.inst.clone() }, t.operator).await {
+            if v["dir"].as_str().map(|d| format!("{}|{d}", c.dev)).as_deref() == Some(p.as_str()) {
+                call(app, &c.dev, Rpc::Say { inst: c.inst.clone(), text: t.text, msg: t.id.into(), files: t.files, typing: t.typing }, t.operator).await?;
+                return Ok(true);
+            }
+        }
+    }
+    let origin = origin.unwrap_or_default();
+    let now = crate::util::system_ms();
+    let mut habits: HashMap<String, fr::Habit> = synced(app, "agent_origins");
+    let mut pick = fr::decide(&origin, &habits, explicit.as_deref(), None, marks.agent.as_deref(), now);
+    if let Pick::Continue { dev, inst } = &pick {
+        let ago = habits.values().filter(|h| h.open.as_ref().is_some_and(|(_, i)| i == inst)).map(|h| now - h.at).min().unwrap_or(0);
+        match call(app, dev, Rpc::Say { inst: inst.clone(), text: t.text.clone(), msg: t.id.into(), files: t.files.clone(), typing: t.typing.clone() }, t.operator).await {
+            Ok(_) => {
+                set_current(app, t.chat, Some((dev, inst)));
+                fr::touch(&mut habits, &origin, dev, inst, now);
+                save_habits(app, &habits);
+                let fresh = Act { a: FRESH.into(), dev: dev.clone(), inst: inst.clone(), n: notify::nonce(), t: Some(t.text.clone()), f: t.files.clone(), m: Some(t.id.into()), o: Some(origin.clone()), ..Default::default() };
+                if let Err(e) = api.reply(t.id, "interactive", &card::continued(t.en, ago, &fresh), false).await {
+                    tracing::debug!(error = %e, "飞书：“接着之前的会话”没发出去");
+                }
+                return Ok(true);
+            }
+            Err(e) => {
+                tracing::info!(error = ?e, "飞书：同一来源的会话接不上了，改成开新的");
+                fr::close(&mut habits, inst);
+                save_habits(app, &habits);
+                pick = fr::decide(&origin, &habits, explicit.as_deref(), None, marks.agent.as_deref(), now);
+            }
+        }
+    }
+    match pick {
+        Pick::Start { place, agent } => match start_at(app, &t, &place, &agent, &origin, false).await {
+            Ok(()) => Ok(true),
+            Err(e) => {
+                tracing::info!(error = ?e, place, "飞书：在定好的地方开不了，改成问");
+                ask_where(app, api, &t, Some(place), &origin).await
+            }
+        },
+        Pick::Ask { .. } => {
+            let list = match places {
+                Some(l) => l,
+                None => all_places(app, t.operator).await,
+            };
+            let guessed = fr::guess(&t.text, &list).map(String::from);
+            // 认不出来源、也猜不出来：跟以前一样在上次的地方开（新会话，不进当前会话），卡片上可以换项目
+            if guessed.is_none() && origin.keys().is_empty() && explicit.is_none() && marks.project.is_none() {
+                if let Some((dev, dir, agent)) = last_place(app) {
+                    if start_at(app, &t, &format!("{dev}|{dir}"), marks.agent.as_deref().unwrap_or(&agent), &origin, false).await.is_ok() {
+                        return Ok(true);
+                    }
+                }
+            }
+            ask_where(app, api, &t, guessed, &origin).await
+        }
+        Pick::Continue { .. } => unreachable!("上面已经处理"),
+    }
+}
+
+/// 回一张选择卡片：交给哪个项目（`prefer` 预先选好）
+async fn ask_where(app: &App, api: &Api, t: &Turn<'_>, prefer: Option<String>, origin: &Origin) -> Result<bool, LocalError> {
+    let last = load_last(app);
+    let prefer = prefer.map(|p| (p, last.agent.clone()));
+    let c = picker(app, Some(&t.text), &t.files, Some(t.id), prefer, Some(origin), t.en).await;
+    api.reply(t.id, "interactive", &c, false).await.map_err(|e| notify::feishu_error(&e))?;
+    Ok(false)
+}
+
+/// 在 `place`（`电脑|文件夹`）开新会话，话题从原话那条消息开始；记下当前会话、上次的地方、来源的习惯
+async fn start_at(app: &App, t: &Turn<'_>, place: &str, agent: &str, origin: &Origin, bind: bool) -> Result<(), LocalError> {
+    let (dev, dir) = place.split_once('|').ok_or_else(LocalError::not_found)?;
+    let agent = if matches!(agent, "claude" | "codex") { agent.to_string() } else { last_place(app).map(|l| l.2).unwrap_or_else(|| "claude".into()) };
+    let rpc = Rpc::Start { agent: agent.clone(), dir: dir.into(), text: t.text.clone(), anchor: Anchor::Reply { m: t.id.into(), th: false }, files: t.files.clone(), typing: t.typing.clone(), origin: Some(origin.clone()) };
+    let v = call(app, dev, rpc, t.operator).await?;
+    let inst = v["inst"].as_str().unwrap_or_default();
+    set_current(app, t.chat, Some((dev, inst)));
+    save_last(app, dev, dir, &agent);
+    remember(app, origin, place, &agent, Some((dev, inst)), bind);
+    Ok(())
+}
+
+/// 记下来源进了哪个项目（同步项 `notify/agent_origins`）
+fn remember(app: &App, origin: &Origin, place: &str, agent: &str, open: Option<(&str, &str)>, bind: bool) {
+    if origin.keys().is_empty() {
+        return;
+    }
+    let mut habits: HashMap<String, fr::Habit> = synced(app, "agent_origins");
+    fr::record(&mut habits, origin, place, agent, open, bind, crate::util::system_ms());
+    save_habits(app, &habits);
+}
+
+fn save_habits(app: &App, habits: &HashMap<String, fr::Habit>) {
+    if let Err(e) = notify::save(app, "agent_origins", Some(serde_json::to_value(habits).unwrap_or_default())) {
+        tracing::warn!(error = ?e, "飞书：来源的习惯没存上");
+    }
+}
+
+/// “结束”：当前会话的事办完了。下一句话开新会话，同一个来源再转来的也开新的
+async fn end_cmd(app: &App, api: &Api, id: &str, chat: &str, en: bool) {
+    let text = match current(app, chat) {
+        Some(c) => {
+            let mut habits: HashMap<String, fr::Habit> = synced(app, "agent_origins");
+            if fr::close(&mut habits, &c.inst) {
+                save_habits(app, &habits);
+            }
+            set_current(app, chat, None);
+            tr(en, "好，这个会话结束了。下一句话开新会话。", "OK, this session is done. Your next message starts a new one.")
+        }
+        None => tr(en, "现在没有当前会话。", "There's no current session."),
+    };
+    reply(api, id, &text).await;
+}
+
+/// 每台在线电脑能开会话的地方：(「项目 · 电脑」, `电脑|文件夹`)
+async fn all_places(app: &App, operator: &str) -> Vec<(String, String)> {
+    let mut list: Vec<(String, String)> = Vec::new();
+    for (dev, name, v) in ask_all(app, || Rpc::Places, operator).await {
+        let inbox = v["inbox"].as_str().unwrap_or_default();
+        for d in v["dirs"].as_array().into_iter().flatten().filter_map(Value::as_str).take(PLACES_PER_DEVICE + 1) {
+            let folder = if d == inbox { tr(load_rules(&app.store).lang.starts_with("en"), "杂事（不在项目里）", "Misc (no project)") } else { folder_name(d) };
+            list.push((format!("{folder} · {name}"), format!("{dev}|{d}")));
+        }
+    }
+    list.truncate(PLACES_MAX);
+    list
+}
+
 /// 开新会话：在上次的地方直接开（会话卡片上写着在哪，想换地方发 /new）；没选过、那台电脑不在线时给一张选择卡片
 #[allow(clippy::too_many_arguments)]
 async fn start_new(app: &App, api: &Api, chat: &str, id: &str, text: String, files: Vec<Resource>, typing: Vec<(String, String)>, operator: &str, en: bool) -> Result<bool, LocalError> {
     if let Some((dev, dir, agent)) = last_place(app) {
-        let rpc = Rpc::Start { agent, dir, text: text.clone(), anchor: Anchor::Reply { m: id.into(), th: false }, files: files.clone(), typing };
+        let rpc = Rpc::Start { agent, dir, text: text.clone(), anchor: Anchor::Reply { m: id.into(), th: false }, files: files.clone(), typing, origin: None };
         match call(app, &dev, rpc, operator).await {
             Ok(v) => {
                 if let Some(i) = v["inst"].as_str() {
@@ -700,7 +989,7 @@ async fn start_new(app: &App, api: &Api, chat: &str, id: &str, text: String, fil
             Err(e) => tracing::info!(error = ?e, "飞书：在上次的地方开不了，改成问"),
         }
     }
-    let c = picker(app, Some(&text), &files, Some(id), None, en).await;
+    let c = picker(app, Some(&text), &files, Some(id), None, None, en).await;
     api.reply(id, "interactive", &c, false).await.map_err(|e| notify::feishu_error(&e))?;
     Ok(false)
 }
@@ -860,7 +1149,16 @@ fn places(app: &App) -> Vec<String> {
             break;
         }
     }
+    let inbox = inbox(app);
+    if !out.contains(&inbox) {
+        out.push(inbox);
+    }
     out
+}
+
+/// 杂事（跟项目无关的：起草回复、翻译、总结）开在数据目录下的 `inbox/`
+fn inbox(app: &App) -> String {
+    app.paths.home.join("inbox").display().to_string()
 }
 
 fn folder_name(dir: &str) -> String {
@@ -956,22 +1254,18 @@ fn save_last(app: &App, dev: &str, dir: &str, agent: &str) {
 }
 
 /// 开会话卡片：列出每台在线电脑的项目文件夹。`text` 为 None 时卡片上写第一句话；
-/// `msg`：原话那条消息（新会话就开在它的话题里），None 时开在一条新消息的话题里；`prefer`：默认选哪里
-async fn picker(app: &App, text: Option<&str>, files: &[Resource], msg: Option<&str>, prefer: Option<(String, String)>, en: bool) -> Value {
+/// `msg`：原话那条消息（新会话就开在它的话题里），None 时开在一条新消息的话题里；`prefer`：默认选哪里；
+/// `origin`：转过来的问题的来源（选了以后记下来，认得来源时可以选“以后都交给这个项目”）
+async fn picker(app: &App, text: Option<&str>, files: &[Resource], msg: Option<&str>, prefer: Option<(String, String)>, origin: Option<&Origin>, en: bool) -> Value {
     let operator = load_feishu(&app.store).and_then(|f| f.open_id).unwrap_or_default();
-    let mut list: Vec<(String, String)> = Vec::new();
-    for (dev, name, v) in ask_all(app, || Rpc::Places, &operator).await {
-        for d in v["dirs"].as_array().into_iter().flatten().filter_map(Value::as_str).take(PLACES_PER_DEVICE) {
-            list.push((format!("{} · {name}", folder_name(d)), format!("{dev}|{d}")));
-        }
-    }
-    list.truncate(PLACES_MAX);
+    let list = all_places(app, &operator).await;
     let last = load_last(app);
     let (want_place, want_agent) = prefer.unwrap_or((last.place, last.agent));
     let place = if list.iter().any(|(_, v)| *v == want_place) { want_place } else { list.first().map(|(_, v)| v.clone()).unwrap_or_default() };
     let agent = if matches!(want_agent.as_str(), "claude" | "codex") { want_agent } else { "claude".into() };
-    let act = Act { a: START.into(), n: notify::nonce(), t: text.map(String::from), m: msg.map(String::from), f: files.to_vec(), ..Default::default() };
-    card::start(en, text, &list, &place, &agent, &act)
+    let act = Act { a: START.into(), n: notify::nonce(), t: text.map(String::from), m: msg.map(String::from), f: files.to_vec(), o: origin.cloned(), ..Default::default() };
+    let who = origin.map(|o| if !o.chat.is_empty() { tr(en, "这个群", "this group") } else { tr(en, "这个人", "this person") }).filter(|_| origin.is_some_and(|o| !o.keys().is_empty()));
+    card::start(en, text, &list, &place, &agent, who.as_deref(), &act)
 }
 
 /// 卡片回调（3 秒内应答）：开会话、新会话、在飞书里接着。真正的事交给会话所在的电脑在后台做
@@ -984,6 +1278,11 @@ pub async fn on_card(app: &App, act: &Act, ev: &Value, operator: &str) -> Value 
     let form = &ev["action"]["form_value"];
     let chat = ev["context"]["open_chat_id"].as_str().unwrap_or_default().to_string();
     let typed = form["text"].as_str().map(str::trim).filter(|t| !t.is_empty()).map(String::from);
+    if matches!(act.a.as_str(), MOVE | INTO | INTO_GO | REPLY | FRESH) {
+        return on_forward_card(app, act, ev, operator, en);
+    }
+    // 选了项目以后记下来源的习惯：(来源, 地方, 助手, 以后都交给这里)
+    let mut rec: Option<(Origin, String, String, bool)> = None;
     let (rpc, dev, done) = match act.a.as_str() {
         START => {
             let place = form["place"].as_str().unwrap_or_default().to_string();
@@ -1003,13 +1302,16 @@ pub async fn on_card(app: &App, act: &Act, ev: &Value, operator: &str) -> Value 
                 Some(m) => Anchor::Reply { m: m.clone(), th: false },
                 None => Anchor::Chat { c: chat.clone() },
             };
+            if let Some(o) = &act.o {
+                rec = Some((o.clone(), place.clone(), agent.clone(), form["remember"] == "1"));
+            }
             let card = card::starting(en, &text, &folder_name(dir));
-            (Rpc::Start { agent, dir: dir.into(), text, anchor, files: act.f.clone(), typing: vec![] }, dev.to_string(), Some(card))
+            (Rpc::Start { agent, dir: dir.into(), text, anchor, files: act.f.clone(), typing: vec![], origin: act.o.clone() }, dev.to_string(), Some(card))
         }
         // 以前的结果卡片底下带输入框：照旧在同一个地方开新会话
         NEW if typed.is_some() => {
             let text = typed.unwrap_or_default();
-            (Rpc::New { inst: act.inst.clone(), text, chat: chat.clone(), files: vec![], src: None, typing: vec![] }, act.dev.clone(), None)
+            (Rpc::New { inst: act.inst.clone(), text, chat: chat.clone(), files: vec![], src: None, typing: vec![], origin: None }, act.dev.clone(), None)
         }
         // 「新会话」：下一句话开新会话，还在这个会话的地方
         NEW => {
@@ -1037,6 +1339,9 @@ pub async fn on_card(app: &App, act: &Act, ev: &Value, operator: &str) -> Value 
                 if let (Some(i), None) = (inst, project(&app2, &chat)) {
                     set_current(&app2, &chat, Some((&dev, i)));
                 }
+                if let (Some((o, place, agent, bind)), Some(i)) = (&rec, inst) {
+                    remember(&app2, o, place, agent, Some((&dev, i)), *bind);
+                }
             }
             Err(e) => {
                 tracing::warn!(error = ?e, dev = %dev, "飞书：卡片上的操作没办成");
@@ -1059,6 +1364,109 @@ pub async fn on_card(app: &App, act: &Act, ev: &Value, operator: &str) -> Value 
     }
 }
 
+/// 转过来的问题的卡片按钮：换项目、接到别的会话、回复来源、当新问题。都在后台做，先回一句提示
+fn on_forward_card(app: &App, act: &Act, ev: &Value, operator: &str, en: bool) -> Value {
+    let chat = ev["context"]["open_chat_id"].as_str().unwrap_or_default().to_string();
+    let card_msg = ev["context"]["open_message_id"].as_str().unwrap_or_default().to_string();
+    let (app, act, operator) = (app.clone(), act.clone(), operator.to_string());
+    let toast = match act.a.as_str() {
+        MOVE => tr(en, "停下了，选一个新的项目", "Stopped; pick a new project"),
+        INTO => tr(en, "选一个会话", "Pick a session"),
+        INTO_GO => tr(en, "正在接过去…", "Moving…"),
+        REPLY => tr(en, "正在写回复…", "Writing the reply…"),
+        _ => tr(en, "正在开新会话…", "Starting a new session…"),
+    };
+    tokio::spawn(async move {
+        let Some(f) = load_feishu(&app.store) else { return };
+        let api = app.notify.api(&f);
+        if let Err(e) = forward_card(&app, &api, &act, &chat, &card_msg, &operator, en).await {
+            tracing::warn!(error = ?e, a = %act.a, "飞书：转过来的问题的按钮没办成");
+            reply(&api, &card_msg, &failed(en, &e)).await;
+        }
+    });
+    notify::toast("success", &toast)
+}
+
+async fn forward_card(app: &App, api: &Api, act: &Act, chat: &str, card_msg: &str, operator: &str, en: bool) -> Result<(), LocalError> {
+    let seed_of = |dev: String, inst: String| async move {
+        let v = call(app, &dev, Rpc::Seed { inst: inst.clone() }, operator).await?;
+        let files: Vec<Resource> = serde_json::from_value(v["files"].clone()).unwrap_or_default();
+        let origin: Origin = serde_json::from_value(v["origin"].clone()).unwrap_or_default();
+        let place = format!("{dev}|{}", v["dir"].as_str().unwrap_or_default());
+        Ok::<_, LocalError>((v["text"].as_str().unwrap_or_default().to_string(), files, v["m"].as_str().unwrap_or_default().to_string(), origin, place))
+    };
+    match act.a.as_str() {
+        // 换项目：停下这个会话，原话再问一次交给哪里（来源的习惯去掉这一次）
+        MOVE => {
+            let (text, files, m, origin, place) = seed_of(act.dev.clone(), act.inst.clone()).await?;
+            call(app, &act.dev, Rpc::Drop { inst: act.inst.clone() }, operator).await?;
+            let mut habits: HashMap<String, fr::Habit> = synced(app, "agent_origins");
+            fr::unrecord(&mut habits, &origin, &place);
+            save_habits(app, &habits);
+            if current(app, chat).is_some_and(|c| c.inst == act.inst) {
+                set_current(app, chat, None);
+            }
+            let msg = Some(m).filter(|m| !m.is_empty());
+            let c = picker(app, Some(&text), &files, msg.as_deref(), None, Some(&origin), en).await;
+            api.reply(card_msg, "interactive", &c, false).await.map_err(|e| notify::feishu_error(&e))?;
+        }
+        // 列出别的会话
+        INTO => {
+            let mut rows: Vec<(i64, card::SessionRow)> = Vec::new();
+            for (dev, name, v) in ask_all(app, || Rpc::List, operator).await {
+                for it in v["items"].as_array().into_iter().flatten() {
+                    let Some(inst) = it["inst"].as_str().filter(|i| !(dev == act.dev && *i == act.inst)) else { continue };
+                    let go = Act { a: INTO_GO.into(), dev: dev.clone(), inst: inst.into(), n: notify::nonce(), s: Some(format!("{}|{}", act.dev, act.inst)), ..Default::default() };
+                    let s = |k: &str| it[k].as_str().unwrap_or_default().to_string();
+                    let agent = if it["agent"] == "codex" { "Codex" } else { "Claude" };
+                    rows.push((it["active_at"].as_i64().unwrap_or(0), card::SessionRow { agent: agent.into(), title: s("title"), project: s("project"), device: name.clone(), board: s("board"), pick: go }));
+                }
+            }
+            rows.sort_by_key(|(at, _)| -at);
+            let rows: Vec<card::SessionRow> = rows.into_iter().map(|(_, r)| r).take(SESSIONS_MAX).collect();
+            api.reply(card_msg, "interactive", &card::move_into(en, &rows), false).await.map_err(|e| notify::feishu_error(&e))?;
+        }
+        // 接到选的会话：原话发给它，原来那个会话停下
+        INTO_GO => {
+            let (sdev, sinst) = act.s.as_deref().and_then(|s| s.split_once('|')).ok_or_else(LocalError::not_found)?;
+            let (text, files, m, origin, place) = seed_of(sdev.into(), sinst.into()).await?;
+            call(app, sdev, Rpc::Drop { inst: sinst.into() }, operator).await?;
+            let msg = if m.is_empty() { card_msg.to_string() } else { m };
+            call(app, &act.dev, Rpc::Say { inst: act.inst.clone(), text, msg, files, typing: vec![] }, operator).await?;
+            set_current(app, chat, Some((&act.dev, &act.inst)));
+            let mut habits: HashMap<String, fr::Habit> = synced(app, "agent_origins");
+            fr::unrecord(&mut habits, &origin, &place);
+            if let Ok(v) = call(app, &act.dev, Rpc::Where { inst: act.inst.clone() }, operator).await {
+                let to = format!("{}|{}", act.dev, v["dir"].as_str().unwrap_or_default());
+                fr::record(&mut habits, &origin, &to, v["agent"].as_str().unwrap_or_default(), Some((&act.dev, &act.inst)), false, crate::util::system_ms());
+            }
+            save_habits(app, &habits);
+        }
+        // 回复来源：这件事办完了，同一个来源再转来的开新会话
+        REPLY => {
+            call(app, &act.dev, Rpc::Reply { inst: act.inst.clone(), msg: card_msg.into() }, operator).await?;
+            let mut habits: HashMap<String, fr::Habit> = synced(app, "agent_origins");
+            if fr::close(&mut habits, &act.inst) {
+                save_habits(app, &habits);
+            }
+        }
+        // 当新问题：在同一个地方开新会话，不接旧的
+        _ => {
+            let origin = act.o.clone().unwrap_or_default();
+            let rpc = Rpc::New { inst: act.inst.clone(), text: act.t.clone().unwrap_or_default(), chat: chat.into(), files: act.f.clone(), src: act.m.clone(), typing: vec![], origin: Some(origin.clone()) };
+            let v = call(app, &act.dev, rpc, operator).await?;
+            if let Some(i) = v["inst"].as_str() {
+                set_current(app, chat, Some((&act.dev, i)));
+                if let Ok(w) = call(app, &act.dev, Rpc::Where { inst: i.into() }, operator).await {
+                    let place = format!("{}|{}", act.dev, w["dir"].as_str().unwrap_or_default());
+                    remember(app, &origin, &place, w["agent"].as_str().unwrap_or_default(), Some((&act.dev, i)), false);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 机器人菜单（事件 `application.bot.menu_v6`）：`new` 新会话、`sessions` 正在跑的会话、`tasks` 任务页
 pub async fn on_menu(app: &App, ev: &Value) {
     let Some(f) = load_feishu(&app.store) else { return };
@@ -1078,7 +1486,7 @@ pub async fn on_menu(app: &App, ev: &Value) {
             }
             return;
         }
-        "new" => picker(app, None, &[], None, None, en).await,
+        "new" => picker(app, None, &[], None, None, None, en).await,
         "sessions" => sessions_card(app, operator, en).await,
         _ => {
             tracing::debug!(key, "飞书：不认识的菜单");
@@ -1142,6 +1550,9 @@ enum Rpc {
         /// 收到消息时加的“正在输入”表情：(消息, 表情 id)，这一轮结束时去掉
         #[serde(default)]
         typing: Vec<(String, String)>,
+        /// 转过来的问题的来源（记在会话的第一句话旁边，回复来源时用）
+        #[serde(default)]
+        origin: Option<Origin>,
     },
     /// 在这个会话的项目里开一个新会话（同一个助手）
     New {
@@ -1155,6 +1566,8 @@ enum Rpc {
         src: Option<String>,
         #[serde(default)]
         typing: Vec<(String, String)>,
+        #[serde(default)]
+        origin: Option<Origin>,
     },
     /// 接着说
     Say {
@@ -1174,8 +1587,12 @@ enum Rpc {
     Stop { inst: String },
     /// 在这个会话（私聊或群）里发一条对应这个会话的消息，之后在它的话题里接着说
     Pick { inst: String, chat: String },
-    /// AI 想以你的身份发的消息（`feishu_tools`）：发还是不发
-    Send { n: String, ok: bool },
+    /// 这个会话最开始交给它的东西（换项目、接到别的会话）
+    Seed { inst: String },
+    /// 停下这个会话、不再把消息对应到它（换了项目、接到了别的会话）
+    Drop { inst: String },
+    /// 让这个会话写一段给来源的回复；装了飞书 CLI 就让 AI 以你的身份发（发之前 AI 助手会请你批准）。回答卡片回复 `msg`
+    Reply { inst: String, msg: String },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1191,11 +1608,6 @@ async fn call(app: &App, dev: &str, rpc: Rpc, operator: &str) -> Result<Value, L
     }
     let payload = serde_json::to_string(&Payload { rpc, operator: operator.into() }).map_err(anyhow::Error::from)?;
     Ok(notify::signed_post(app, dev, RPC_PATH, RPC_KIND, payload).await?.unwrap_or(Value::Null))
-}
-
-/// 发消息确认卡片的回调落在了别的电脑上：转给等着的那台
-pub(crate) async fn forward_send(app: &App, dev: &str, n: &str, ok: bool, operator: &str) -> Result<Value, LocalError> {
-    call(app, dev, Rpc::Send { n: n.into(), ok }, operator).await
 }
 
 /// 另一台电脑转来的请求（`POST /api/notify/agent`，只接受 `Access::Rtc`）：校验签名和操作人
@@ -1217,15 +1629,13 @@ fn handle_route(app: &App, ids: &[String]) -> Result<Value, LocalError> {
 
 async fn handle(app: &App, rpc: Rpc) -> Result<Value, LocalError> {
     let rules = load_rules(&app.store);
-    // AI 工具发消息的确认跟“在飞书里和 AI 对话”开没开无关
-    if !matches!(rpc, Rpc::Send { .. }) && (!rules.agent || !rules.actions) {
+    if !rules.agent || !rules.actions {
         return Err(LocalError::new("FORBIDDEN"));
     }
     match rpc {
-        Rpc::Send { n, ok } => Ok(json!({ "found": crate::feishu_tools::decide(app, &n, ok) })),
         Rpc::Route { ids } => handle_route(app, &ids),
-        Rpc::Places => Ok(json!({ "dirs": places(app) })),
-        Rpc::Start { agent, dir, text, anchor, files, typing } => {
+        Rpc::Places => Ok(json!({ "dirs": places(app), "inbox": inbox(app) })),
+        Rpc::Start { agent, dir, text, anchor, files, typing, origin } => {
             if !matches!(agent.as_str(), "claude" | "codex") {
                 return Err(LocalError::invalid("agent", "invalid"));
             }
@@ -1234,19 +1644,22 @@ async fn handle(app: &App, rpc: Rpc) -> Result<Value, LocalError> {
                 tracing::warn!(dir, "飞书：要在不认识的文件夹里开会话");
                 return Err(LocalError::new("FORBIDDEN"));
             }
+            if dir == inbox(app) {
+                std::fs::create_dir_all(&dir).map_err(anyhow::Error::from)?;
+            }
             let src = match &anchor {
                 Anchor::Reply { m, .. } => Some(m.clone()),
                 Anchor::Chat { .. } => None,
             };
-            let inst = start_session(app, agent, dir, text, anchor, files, src, typing).await?;
+            let inst = start_session(app, agent, dir, text, anchor, files, src, typing, origin).await?;
             Ok(json!({ "inst": inst }))
         }
-        Rpc::New { inst, text, chat, files, src, typing } => {
+        Rpc::New { inst, text, chat, files, src, typing, origin } => {
             let row = app.store.instance(&inst)?.ok_or_else(LocalError::not_found)?;
             if !matches!(row.launch.as_str(), "claude" | "codex") {
                 return Err(LocalError::invalid("inst", "invalid"));
             }
-            let inst = start_session(app, row.launch, row.workdir, text, Anchor::Chat { c: chat }, files, src, typing).await?;
+            let inst = start_session(app, row.launch, row.workdir, text, Anchor::Chat { c: chat }, files, src, typing, origin).await?;
             Ok(json!({ "inst": inst }))
         }
         Rpc::Say { inst, text, msg, files, typing } => {
@@ -1302,7 +1715,53 @@ async fn handle(app: &App, rpc: Rpc) -> Result<Value, LocalError> {
             tracing::info!(inst = %inst, "飞书：在飞书里接着一个会话");
             Ok(json!({}))
         }
+        Rpc::Seed { inst } => {
+            let seed = app.notify.agent.seed(app, &inst).ok_or_else(LocalError::not_found)?;
+            Ok(json!({ "text": seed.text, "files": seed.files, "m": seed.m, "origin": seed.origin, "dir": seed.dir }))
+        }
+        Rpc::Drop { inst } => {
+            let me = &app.notify.agent;
+            if app.chat.brief(&inst).is_some_and(|b| matches!(b["board"].as_str(), Some("working" | "attn"))) {
+                app.chat.interrupt(&inst).await?;
+            }
+            me.forget(app, &inst);
+            tracing::info!(inst = %inst, "飞书：转过来的问题从这个会话挪走了");
+            Ok(json!({}))
+        }
+        Rpc::Reply { inst, msg } => {
+            let seed = app.notify.agent.seed(app, &inst).ok_or_else(LocalError::not_found)?;
+            let lark = crate::tools::detect(app.instances.shell()).await.lark.is_some();
+            let en = rules.lang.starts_with("en");
+            let text = reply_prompt(&seed.origin.unwrap_or_default(), lark, en);
+            Box::pin(handle(app, Rpc::Say { inst, text, msg, files: vec![], typing: vec![] })).await
+        }
     }
+}
+
+/// [回复] 交给会话的话：写一段给来源的回复；装了飞书 CLI 就以你的身份发过去（AI 助手跑命令前会请你批准）
+fn reply_prompt(o: &Origin, lark: bool, en: bool) -> String {
+    let mut s = tr(
+        en,
+        "把上面的结果写成一段回复，给反馈这个问题的人：口语、简短，说清楚现在怎么样了、对方要做什么，不要用 markdown。",
+        "Write the result above as a reply to the person who reported this: plain, short, say where things stand and what they need to do, no markdown.",
+    );
+    if !lark {
+        s.push_str(&tr(en, "\n只写草稿，我自己复制去发。", "\nJust write the draft; I'll copy and send it myself."));
+        return s;
+    }
+    let to = if !o.chat.is_empty() {
+        tr(en, &format!("发到原来的群（chat_id {}）", o.chat), &format!("send it to the original group (chat_id {})", o.chat))
+    } else if !o.hint.is_empty() {
+        tr(en, &format!("对方的原话开头是「{}」：先在我最近的私聊和群里找到这条消息和发它的人，回复给他", o.hint), &format!("their message starts with “{}”: first find that message and its sender in my recent chats, then reply to them", o.hint))
+    } else {
+        tr(en, "先问我发给谁", "ask me who to send it to first")
+    };
+    s.push_str(&tr(
+        en,
+        &format!("\n写好后用飞书 CLI（lark-cli，加 --as user）以我的身份发出去：{to}。发之前把草稿给我看，我同意了再发。"),
+        &format!("\nThen send it as me with the Feishu CLI (lark-cli with --as user): {to}. Show me the draft first and only send after I agree."),
+    ));
+    s
 }
 
 /// 在一个会话（私聊或群）里发一条话题的开头，返回消息 id
@@ -1315,7 +1774,7 @@ async fn send_root(app: &App, inst: &str, chat: &str, text: &str) -> Result<Stri
 
 /// 开一个会话，并开始推它的回复。带着图片和文件时先不给第一句话，等会话起来了连同附件一起送进去
 #[allow(clippy::too_many_arguments)]
-async fn start_session(app: &App, agent: String, dir: String, text: String, anchor: Anchor, files: Vec<Resource>, src: Option<String>, typing: Vec<(String, String)>) -> Result<String, LocalError> {
+async fn start_session(app: &App, agent: String, dir: String, text: String, anchor: Anchor, files: Vec<Resource>, src: Option<String>, typing: Vec<(String, String)>, origin: Option<Origin>) -> Result<String, LocalError> {
     let me = &app.notify.agent;
     // 同一条消息只开一次
     let key = match &anchor {
@@ -1346,6 +1805,7 @@ async fn start_session(app: &App, agent: String, dir: String, text: String, anch
         Anchor::Chat { c } => (send_root(app, &inst, &c, &text).await?, false),
     };
     me.add_route(app, &root, &inst);
+    me.add_seed(app, Seed { i: inst.clone(), text: text.clone(), files: files.clone(), m: src.clone().unwrap_or_else(|| root.clone()), origin, dir: app.store.instance(&inst).ok().flatten().map(|r| r.workdir).unwrap_or_default(), at: since });
     me.hold_typing(&inst, typing);
     tokio::spawn(stream(app.clone(), inst.clone(), root.clone(), 0, since, thread));
     if prompt.is_none() {
@@ -1573,11 +2033,28 @@ async fn stream_turn(app: &App, inst: &str, reply_to: &str, base: usize, since: 
     };
     resnap(app, inst, base, &mut items).await;
     let body = body_of(&items, en);
-    let new = Act { a: NEW.into(), dev: own, inst: inst.into(), n: notify::nonce(), ..Default::default() };
-    let done = card::stream_done(&info.info(), outcome, if body == "…" { "" } else { &body }, &steps_of(&items), &thinking_of(&items), took, &new);
+    let new = Act { a: NEW.into(), dev: own.clone(), inst: inst.into(), n: notify::nonce(), ..Default::default() };
+    let more = forward_buttons(app, inst, &own, base == 0, en);
+    let done = card::stream_done(&info.info(), outcome, if body == "…" { "" } else { &body }, &steps_of(&items), &thinking_of(&items), took, &new, &more);
     let r = s.finish(&done).await;
     send_outputs(app, &api, &msg, inst, &items, since).await;
     r
+}
+
+/// 回答卡片上多的按钮：第一轮可以换项目、接到别的会话；转过来的问题可以回复来源
+fn forward_buttons(app: &App, inst: &str, own: &str, first: bool, en: bool) -> Vec<(String, Act)> {
+    let Some(seed) = app.notify.agent.seed(app, inst) else { return vec![] };
+    let act = |a: &str| Act { a: a.into(), dev: own.into(), inst: inst.into(), n: notify::nonce(), ..Default::default() };
+    let mut out = Vec::new();
+    // 群里 @ 的（来源只有这个群）：回答本来就在群里，不用另外回复
+    if seed.origin.as_ref().is_some_and(|o| !o.user.is_empty() || !o.hint.is_empty()) {
+        out.push((tr(en, "回复对方", "Reply to them"), act(REPLY)));
+    }
+    if first {
+        out.push((tr(en, "换项目", "Other project"), act(MOVE)));
+        out.push((tr(en, "接到别的会话", "Move to a session"), act(INTO)));
+    }
+    out
 }
 
 /// 这一轮回复里提到的、这一轮新写出来的文件（图片、PDF、文档、压缩包等，不含代码和文本）发进话题
@@ -1859,6 +2336,7 @@ mod tests {
             assert!(!is_stop(t), "{t}");
         }
         assert!(is_help("/help") && is_help("帮助") && !is_help("帮助我改一下"));
+        assert!(is_end("结束") && is_end("/done") && !is_end("结束了吗"));
         assert_eq!(group_command("/group"), Some(String::new()));
         assert_eq!(group_command("建群：支付后台"), Some("支付后台".into()));
         assert_eq!(group_command("/groups"), None);
@@ -1872,10 +2350,22 @@ mod tests {
             json!({ "message_id": "om_s2", "upper_message_id": "om_f", "msg_type": "image", "body": { "content": "{\"image_key\":\"img_9\"}" } }),
             json!({ "message_id": "om_s3", "upper_message_id": "om_other", "msg_type": "text", "body": { "content": "{\"text\":\"更深一层\"}" } }),
         ];
-        let (text, files) = forwarded_parts("om_f", &items, false);
+        let (text, files, origin) = forwarded_parts("om_f", &items, "ou_me", "oc_dm", false);
         assert_eq!(text, "转发的聊天记录：\n> 登录页 500 了\n> 看下日志");
         assert_eq!(files, vec![Resource { kind: "image".into(), key: "img_9".into(), name: String::new(), msg: "om_s2".into() }]);
-        assert_eq!(forwarded_parts("om_none", &items, false), (String::new(), vec![]));
+        assert_eq!(origin, Origin { hint: "登录页 500 了\n看下日志".into(), ..Default::default() });
+        assert_eq!(forwarded_parts("om_none", &items, "ou_me", "oc_dm", false), (String::new(), vec![], Origin::default()));
+        // 带发送人、原来的群：自己写“我”，一个别人写“对方”，说得最多的人和群当来源
+        let user = |id: &str, from: &str, text: &str| json!({ "message_id": id, "upper_message_id": "om_f", "chat_id": "oc_feedback", "sender": { "id": from, "id_type": "open_id", "sender_type": "user" }, "msg_type": "text", "body": { "content": json!({ "text": text }).to_string() } });
+        let items = vec![user("om_1", "ou_zhang", "点了没反应"), user("om_2", "ou_me", "哪个页面？"), user("om_3", "ou_zhang", "登录页")];
+        let (text, _, origin) = forwarded_parts("om_f", &items, "ou_me", "oc_dm", false);
+        assert_eq!(text, "转发的聊天记录：\n> **对方**：\n> 点了没反应\n>\n> **我**：\n> 哪个页面？\n>\n> **对方**：\n> 登录页");
+        assert_eq!(origin, Origin { user: "ou_zhang".into(), chat: "oc_feedback".into(), hint: "点了没反应".into() });
+        // 两个别人：A、B；转到的私聊本身不当原来的群
+        let items = vec![user("om_1", "ou_a", "1"), user("om_2", "ou_b", "2"), user("om_3", "ou_b", "3")];
+        let (text, _, origin) = forwarded_parts("om_f", &items, "ou_me", "oc_feedback", false);
+        assert!(text.contains("**A**") && text.contains("**B**"));
+        assert_eq!((origin.user.as_str(), origin.chat.as_str()), ("ou_b", ""));
     }
 
     #[test]
@@ -2122,13 +2612,35 @@ mod tests {
         fake.wait_after(before, "当前会话这一轮做完", 240, |r| is_card_update(r) && r.text().contains("已完成")).await;
         fake.wait_after(before, "这一轮结束去掉表情", 30, |r| r.method == "DELETE" && r.path.starts_with("/open-apis/im/v1/messages/om_u6/reactions/")).await;
         assert_eq!(store.instances().unwrap().len(), sessions, "接着当前会话，没开新会话");
-        // 合并转发：展开成文字交给 AI
+        // 合并转发（张三说的）：不进当前会话；第一次认得这个人，问交给哪个项目，选“以后都交给这里”
         let before = fake.reqs().len();
         fake.push("event", msg_ev("om_fwd", "p2p", "ou_me", "merge_forward", json!("Merged and Forwarded Message"), None, json!([]))).await;
         fake.wait_after(before, "取转发的子消息", 10, |r| r.method == "GET" && r.path == "/open-apis/im/v1/messages/om_fwd").await;
-        fake.wait_after(before, "转发那一轮做完", 240, |r| is_card_update(r) && r.text().contains("已完成")).await;
-        let snap = chat.snapshot(&inst).await.unwrap();
-        assert!(snap["items"].as_array().unwrap().iter().any(|i| i["k"] == "user" && i["text"].as_str().is_some_and(|t| t.contains("暗号是 ZEBRA"))), "转发的内容交给了 AI");
+        let ask = fake.wait_after(before, "问交给哪个项目", 30, |r| r.path.contains("/om_fwd/reply") && r.text().contains("交给哪个项目")).await;
+        assert!(ask.text().contains("以后这个人的都交给这个项目"));
+        let form = &ask.content()["body"]["elements"][1];
+        let go = form["elements"][3]["behaviors"][0]["value"].clone();
+        assert_eq!(go["o"]["user"], "ou_zhang");
+        let resp = fake.push("card", click("fwd", &go, json!({ "place": place, "agent": "claude", "remember": "1" }))).await.unwrap();
+        assert_eq!(resp["toast"]["type"], "success", "{resp}");
+        let done = fake.wait_after(before, "转发那一轮做完", 240, |r| is_card_update(r) && r.text().contains("已完成")).await;
+        assert!(done.text().contains("回复对方") && done.text().contains("换项目"), "转过来的问题的回答卡片有回复、换项目");
+        let inst3 = store.instances().unwrap().into_iter().find(|r| r.launch == "claude" && r.id != inst).map(|r| r.id).expect("转发开了新会话");
+        let snap = chat.snapshot(&inst3).await.unwrap();
+        assert!(snap["items"].as_array().unwrap().iter().any(|i| i["k"] == "user" && i["text"].as_str().is_some_and(|t| t.contains("暗号是 ZEBRA") && t.contains("**对方**"))), "转发的内容交给了新会话");
+        let habits: HashMap<String, fr::Habit> = synced(&app, "agent_origins");
+        assert_eq!(habits["u:ou_zhang"].bound, place, "记住了张三的项目");
+        // 同一个人再转来一段：接着刚才那个会话说，带「当新问题」
+        let before = fake.reqs().len();
+        let n = store.instances().unwrap().len();
+        fake.push("event", msg_ev("om_fwd_b", "p2p", "ou_me", "merge_forward", json!("Merged and Forwarded Message"), None, json!([]))).await;
+        fake.wait_after(before, "接着同一个来源的会话", 30, |r| r.path.contains("/om_fwd_b/reply") && r.text().contains("当新问题")).await;
+        fake.wait_after(before, "第二段那一轮做完", 240, |r| is_card_update(r) && r.text().contains("已完成")).await;
+        assert_eq!(store.instances().unwrap().len(), n, "没开新会话");
+        let snap = chat.snapshot(&inst3).await.unwrap();
+        assert!(snap["items"].as_array().unwrap().iter().any(|i| i["k"] == "user" && i["text"].as_str().is_some_and(|t| t.contains("OTTER"))), "第二段交给了同一个会话");
+        // 回到第一个会话，后面的步骤还用它
+        set_current(&app, "oc_dm", Some(("dev1", &inst)));
         // 没在跑时发“停止”
         let before = fake.reqs().len();
         fake.push("event", msg_ev("om_u7", "p2p", "ou_me", "text", json!({ "text": "停止" }), None, json!([]))).await;
@@ -2143,7 +2655,7 @@ mod tests {
         assert_eq!(root.json()["receive_id"], "oc_dm");
         // 假飞书回的 message_id 是 om_b{第几个请求}
         let root_id = format!("om_b{}", fake.reqs().iter().position(|r| r.path == root.path && r.body == root.body).unwrap());
-        let inst2 = store.instances().unwrap().into_iter().find(|r| r.launch == "claude" && r.id != inst).map(|r| r.id).expect("第二个会话");
+        let inst2 = store.instances().unwrap().into_iter().find(|r| r.launch == "claude" && r.id != inst && r.id != inst3).map(|r| r.id).expect("第二个会话");
         fake.wait_after(before, "新会话第一轮做完", 240, |r| is_card_update(r) && r.text().contains("已完成")).await;
         chat.setting(&inst2, "mode", "default").await.unwrap();
         let before = fake.reqs().len();
@@ -2155,11 +2667,11 @@ mod tests {
         fake.wait_after(before, "文件消息发在话题里", 30, |r| r.path.ends_with("/reply") && r.json()["msg_type"] == "file").await;
         println!("4. /new + 审批 + 文件发回 ok");
 
-        // 5. 菜单「会话」：列出两个会话；点「在飞书里接着」发一条新的话题开头
+        // 5. 菜单「会话」：列出三个会话（含转发开的）；点「在飞书里接着」发一条新的话题开头
         let before = fake.reqs().len();
         fake.push("event", json!({ "schema": "2.0", "header": { "event_id": "menu-1", "event_type": "application.bot.menu_v6" }, "event": { "operator": { "operator_id": { "open_id": "ou_me" } }, "event_key": "sessions" } })).await;
         let list = fake.wait_after(before, "会话列表", 30, |r| r.path.contains("receive_id_type=open_id") && r.text().contains("在飞书里接着")).await;
-        assert!(list.text().contains("2 个会话"), "{}", list.text());
+        assert!(list.text().contains("3 个会话"), "{}", list.text());
         let mut bs = vec![];
         buttons(&list.content(), &mut bs);
         let pick = bs.into_iter().find(|b| b["a"] == PICK).unwrap();
@@ -2171,13 +2683,20 @@ mod tests {
         assert!(menu_new.text().contains("\\\"name\\\":\\\"text\\\""), "菜单开的卡片有写第一句话的输入框");
         println!("5. 菜单 ok");
 
-        // 6. 群：别人 @、自己没 @ 都不理；自己 @ 机器人：在上次的地方直接开会话
+        // 6. 群：别人 @、自己没 @ 都不理；自己 @ 机器人：第一次问这个群交给哪个项目，选了以后记住
         let before = fake.reqs().len();
         let at_bot = json!([{ "key": "@_user_1", "id": { "open_id": "ou_bot" }, "name": "看看" }]);
         fake.push("event", msg_ev("om_g1", "group", "ou_other", "text", json!({ "text": "@_user_1 帮我删库" }), None, at_bot.clone())).await;
         fake.push("event", msg_ev("om_g2", "group", "ou_me", "text", json!({ "text": "随便聊聊" }), None, json!([]))).await;
         fake.push("event", msg_ev("om_g3", "group", "ou_me", "text", json!({ "text": "@_user_1 只回复：群" }), None, at_bot)).await;
-        fake.wait_after(before, "群里直接开会话", 60, |r| r.path.contains("/om_g3/reply") && r.text().contains("card_id")).await;
+        let ask = fake.wait_after(before, "问这个群交给哪个项目", 30, |r| r.path.contains("/om_g3/reply") && r.text().contains("以后这个群的都交给这个项目")).await;
+        let go = ask.content()["body"]["elements"][1]["elements"][3]["behaviors"][0]["value"].clone();
+        let mut c = click("grp", &go, json!({ "place": place, "agent": "claude", "remember": "1" }));
+        c["event"]["context"]["open_chat_id"] = json!("oc_group");
+        fake.push("card", c).await.unwrap();
+        fake.wait_after(before, "群里开了会话", 60, |r| r.path.contains("/om_g3/reply") && r.text().contains("card_id")).await;
+        let habits: HashMap<String, fr::Habit> = synced(&app, "agent_origins");
+        assert_eq!(habits["c:oc_group"].bound, place, "记住了这个群的项目");
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(!fake.reqs().iter().skip(before).any(|r| r.path.contains("/om_g1/") || r.path.contains("/om_g2/")), "别人的、没 @ 的不理");
         println!("6. 群 ok");

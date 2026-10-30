@@ -1,4 +1,4 @@
-//! AI 命令行工具：检测 Codex / Claude Code / OpenCode / DSH（DeepSeek Harness）/ Node.js 是否已安装，并生成安装命令。
+//! AI 命令行工具：检测 Codex / Claude Code / OpenCode / DSH（DeepSeek Harness）/ 飞书 CLI（lark-cli）/ Node.js 是否已安装，并生成安装命令。
 //! 安装是一个临时的后台任务（不进 tmux、不建终端）：输出留在内存里给界面看进度，客户端重启就没了；
 //! npm 镜像可选淘宝（npmmirror）、腾讯或官方。
 
@@ -11,7 +11,7 @@ use serde::Serialize;
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 
-pub const TOOLS: &[&str] = &["codex", "claude", "opencode", "dsh", "node", "npm"];
+pub const TOOLS: &[&str] = &["codex", "claude", "opencode", "dsh", "lark-cli", "node", "npm"];
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Detected {
@@ -19,6 +19,9 @@ pub struct Detected {
     pub claude: Option<String>,
     pub opencode: Option<String>,
     pub dsh: Option<String>,
+    /// 飞书官方的命令行（`@larksuite/cli`）：AI 助手用它以你本人的身份读、发飞书
+    #[serde(rename = "lark-cli")]
+    pub lark: Option<String>,
     pub node: Option<String>,
     pub npm: Option<String>,
 }
@@ -30,6 +33,7 @@ impl Detected {
             "claude" => &mut self.claude,
             "opencode" => &mut self.opencode,
             "dsh" => &mut self.dsh,
+            "lark-cli" => &mut self.lark,
             "node" => &mut self.node,
             "npm" => &mut self.npm,
             _ => return,
@@ -89,12 +93,18 @@ pub fn package(tool: &str) -> Option<&'static str> {
         "claude" => Some("@anthropic-ai/claude-code"),
         "opencode" => Some("opencode-ai"),
         "dsh" => Some("@deepseek-ai/dsh"),
+        "lark-cli" => Some("@larksuite/cli"),
         _ => None,
     }
 }
 
 pub fn install_command(tool: &str, mirror: &str) -> Option<String> {
     Some(format!("npm install -g {} --registry={}", package(tool)?, registry(mirror)))
+}
+
+/// 装完以后再做的：飞书 CLI 要把它的技能装进各个 AI 助手（`npx skills add larksuite/cli -y -g`），AI 助手才知道怎么用
+fn after_install(tool: &str, mirror: &str) -> Option<String> {
+    (tool == "lark-cli").then(|| format!("npx -y --registry={} skills add larksuite/cli -y -g", registry(mirror)))
 }
 
 // ---------------- 安装任务 ----------------
@@ -163,7 +173,10 @@ pub fn start_install(shell: &str, tool: &str, mirror: &str) -> Option<Job> {
         Ok(j) => j,
         Err(running) => return Some(running.lock().unwrap_or_else(|e| e.into_inner()).clone()),
     };
-    let line = format!("{command} --loglevel=http --no-fund --no-audit");
+    let mut line = format!("{command} --loglevel=http --no-fund --no-audit");
+    if let Some(next) = after_install(tool, mirror) {
+        line = format!("{line} && {next}");
+    }
     let mut cmd = if cfg!(windows) {
         let mut c = Command::new("cmd.exe");
         c.args(["/D", "/S", "/C", &format!("{line} 2>&1")]);
@@ -172,7 +185,7 @@ pub fn start_install(shell: &str, tool: &str, mirror: &str) -> Option<Job> {
         c
     } else {
         let mut c = Command::new(shell);
-        c.args(["-lc", &format!("exec {line} 2>&1")]);
+        c.args(["-lc", &format!("{{ {line} ; }} 2>&1")]);
         c
     };
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env("NO_COLOR", "1").kill_on_drop(true);
@@ -242,6 +255,9 @@ mod tests {
         assert_eq!(install_command("opencode", "official").unwrap(), "npm install -g opencode-ai --registry=https://registry.npmjs.org/");
         assert_eq!(install_command("dsh", "npmmirror").unwrap(), "npm install -g @deepseek-ai/dsh --registry=https://registry.npmmirror.com/");
         assert!(install_command("vim", "official").is_none());
+        assert_eq!(install_command("lark-cli", "official").unwrap(), "npm install -g @larksuite/cli --registry=https://registry.npmjs.org/");
+        assert!(after_install("lark-cli", "npmmirror").unwrap().contains("skills add larksuite/cli"));
+        assert!(after_install("codex", "npmmirror").is_none());
     }
 
     #[test]

@@ -41,8 +41,6 @@ fn view(app: &App) -> Value {
         "sync_enabled": crate::settings_sync::enabled(&app.store),
         // 扫码建应用的进度（这台电脑上的）
         "register": app.notify.reg(),
-        // AI 工具用你本人的身份调飞书：这台电脑上授权了没有（令牌不同步）
-        "user": crate::feishu_tools::view(app),
     })
 }
 
@@ -100,18 +98,6 @@ pub async fn register(State(app): State<App>, Json(req): Json<RegisterReq>) -> R
 
 pub async fn register_cancel(State(app): State<App>) -> R<Json<Value>> {
     app.notify.reg_cancel();
-    Ok(Json(view(&app)))
-}
-
-/// 让 AI 工具用你的身份调飞书：开始授权（飞书私聊里也会收到一张授权卡片）
-pub async fn user_auth(State(app): State<App>) -> R<Json<Value>> {
-    crate::feishu_tools::start(&app).await?;
-    Ok(Json(view(&app)))
-}
-
-/// 撤销：删掉这台电脑上的用户令牌
-pub async fn user_revoke(State(app): State<App>) -> R<Json<Value>> {
-    crate::feishu_tools::revoke(&app);
     Ok(Json(view(&app)))
 }
 

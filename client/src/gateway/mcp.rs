@@ -43,8 +43,6 @@ pub struct McpConfig {
     pub token: String,
     /// 关掉 SSH 工具（`list_ssh_hosts`、`ssh_run`）：不出现在工具列表里，调用也拒绝。默认开着，但只能用标了“允许 AI 使用”的主机
     pub ssh_disabled: bool,
-    /// 原来的飞书工具开关；飞书工具已经拿掉，这里不再用到（管理台接口还在读写，跟着那边一起删）
-    pub feishu_disabled: bool,
 }
 
 impl McpConfig {

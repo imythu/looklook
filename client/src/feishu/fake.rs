@@ -93,11 +93,15 @@ impl Fake {
                     }
                     ("POST", p) if p.ends_with("/reactions") => ok(json!({ "reaction_id": format!("r{n}") })),
                     ("POST", "/open-apis/im/v1/chats") => ok(json!({ "chat_id": "oc_proj" })),
-                    // 合并转发：一条转发 + 两条子消息
+                    // 合并转发：一条转发 + 两条子消息（张三说的）；同一个人的第二段
                     ("GET", "/open-apis/im/v1/messages/om_fwd") => ok(json!({ "items": [
                         { "message_id": "om_fwd", "msg_type": "merge_forward", "body": { "content": "Merged and Forwarded Message" } },
-                        { "message_id": "om_fwd1", "upper_message_id": "om_fwd", "msg_type": "text", "body": { "content": "{\"text\":\"线上登录 500\"}" } },
-                        { "message_id": "om_fwd2", "upper_message_id": "om_fwd", "msg_type": "text", "body": { "content": "{\"text\":\"暗号是 ZEBRA\"}" } },
+                        { "message_id": "om_fwd1", "upper_message_id": "om_fwd", "chat_id": "oc_dm", "sender": { "id": "ou_zhang", "id_type": "open_id", "sender_type": "user" }, "msg_type": "text", "body": { "content": "{\"text\":\"线上登录 500\"}" } },
+                        { "message_id": "om_fwd2", "upper_message_id": "om_fwd", "chat_id": "oc_dm", "sender": { "id": "ou_zhang", "id_type": "open_id", "sender_type": "user" }, "msg_type": "text", "body": { "content": "{\"text\":\"暗号是 ZEBRA\"}" } },
+                    ] })),
+                    ("GET", "/open-apis/im/v1/messages/om_fwd_b") => ok(json!({ "items": [
+                        { "message_id": "om_fwd_b", "msg_type": "merge_forward", "body": { "content": "Merged and Forwarded Message" } },
+                        { "message_id": "om_fwd_b1", "upper_message_id": "om_fwd_b", "chat_id": "oc_dm", "sender": { "id": "ou_zhang", "id_type": "open_id", "sender_type": "user" }, "msg_type": "text", "body": { "content": "{\"text\":\"第二个暗号是 OTTER\"}" } },
                     ] })),
                     ("POST", "/open-apis/im/v1/images") => ok(json!({ "image_key": format!("img_up{n}") })),
                     ("POST", "/open-apis/im/v1/files") => ok(json!({ "file_key": format!("file_up{n}") })),

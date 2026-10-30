@@ -158,7 +158,6 @@ pub fn routes(app: App) -> Router<App> {
         .route("/notify", get(super::notify::get))
         .route("/notify/feishu", put(super::notify::put_feishu).delete(super::notify::delete_feishu))
         .route("/notify/feishu/register", post(super::notify::register).delete(super::notify::register_cancel))
-        .route("/notify/feishu/user", post(super::notify::user_auth).delete(super::notify::user_revoke))
         .route("/notify/unbind", post(super::notify::unbind))
         .route("/notify/rules", put(super::notify::put_rules))
         .route("/notify/test", post(super::notify::test))
@@ -1257,7 +1256,7 @@ async fn git_show(State(app): State<App>, Path(id): Path<String>, Query(q): Quer
 async fn ssh_list(State(app): State<App>) -> Json<Value> {
     let mcp = super::mcp::McpConfig::load(&app.store);
     // AI 助手能不能真用上“允许 AI 使用”的主机：MCP 接口要打开，SSH 工具也没被关掉
-    Json(json!({ "items": crate::ssh::views(&app.store), "ssh": crate::shells::which("ssh").is_some(), "ai": { "mcp": mcp.enabled, "ssh": !mcp.ssh_disabled, "feishu": !mcp.feishu_disabled } }))
+    Json(json!({ "items": crate::ssh::views(&app.store), "ssh": crate::shells::which("ssh").is_some(), "ai": { "mcp": mcp.enabled, "ssh": !mcp.ssh_disabled } }))
 }
 
 async fn ssh_create(State(app): State<App>, Json(req): Json<crate::ssh::HostInput>) -> R<impl IntoResponse> {
@@ -2154,8 +2153,7 @@ async fn mcp_view(app: &App, access: &Access) -> Value {
     let agents = crate::agents::status(app.instances.shell(), &url, &c.token).await;
     let local = access.is_local();
     let token = if local { c.token } else { String::new() };
-    let feishu_ready = crate::notify::load_feishu(&app.store).is_some_and(|f| f.open_id.is_some());
-    json!({ "enabled": c.enabled, "ssh": !c.ssh_disabled, "feishu": !c.feishu_disabled, "feishu_ready": feishu_ready, "token": token, "local": local, "url": url, "agents": agents, "tools": super::mcp::tool_names() })
+    json!({ "enabled": c.enabled, "ssh": !c.ssh_disabled, "token": token, "local": local, "url": url, "agents": agents, "tools": super::mcp::tool_names() })
 }
 
 /// 开关（MCP、SSH 工具）远程也能改；令牌、换令牌、装进 AI 助手只能直接在这台机器（或允许的局域网）上做：
@@ -2170,8 +2168,6 @@ struct McpReq {
     enabled: Option<bool>,
     /// 让 AI 助手使用 SSH 主机（`list_ssh_hosts`、`ssh_run`）
     ssh: Option<bool>,
-    /// 让 AI 助手用飞书工具（`feishu_*`）
-    feishu: Option<bool>,
     /// 换一个新令牌；已经装好的助手配置一并更新
     rotate: bool,
 }
@@ -2187,9 +2183,6 @@ async fn put_mcp(State(app): State<App>, Extension(access): Extension<Access>, J
     }
     if let Some(v) = req.ssh {
         c.ssh_disabled = !v;
-    }
-    if let Some(v) = req.feishu {
-        c.feishu_disabled = !v;
     }
     if req.rotate || (c.enabled && c.token.is_empty()) {
         c.token = super::mcp::generate_token();

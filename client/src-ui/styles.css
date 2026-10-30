@@ -1394,6 +1394,7 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .ai-tools li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .ai-tools li.off, .ai-hosts li.off { opacity: .5; }
 .ai-tools code { padding: 1px 6px; border-radius: 6px; background: var(--panel-2); }
+.ai-job { max-height: 200px; overflow: auto; margin: 0; padding: 8px; border-radius: 6px; background: var(--panel-2); white-space: pre-wrap; word-break: break-all; }
 .ai-hosts li > span { display: flex; flex-direction: column; }
 .ssh-safety { margin: 0; padding-left: 1.2em; display: grid; gap: 6px; }
 

@@ -46,7 +46,7 @@ mod model;
 mod model_presets;
 mod notify;
 mod feishu_agent;
-mod feishu_tools;
+mod feishu_route;
 mod paths;
 mod platform;
 mod ports;

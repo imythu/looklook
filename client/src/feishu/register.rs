@@ -37,11 +37,11 @@ pub const EVENTS: &[&str] = &["im.message.receive_v1", "application.bot.menu_v6"
 pub const CALLBACKS: &[&str] = &["card.action.trigger"];
 
 /// `addons` 参数：JSON → gzip → base64（URL 安全、去掉 `=`）。`extra`：再多要的权限。
-/// 用户权限（`scopes.user`）给 AI 助手的飞书工具用（[`super::user::SCOPES`]），开了以后还要本人另外授权一次
+/// 不要用户权限：以你本人的身份读、发飞书交给飞书官方的 lark-cli（AI 助手自己调），不用给应用申请
 fn addons(extra: &[&str]) -> String {
     let scopes: Vec<&str> = SCOPES.iter().chain(extra).copied().collect();
     let v = json!({
-        "scopes": { "tenant": scopes, "user": super::user::SCOPES },
+        "scopes": { "tenant": scopes },
         "events": { "items": { "tenant": EVENTS } },
         "callbacks": { "items": CALLBACKS },
     });
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(v["callbacks"]["items"][0], "card.action.trigger");
         assert_eq!(v["events"]["items"]["tenant"][0], "im.message.receive_v1");
         assert_eq!(v["scopes"]["tenant"].as_array().unwrap().len(), SCOPES.len() + 1);
-        assert_eq!(v["scopes"]["user"].as_array().unwrap().len(), super::super::user::SCOPES.len());
+        assert!(v["scopes"]["user"].is_null());
     }
 
     /// 真飞书：拿一个链接、问一次（没人扫，应该是等待中）。`cargo test register_live -- --ignored --nocapture`
