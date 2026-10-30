@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { applyEvent, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, knownDialog, latestTodos, localFilePath, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds } from './chat.js';
+import { applyEvent, insertMention, mentionAt, backgroundCounts, chatRows, conversationResources, diffLines, diffStat, EMPTY, fieldKind, knownDialog, latestTodos, localFilePath, lineDiff, baseModel, modelFamily, modelLabel, modelView, parseJson, questionAnswers, slashAction, splitLinks, tokens, resultsById, toolCounts, toolSummary, toolUseIds, workParts } from './chat.js';
 
 test('events merge into the tail and update the last item', () => {
   let s = applyEvent(EMPTY, 'snapshot', { status: { phase: 'idle' }, start: 10, total: 12, items: [{ key: 'a' }, { key: 'b' }] });
@@ -243,4 +243,30 @@ test('sub-agents from the conversation', async () => {
   assert.deepEqual([a[0].id, a[0].tool_use_id, a[0].runs, a[0].state, a[0].started], ['th1', 'a1', 2, 'running', 't0']);
   assert.deepEqual([a[1].type, a[1].prompt, a[1].state], ['Explore', 'find x', 'running']);
   assert.equal(conversationAgents(items, false)[1].state, 'ended');
+});
+
+test('work parts: process collapses into one block, trailing text is the answer', () => {
+  const text = (key) => ({ k: 'text', key, block: { t: 'text', text: key } });
+  const tool = (key) => ({ k: 'tool', key, block: { t: 'tool_use', id: key } });
+  const item = (key, k, extra) => ({ k: 'item', key, item: { k, key, ...extra } });
+  const rows = [item('u1', 'user'), text('a'), tool('b'), text('c'), text('d'), item('t1', 'turn', { ms: 9000 }), item('u2', 'user'), text('e'), item('u3', 'user'), tool('f')];
+  const parts = workParts(rows, false);
+  assert.deepEqual(parts.map((p) => (p.k === 'work' ? `W${p.rows.join('')}${p.answer ? '+' : ''}` : p.n)), [0, 'W12+', 3, 4, 5, 6, 7, 8, 'W9']);
+  assert.equal(parts[1].turn.ms, 9000);
+  assert.equal(parts[1].running, false);
+  // 还在跑：最后一段连文字一起都在处理过程里
+  const live = workParts([item('u1', 'user'), tool('a'), text('b')], true);
+  assert.deepEqual(live[1], { k: 'work', key: 'w:a', rows: [1, 2], running: true, answer: false, turn: null });
+  // 没配上的工具结果不打断处理过程
+  assert.deepEqual(workParts([tool('a'), item('r', 'tool_result'), text('b')], false).map((p) => p.k), ['work', 'row']);
+});
+
+test('mentionAt / insertMention：输入框里的 @ 提示', () => {
+  assert.deepEqual(mentionAt('看看 @src/ch', 10), { start: 3, q: 'src/ch' });
+  assert.deepEqual(mentionAt('@', 1), { start: 0, q: '' });
+  assert.equal(mentionAt('a@b.com', 7), null, '邮箱不算');
+  assert.equal(mentionAt('@a b', 4), null, '打了空格就结束');
+  assert.deepEqual(insertMention('看 @ch 吧', 2, 5, 'src/chat.js'), { text: '看 @src/chat.js  吧', caret: 15 });
+  assert.deepEqual(insertMention('@s', 0, 2, 'src/'), { text: '@src/', caret: 5 }, '目录不加空格，接着找');
+  assert.equal(insertMention('@m', 0, 2, 'my file.txt').text, '@"my file.txt" ');
 });

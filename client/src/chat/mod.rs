@@ -22,6 +22,7 @@ pub mod codex_screen;
 pub mod codex_worktree;
 pub mod commands;
 pub mod hooks;
+pub mod mentions;
 pub mod models;
 pub mod prompts;
 pub mod risk;
@@ -527,7 +528,8 @@ impl Chat {
             let mut st = lock(&inst.st);
             st.last_hook = Some(Instant::now());
             st.active_at = crate::util::system_ms();
-            if let Some(m) = ev["permission_mode"].as_str() {
+            // Codex 的权限看 app-server（codex_chat 的 perm_of），hook 里的是 Claude 那套名字
+            if let Some(m) = ev["permission_mode"].as_str().filter(|_| inst.agent.launch() != "codex") {
                 st.mode = Some(m.to_string());
             }
             if let Some(m) = ev["model"].as_str() {
@@ -1238,6 +1240,19 @@ impl Chat {
         self.require(id)?;
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         Ok(json!({ "items": self.inst(id).agent.commands(Path::new(&row.workdir)) }))
+    }
+
+    /// 输入框里打 `@` 时提示的文件、目录（相对这段对话的工作目录，见 mentions.rs）
+    pub async fn mentions(&self, id: &str, q: &str) -> Result<Value, LocalError> {
+        self.require(id)?;
+        let root = if self.is_codex(id) {
+            self.codex_current_cwd(id)?
+        } else {
+            self.store.instance(id)?.ok_or_else(LocalError::not_found)?.workdir
+        };
+        let q = q.chars().take(200).collect::<String>();
+        let items = tokio::task::spawn_blocking(move || mentions::search(Path::new(&root), &q, 30)).await.map_err(|e| LocalError::from(anyhow::anyhow!(e)))?;
+        Ok(json!({ "items": items }))
     }
 
     /// 输入历史（上下键、Ctrl+R）：Claude Code 自己的 `history.jsonl` 里这个项目的，各个账号的配置目录合起来。

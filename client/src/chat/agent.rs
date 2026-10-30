@@ -262,9 +262,9 @@ impl Agent for Codex {
         json!([])
     }
 
-    /// 走 app-server：能选模型、看账号用量、“本会话都允许”、提问、发图片；没有权限模式和计划确认框
+    /// 走 app-server：能选模型、看账号用量、“本会话都允许”、提问、发图片、换权限（三档，见 codex_chat 的 PERMS）；没有计划确认框
     fn caps(&self) -> Value {
-        json!({ "allow_session": true, "allow_dirs": false, "images": true, "user_images": true, "plan": false, "questions": true, "models": true, "usage": true, "mode": false })
+        json!({ "allow_session": true, "allow_dirs": false, "images": true, "user_images": true, "plan": false, "questions": true, "models": true, "usage": true, "mode": true })
     }
 
     /// 子代理的 hook 可能带着它自己的 rollout（S11 未验证），只认主线的开始和用户发消息

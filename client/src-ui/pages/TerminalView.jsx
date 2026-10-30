@@ -4,7 +4,7 @@
 // 顶栏、按键条、标签栏都跟着终端配色（设置 → 终端配色），不会出现终端是浅色、上下两头还是深色。
 // 会话页右边打开的每个会话是一个 TermPane（见 Sessions.jsx）。
 import { ArrowLeft, Expand, ExternalLink, FolderOpen, GitBranch, Keyboard, Maximize2, MessagesSquare, Minimize2, Palette, Play, PlugZap, RefreshCw, Shrink, SquareTerminal, TextSelect as TextSelectIcon, WifiOff } from 'lucide-react';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
@@ -367,6 +367,14 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
   useFocusWhenReady(frame, running && active && tab === 'term');
   const [selecting, setSelecting, selectAt] = useTextSelect(frame, running && active && tab === 'term');
   const reconnect = useCodexReconnect(id, inst, frame);
+  // 切会话时在提交那一刻就交接焦点，不等下面的 30 ms：切完马上打字的话，字会进上一个会话藏起来的输入框
+  // （Mac 上 WKWebView 不让藏起来的输入框失焦，输入法候选框飘在左上角，字还写进了别的会话的草稿）。
+  // 切走的会话把自己里面的焦点放掉；切到的会话是对话标签就直接聚焦输入框（终端要等适配好，仍走下面）。
+  useLayoutEffect(() => {
+    if (active) {
+      if (tab === 'chat') focusInput();
+    } else if (wrap.current?.contains(document.activeElement)) document.activeElement.blur();
+  }, [active, tab]);
   useEffect(() => {
     if (!active) return undefined;
     const timer = setTimeout(() => {

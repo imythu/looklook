@@ -579,6 +579,7 @@ function DraftForm() {
             ref={input}
             className="draft-input"
             rows={2}
+            autoCapitalize="none"
             value={text}
             onChange={(e) => setText(e.target.value)}
             onPaste={(e) => willChat && addFiles(e.clipboardData.files) && e.preventDefault()}

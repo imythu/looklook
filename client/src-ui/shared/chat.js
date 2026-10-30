@@ -251,7 +251,10 @@ export const COMMANDS = [
 ];
 
 /** Codex（走 app-server）认的内置命令：/compact、/clear 由看看换成对应的请求，其余是界面自己的动作 */
-export const CODEX_COMMANDS = ['/compact', '/clear', '/new', '/model', '/resume', '/context', '/usage', '/status', '/worktree'];
+export const CODEX_COMMANDS = ['/compact', '/clear', '/new', '/model', '/permissions', '/resume', '/context', '/usage', '/status', '/worktree'];
+
+/** Codex 里意思不一样的命令：/permissions 是换权限（打开权限菜单），不是 Claude 的权限规则 */
+export const CODEX_ACTIONS = { '/permissions': 'mode' };
 
 /** 只有 Codex 有的（看看在界面里做）：别的工具不列、不拦 */
 export const CODEX_ONLY = ['/worktree'];
@@ -266,6 +269,7 @@ export function slashAction(text, agent) {
   // 带参数的照常送（例如 /model sonnet）
   if (s !== cmd) return null;
   if (agent !== 'codex' && CODEX_ONLY.includes(cmd)) return null;
+  if (agent === 'codex' && CODEX_ACTIONS[cmd]) return CODEX_ACTIONS[cmd];
   return COMMANDS.find(([c]) => c === cmd)?.[1] ?? null;
 }
 
@@ -374,6 +378,35 @@ export function chatRows(items, used = toolUseIds(items)) {
   return rows;
 }
 
+/**
+ * 每一段回复拆成“处理过程”和“回复”（参照 LiveAgent 的 AssistantWorkTrace）：两条记录之间连续的思考、工具、文字是一段，
+ * 结尾连着的文字是回复，前面的都是处理过程。还在跑的那一段（最后一段且 live）全算处理过程，免得中间的说明一会儿进回复一会儿出来。
+ * 返回 [{ k: 'row', n } | { k: 'work', key, rows: [n], running, answer, turn }]，n 是 rows 里的下标；没有处理过程的段原样一行一行。
+ */
+export function workParts(rows, live) {
+  const out = [];
+  for (let n = 0; n < rows.length; ) {
+    // 没配上调用的工具结果也算处理过程
+    if (rows[n].k === 'item' && rows[n].item.k !== 'tool_result') {
+      out.push({ k: 'row', n: n++ });
+      continue;
+    }
+    const from = n;
+    while (n < rows.length && !(rows[n].k === 'item' && rows[n].item.k !== 'tool_result')) n++;
+    const running = live && n === rows.length;
+    let cut = n;
+    if (!running) while (cut > from && rows[cut - 1].k === 'text') cut--;
+    if (cut === from) {
+      for (let i = from; i < n; i++) out.push({ k: 'row', n: i });
+      continue;
+    }
+    const turn = rows[n]?.item?.k === 'turn' ? rows[n].item : null;
+    out.push({ k: 'work', key: `w:${rows[from].key}`, rows: Array.from({ length: cut - from }, (_, i) => from + i), running, answer: cut < n, turn });
+    for (let i = cut; i < n; i++) out.push({ k: 'row', n: i });
+  }
+  return out;
+}
+
 /** 一组里每种工具各调用了几次：[[名字, 次数]]，按第一次出现的顺序 */
 export function toolCounts(calls) {
   const m = new Map();
@@ -459,6 +492,24 @@ export function tokens(n) {
 export const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
 /** Shift+Tab 能轮换到的权限模式（自动模式、全部权限要启动时开启才有） */
 export const MODE_CHOICES = ['default', 'acceptEdits', 'plan', 'auto', 'bypassPermissions'];
+/** Codex 的权限（和 TUI 的 `/permissions` 一样三档），Shift+Tab 在这三个里轮换 */
+export const CODEX_MODE_CHOICES = ['readOnly', 'workspaceWrite', 'fullAccess'];
+
+/** 光标前面正在打的 `@…`：{ start, q }，start 是 `@` 的位置；不在打就是 null。`@` 要在开头或空白后面（邮箱里的 @ 不算） */
+export function mentionAt(text, caret) {
+  const m = /(^|\s)@([^\s@"]*)$/.exec(text.slice(0, caret));
+  return m ? { start: caret - m[2].length - 1, q: m[2] } : null;
+}
+
+/**
+ * 选中一项：把 `@q` 换成 `@路径`（Claude Code 和 Codex 都按这个认文件；有空格时加引号）。
+ * 选的是目录时不加空格，可以接着往下找。返回 { text, caret }
+ */
+export function insertMention(text, start, caret, path) {
+  const ref = `@${/\s/.test(path) ? `"${path}"` : path}${path.endsWith('/') ? '' : ' '}`;
+  const before = text.slice(0, start) + ref;
+  return { text: before + text.slice(caret), caret: before.length };
+}
 
 /** 状态栏上的后台任务个数：{ shell: 1, subagent: 2 } */
 export function backgroundCounts(status) {

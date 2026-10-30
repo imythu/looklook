@@ -133,6 +133,17 @@ pub async fn commands(State(app): State<App>, Path(id): Path<String>) -> R<Json<
     Ok(Json(app.chat.commands(&id)?))
 }
 
+#[derive(Deserialize)]
+pub struct MentionsQuery {
+    #[serde(default)]
+    q: String,
+}
+
+/// `GET /api/instances/{id}/chat/mentions?q=`：输入框里打 `@` 时提示的文件、目录
+pub async fn mentions(State(app): State<App>, Path(id): Path<String>, Query(q): Query<MentionsQuery>) -> R<Json<Value>> {
+    Ok(Json(app.chat.mentions(&id, &q.q).await?))
+}
+
 pub async fn prompts(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
     Ok(Json(app.chat.prompts(&id)?))
 }

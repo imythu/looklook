@@ -1500,6 +1500,15 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-turn { text-align: right; font-size: 12px; }
 .chat-working { display: flex; align-items: center; gap: 8px; }
 .chat-working svg { color: var(--claude); }
+/* 一段回复的处理过程（WorkTrace）：标题一行，后面一条细线；展开的内容和外面的行距一样 */
+.chat-work { display: flex; flex-direction: column; gap: 14px; }
+.chat-work-head { display: flex; align-items: center; gap: 6px; width: 100%; padding: 2px 0; border: 0; background: none; color: var(--muted); font: inherit; font-size: 13px; cursor: pointer; text-align: left; }
+.chat-work-head:hover { color: var(--text); }
+.chat-work-head > svg { flex: none; }
+.chat-work-time { font-variant-numeric: tabular-nums; }
+.chat-work-rule { flex: 1; min-width: 32px; height: 1px; margin-left: 4px; background: var(--line); }
+.chat-work-body, .chat-work-tail { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.chat-work-tail { opacity: .85; }
 .chat-reply-acts { display: flex; gap: 2px; margin-top: -6px; opacity: 0; transition: opacity .15s; }
 .chat-reply-end:hover .chat-reply-acts, .chat-reply-acts:focus-within { opacity: 1; }
 @media (hover: none) { .chat-reply-acts { opacity: 1; } }
@@ -1659,6 +1668,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-chip-mode[data-mode="plan"] { color: var(--brand); }
 .chat-chip-mode[data-mode="auto"] { color: var(--warn); }
 .chat-chip-mode[data-mode="bypassPermissions"] { color: var(--danger); }
+.chat-chip-mode[data-mode="readOnly"] { color: var(--brand); }
+.chat-chip-mode[data-mode="fullAccess"] { color: var(--danger); }
 .chat-warn { color: var(--warn); }
 .chat-ring { min-height: 30px !important; padding: 0 6px; gap: 5px; display: inline-flex; align-items: center; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
 .chat-ring[data-level="mid"] { color: var(--warn); }
@@ -1680,6 +1691,8 @@ input[type="checkbox"], input[type="radio"] { width: auto; min-height: 0; paddin
 .chat-slash button:hover, .chat-slash button[aria-selected="true"] { background: var(--panel-2); }
 .chat-slash b { font: 600 13px var(--mono); min-width: 7.5em; }
 .chat-slash .chat-note { margin: 0; flex: 1; }
+.chat-mention button { font: 13px var(--mono); }
+.chat-mention svg { flex: none; color: var(--muted); }
 
 /* 输入框上的弹出菜单（模型、权限模式） */
 .chat-pop { position: absolute; bottom: calc(100% + 6px); z-index: 5; width: min(360px, calc(100cqw - 24px)); max-height: min(70vh, 560px); overflow-y: auto; display: flex; flex-direction: column; gap: 1px; padding: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow-lg); animation: fade .12s; }
@@ -2287,9 +2300,9 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
   .chat-view { --k-run: #2dd4bf; --k-read: #6ea2ff; --k-edit: #fbbf24; --k-search: #a78bfa; --k-web: #22d3ee; --k-agent: #f472b6; --k-todo: #4ade80; --k-mcp: #818cf8; --k-image: #fb7185; }
 }
 .chat-items { gap: 16px; }
-.chat-items > .md, .chat-reply-end > .md, .chat-sub-body > .md, .chat-preview { font-family: var(--prose); font-size: 16px; line-height: 1.72; letter-spacing: .003em; }
-.chat-items > .md h1, .chat-items > .md h2, .chat-items > .md h3, .chat-reply-end > .md h1, .chat-reply-end > .md h2, .chat-reply-end > .md h3 { font-weight: 600; letter-spacing: -.005em; }
-.chat-items > .md h2, .chat-reply-end > .md h2 { border-bottom: 0; font-size: 1.22em; }
+.chat-items > .md, .chat-reply-end > .md, .chat-sub-body > .md, .chat-preview, .chat-work-body > .md, .chat-work-tail > .md { font-family: var(--prose); font-size: 16px; line-height: 1.72; letter-spacing: .003em; }
+.chat-items > .md h1, .chat-items > .md h2, .chat-items > .md h3, .chat-reply-end > .md h1, .chat-reply-end > .md h2, .chat-reply-end > .md h3, .chat-work-body > .md h1, .chat-work-tail > .md h1, .chat-work-body > .md h2, .chat-work-tail > .md h2, .chat-work-body > .md h3, .chat-work-tail > .md h3 { font-weight: 600; letter-spacing: -.005em; }
+.chat-items > .md h2, .chat-reply-end > .md h2, .chat-work-body > .md h2, .chat-work-tail > .md h2 { border-bottom: 0; font-size: 1.22em; }
 .chat-view .md code { font-size: .84em; }
 .chat-view .md table { border-radius: 10px; border: 1px solid var(--line); border-collapse: separate; border-spacing: 0; overflow: auto; }
 .chat-view .md th, .chat-view .md td { border: 0; border-bottom: 1px solid var(--line); }
@@ -2337,16 +2350,16 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-items > :last-child { animation: rise .32s cubic-bezier(.2, .8, .2, 1) both; }
 
 /* —— 工具调用：一张轻卡片；组里的每一步是时间线上的一个节点 —— */
-.chat-items > .chat-tool, .chat-sub-body > .chat-tool {
+.chat-items > .chat-tool, .chat-sub-body > .chat-tool, .chat-work-body > .chat-tool, .chat-work-tail > .chat-tool {
   border: 1px solid color-mix(in srgb, var(--line) 80%, transparent);
   border-radius: 14px;
   background: color-mix(in srgb, var(--panel) 72%, transparent);
   padding: 3px 12px;
   transition: border-color .2s, box-shadow .2s, background .2s;
 }
-.chat-items > .chat-tool:hover, .chat-sub-body > .chat-tool:hover { border-color: var(--line); background: var(--panel); }
-.chat-items > .chat-tool[data-state="run"], .chat-sub-body > .chat-tool[data-state="run"] { border-color: color-mix(in srgb, var(--claude) 55%, var(--line)); box-shadow: 0 0 0 4px var(--claude-soft); }
-.chat-items > .chat-tool[data-state="err"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
+.chat-items > .chat-tool:hover, .chat-sub-body > .chat-tool:hover, .chat-work-body > .chat-tool:hover, .chat-work-tail > .chat-tool:hover { border-color: var(--line); background: var(--panel); }
+.chat-items > .chat-tool[data-state="run"], .chat-sub-body > .chat-tool[data-state="run"], .chat-work-body > .chat-tool[data-state="run"], .chat-work-tail > .chat-tool[data-state="run"] { border-color: color-mix(in srgb, var(--claude) 55%, var(--line)); box-shadow: 0 0 0 4px var(--claude-soft); }
+.chat-items > .chat-tool[data-state="err"], .chat-work-body > .chat-tool[data-state="err"], .chat-work-tail > .chat-tool[data-state="err"] { border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
 .chat-tool-head { min-height: 34px; }
 .chat-tool-head b { font-weight: 600; }
 .chat-tool-cmd { margin: -6px 0 6px 51px; }
@@ -2485,8 +2498,8 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-tool-head b > span[data-kind="run"] { color: var(--k-run); } .chat-tool-head b > span[data-kind="read"] { color: var(--k-read); }
 .chat-tool-head b > span[data-kind="edit"] { color: var(--k-edit); } .chat-tool-head b > span[data-kind="search"] { color: var(--k-search); }
 .chat-tool-head b > span[data-kind="web"] { color: var(--k-web); } .chat-tool-head b > span[data-kind="mcp"] { color: var(--k-mcp); }
-.chat-items > .chat-tool:hover, .chat-sub-body > .chat-tool:hover { border-color: color-mix(in srgb, var(--kind, var(--line)) 40%, var(--line)); box-shadow: 0 8px 24px -14px color-mix(in srgb, var(--kind, #000) 55%, transparent); transform: translateY(-1px); }
-.chat-items > .chat-tool { transition: border-color .2s, box-shadow .2s, background .2s, transform .2s; }
+.chat-items > .chat-tool:hover, .chat-sub-body > .chat-tool:hover, .chat-work-body > .chat-tool:hover, .chat-work-tail > .chat-tool:hover { border-color: color-mix(in srgb, var(--kind, var(--line)) 40%, var(--line)); box-shadow: 0 8px 24px -14px color-mix(in srgb, var(--kind, #000) 55%, transparent); transform: translateY(-1px); }
+.chat-items > .chat-tool, .chat-work-body > .chat-tool, .chat-work-tail > .chat-tool { transition: border-color .2s, box-shadow .2s, background .2s, transform .2s; }
 /* 时间线：成功的节点用这一步的种类色 */
 .chat-group-body > .chat-tool[data-state="ok"]::before { border-color: var(--kind); background: var(--kind); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kind) 18%, transparent); }
 .chat-group-body::before { background: linear-gradient(color-mix(in srgb, var(--claude) 35%, var(--line)), color-mix(in srgb, var(--k-search) 25%, transparent)); }
@@ -2920,7 +2933,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
     --k-run: #b4b4b4; --k-read: #b4b4b4; --k-edit: #b4b4b4; --k-search: #b4b4b4; --k-web: #b4b4b4; --k-agent: #b4b4b4; --k-todo: #b4b4b4; --k-mcp: #b4b4b4; --k-image: #b4b4b4;
   }
 }
-.chat-view[data-agent="codex"] .chat-items > .md, .chat-view[data-agent="codex"] .chat-reply-end > .md, .chat-view[data-agent="codex"] .chat-sub-body > .md, .chat-view[data-agent="codex"] .chat-preview { font-size: 15px; line-height: 1.65; letter-spacing: 0; }
+.chat-view[data-agent="codex"] .chat-items > .md, .chat-view[data-agent="codex"] .chat-reply-end > .md, .chat-view[data-agent="codex"] .chat-sub-body > .md, .chat-view[data-agent="codex"] .chat-preview, .chat-view[data-agent="codex"] .chat-work-body > .md, .chat-view[data-agent="codex"] .chat-work-tail > .md { font-size: 15px; line-height: 1.65; letter-spacing: 0; }
 /* 用户消息：浅灰气泡，正文色 */
 .chat-view[data-agent="codex"] .chat-bubble { background: var(--codex-bubble); color: var(--text); box-shadow: none; border-radius: 22px; padding: 9px 16px; }
 .chat-view[data-agent="codex"] .chat-bubble .chat-note { color: var(--muted); }
@@ -2929,7 +2942,7 @@ button.chat-task-head.chat-task-main { flex-direction: row; align-items: center;
 .chat-view[data-agent="codex"] .chat-group-body > .chat-tool[data-state="ok"]::before { box-shadow: none; }
 .chat-view[data-agent="codex"] .chat-group-body::before { background: var(--line); }
 .chat-view[data-agent="codex"] .chat-group[data-kind="mix"] > .chat-tool-head .chat-tool-icon { background: var(--panel-2); color: var(--muted); }
-.chat-view[data-agent="codex"] .chat-items > .chat-tool[data-state="run"], .chat-view[data-agent="codex"] .chat-sub-body > .chat-tool[data-state="run"] { border-color: var(--line); box-shadow: none; }
+.chat-view[data-agent="codex"] .chat-items > .chat-tool[data-state="run"], .chat-view[data-agent="codex"] .chat-sub-body > .chat-tool[data-state="run"], .chat-view[data-agent="codex"] .chat-work-body > .chat-tool[data-state="run"], .chat-view[data-agent="codex"] .chat-work-tail > .chat-tool[data-state="run"] { border-color: var(--line); box-shadow: none; }
 /* 运行中：Codex 标志呼吸，不用流光（CHAT_UI_LESSONS §5） */
 .chat-view[data-agent="codex"] .chat-working-mark { text-shadow: none; color: var(--text); }
 .chat-working-mark.codex { display: grid; place-items: center; height: 18px; animation: codex-breathe 1.6s ease-in-out infinite; }

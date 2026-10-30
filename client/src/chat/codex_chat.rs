@@ -96,6 +96,35 @@ pub struct CodexSt {
     retrying: bool,
     /// 这段对话的工作目录（app-server 的 `thread.cwd`；在托管工作树里时不是终端的工作目录）
     pub cwd: Option<String>,
+    /// 界面上选的权限（[`PERMS`] 之一）：之后每一轮、重新加载对话都带上；没选过是 None，按 Codex 自己的配置
+    pub perm: Option<String>,
+}
+
+/// 权限模式，和 TUI 的 `/permissions` 一样三档：只读（改文件、联网要问）、默认（工作目录里随便改，出了目录要问）、完全访问（不问、不用沙箱）
+pub const PERMS: [&str; 3] = ["readOnly", "workspaceWrite", "fullAccess"];
+
+/// 权限模式 → (`approvalPolicy`, `thread/start` 的 `sandbox`, `turn/start` 的 `sandboxPolicy`)
+fn perm_params(perm: &str) -> (Value, Value, Value) {
+    match perm {
+        "readOnly" => (json!("on-request"), json!("read-only"), json!({ "type": "readOnly", "networkAccess": false })),
+        "fullAccess" => (json!("never"), json!("danger-full-access"), json!({ "type": "dangerFullAccess" })),
+        _ => (
+            json!("on-request"),
+            json!("workspace-write"),
+            json!({ "type": "workspaceWrite", "writableRoots": [], "networkAccess": false, "excludeTmpdirEnvVar": false, "excludeSlashTmp": false }),
+        ),
+    }
+}
+
+/// app-server 报的审批策略和沙箱 → 权限模式；对不上三档的（`untrusted`、细分的审批）原样给界面，显示成“自定义”
+fn perm_of(approval: &Value, sandbox: &Value) -> Option<String> {
+    let kind = sandbox["type"].as_str().or(sandbox.as_str())?;
+    Some(match (approval.as_str(), kind) {
+        (Some("never"), "dangerFullAccess" | "danger-full-access") => "fullAccess".into(),
+        (Some("on-request"), "readOnly" | "read-only") => "readOnly".into(),
+        (Some("on-request"), "workspaceWrite" | "workspace-write") => "workspaceWrite".into(),
+        (a, k) => format!("{}/{k}", a.unwrap_or("custom")),
+    })
 }
 
 /// 在托管工作树里开的对话：记下它的目录，之后加载（`thread/resume`）时用它，不用终端的工作目录
@@ -278,9 +307,12 @@ impl Chat {
         self.inst(id).agent.launch() == "codex"
     }
 
-    /// 全部权限的终端：不询问、不用沙箱（和 `codex --yolo` 一样）
+    /// 界面上选过权限就用选的；否则全部权限的终端不询问、不用沙箱（和 `codex --yolo` 一样）
     fn codex_policy(&self, id: &str) -> Value {
-        if self.instances.opts(id).full_access {
+        if let Some(perm) = lock(&self.inst(id).st).codex.perm.clone() {
+            let (approval, sandbox, _) = perm_params(&perm);
+            json!({ "approvalPolicy": approval, "sandbox": sandbox })
+        } else if self.instances.opts(id).full_access {
             json!({ "approvalPolicy": "never", "sandbox": "danger-full-access" })
         } else {
             json!({})
@@ -421,6 +453,7 @@ impl Chat {
         st.title = t["name"].as_str().filter(|s| !s.is_empty()).map(String::from).or(st.title.take());
         st.version = t["cliVersion"].as_str().map(String::from).or(st.version.take());
         st.codex.cwd = t["cwd"].as_str().map(String::from).or(st.codex.cwd.take());
+        st.mode = st.codex.perm.clone().or_else(|| perm_of(&r["approvalPolicy"], &r["sandbox"]));
         st.error = None;
         let active = t["status"]["type"] == "active";
         Self::set_phase(inst, &mut st, if active { Phase::Running } else { Phase::Idle }, None);
@@ -599,6 +632,17 @@ impl Chat {
                     st.error = None;
                     inst.prompts.send_modify(|n| *n += 1);
                     Self::set_phase(&inst, &mut st, Phase::Running, None);
+                }
+                // 终端里的 TUI 用 `/permissions` 换了权限：界面跟着显示；界面选过的也换成它，免得下一轮又改回去
+                "thread/settings/updated" => {
+                    let set = &p["threadSettings"];
+                    if let Some(perm) = perm_of(&set["approvalPolicy"], &set["sandboxPolicy"]) {
+                        if st.codex.perm.is_some() {
+                            st.codex.perm = PERMS.contains(&perm.as_str()).then(|| perm.clone());
+                        }
+                        st.mode = Some(perm);
+                        Self::emit_status(&inst, &st);
+                    }
                 }
                 "turn/completed" => {
                     st.codex.turn = None;
@@ -889,6 +933,11 @@ impl Chat {
         if let Some(e) = effort {
             params["effort"] = json!(e);
         }
+        if let Some(perm) = lock(&inst.st).codex.perm.clone() {
+            let (approval, _, sandbox) = perm_params(&perm);
+            params["approvalPolicy"] = approval;
+            params["sandboxPolicy"] = sandbox;
+        }
         self.checkpoint_turn(id, text, true).await;
         let r = server.call("turn/start", params).await?;
         let mut st = lock(&inst.st);
@@ -901,7 +950,7 @@ impl Chat {
     // ---------------- 托管工作树（见 codex_worktree.rs） ----------------
 
     /// 现在这段对话所在的目录（还没有对话时是终端的工作目录）
-    fn codex_current_cwd(&self, id: &str) -> Result<String, LocalError> {
+    pub(super) fn codex_current_cwd(&self, id: &str) -> Result<String, LocalError> {
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         let inst = self.inst(id);
         let st = lock(&inst.st);
@@ -1044,6 +1093,14 @@ impl Chat {
                 if st.model_set_at.is_none() {
                     st.model_set_at = Some(st.model_msg.clone());
                 }
+            }
+            // 权限：下一轮开始时生效（正在跑的这一轮不变）
+            "mode" => {
+                if !PERMS.contains(&value) {
+                    return Err(LocalError::invalid("value", "invalid"));
+                }
+                st.codex.perm = Some(value.to_string());
+                st.mode = Some(value.to_string());
             }
             _ => return Err(LocalError::invalid("kind", "invalid")),
         }
@@ -1964,6 +2021,17 @@ fn set_usage(st: &mut super::State, u: &Value) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perms_round_trip() {
+        for p in PERMS {
+            let (approval, sandbox, policy) = perm_params(p);
+            assert_eq!(perm_of(&approval, &sandbox).as_deref(), Some(p), "thread/start 的写法");
+            assert_eq!(perm_of(&approval, &policy).as_deref(), Some(p), "turn/start、thread/settings/updated 的写法");
+        }
+        assert_eq!(perm_of(&json!("untrusted"), &json!({ "type": "workspaceWrite" })).as_deref(), Some("untrusted/workspaceWrite"));
+        assert_eq!(perm_of(&json!("never"), &Value::Null), None);
+    }
 
     #[test]
     fn versions() {

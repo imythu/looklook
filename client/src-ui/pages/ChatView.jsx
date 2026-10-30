@@ -30,6 +30,7 @@ import {
   ExternalLink,
   FilePen,
   FileText,
+  Folder,
   FolderGit2,
   GitBranch,
   GitFork,
@@ -69,11 +70,13 @@ import { api, deviceApi, fetchRaw, plainLinksWork, terminalDevice } from '../sha
 import { chatEventsMode, onChatEventsMode, subscribeChat } from '../shared/chatEvents.js';
 import { spinnerText } from '../shared/spinner.js';
 import {
+  CODEX_ACTIONS,
   CODEX_COMMANDS,
   CODEX_ONLY,
   COMMANDS,
   EFFORTS,
   EMPTY,
+  CODEX_MODE_CHOICES,
   MODE_CHOICES,
   TERMINAL_ONLY,
   applyEvent,
@@ -89,8 +92,10 @@ import {
   fieldKind,
   KNOWN_DIALOGS,
   knownDialog,
+  insertMention,
   latestTodos,
   maskEmail,
+  mentionAt,
   modelLabel,
   modelView,
   parseJson,
@@ -102,6 +107,7 @@ import {
   toolCounts,
   toolSummary,
   toolUseIds,
+  workParts,
 } from '../shared/chat.js';
 import { copyText } from '../shared/chatCopy.js';
 import ErrorBoundary from '../shared/ErrorBoundary.jsx';
@@ -911,10 +917,42 @@ function ToolGroup({ id, row, results, live }) {
 }
 
 /**
+ * 一段回复的处理过程（思考、工具、中间的说明）收进一块，结尾的回复留在外面（参照 LiveAgent 的 AssistantWorkTrace）：
+ * - 在跑的时候展开；看历史时有回复的收起，没有回复的（停在工具上、被打断）展开，不然什么都看不见
+ * - 这一轮做完、有回复：自动收起一次，之后展开收起都听用户的
+ * - 等你确认（approval）：强制展开一次，看得到要确认的是什么；之后用户再收起不跟他抢
+ * - 在跑的时候用户收起了：标题下面留着正在做的那一步
+ */
+function WorkTrace({ part, attention, tail, children }) {
+  const { t } = useT();
+  const { running, answer, turn } = part;
+  const [open, setOpen] = useState(() => running || attention || !answer);
+  useEffect(() => {
+    if (attention) setOpen(true);
+  }, [attention]);
+  useEffect(() => {
+    if (!running && !attention && answer) setOpen(false);
+  }, [running, attention, answer]);
+  return (
+    <section className="chat-work" data-running={running ? '' : undefined}>
+      <button type="button" className="chat-work-head" onClick={() => setOpen(!open)} aria-expanded={open}>
+        {open ? <ChevronDown size={14} aria-hidden="true" /> : <ChevronRight size={14} aria-hidden="true" />}
+        <span>{running ? t('chat.work_running') : t('chat.work_done')}</span>
+        {!running && turn && <span className="chat-work-time">{duration(turn.ms)}</span>}
+        {running && <LoaderCircle size={13} className="spin" aria-hidden="true" />}
+        <span className="chat-work-rule" aria-hidden="true" />
+      </button>
+      {open ? <div className="chat-work-body">{children}</div> : running && tail && <div className="chat-work-tail">{tail}</div>}
+    </section>
+  );
+}
+
+/**
  * 一串条目：assistant 回复拆成文字、思考、工具调用，连续的同类工具调用合成一组（主对话和子代理共用）。
  * limit：只画最近的这么多行，前面放“显示更早的 N 步”（每点一次多画一些）。
+ * trace：每段回复的处理过程收进 WorkTrace（只有主对话；子代理的步骤本来就是看过程的）；attention：在等你确认。
  */
-function Rows({ id, items, live, limit = 0 }) {
+function Rows({ id, items, live, limit = 0, trace = false, attention = false }) {
   const { t } = useT();
   const { links, fileUrl } = useContext(ArtifactCtx);
   const results = useMemo(() => resultsById(items), [items]);
@@ -927,7 +965,9 @@ function Rows({ id, items, live, limit = 0 }) {
       {t('chat.sub_earlier', { count: hidden })}
     </button>
   );
-  return [more, ...rows.map((r, n) => {
+  const parts = useMemo(() => (trace ? workParts(rows, live) : null), [trace, rows, live]);
+  const traced = new Set();
+  const render = (r, n) => {
     switch (r.k) {
       case 'text': {
         // 一段回复的最后一段文字（后面是用户消息、提示或者没有了）：下面放复制按钮，复制这段回复的全部文字
@@ -938,7 +978,8 @@ function Rows({ id, items, live, limit = 0 }) {
         while (from > 0 && rows[from - 1].k !== 'item') from--;
         const all = rows.slice(from, n + 1).filter((x) => x.k === 'text').map((x) => x.block.text).join('\n\n');
         // 这一轮用了多久跟在复制按钮后面（不再单独占一行）
-        const turn = next?.item?.k === 'turn' ? next.item : null;
+        // 有处理过程的：用时已经在处理过程的标题上
+        const turn = next?.item?.k === 'turn' && !traced.has(n + 1) ? next.item : null;
         return <ReplyEnd key={r.key} text={r.block.text} all={all} turn={turn} />;
       }
       case 'thinking':
@@ -954,11 +995,31 @@ function Rows({ id, items, live, limit = 0 }) {
           </p>
         );
       default:
-        // 跟在回复后面的用时已经画在回复的结尾
-        if (r.item.k === 'turn' && rows[n - 1]?.k === 'text') return null;
+        // 跟在回复后面的用时已经画在回复的结尾，跟在处理过程后面的画在处理过程的标题上
+        if (r.item.k === 'turn' && (rows[n - 1]?.k === 'text' || traced.has(n))) return null;
         return <Item key={r.key} id={id} item={r.item} />;
     }
-  })];
+  };
+  if (!parts) return [more, ...rows.map(render)];
+  // 处理过程后面紧跟的用时（回复的结尾、单独的那行）不再画
+  for (const p of parts) {
+    if (p.k !== 'work' || !p.turn) continue;
+    let i = p.rows.at(-1) + 1;
+    while (rows[i]?.k === 'text') i++;
+    traced.add(i);
+  }
+  return [
+    more,
+    ...parts.map((p) =>
+      p.k === 'row' ? (
+        render(rows[p.n], p.n)
+      ) : (
+        <WorkTrace key={p.key} part={p} attention={attention && p.running} tail={render(rows[p.rows.at(-1)], p.rows.at(-1))}>
+          {p.rows.map((n) => render(rows[n], n))}
+        </WorkTrace>
+      ),
+    ),
+  ];
 }
 
 /** 一段回复的最后一段文字，下面是复制和用时；手机上长按这一段弹出复制菜单 */
@@ -2090,6 +2151,8 @@ function ModelMenu({ id, status, models, view, onClose }) {
 function ModeMenu({ id, status, onClose }) {
   const { t } = useT();
   const toast = useToast();
+  const { id: agentId } = useContext(AgentCtx);
+  const choices = agentId === 'codex' ? CODEX_MODE_CHOICES : MODE_CHOICES;
   const [busy, setBusy] = useState(null);
   const ready = status?.phase === 'idle' || status?.phase === 'running';
   const set = async (m) => {
@@ -2109,7 +2172,7 @@ function ModeMenu({ id, status, onClose }) {
         <span>{t('chat.mode_pick')}</span>
         <span>Shift+Tab</span>
       </div>
-      {MODE_CHOICES.map((m) => (
+      {choices.map((m) => (
         <button key={m} type="button" className="chat-mi" role="menuitemradio" aria-checked={status?.mode === m} disabled={!ready || busy != null} onClick={() => set(m)}>
           <span className="chat-mi-text">
             <span>{t(`chat.mode_${m}`)}</span>
@@ -2118,6 +2181,8 @@ function ModeMenu({ id, status, onClose }) {
           {busy === m ? <LoaderCircle size={15} className="spin" /> : <Check size={15} className="chat-mi-check" aria-hidden="true" />}
         </button>
       ))}
+      {/* Codex 换权限从下一轮开始算 */}
+      {agentId === 'codex' && status?.phase === 'running' && <p className="chat-pop-note">{t('chat.mode_next_turn')}</p>}
     </Popover>
   );
 }
@@ -2596,6 +2661,7 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
     if (action === 'model') setMenu('model');
     else if (action === 'history') setMenu('resume');
     else if (action === 'worktree') setMenu('worktree');
+    else if (action === 'mode') setMenu('mode');
     else onAction(action);
   };
   // 以前说过的话：Claude Code 用它自己的 history.jsonl（和终端里按上键翻的同一份），发出一句后重新取；
@@ -2655,6 +2721,24 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
     }
   };
   const onKey = (e) => {
+    if (ment.length && !imeComposing(e) && !e.altKey && !e.ctrlKey && !e.metaKey) {
+      // @ 的提示开着：上下键选、回车或 Tab 用上、Esc 关掉
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        setMentPick((p) => (p + (e.key === 'ArrowDown' ? 1 : -1) + ment.length) % ment.length);
+        return;
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+        e.preventDefault();
+        pickMention(ment[mentPick] ?? ment[0]);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setMentOff(mention.start);
+        return;
+      }
+    }
     if (e.key === 'r' && e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
       // 像命令行：Ctrl+R 搜以前说过的话
       e.preventDefault();
@@ -2683,10 +2767,10 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
       e.preventDefault();
       applySuggestion();
     } else if (e.key === 'Tab' && e.shiftKey && !text && caps.mode !== false) {
-      // 和 Claude Code 一样：Shift+Tab 轮换权限模式
+      // 和 Claude Code 一样：Shift+Tab 轮换权限模式（Claude 只在前三个里转，Codex 三档都转）
       e.preventDefault();
-      const i = MODE_CHOICES.indexOf(status?.mode);
-      api.post(`/instances/${id}/chat/setting`, { kind: 'mode', value: MODE_CHOICES[(i + 1) % 3] }).catch((err) => toast(errorText(t, err), 'error'));
+      const i = modeChoices.indexOf(status?.mode);
+      api.post(`/instances/${id}/chat/setting`, { kind: 'mode', value: modeChoices[(i + 1) % 3] }).catch((err) => toast(errorText(t, err), 'error'));
     }
   };
   // 输入 / 时：内置的常用命令 + 这个项目和用户自己的命令、技能（第一次用到时取）
@@ -2703,7 +2787,10 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
   const slash = useMemo(() => {
     if (!wantSlash) return [];
     const q = text.toLowerCase();
-    const builtin = COMMANDS.filter(([name]) => (agentId === 'codex' ? CODEX_COMMANDS.includes(name) : !CODEX_ONLY.includes(name))).map(([name, action]) => ({ name, action, description: t(`chat.cmd.${name.slice(1)}`) }));
+    const builtin = COMMANDS.filter(([name]) => (agentId === 'codex' ? CODEX_COMMANDS.includes(name) : !CODEX_ONLY.includes(name))).map(([name, action]) => {
+      const codex = agentId === 'codex' ? CODEX_ACTIONS[name] : null;
+      return { name, action: codex ?? action, description: t(codex ? `chat.cmd.codex_${name.slice(1)}` : `chat.cmd.${name.slice(1)}`) };
+    });
     const names = new Set([...builtin.map((c) => c.name), ...TERMINAL_ONLY]);
     const mine = (custom ?? []).filter((c) => !names.has(c.name));
     const all = [...builtin, ...mine];
@@ -2719,6 +2806,40 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
     setText(`${c.name} `);
     area.current?.focus();
   };
+  // 输入 @ 时：这段对话的工作目录里的文件、目录（和 TUI 一样，选中后写成 @路径）
+  const [caret, setCaret] = useState(0);
+  const [mentOff, setMentOff] = useState(null);
+  const [mentFound, setMentFound] = useState({ q: null, items: [] });
+  const [mentPick, setMentPick] = useState(0);
+  const mention = !wantSlash && !disabled && caret <= text.length ? mentionAt(text, caret) : null;
+  const mentQ = mention && mention.start !== mentOff ? mention.q : null;
+  useEffect(() => {
+    setMentPick(0);
+    if (mentQ == null) return undefined;
+    let alive = true;
+    const timer = setTimeout(() => {
+      api.get(`/instances/${id}/chat/mentions?q=${encodeURIComponent(mentQ)}`).then(
+        (r) => alive && setMentFound({ q: mentQ, items: r?.items ?? [] }),
+        () => {},
+      );
+    }, 120);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [mentQ, id]);
+  const ment = mentQ != null && mentFound.q != null ? mentFound.items : [];
+  const pickMention = (m) => {
+    const r = insertMention(text, mention.start, caret, m.path);
+    setText(r.text);
+    setCaret(r.caret);
+    requestAnimationFrame(() => {
+      const el = area.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(r.caret, r.caret);
+    });
+  };
   // Claude Code 跑完一轮后推荐的下一句（终端里灰着显示在输入框里）：空闲、输入框空着时显示，点一下或按 Tab 填进来
   const suggestion = phase === 'idle' && !offline && !text && !files.length ? status?.suggestion || null : null;
   const applySuggestion = () => {
@@ -2730,7 +2851,8 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
       el.setSelectionRange(el.value.length, el.value.length);
     });
   };
-  const modeText = status?.mode ? t(`chat.mode_${MODE_CHOICES.includes(status.mode) || status.mode === 'dontAsk' ? status.mode : 'other'}`, { mode: status.mode }) : t('chat.mode');
+  const modeChoices = agentId === 'codex' ? CODEX_MODE_CHOICES : MODE_CHOICES;
+  const modeText = status?.mode ? t(`chat.mode_${modeChoices.includes(status.mode) || (agentId !== 'codex' && status.mode === 'dontAsk') ? status.mode : 'other'}`, { mode: status.mode }) : t('chat.mode');
   const ready = phase === 'idle' || phase === 'running';
   const showStop = running && !text.trim() && !files.length;
   const canSend = !!text.trim() || files.some((f) => f.path);
@@ -2753,6 +2875,24 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
                 <span className="chat-note ellipsis">{c.description}</span>
                 {c.action && <span className="badge">{t(`chat.cmd_action_${c.action}`)}</span>}
                 {c.source && <span className="badge">{t(`chat.cmd_source_${c.source}`)}</span>}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      {ment.length > 0 && (
+        <ul className="chat-slash chat-mention" role="listbox" aria-label={t('chat.mention')}>
+          {ment.map((m, n) => (
+            <li key={m.path}>
+              <button
+                type="button"
+                aria-selected={mentPick === n}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pickMention(m)}
+                title={m.path}
+              >
+                {m.dir ? <Folder size={15} aria-hidden="true" /> : <FileText size={15} aria-hidden="true" />}
+                <span className="ellipsis">{m.path}</span>
               </button>
             </li>
           ))}
@@ -2837,13 +2977,17 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
         <textarea
           ref={area}
           rows={1}
+          // 不自动把第一个字母变大写（手机、Mac 都会）：常打命令、文件名、代码
+          autoCapitalize="none"
           value={text}
           disabled={disabled}
           placeholder={suggestion ?? t(offline ? 'chat.placeholder_offline' : disabled ? `chat.placeholder_${phase}` : running ? 'chat.placeholder_running' : touch ? 'chat.placeholder_touch' : 'chat.placeholder')}
           onChange={(e) => {
             hist.current = -1;
             setText(e.target.value);
+            setCaret(e.target.selectionStart ?? e.target.value.length);
           }}
+          onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
           onKeyDown={onKey}
           onPaste={(e) => {
             const imgs = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'));
@@ -4217,7 +4361,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
                   <p className="chat-note">{t('chat.beta_note')}</p>
                 </div>
               )}
-              <Rows id={id} items={items} live={live} />
+              <Rows id={id} items={items} live={live} trace attention={phase === 'approval'} />
               {first && <FirstSend id={id} first={first} onBack={onDraftBack} />}
               {phase === 'running' && <Live status={status} items={items} since={since} />}
               {/* 推荐的下一句放在对话最后：点一下填进输入框（电脑上也可以按 Tab） */}
