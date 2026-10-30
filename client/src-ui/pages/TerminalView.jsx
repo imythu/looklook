@@ -474,14 +474,9 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
           {sub}
           {running && <LinkBadge id={id} />}
         </span>
-        {running && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} tip={active} launch={inst?.launch} />}
+        {/* 随标签变的按钮放在标签左边，标签右边只放每个标签都有的：切标签时标签组不跟着挪 */}
         {tab === 'term' && <NewlineHint inst={inst} touch={false} />}
         {running && tab === 'term' && reconnect.button}
-        {running && (
-          <button type="button" className={iconBtn} onClick={reload} aria-label={t('term.reload')} title={t('term.reload')}>
-            <RefreshCw size={16} />
-          </button>
-        )}
         {running && tab === 'term' && (
           <button type="button" className={iconBtn} onClick={() => setSelecting(!selecting)} aria-pressed={selecting} aria-label={t('select.toggle')} title={t('select.toggle')}>
             <TextSelectIcon size={16} />
@@ -493,6 +488,12 @@ export function TermPane({ id, inst, active, missing, offline = false, onStart, 
           </button>
         )}
         {tab !== 'chat' && files.button}
+        {running && !inst?.container && <TermTabs tab={tab} onChange={setTab} chat={chat} tip={active} launch={inst?.launch} />}
+        {running && (
+          <button type="button" className={iconBtn} onClick={reload} aria-label={t('term.reload')} title={t('term.reload')}>
+            <RefreshCw size={16} />
+          </button>
+        )}
         {!full && (
           <button type="button" className={iconBtn} onClick={toggleMax} aria-pressed={max} aria-label={t(max ? 'term.restore' : 'term.maximize')} title={t(max ? 'term.restore' : 'term.maximize')}>
             {max ? <Shrink size={16} /> : <Expand size={16} />}

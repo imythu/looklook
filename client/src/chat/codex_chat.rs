@@ -1194,7 +1194,9 @@ impl Chat {
 
     /// 从“以前的对话”接着、或者迁移时：直接记下要接着的会话（记录文件路径在加载时由 app-server 给）
     pub fn codex_bind(&self, id: &str, thread: &str) {
-        let b = Binding { session_id: thread.to_string(), transcript_path: PathBuf::new() };
+        // 记录文件找得到就记上：终端里的 TUI 只接有记录文件的对话（见 instances 的 codex_tui_command）
+        let path = tokio::task::block_in_place(|| crate::history::codex_rollout(thread)).unwrap_or_default();
+        let b = Binding { session_id: thread.to_string(), transcript_path: path };
         let _ = self.store.set(&super::binding_key(id), &b);
         if let Some(inst) = lock(&self.insts).get(id).cloned() {
             let mut st = lock(&inst.st);

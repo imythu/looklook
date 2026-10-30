@@ -466,10 +466,14 @@ async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> 
 pub async fn create_session(app: &App, input: Input, start: bool) -> R<crate::instances::View> {
     let (prompt, resume) = (input.prompt.clone().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()), input.resume.clone());
     let v = if input.launch.as_deref() == Some("dsh") { create_dsh(app, input).await? } else { app.instances.create(input).await? };
-    // 对话模式的 Codex：第一句话、接着以前的对话都交给 app-server（终端里只是 shell）
-    if app.instances.codex_app_mode(&v.row) && (prompt.is_some() || resume.is_some()) {
+    // 对话模式的 Codex：第一句话、接着以前的对话都交给 app-server。接着哪段对话要在终端启动之前记好：
+    // 终端里的 TUI 按它接上同一段，不然会自己新开一段空的
+    if app.instances.codex_app_mode(&v.row) && resume.is_some() {
+        app.chat.codex_first(&v.row.id, None, resume).await;
+    }
+    if app.instances.codex_app_mode(&v.row) && prompt.is_some() {
         let (chat, id) = (app.chat.clone(), v.row.id.clone());
-        tokio::spawn(async move { chat.codex_first(&id, prompt, resume).await });
+        tokio::spawn(async move { chat.codex_first(&id, prompt, None).await });
     }
     if start && app.instances.codex_app_mode(&v.row) {
         app.chat.codex_warm(&v.row.workdir).await;

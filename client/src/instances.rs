@@ -1113,7 +1113,10 @@ impl Instances {
         let opts = self.opts(&row.id);
         // 对话还没有记录文件（新开的、还没聊过）时 TUI 接不上它（thread/resume 报 no rollout found）：
         // 不带会话号启动，让 TUI 自己开一段，看看收到 thread/started 再认领（见 chat::codex_chat 的 codex_claim_thread）
-        let thread = crate::chat::binding(&self.store, &row.id).filter(|b| b.transcript_path.is_file()).map(|b| b.session_id);
+        // 接着以前的对话时还没记下记录文件的路径（接上之前）：按会话号找
+        let thread = crate::chat::binding(&self.store, &row.id)
+            .filter(|b| b.transcript_path.is_file() || (b.transcript_path.as_os_str().is_empty() && crate::history::codex_rollout(&b.session_id).is_some()))
+            .map(|b| b.session_id);
         Some(match crate::chat::codex_app::endpoint() {
             // 接在 app-server 上的 TUI 不带权限参数（--yolo）：权限只由看看在 app-server 上设（thread/start、thread/resume、
             // 认领时的 thread/settings/update）。带了的话 TUI 里 /resume、换会话会报

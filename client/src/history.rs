@@ -321,6 +321,15 @@ fn codex_files() -> Vec<(PathBuf, std::fs::Metadata)> {
     out
 }
 
+/// Codex 对话 `thread` 的记录文件
+pub fn codex_rollout(thread: &str) -> Option<PathBuf> {
+    if thread.is_empty() {
+        return None;
+    }
+    let tail = format!("-{thread}.jsonl");
+    codex_files().into_iter().map(|(p, _)| p).find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().ends_with(&tail)))
+}
+
 fn codex_titles() -> HashMap<String, String> {
     let mut m = HashMap::new();
     let Ok(text) = std::fs::read_to_string(codex_dir().join("session_index.jsonl")) else { return m };
