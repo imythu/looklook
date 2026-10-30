@@ -55,7 +55,7 @@ import {
   useLoad,
   useToast,
 } from "../shared/ui.jsx";
-import { CHAT_LAUNCHES } from "../shared/chat.js";
+import { CHAT_LAUNCHES, isDshWeb } from "../shared/chat.js";
 import { RemoteUpsell, remoteAllowed } from "../shared/Remote.jsx";
 
 const LAUNCHES = ["shell", "codex", "claude", "opencode", "dsh", "custom"];
@@ -290,7 +290,7 @@ export function useInstanceActions(inst, { onChanged, onEdit, onLogs, onOpenHere
   const live = inst.running || Boolean(inst.task_alive);
   const persistent = status.capabilities.persistent;
   const allowed = status.account.allowed;
-  const dsh = inst.launch === "dsh";
+  const dsh = isDshWeb(inst);
   const act = async (fn, okText) => {
     setBusy(true);
     try {
@@ -1127,12 +1127,12 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
         <Field label={t('form.name')} hint={t('form.name_hint')}>
           <input value={name} onChange={(e) => setName(e.target.value)} maxLength={40} placeholder={guessName(launch, workdir) || t(`launch.${launch}.title`)} />
         </Field>
-        {launch === "dsh" && <Note>{t("dsh.form_note")}</Note>}
+        {launch === "dsh" && !(canChat && chatUi) && <Note>{t("dsh.form_note")}</Note>}
         <FolderField
           value={workdir}
           onChange={editWorkdir}
           client={client}
-          hint={launch === "dsh" ? t("dsh.workdir_hint") : undefined}
+          hint={launch === "dsh" && !(canChat && chatUi) ? t("dsh.workdir_hint") : undefined}
         />
         <ShellPicker
           value={shell}
@@ -1179,7 +1179,8 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
             </label>
           </div>
         )}
-        {canChat && (
+        {/* DSH 的网页版和对话模式建好后不能互换 */}
+        {canChat && !(editing && launch === "dsh") && (
           <label
             className="row"
             style={{ alignItems: "flex-start", gap: 8, cursor: "pointer", marginBottom: 12 }}
@@ -1193,7 +1194,7 @@ export function InstanceDialog({ open, onClose, initial, preset, workdir: wantWo
             <span>
               <b style={{ fontSize: 14 }}>{t("form.chat_ui")}</b>
               <span className="field-hint" style={{ display: "block" }}>
-                {launch === "codex" ? t("form.chat_ui_hint_codex") : t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
+                {launch === "codex" ? t("form.chat_ui_hint_codex") : launch === "dsh" ? t("form.chat_ui_hint_dsh") : t(editing && !initial?.chat_ui ? "form.chat_ui_hint_restart" : "form.chat_ui_hint")}
               </span>
             </span>
           </label>

@@ -35,7 +35,7 @@ const LAUNCHES: &[&str] = &["shell", "codex", "claude", "opencode", "dsh", "cust
 const ORPHAN_SWEEP: Duration = Duration::from_secs(60);
 /// 有对话界面的启动类型（Claude Code：docs/CLAUDE_UI.md；Codex：docs/CODEX_UI.md）；
 /// 前端 `src-ui/shared/chat.js` 的 `CHAT_LAUNCHES` 要一起改。
-pub const CHAT_LAUNCHES: &[&str] = &["claude", "codex"];
+pub const CHAT_LAUNCHES: &[&str] = &["claude", "codex", "dsh"];
 
 fn has_chat(launch: &str) -> bool {
     CHAT_LAUNCHES.contains(&launch)
@@ -450,9 +450,9 @@ impl Instances {
         (PORT_RANGE.0..=PORT_RANGE.1).contains(&port)
     }
 
-    /// 这台电脑上的 DSH（只有一个：一个 `dsh web` 进程管理所有项目文件夹）。
+    /// 这台电脑上网页版的 DSH（只有一个：一个 `dsh web` 进程管理所有项目文件夹）。对话模式的 DSH 不算，可以有很多个。
     pub fn dsh(&self) -> Result<Option<InstanceRow>, LocalError> {
-        Ok(self.store.instances()?.into_iter().find(|r| r.launch == "dsh"))
+        Ok(self.store.instances()?.into_iter().find(|r| r.launch == "dsh" && !self.opts(&r.id).chat_ui))
     }
 
     /// 给 DSH 网页界面挑一个现在没被占用的端口：3080 起往后找，都不行再让系统分配。
@@ -524,9 +524,9 @@ impl Instances {
     }
 
     /// 全部权限选项：只对 Codex / Claude Code / OpenCode 有意义（DSH 的权限在它自己的网页里设置）；
-    /// root 运行时必须确认。DSH 必须有网页端口。
+    /// root 运行时必须确认。网页版的 DSH 必须有网页端口；对话模式的 DSH 用看看共用的 `dsh web`，没有自己的端口。
     fn validate_opts(row: &InstanceRow, opts: &mut Opts) -> Result<(), LocalError> {
-        if row.launch == "dsh" {
+        if row.launch == "dsh" && !opts.chat_ui {
             if opts.web_port.is_none() {
                 return Err(LocalError::invalid("web_port", "required"));
             }
@@ -585,7 +585,8 @@ impl Instances {
             row.name = default_name(&row.launch, container.as_ref().map_or(&row.workdir, |c| &c.dir), &taken);
         }
         self.validate(&mut row)?;
-        if row.launch == "dsh" && self.dsh()?.is_some() {
+        let dsh_web = row.launch == "dsh" && !input.chat_ui.unwrap_or(matches!(self.backend, Backend::Tmux(_)));
+        if dsh_web && self.dsh()?.is_some() {
             return Err(LocalError::new("DSH_EXISTS"));
         }
         let claude_profile = input.claude_profile.filter(|s| !s.is_empty());
@@ -699,6 +700,10 @@ impl Instances {
             opts.root_confirmed = v;
         }
         if let Some(v) = input.chat_ui {
+            // DSH 的网页版和对话模式不能互相改（网页版带着自己的端口和网页映射）
+            if row.launch == "dsh" && v != opts.chat_ui {
+                return Err(LocalError::invalid("chat_ui", "invalid"));
+            }
             opts.chat_ui = v;
         }
         if renamed {
@@ -1594,6 +1599,8 @@ pub fn launch_command_line(row: &InstanceRow, opts: Opts, root: bool) -> Option<
         "claude" => Some("claude --allow-dangerously-skip-permissions".into()),
         "opencode" if opts.full_access => Some("opencode --auto".into()),
         "opencode" => Some("opencode".into()),
+        // 对话模式的 DSH：终端里是 shell（对话走看看共用的 dsh web）
+        "dsh" if opts.chat_ui => None,
         "dsh" => opts.web_port.map(|p| format!("dsh web --no-open --port {p}")),
         "custom" => Some(row.command.clone()),
         _ => None,
@@ -2166,6 +2173,8 @@ mod tests {
         r.launch = "dsh".into();
         let web = Opts { web_port: Some(3080), ..Opts::default() };
         assert_eq!(launch_command_line(&r, web, false).as_deref(), Some("dsh web --no-open --port 3080"));
+        let chat = Opts { chat_ui: true, ..Opts::default() };
+        assert_eq!(launch_command_line(&r, chat, false), None, "对话模式的 DSH 终端里是 shell");
     }
 
     #[test]
@@ -2187,6 +2196,9 @@ mod tests {
         let mut o = Opts { full_access: true, root_confirmed: true, web_port: Some(3080), chat_ui: false, name_custom: false };
         Instances::validate_opts(&r, &mut o).unwrap();
         assert!(o == Opts { web_port: Some(3080), ..Opts::default() }, "DSH 没有全部权限选项");
+        let mut o = Opts { full_access: true, root_confirmed: false, web_port: Some(3080), chat_ui: true, name_custom: false };
+        Instances::validate_opts(&r, &mut o).unwrap();
+        assert!(o == Opts { chat_ui: true, ..Opts::default() }, "对话模式的 DSH 不要网页端口");
     }
 
     #[test]

@@ -260,5 +260,10 @@
   "CODEX_WORKTREE_NO_REPO": "This project isn't a Git repository, so worktrees aren't available",
   "CODEX_WORKTREE_NO_OWNER": "No conversation is recorded for this worktree",
   "CODEX_WORKTREE_NO_THREAD": "There's no conversation yet. Send a message first, then continue it in a new worktree",
-  "DSH_NOT_INSTALLED": "DSH isn't installed on this computer. Choose DSH in New session to install it in one step, then open this again"
+  "DSH_NOT_INSTALLED": "DSH isn't installed on this computer. Choose DSH in New session to install it in one step, then open this again",
+  "DSH_CONNECT": "Can't connect to DSH on this computer ({{detail}})",
+  "DSH_UNAUTHORIZED": "DSH rejected the sign-in; try again, or restart dsh web",
+  "DSH_REQUEST_FAILED": "DSH couldn't do it: {{detail}}",
+  "DSH_START": "dsh web didn't start ({{detail}}). See the log run/dsh-web.log",
+  "DSH_IMAGES_UNSUPPORTED": "The selected model can't take images. Pick one that does (for example Flash) in the model menu and send again"
 }

@@ -260,5 +260,10 @@
   "CODEX_WORKTREE_NO_REPO": "这个项目不是 Git 仓库，用不了工作树",
   "CODEX_WORKTREE_NO_OWNER": "这个工作树里没有记录对应的对话",
   "CODEX_WORKTREE_NO_THREAD": "还没有对话，先说一句再接到新工作树里",
-  "DSH_NOT_INSTALLED": "这台电脑上没装 DSH。在“新建会话”里选 DSH 可以一键安装，装好后再打开"
+  "DSH_NOT_INSTALLED": "这台电脑上没装 DSH。在“新建会话”里选 DSH 可以一键安装，装好后再打开",
+  "DSH_CONNECT": "连不上这台电脑上的 DSH（{{detail}}）",
+  "DSH_UNAUTHORIZED": "DSH 拒绝了看看的登录，重试一次；还不行就重启 dsh web",
+  "DSH_REQUEST_FAILED": "DSH 没能完成：{{detail}}",
+  "DSH_START": "dsh web 没能启动（{{detail}}）。看看日志 run/dsh-web.log",
+  "DSH_IMAGES_UNSUPPORTED": "现在选的模型不能看图片：在模型菜单里换一个支持图片的模型（例如 Flash）再发"
 }

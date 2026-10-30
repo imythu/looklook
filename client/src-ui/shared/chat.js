@@ -2,7 +2,10 @@
 // 不依赖 React 和浏览器，`node --test` 直接测。
 
 /** 有对话界面的启动类型（和服务端 instances.rs 的 CHAT_LAUNCHES 一致） */
-export const CHAT_LAUNCHES = ['claude', 'codex'];
+export const CHAT_LAUNCHES = ['claude', 'codex', 'dsh'];
+
+/** 网页版的 DSH（每台电脑一个，会话标签里显示它自己的网页）；对话模式的 DSH 和 Codex 一样走对话界面 */
+export const isDshWeb = (inst) => inst?.launch === 'dsh' && !inst?.chat_ui;
 
 /** 空的对话状态 */
 export const EMPTY = { status: null, items: [], start: 0, total: 0 };
@@ -256,6 +259,9 @@ export const CODEX_COMMANDS = ['/compact', '/clear', '/new', '/model', '/permiss
 /** Codex 里意思不一样的命令：/permissions 是换权限（打开权限菜单），不是 Claude 的权限规则 */
 export const CODEX_ACTIONS = { '/permissions': 'mode' };
 
+/** DSH（走 dsh web）认的：/clear、/new 开新会话，/model 是界面的模型菜单；别的斜杠命令交给 DSH 自己执行 */
+export const DSH_COMMANDS = ['/clear', '/new', '/model'];
+
 /** 只有 Codex 有的（看看在界面里做）：别的工具不列、不拦 */
 export const CODEX_ONLY = ['/worktree'];
 
@@ -270,6 +276,7 @@ export function slashAction(text, agent) {
   if (s !== cmd) return null;
   if (agent !== 'codex' && CODEX_ONLY.includes(cmd)) return null;
   if (agent === 'codex' && CODEX_ACTIONS[cmd]) return CODEX_ACTIONS[cmd];
+  if (agent === 'dsh' && !DSH_COMMANDS.includes(cmd)) return null;
   return COMMANDS.find(([c]) => c === cmd)?.[1] ?? null;
 }
 

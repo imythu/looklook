@@ -264,7 +264,8 @@
     "chat_ui": "Chat view",
     "chat_ui_hint": "Besides the terminal, talk to Claude Code, approve actions and send images in a chat view. Everything in the terminal still works; switch to it anytime.",
     "chat_ui_hint_restart": "Besides the terminal, talk to Claude Code, approve actions and send images in a chat view. Restart this terminal after turning it on.",
-    "chat_ui_hint_codex": "Besides the terminal, talk to Codex and approve actions in a chat view. Looklook runs it with --no-daemon and its own profile (looklook-chat) for hooks; your Codex config is not changed."
+    "chat_ui_hint_codex": "Besides the terminal, talk to Codex and approve actions in a chat view. Looklook runs it with --no-daemon and its own profile (looklook-chat) for hooks; your Codex config is not changed.",
+    "chat_ui_hint_dsh": "Talk to DSH, approve actions and answer its questions in a chat view. Looklook drives the chat through `dsh web` on this computer (started in the background if it isn't running); the terminal is a plain shell in the same folder. Leave it off for the old web version (one per computer)."
   },
   "tools": {
     "missing": "{{tool}} isn't installed on this computer",
@@ -1996,7 +1997,23 @@
     "read_show_read": "Show what was read",
     "read_show_file": "Preview the whole file",
     "read_full": "Full screen",
-    "read_image_gone": "The image is gone (it may have been deleted or moved)"
+    "read_image_gone": "The image is gone (it may have been deleted or moved)",
+    "detached_dsh_unavailable_title": "Can't reach DSH",
+    "detached_dsh_unavailable_body": "Looklook drives the chat through `dsh web` on this computer, which didn't start or can't be reached. Make sure DSH is installed and its model API key is set, then try again.",
+    "detached_dsh_not_found_title": "DSH is not installed on this computer",
+    "detached_dsh_not_found_body": "Pick DSH in New session to install it, then try again.",
+    "detached_dsh_follow_title": "Lost the connection to DSH",
+    "detached_dsh_follow_body": "Reconnecting; if it doesn't come back, try again below.",
+    "approve_reason": "Reason: {{reason}}",
+    "pet_hide": "Hide the buddy",
+    "pet_show": "Bring back the buddy",
+    "pet_working": "Working",
+    "pet_waiting": "Waiting for you",
+    "pet_done": "Done!",
+    "pet_sleeping": "Napping",
+    "plan_approve": "Approve the plan and start",
+    "dsh_plan_on": "Plan mode: DSH only reads and writes a plan; it acts after you approve",
+    "dsh_plan_off": "Leave plan mode"
   },
   "board": {
     "title": "Tasks",
@@ -2198,7 +2215,7 @@
     "custom": "Custom command…",
     "custom_hint": "Type the command to run in the box",
     "dsh_hint": "Opens its web page in a session tab",
-    "dsh_open": "Already on this computer; opens it",
+    "dsh_open": "Opens the DSH web page already on this computer",
     "install_start": "Install and start",
     "install_strip": "{{tool}} isn't installed on this computer. Start installs it first, then starts.",
     "offline": "{{device}} is offline. Your draft is kept and can be sent when it's back, or pick another project.",
@@ -2209,7 +2226,8 @@
     "docker_hint": "Terminal only, no chat view",
     "keys": "Enter to start · Shift+Enter for a new line · Draft saved automatically",
     "recent": "Or continue a recent one in this project",
-    "continue": "Continue"
+    "continue": "Continue",
+    "dsh_web": "DSH web"
   },
   "acct": {
     "computers": "Computers",

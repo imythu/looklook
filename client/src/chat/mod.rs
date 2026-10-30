@@ -21,6 +21,9 @@ pub mod codex_rollout;
 pub mod codex_screen;
 pub mod codex_worktree;
 pub mod commands;
+pub mod dsh_app;
+pub mod dsh_chat;
+pub mod dsh_log;
 pub mod hooks;
 pub mod mentions;
 pub mod models;
@@ -170,6 +173,8 @@ struct State {
     suggestion: Option<String>,
     /// Codex（app-server）的这一轮、上下文窗口、累计 token
     codex: codex_chat::CodexSt,
+    /// DSH（dsh web）的跟读、排队的消息、用量
+    dsh: dsh_chat::DshSt,
     /// 连续几次抓屏都认不出输入框、也读不出选择框（重绘、缩放到一半时会抓到这种半截屏幕）
     odd_screens: u8,
     /// 这次启动后屏幕上出现过输入框（之前认不出来的屏幕多半是还在启动，见 [`STARTUP_WAIT`]）
@@ -272,6 +277,8 @@ pub struct Chat {
     insts: Mutex<HashMap<String, Arc<Inst>>>,
     /// Codex 的 app-server
     codex: codex_chat::Hub,
+    /// DSH 的 dsh web
+    dsh: dsh_chat::Hub,
     me: Weak<Chat>,
 }
 
@@ -297,6 +304,7 @@ impl Chat {
             next_id: AtomicU64::new(1),
             insts: Mutex::new(HashMap::new()),
             codex: Default::default(),
+            dsh: Default::default(),
             me: me.clone(),
         })
     }
@@ -352,6 +360,7 @@ impl Chat {
                         dialog: None,
                         suggestion: None,
                         codex: Default::default(),
+                        dsh: Default::default(),
                         odd_screens: 0,
                         drawn: false,
                         compacting: None,
@@ -390,6 +399,12 @@ impl Chat {
                     tokio::spawn(async move { me.codex_forget(thread).await });
                 }
             }
+            if inst.agent.launch() == "dsh" {
+                let session = st.binding.as_ref().map(|b| b.session_id.clone());
+                if let (Some(me), id) = (self.me.upgrade(), id.to_string()) {
+                    tokio::spawn(async move { me.dsh_forget(&id, session).await });
+                }
+            }
         }
         let _ = self.store.remove(&binding_key(id));
         let _ = self.store.remove(&board::key(id));
@@ -423,9 +438,9 @@ impl Chat {
             "context": st.context,
             "title": st.title,
             // Codex：这段对话实际在哪个目录（在托管工作树里时和终端的工作目录不同）
-            "cwd": st.codex.cwd,
+            "cwd": st.codex.cwd.as_ref().or(st.dsh.cwd.as_ref()),
             // Claude Code 队列里的（读 transcript）；Codex 是插话（`turn/steer`）发出去、还没进对话的
-            "queued": st.queued.iter().chain(&st.codex.steered).collect::<Vec<_>>(),
+            "queued": st.queued.iter().chain(&st.codex.steered).chain(&st.dsh.queued).collect::<Vec<_>>(),
             "limit": (st.limit_wait.is_some() || st.limit_auto_at.is_some()).then(|| json!({ "waiting": st.limit_wait, "auto_at": st.limit_auto_at })),
             "dialog": st.dialog,
             "effort": st.effort,
@@ -865,6 +880,23 @@ impl Chat {
                 }
             }
         }
+        if inst.agent.launch() == "dsh" {
+            if let Err(e) = self.dsh_attach(id).await {
+                let mut st = lock(&inst.st);
+                st.error = e.params.get("detail").and_then(Value::as_str).map(|d| d.chars().take(500).collect()).or(Some(e.code.to_string()));
+                let reason = if e.code == "DSH_NOT_FOUND" { "dsh_not_found" } else { "dsh_unavailable" };
+                Self::set_phase(&inst, &mut st, Phase::Detached, Some(reason));
+            } else {
+                // 刚开始跟读：等快照到了再取（最多两秒）
+                let log = lock(&inst.st).binding.as_ref().map(|b| dsh_log::shared(&b.session_id));
+                for _ in 0..40 {
+                    if log.as_ref().is_none_or(|l| lock(l).seeded()) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            }
+        }
         self.poll(&inst).await;
         let tr = inst.tr.lock().await;
         let (total, items) = match tr.as_ref().map(Reader::get) {
@@ -899,6 +931,10 @@ impl Chat {
     /// 用户消息 `key` 里的第 `n` 张图片：类型和内容。Claude Code 的图片直接存在 transcript 里，Codex 的在 rollout 里
     pub async fn user_image(&self, id: &str, key: &str, n: usize) -> Result<(&'static str, Vec<u8>), LocalError> {
         self.require(id)?;
+        if self.is_dsh(id) {
+            let rec = self.item(id, key).await?;
+            return self.dsh_user_image(id, &rec, n).await;
+        }
         if self.is_codex(id) {
             let inst = self.inst(id);
             let path = {
@@ -929,9 +965,13 @@ impl Chat {
         let mut tick = 0u32;
         loop {
             while inst.viewers.load(Ordering::SeqCst) > 0 {
+                // DSH：连接断了（DSH 重启）就重新接上
+                if tick.is_multiple_of(10) && inst.agent.launch() == "dsh" {
+                    self.dsh_keep(&inst.id).await;
+                }
                 self.poll(&inst).await;
-                // Codex 的状态来自 app-server，不用看屏幕
-                if tick.is_multiple_of(3) && inst.agent.launch() != "codex" {
+                // Codex、DSH 的状态来自它们的后台服务，不用看屏幕
+                if tick.is_multiple_of(3) && !matches!(inst.agent.launch(), "codex" | "dsh") {
                     self.check_screen(&inst, true).await;
                     if lock(&inst.st).dialog.as_ref().is_some_and(screen::Dialog::is_limit) {
                         self.guard_limit(&inst);
@@ -1173,7 +1213,8 @@ impl Chat {
             tick = tick.wrapping_add(1);
             let insts: Vec<Arc<Inst>> = lock(&self.insts).values().cloned().collect();
             for inst in insts {
-                let claude = inst.agent.launch() != "codex";
+                // Codex、DSH 的状态来自它们的后台服务，不看屏幕
+                let claude = !matches!(inst.agent.launch(), "codex" | "dsh");
                 let phase = lock(&inst.st).phase;
                 let due = match phase {
                     Phase::Running | Phase::Approval | Phase::Tui => true,
@@ -1236,8 +1277,11 @@ impl Chat {
     }
 
     /// 输入 / 时提示的自定义命令和技能
-    pub fn commands(&self, id: &str) -> Result<Value, LocalError> {
+    pub async fn commands(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
+        if self.is_dsh(id) {
+            return self.dsh_commands(id).await;
+        }
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         Ok(json!({ "items": self.inst(id).agent.commands(Path::new(&row.workdir)) }))
     }
@@ -1359,6 +1403,9 @@ impl Chat {
         }
         if inst.agent.launch() == "codex" {
             return self.codex_input(id, text, images).await;
+        }
+        if inst.agent.launch() == "dsh" {
+            return self.dsh_input(id, text, images).await;
         }
         let (hooked, running) = {
             let st = lock(&inst.st);
@@ -1494,6 +1541,9 @@ impl Chat {
         if self.is_codex(id) {
             return self.codex_interrupt(id).await;
         }
+        if self.is_dsh(id) {
+            return self.dsh_interrupt(id).await;
+        }
         let inst = self.inst(id);
         // 已经停下来时不按：输入框空着时连按两次 Esc 会打开回退（Rewind）菜单
         // 额度用完、正在等重置后自动继续时也按（Esc 取消等待；这时输入框是空闲的）
@@ -1516,6 +1566,14 @@ impl Chat {
         let inst = self.inst(id);
         let mut st = lock(&inst.st);
         let Some(p) = st.pending.as_mut().filter(|p| p.id == req.id) else { return Err(LocalError::new("CHAT_STALE")) };
+        // DSH：答复是 waterfall 的结果；不替用户回答时交给 DSH 自己的界面
+        if inst.agent.launch() == "dsh" {
+            let result = dsh_chat::decision(p.kind, &p.input, req)?;
+            p.resolve(result.map(|r| r.to_string()).unwrap_or_default());
+            st.pending = None;
+            Self::set_phase(&inst, &mut st, Phase::Running, None);
+            return Ok(());
+        }
         // Codex：答复直接是 app-server 请求的结果
         if inst.agent.launch() == "codex" {
             // 命令规则标出来的：只能这一次允许
@@ -1564,6 +1622,10 @@ impl Chat {
     /// 3 是“告诉 Claude 要改什么”：按 3 后光标停在这一项的输入框里，打字、回车，Claude 照着改计划（实测 2.1.304）。
     pub async fn plan(&self, id: &str, choice: u8, feedback: Option<&str>) -> Result<(), LocalError> {
         self.require(id)?;
+        if self.is_dsh(id) {
+            let feedback = feedback.map(str::trim).filter(|f| !f.is_empty()).map(|f| f.chars().take(2000).collect::<String>());
+            return self.dsh_plan(id, choice, feedback.as_deref());
+        }
         // 计划确认框是 Claude Code 的（[`Agent::plan_check`]；Codex 没有）
         if self.inst(id).agent.plan_check(1).is_none() {
             return Err(LocalError::invalid("choice", "invalid"));
@@ -1597,6 +1659,9 @@ impl Chat {
         if self.is_codex(id) {
             return self.codex_attach(id).await.map(|_| ());
         }
+        if self.is_dsh(id) {
+            return self.dsh_attach(id).await.map(|_| ());
+        }
         let pane = self.instances.pane(id).await.ok_or_else(|| LocalError::new("CHAT_NOT_RUNNING"))?;
         if agent_state(self.inst(id).agent, &pane).is_some() {
             return Err(LocalError::new("CHAT_CLAUDE_RUNNING"));
@@ -1614,6 +1679,9 @@ impl Chat {
         self.require(id)?;
         if self.is_codex(id) {
             return self.codex_adopt(id, true).await.map(|_| ());
+        }
+        if self.is_dsh(id) {
+            return self.dsh_attach(id).await.map(|_| ());
         }
         self.claude_adopt(id, true).await
     }
@@ -1790,6 +1858,9 @@ impl Chat {
         if inst.agent.launch() == "codex" {
             return self.codex_setting(id, kind, value);
         }
+        if inst.agent.launch() == "dsh" {
+            return self.dsh_setting(id, kind, value).await;
+        }
         // 斜杠命令和状态栏都是按 Claude Code 认的
         if inst.agent.launch() != "claude" {
             return Err(LocalError::new("CHAT_UNAVAILABLE"));
@@ -1900,6 +1971,9 @@ impl Chat {
         if self.is_codex(id) {
             return self.codex_models(id).await;
         }
+        if self.is_dsh(id) {
+            return self.dsh_models(id).await;
+        }
         let row = self.store.instance(id)?.ok_or_else(LocalError::not_found)?;
         let workdir = PathBuf::from(&row.workdir);
         let ctx = self.model_ctx(id, &workdir).await;
@@ -1948,6 +2022,9 @@ impl Chat {
 
     pub async fn usage(&self, id: &str) -> Result<Value, LocalError> {
         self.require(id)?;
+        if self.is_dsh(id) {
+            return Ok(self.dsh_usage(id));
+        }
         if self.is_codex(id) {
             return self.codex_usage(id).await;
         }
@@ -3023,7 +3100,7 @@ mod tests {
         // 自定义命令
         std::fs::create_dir_all(format!("{dir}/.claude/commands")).unwrap();
         std::fs::write(format!("{dir}/.claude/commands/hello-e2e.md"), "---\ndescription: 端到端测试命令\n---\n说你好").unwrap();
-        let cmds = chat.commands(&id).unwrap();
+        let cmds = chat.commands(&id).await.unwrap();
         assert!(cmds["items"].as_array().unwrap().iter().any(|c| c["name"] == "/hello-e2e" && c["description"] == "端到端测试命令"));
         let _ = std::fs::remove_file(format!("{dir}/.claude/commands/hello-e2e.md"));
 

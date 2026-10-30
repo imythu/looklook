@@ -80,7 +80,7 @@ static USER_PATH: Mutex<Option<String>> = Mutex::new(None);
 /// 用户平时打开终端时的 PATH：从程序坞打开的客户端（和 launchd 起的后台）只有系统默认的 PATH，
 /// Homebrew、npm、nvm / fnm 加的目录常只写在 `~/.zshrc` 里，只问登录 shell 也拿不到。
 /// 用 `/usr/bin/env` 打印，不用 shell 自己的语法（fish、nushell 的 `$PATH` 不是冒号分隔）。
-async fn user_path(shell: &str) -> Option<String> {
+pub(super) async fn user_path(shell: &str) -> Option<String> {
     if cfg!(windows) {
         return None;
     }
@@ -96,7 +96,7 @@ async fn user_path(shell: &str) -> Option<String> {
 }
 
 /// 启动 app-server 时的 PATH：codex 所在的目录（node 常在它旁边）、用户 shell 的 PATH、客户端自己的 PATH
-async fn launch_path(shell: &str, program: &Path) -> Option<std::ffi::OsString> {
+pub(super) async fn launch_path(shell: &str, program: &Path) -> Option<std::ffi::OsString> {
     if cfg!(windows) {
         return None;
     }

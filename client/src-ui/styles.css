@@ -3182,3 +3182,37 @@ button.chat-read-no:hover { color: var(--brand); opacity: 1; }
 .help-link { display: inline-grid; place-items: center; width: 28px; height: 28px; margin-left: 2px; border-radius: 8px; color: var(--muted); vertical-align: middle; }
 .help-link:hover { color: var(--brand); background: var(--brand-soft); }
 .page-tip { margin: 0 0 14px; }
+
+/* 对话界面右下角的小胖鱼（shared/ChatPet.jsx）：叠在对话列表底部、输入框上面，不占地方 */
+.chat-view { --pet-ink: #3b2a20; --pet-b: #ffa24c; --pet-l: #ffe2b8; --pet-f: #ff7a3d; --pet-w: #ffffff; --pet-p: #1d1b26; --pet-c: #ff8fa3; }
+@media (prefers-color-scheme: dark) { .chat-view { --pet-ink: #1a1410; --pet-b: #f0913c; --pet-l: #f5d3a4; --pet-f: #e86a30; --pet-c: #f07a90; } }
+.chat-pet-dock { position: relative; height: 0; z-index: 2; pointer-events: none; }
+.chat-pet { position: absolute; right: 18px; bottom: 6px; pointer-events: auto; }
+.chat-pet-body { position: relative; display: block; padding: 0; border: 0; background: none; cursor: pointer; line-height: 0; animation: pet-bob 2.4s ease-in-out infinite; }
+.chat-pet-body:focus-visible { outline: 2px solid var(--brand); outline-offset: 4px; border-radius: 8px; }
+.chat-pet-body svg { display: block; filter: drop-shadow(0 2px 3px rgba(20, 24, 40, .18)); }
+.pet-o { fill: var(--pet-ink); } .pet-b { fill: var(--pet-b); } .pet-l { fill: var(--pet-l); } .pet-f { fill: var(--pet-f); }
+.pet-w { fill: var(--pet-w); } .pet-p { fill: var(--pet-p); } .pet-c { fill: var(--pet-c); }
+.chat-pet[data-mood="work"] .chat-pet-body { animation-duration: .9s; }
+.chat-pet[data-mood="wait"] .chat-pet-body { animation: pet-hop .8s ease-in-out infinite; }
+.chat-pet[data-mood="done"] .chat-pet-body { animation: pet-flip .9s ease-in-out 1; }
+.chat-pet[data-mood="sleep"] .chat-pet-body { animation-duration: 4s; }
+.chat-pet-body[data-boop] { animation: pet-boop .45s ease-out 1; }
+.chat-pet-mark { position: absolute; left: 8px; top: -14px; font: 800 15px/1 var(--font); color: var(--warn); animation: pet-hop .8s ease-in-out infinite; }
+.chat-pet-z { position: absolute; left: 4px; top: -6px; font: 700 12px/1 var(--mono); color: var(--muted); animation: pet-z 2.6s ease-in infinite; }
+.chat-pet-bubbles { position: absolute; left: -6px; top: 6px; width: 10px; height: 30px; pointer-events: none; }
+.chat-pet-bubbles i { position: absolute; bottom: 0; left: 2px; width: 5px; height: 5px; border: 1.5px solid color-mix(in srgb, var(--info) 70%, transparent); border-radius: 50%; opacity: 0; animation: pet-bubble 1.5s ease-in infinite; }
+.chat-pet-bubbles i:nth-child(2) { left: -2px; animation-delay: .5s; }
+.chat-pet-bubbles i:nth-child(3) { left: 4px; animation-delay: 1s; }
+.chat-pet-hide { position: absolute; right: -8px; top: -8px; display: grid; place-items: center; width: 18px; height: 18px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: var(--panel); color: var(--muted); cursor: pointer; opacity: 0; transition: opacity .15s; }
+.chat-pet:hover .chat-pet-hide, .chat-pet-hide:focus-visible { opacity: 1; }
+@media (hover: none) { .chat-pet-hide { display: none; } }
+.chat-pet-peek { position: absolute; right: 22px; bottom: 8px; width: 10px; height: 10px; padding: 0; border: 0; border-radius: 50%; background: var(--pet-b); opacity: .35; cursor: pointer; pointer-events: auto; }
+.chat-pet-peek:hover, .chat-pet-peek:focus-visible { opacity: .9; }
+@keyframes pet-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes pet-hop { 0%, 100% { transform: translateY(0); } 40% { transform: translateY(-6px); } }
+@keyframes pet-flip { 0% { transform: translateY(0) rotate(0); } 45% { transform: translateY(-14px) rotate(-180deg); } 100% { transform: translateY(0) rotate(-360deg); } }
+@keyframes pet-boop { 0% { transform: scale(1); } 35% { transform: scale(1.18, .86); } 70% { transform: scale(.92, 1.1); } 100% { transform: scale(1); } }
+@keyframes pet-z { 0% { opacity: 0; transform: translate(0, 0) scale(.8); } 30% { opacity: 1; } 100% { opacity: 0; transform: translate(-8px, -14px) scale(1.2); } }
+@keyframes pet-bubble { 0% { opacity: 0; transform: translateY(0) scale(.6); } 20% { opacity: 1; } 100% { opacity: 0; transform: translateY(-26px) scale(1.1); } }
+@media (prefers-reduced-motion: reduce) { .chat-pet-body, .chat-pet-mark, .chat-pet-z, .chat-pet-bubbles i, .chat-pet[data-mood] .chat-pet-body { animation: none; } .chat-pet-bubbles i { opacity: .6; } .chat-pet-z { opacity: 1; } }

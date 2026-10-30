@@ -72,6 +72,7 @@ import { spinnerText } from '../shared/spinner.js';
 import {
   CODEX_ACTIONS,
   CODEX_COMMANDS,
+  DSH_COMMANDS,
   CODEX_ONLY,
   COMMANDS,
   EFFORTS,
@@ -120,6 +121,7 @@ import { dropFirst, retryFirst, useFirstSend } from '../shared/firstSend.js';
 import { runUpload } from '../shared/uploader.js';
 import { inputHistory, rememberInput, searchInputs } from '../shared/inputHistory.js';
 import PopMenu from '../shared/PopMenu.jsx';
+import ChatPet from '../shared/ChatPet.jsx';
 import { Button, CopyButton, useConfirm, useLoad, useToast } from '../shared/ui.jsx';
 import { KindIcon, profileName } from './ClaudeProfiles.jsx';
 import { FindBar, MessageSheet, OutlineTab, UserActs, fillInput, useChatKeys, useLongPress } from './ChatTools.jsx';
@@ -132,7 +134,7 @@ import { shownFocus } from '../shared/termFrame.js';
 // ---------------- 数据 ----------------
 
 /** 服务端状态里的 `agent` → 文案里的 {{agent}}；老版本服务端不带 agent，就是 Claude Code */
-const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex' };
+const AGENT_NAMES = { claude: 'Claude Code', codex: 'Codex', dsh: 'DSH' };
 /** 这个对话的 AI 工具和它支持的操作（`status.caps`；老版本服务端不带 caps，就是全部可用）：界面只按它显示按钮 */
 const AgentCtx = createContext({ id: 'claude', name: AGENT_NAMES.claude, caps: {} });
 /** 这段对话产出的文件（Codex）：list 给资源栏，links（文字里的写法 → 地址）给回复里的路径变成链接 */
@@ -1460,8 +1462,8 @@ function QuestionForm({ pending, onAnswer, busy }) {
 
 /** 权限审批、Claude 的提问、计划审批 */
 function PendingCard({ id, pending, active }) {
-  const { t } = useT();
-  const { caps } = useContext(AgentCtx);
+  const { t, i18n } = useT();
+  const { id: agentId, caps } = useContext(AgentCtx);
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const [reason, setReason] = useState('');
@@ -1514,12 +1516,15 @@ function PendingCard({ id, pending, active }) {
           <Markdown text={input.plan ?? ''} />
         </div>
         <div className="chat-acts">
+          {/* DSH 批准后就离开计划模式，不分自动、逐项确认 */}
           <Button busy={busy} onClick={() => plan(1)}>
-            {t('chat.plan_auto')} <kbd className="chat-kbd">↵</kbd>
+            {t(agentId === 'dsh' ? 'chat.plan_approve' : 'chat.plan_auto')} <kbd className="chat-kbd">↵</kbd>
           </Button>
-          <Button variant="secondary" busy={busy} onClick={() => plan(2)}>
-            {t('chat.plan_manual')}
-          </Button>
+          {agentId !== 'dsh' && (
+            <Button variant="secondary" busy={busy} onClick={() => plan(2)}>
+              {t('chat.plan_manual')}
+            </Button>
+          )}
         </div>
         <form
           className="chat-acts"
@@ -1557,7 +1562,10 @@ function PendingCard({ id, pending, active }) {
           </button>
         )}
         {pending.tool !== 'apply_patch' && (open || (diff && diff.length <= 40)) && (diff ? <DiffView lines={diff} /> : <Pre text={JSON.stringify(input, null, 2)} />)}
-        {input.description && <p className="chat-note">{input.description}</p>}
+        {/* DSH 的审批原因带中英两份（display_reason），按界面语言挑 */}
+        {(input.display_reason?.[i18n.language.startsWith('zh') ? 'zh' : 'en'] || input.description) && (
+          <p className="chat-note">{input.display_reason?.[i18n.language.startsWith('zh') ? 'zh' : 'en'] || input.description}</p>
+        )}
         {pending.guard && (
           <p className="chat-guard">
             <ShieldAlert size={14} aria-hidden="true" />
@@ -1586,8 +1594,9 @@ function PendingCard({ id, pending, active }) {
             answer('deny', { message: reason });
           }}
         >
-          <input className="chat-field grow" placeholder={t('chat.deny_reason')} value={reason} onChange={(e) => setReason(e.target.value)} />
-          <Button type="submit" variant="ghost" busy={busy}>
+          {/* DSH 的审批只能答允许 / 拒绝，带不了原因 */}
+          {agentId !== 'dsh' && <input className="chat-field grow" placeholder={t('chat.deny_reason')} value={reason} onChange={(e) => setReason(e.target.value)} />}
+          <Button type="submit" variant={agentId === 'dsh' ? 'secondary' : 'ghost'} busy={busy}>
             {t('chat.deny')}
           </Button>
         </form>
@@ -2787,7 +2796,7 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
   const slash = useMemo(() => {
     if (!wantSlash) return [];
     const q = text.toLowerCase();
-    const builtin = COMMANDS.filter(([name]) => (agentId === 'codex' ? CODEX_COMMANDS.includes(name) : !CODEX_ONLY.includes(name))).map(([name, action]) => {
+    const builtin = COMMANDS.filter(([name]) => (agentId === 'codex' ? CODEX_COMMANDS.includes(name) : agentId === 'dsh' ? DSH_COMMANDS.includes(name) : !CODEX_ONLY.includes(name))).map(([name, action]) => {
       const codex = agentId === 'codex' ? CODEX_ACTIONS[name] : null;
       return { name, action: codex ?? action, description: t(codex ? `chat.cmd.codex_${name.slice(1)}` : `chat.cmd.${name.slice(1)}`) };
     });
@@ -3012,6 +3021,21 @@ function Composer({ id, active, status, phase, touch, offline, models, usage, it
             <span className="ellipsis">{modeText}</span>
             <ChevronDown size={13} aria-hidden="true" />
           </button>
+          )}
+          {/* DSH 的计划模式：点了送 `/plan`、`/plan off`（DSH 自己的命令），开着时高亮 */}
+          {agentId === 'dsh' && (
+            <button
+              type="button"
+              className="btn btn-plain chat-chip chat-chip-mode"
+              data-mode={status?.mode === 'plan' ? 'plan' : ''}
+              aria-pressed={status?.mode === 'plan'}
+              disabled={!ready || phase === 'running'}
+              onClick={() => api.post(`/instances/${id}/chat/input`, { text: status?.mode === 'plan' ? '/plan off' : '/plan', images: [] }).catch((e) => toast(errorText(t, e), 'error'))}
+              title={t(status?.mode === 'plan' ? 'chat.dsh_plan_off' : 'chat.dsh_plan_on')}
+            >
+              <ListTodo size={14} aria-hidden="true" />
+              <span className="ellipsis">{t('chat.mode_plan')}</span>
+            </button>
           )}
           {/* 以前说过的话：点开搜（电脑上 Ctrl+R），选一句接到输入框里 */}
           <button type="button" className="btn btn-plain btn-icon chat-inputs-btn" data-pop-anchor="" aria-expanded={menu === 'inputs'} disabled={disabled} onClick={() => setMenu(menu === 'inputs' ? null : 'inputs')} aria-label={t('chat.inputs')} title={touch ? t('chat.inputs') : t('chat.inputs_hint')}>
@@ -3272,10 +3296,10 @@ function Detached({ id, status }) {
           )}
         </div>
       )}
-      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server') && (
+      {(reason === 'not_running' || reason === 'ended' || reason === 'app_server' || reason?.startsWith?.('dsh_')) && (
         <div className="chat-acts">
           <Button busy={busy} onClick={relaunch}>
-            {t(reason === 'app_server' ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
+            {t(reason === 'app_server' || reason?.startsWith?.('dsh_') ? 'chat.relaunch_app_server' : status?.session_id ? 'chat.relaunch_resume' : 'chat.relaunch')}
           </Button>
         </div>
       )}
@@ -3844,6 +3868,7 @@ function ConfigTab({ id }) {
 
 const SIDE_TABS = ['changes', 'outline', 'tasks', 'usage', 'config'];
 const CODEX_TABS = ['changes', 'outline', 'agents', 'resources', 'usage'];
+const DSH_TABS = ['changes', 'outline', 'usage'];
 
 const RES_ICONS = { link: Globe, search: Search, image: ImageIcon };
 const ART_ICONS = { image: ImageIcon, pdf: FileText, video: FileText, audio: FileText, text: FileText, file: FileText };
@@ -3965,7 +3990,10 @@ function ResourcesTab({ id, items }) {
 function SidePanel({ id, tab, onTab, onClose, status, items, onTermTab, onCompact, outline, agentSel, onAgentSel, wide }) {
   const { t } = useT();
   // 资源栏、子代理栏先只给 Codex（Claude 的子代理在“任务”里，和后台命令一起）
-  const tabs = useContext(AgentCtx).id === 'claude' ? SIDE_TABS : CODEX_TABS;
+  const agentId = useContext(AgentCtx).id;
+  const tabs = agentId === 'claude' ? SIDE_TABS : agentId === 'dsh' ? DSH_TABS : CODEX_TABS;
+  // 记着的栏这个工具没有（例如从 Claude 的“任务”换到 DSH）：显示第一栏
+  if (!tabs.includes(tab)) tab = tabs[0];
   const bg = backgroundCounts(status);
   const running = (bg.subagent ?? 0) + (bg.shell ?? 0);
   const live = status?.phase === 'running' || status?.phase === 'approval';
@@ -4027,10 +4055,10 @@ function SpinGlyph() {
 }
 
 /** Codex 运行中：单色的 Codex 标志轻轻呼吸（docs/UI_REDESIGN_2026-10.md §3） */
-function CodexGlyph() {
+function CodexGlyph({ launch = 'codex' }) {
   return (
     <span className="chat-working-mark codex" aria-hidden="true">
-      <LaunchIcon launch="codex" size={14} mono />
+      <LaunchIcon launch={launch} size={14} mono />
     </span>
   );
 }
@@ -4056,7 +4084,7 @@ function Live({ status, items, since }) {
     <>
       {shown && <div className="chat-preview">{preview}</div>}
       <p className="chat-working">
-        {agent === 'codex' ? <CodexGlyph /> : <SpinGlyph />}
+        {agent === 'claude' ? <SpinGlyph /> : <CodexGlyph launch={agent} />}
         <span className="ellipsis">{act.text || (status?.tool ? t('chat.running_tool', { tool: status.tool }) : t('chat.working'))}</span>
         {act.orig && <span className="chat-working-orig" lang="en">{act.orig}</span>}
         {act.detail && (
@@ -4260,7 +4288,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
   const openAgent = useCallback(
     (a) => {
       setAgentSel(a);
-      setSide(agentId === 'claude' ? 'tasks' : 'agents');
+      setSide(agentId === 'claude' ? 'tasks' : agentId === 'dsh' ? 'outline' : 'agents');
     },
     [agentId, setSide],
   );
@@ -4346,7 +4374,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
               {!items.length && status && phase !== 'detached' && !first && (
                 <div className="chat-empty">
                   <span className="chat-empty-mark" aria-hidden="true">
-                    {agentId === 'codex' ? <LaunchIcon launch="codex" size={40} mono /> : <Asterisk size={40} />}
+                    {agentId === 'claude' ? <Asterisk size={40} /> : <LaunchIcon launch={agentId} size={40} mono />}
                   </span>
                   <p className="chat-empty-title">{t('chat.empty')}</p>
                   {/* 几个常用的开头：点了填进输入框，可以改了再发 */}
@@ -4417,6 +4445,7 @@ export default function ChatView({ id, launch, active, touch, offline = false, o
           {phase !== 'detached' && <AgentStrip id={id} items={items} live={live} bg={bg} onOpen={openAgent} />}
           <StatusNotice status={status} online={chat.online} offline={offline} />
           <NotifyAsk active={active} phase={phase} />
+          <ChatPet phase={phase} />
           <Composer id={id} active={active} status={status} phase={phase} touch={touch} offline={offline && !chat.online} models={models} usage={usage} items={items} onAction={onAction} onSide={setSide} />
         </div>
       </div>

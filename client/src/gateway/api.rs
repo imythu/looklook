@@ -465,7 +465,17 @@ async fn create_instance(State(app): State<App>, Json(req): Json<CreateReq>) -> 
 /// 新建一个会话（会话页“新建”，也给飞书里开会话用，docs/FEISHU_AGENT.md §2.1）
 pub async fn create_session(app: &App, input: Input, start: bool) -> R<crate::instances::View> {
     let (prompt, resume) = (input.prompt.clone().map(|p| p.trim().to_string()).filter(|p| !p.is_empty()), input.resume.clone());
-    let v = if input.launch.as_deref() == Some("dsh") { create_dsh(app, input).await? } else { app.instances.create(input).await? };
+    // DSH：网页版（每台电脑一个，带网页端口）走 create_dsh；对话模式（默认）和别的一样，可以有很多个
+    let dsh_web = input.launch.as_deref() == Some("dsh") && input.chat_ui == Some(false);
+    if input.launch.as_deref() == Some("dsh") && !dsh_web {
+        // 对话走这台电脑上共用的 dsh web，容器里用不了
+        if input.container.is_some() {
+            return Err(LocalError::invalid("container", "invalid").into());
+        }
+        require_persistent(app)?;
+        require_dsh(app).await?;
+    }
+    let v = if dsh_web { create_dsh(app, input).await? } else { app.instances.create(input).await? };
     // 对话模式的 Codex：第一句话、接着以前的对话都交给 app-server。接着哪段对话要在终端启动之前记好：
     // 终端里的 TUI 按它接上同一段，不然会自己新开一段空的
     if app.instances.codex_app_mode(&v.row) && resume.is_some() {

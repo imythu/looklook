@@ -121,6 +121,7 @@ pub fn for_launch(launch: &str) -> Option<&'static dyn Agent> {
     match launch {
         "claude" => Some(&Claude),
         "codex" => Some(&Codex),
+        "dsh" => Some(&Dsh),
         _ => None,
     }
 }
@@ -295,6 +296,68 @@ impl Agent for Codex {
         std::time::Duration::from_secs(10)
     }
 
+}
+
+// ---------------- DSH ----------------
+
+/// DSH 不在终端里跑：对话由看看直接通过 `dsh web` 的接口驱动（`dsh_chat.rs`），没有屏幕、没有 hooks
+pub struct Dsh;
+
+impl Agent for Dsh {
+    fn launch(&self) -> &'static str {
+        "dsh"
+    }
+
+    /// 记录不是文件，是内存里按会话的那份：`dsh/<会话>`
+    fn valid_transcript(&self, p: &Path) -> bool {
+        super::dsh_log::session_of(p).is_some_and(super::dsh_log::valid_session)
+    }
+
+    fn open_transcript(&self, path: PathBuf) -> Box<dyn TranscriptReader> {
+        Box::new(super::dsh_log::Reader::new(path))
+    }
+
+    fn classify(&self, _capture: &str) -> Screen {
+        Screen::Modal
+    }
+
+    fn live(&self, _capture: &str) -> Live {
+        Live::default()
+    }
+
+    fn pending_kind(&self, tool: &str) -> &'static str {
+        if tool == "AskUserQuestion" {
+            "question"
+        } else {
+            "permission"
+        }
+    }
+
+    fn decision(&self, p: &PendingView, kind: &str, req: &PermissionAnswer) -> Result<Value, LocalError> {
+        Ok(super::dsh_chat::decision(kind, p.input, req)?.unwrap_or(Value::Null))
+    }
+
+    fn plan_check(&self, _choice: u8) -> Option<(&'static [&'static str], &'static str)> {
+        None
+    }
+
+    /// DSH 自己的命令（`/compact` 这些）在界面里；技能以后再加（`skills/list`）
+    fn commands(&self, _workdir: &Path) -> Value {
+        json!([])
+    }
+
+    /// 能选模型、提问；审批只有“允许这一次”；还不能发图片（要先经 DSH 的上传接口）
+    fn caps(&self) -> Value {
+        json!({ "allow_session": false, "allow_dirs": false, "images": true, "user_images": true, "plan": true, "questions": true, "models": true, "usage": true, "mode": false })
+    }
+
+    fn session_starts_on_prompt(&self) -> bool {
+        true
+    }
+
+    fn tui_asks_while_hook_waits(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

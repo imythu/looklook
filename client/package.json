@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "check:locales": "node scripts/check-locales.mjs",
-    "test": "node --test src-ui/shared/xfer.test.mjs src-ui/shared/chat.test.mjs src-ui/shared/inputHistory.test.mjs src-ui/shared/chatCopy.test.mjs src-ui/shared/office.test.mjs src-ui/shared/selectAt.test.mjs"
+    "test": "node --test src-ui/shared/xfer.test.mjs src-ui/shared/chat.test.mjs src-ui/shared/inputHistory.test.mjs src-ui/shared/chatCopy.test.mjs src-ui/shared/office.test.mjs src-ui/shared/selectAt.test.mjs src-ui/shared/pet.test.mjs"
   },
   "dependencies": {
     "@xterm/addon-fit": "0.11.0",

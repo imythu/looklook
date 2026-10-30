@@ -653,7 +653,7 @@ fn parse_dsh_web(text: &str) -> Option<(i64, DshWeb)> {
     Some((v["at"].as_i64().unwrap_or(0), DshWeb { pid, port, token }))
 }
 
-fn alive_pids(pids: &[u32]) -> Vec<u32> {
+pub(crate) fn alive_pids(pids: &[u32]) -> Vec<u32> {
     use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
     if pids.is_empty() {
         return vec![];

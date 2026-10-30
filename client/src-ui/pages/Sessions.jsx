@@ -10,6 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useStatus } from '../App.jsx';
 import { deviceApi, rememberTerminals, terminalDevice } from '../shared/api.js';
+import { isDshWeb } from '../shared/chat.js';
 import { DeviceAvatar, deviceColor, DeviceTag, LaunchIcon } from '../shared/brands.jsx';
 import { deviceName, osLabel, RenameDeviceDialog, useDevices } from '../shared/devices.jsx';
 import { errorText } from '../shared/i18n.js';
@@ -98,7 +99,7 @@ export function SessionUiProvider({ children }) {
   const [draftAt, setDraftAt] = useState(null);
   const openSession = (id) => {
     // 手机上整页打开；网页类型（DSH）打开的是它的网页
-    if (!opensInPage()) return navigate(s.byId(id)?.launch === 'dsh' ? `/t/${id}?web` : `/t/${id}`);
+    if (!opensInPage()) return navigate(isDshWeb(s.byId(id)) ? `/t/${id}?web` : `/t/${id}`);
     s.openTab(id);
     s.openRecent(id);
     s.requestFocus(id);
@@ -1098,7 +1099,7 @@ export function SessionStage({ activeId }) {
       {ids.map((id) => {
         // 电脑离线时用最后一次看到的：终端不卸载，内容还能看
         const inst = s.known(id);
-        if (inst?.launch === 'dsh') {
+        if (isDshWeb(inst)) {
           return (
             <WebPane
               key={id}

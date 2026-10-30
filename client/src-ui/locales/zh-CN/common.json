@@ -264,7 +264,8 @@
     "chat_ui": "对话界面",
     "chat_ui_hint": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片；终端里的功能一个不少，随时可以切过去。",
     "chat_ui_hint_restart": "除了终端，还可以在聊天界面里和 Claude Code 对话、审批操作、发图片。开启后要重启这个终端才生效。",
-    "chat_ui_hint_codex": "除了终端，还可以在聊天界面里和 Codex 对话、审批操作。看看会用 --no-daemon 单独运行它，并通过自己的配置（looklook-chat）带上 hooks，不改你的 Codex 配置。"
+    "chat_ui_hint_codex": "除了终端，还可以在聊天界面里和 Codex 对话、审批操作。看看会用 --no-daemon 单独运行它，并通过自己的配置（looklook-chat）带上 hooks，不改你的 Codex 配置。",
+    "chat_ui_hint_dsh": "在聊天界面里和 DSH 对话、审批操作、回答它的提问。看看通过这台电脑上的 dsh web 驱动对话（没有在运行时自动在后台启动），终端里是同一个文件夹下的普通 shell。不勾选就是以前的网页版（每台电脑一个）。"
   },
   "tools": {
     "missing": "这台电脑还没有安装 {{tool}}",
@@ -1736,7 +1737,7 @@
     "notify_done_bg_one": "{{agent}} 这一轮做完了，还有 {{count}} 个后台命令在运行",
     "notify_done_bg_other": "{{agent}} 这一轮做完了，还有 {{count}} 个后台命令在运行",
     "placeholder_running": "可以接着说…",
-    "plan_send_change": "让 Claude 修改",
+    "plan_send_change": "让 {{agent}} 修改",
     "model_default_is": "现在是 {{name}}",
     "model_older": "其他版本（{{n}} 个）",
     "model_provider": "服务商的其他模型",
@@ -1996,7 +1997,23 @@
     "read_show_read": "看读到的内容",
     "read_show_file": "预览整个文件",
     "read_full": "全屏查看",
-    "read_image_gone": "图片已经不在了（可能被删掉或移走了）"
+    "read_image_gone": "图片已经不在了（可能被删掉或移走了）",
+    "detached_dsh_unavailable_title": "连不上 DSH",
+    "detached_dsh_unavailable_body": "看看通过这台电脑上的 `dsh web` 驱动对话，它没能启动或者连不上。确认装了 DSH、配置好了模型的 API Key，然后点下面的按钮重试。",
+    "detached_dsh_not_found_title": "这台电脑上没有 DSH",
+    "detached_dsh_not_found_body": "在“新建会话”里选 DSH 可以一键安装，装好后点下面的按钮重试。",
+    "detached_dsh_follow_title": "和 DSH 的连接断了",
+    "detached_dsh_follow_body": "正在重新连接；一直连不上时点下面的按钮重试。",
+    "approve_reason": "原因：{{reason}}",
+    "pet_hide": "藏起小家伙",
+    "pet_show": "叫出小家伙",
+    "pet_working": "在干活",
+    "pet_waiting": "在等你",
+    "pet_done": "做完啦",
+    "pet_sleeping": "在打盹",
+    "plan_approve": "批准计划，开始执行",
+    "dsh_plan_on": "进入计划模式：DSH 先只读、写计划，你批准后再动手",
+    "dsh_plan_off": "离开计划模式"
   },
   "board": {
     "title": "任务",
@@ -2198,7 +2215,7 @@
     "custom": "自定义命令…",
     "custom_hint": "在输入框里写要运行的命令",
     "dsh_hint": "在会话标签里打开它的网页",
-    "dsh_open": "这台电脑上已经有了，点了打开它",
+    "dsh_open": "打开这台电脑上以前开的 DSH 网页",
     "install_start": "安装并开始",
     "install_strip": "这台电脑还没装 {{tool}}。点开始会先装好，装好接着开始。",
     "offline": "{{device}} 离线了，草稿先留着，电脑回来就能发。也可以换个项目。",
@@ -2209,7 +2226,8 @@
     "docker_hint": "只有终端，没有对话界面",
     "keys": "回车开始 · Shift+回车换行 · 草稿自动保存",
     "recent": "或者接着这个项目里最近的",
-    "continue": "接着聊"
+    "continue": "接着聊",
+    "dsh_web": "DSH 网页版"
   },
   "acct": {
     "computers": "电脑",

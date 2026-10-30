@@ -130,7 +130,7 @@ pub async fn agent(State(app): State<App>, Path(id): Path<String>, Query(q): Que
 }
 
 pub async fn commands(State(app): State<App>, Path(id): Path<String>) -> R<Json<Value>> {
-    Ok(Json(app.chat.commands(&id)?))
+    Ok(Json(app.chat.commands(&id).await?))
 }
 
 #[derive(Deserialize)]

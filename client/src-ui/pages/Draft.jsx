@@ -9,7 +9,7 @@ import { useTranslation } from 'react-i18next';
 
 import { SafetyNote, useStatus } from '../App.jsx';
 import { deviceApi, rememberTerminals, terminalDevice } from '../shared/api.js';
-import { CHAT_LAUNCHES } from '../shared/chat.js';
+import { CHAT_LAUNCHES, isDshWeb } from '../shared/chat.js';
 import { DeviceAvatar, deviceColor, LaunchIcon } from '../shared/brands.jsx';
 import { deviceName, osLabel, useDevices } from '../shared/devices.jsx';
 import { clearDraftBack, draftBack, queueFirst } from '../shared/firstSend.js';
@@ -29,7 +29,7 @@ import { BackendNote, FolderPicker, InstallProgress, Promotions, RemoteCard, She
 import { imeComposing } from '../shared/ime.js';
 
 // 留在草稿里的类型（写好第一句再开始）；终端、DSH 点了马上开
-const DRAFT_LAUNCHES = ['claude', 'codex', 'opencode'];
+const DRAFT_LAUNCHES = ['claude', 'codex', 'opencode', 'dsh'];
 // 第一句话能用在哪些类型上（AI 工具作为第一条消息，普通终端当作启动后运行的命令）
 const PROMPT_LAUNCHES = ['claude', 'codex', 'opencode', 'shell'];
 const DRAFTS_KEY = 'looklook.new-drafts';
@@ -236,7 +236,7 @@ function DraftForm() {
   const project = s.projects.find((p) => isDraftProject(p, at));
   const draftKey = projectKey(device, container ? `docker://${container.name}${container.dir}` : workdir);
   const initLaunch = (p) => (DRAFT_LAUNCHES.includes(p?.launch) || p?.launch === 'custom' ? p.launch : 'claude');
-  const [launch, setLaunchState] = useState(DRAFT_LAUNCHES.includes(want.launch) || want.launch === 'custom' || want.launch === 'dsh' ? want.launch : initLaunch(project));
+  const [launch, setLaunchState] = useState(DRAFT_LAUNCHES.includes(want.launch) || want.launch === 'custom' ? want.launch : initLaunch(project));
   // 用户自己选过类型、全部权限：换项目、那台电脑的设置到了都不再改它
   const chosen = useRef(Boolean(want.launch));
   const fullChosen = useRef(false);
@@ -373,12 +373,7 @@ function DraftForm() {
   // 终端、DSH：点了就开，不用草稿
   const openNow = async (l) => {
     if (blocked) return toast(blocked, 'error');
-    if (l === 'dsh') {
-      const row = s.items.find((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device));
-      if (row) return ui.openSession(row.id);
-      // 还没装：留在草稿里选上 DSH，下面出现安装提示，点“安装并开始”装好后自动打开
-      if (missing('dsh')) return setLaunch('dsh');
-    }
+    if (l === 'dsh-web') return dshWeb && ui.openSession(dshWeb.id);
     await ui.quickCreate(target(), l);
   };
   const go = async () => {
@@ -447,10 +442,12 @@ function DraftForm() {
   const recent = project && !container ? projectEntries(project).rest.filter((x) => x.kind === 'conv').slice(0, RECENT_N) : [];
   const empty = !text.trim() && !files.length;
   const guideRemote = useGuideShowsRemote();
-  const dshHere = s.items.some((i) => i.launch === 'dsh' && (!devices.multi || terminalDevice(i.id) === device));
+  // 以前开的网页版 DSH（每台电脑一个）：还能从这里打开它的网页；新开的 DSH 都是对话模式
+  const dshWeb = s.items.find((i) => isDshWeb(i) && (!devices.multi || terminalDevice(i.id) === device));
   const typeItems = [
     { head: t('draft.group_chat') },
-    ...DRAFT_LAUNCHES.map((l) => ({
+    // DSH 的对话走这台电脑上的 dsh web，容器里用不了
+    ...DRAFT_LAUNCHES.filter((l) => !(container && l === 'dsh')).map((l) => ({
       icon: (p) => <LaunchIcon launch={l} {...p} />,
       label: t(`launch.${l}.title`),
       hint: missing(l) ? t(container ? 'sess.container_missing' : 'draft.not_installed_hint', { tool: t(`launch.${l}.title`) }) : project?.launch === l ? t('draft.last_used') : undefined,
@@ -460,7 +457,7 @@ function DraftForm() {
     { head: t('draft.group_now') },
     { icon: (p) => <LaunchIcon launch="shell" {...p} />, label: t('launch.shell.title'), hint: t('draft.shell_hint'), checked: false, onClick: () => openNow('shell') },
     { icon: (p) => <LaunchIcon launch="custom" {...p} />, label: t('draft.custom'), hint: t('draft.custom_hint'), checked: launch === 'custom', onClick: () => setLaunch('custom') },
-    !container && { icon: (p) => <LaunchIcon launch="dsh" {...p} />, label: t('launch.dsh.title'), hint: t(dshHere ? 'draft.dsh_open' : 'draft.dsh_hint'), checked: false, onClick: () => openNow('dsh') },
+    !container && dshWeb && { icon: (p) => <LaunchIcon launch="dsh" {...p} />, label: t('draft.dsh_web'), hint: t('draft.dsh_open'), checked: false, onClick: () => openNow('dsh-web') },
   ];
   const ph = launch === 'custom' ? t('sess.ph_custom') : t('draft.ph', { tool: toolName });
   const installing = job?.tool === launch && job.state === 'running';
